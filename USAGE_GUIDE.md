@@ -6,20 +6,251 @@ The Adept Triage Agent is a GitHub Action that uses AI (GPT-4.1) to automaticall
 
 The action returns a comprehensive JSON object containing the analysis results, which you can integrate into your existing notification systems, dashboards, or workflows.
 
+## Important: Workflow Architecture
+
+⚠️ **The Adept Triage Agent must be run in a separate workflow from your tests.**
+
+Running the triage agent within the same workflow that it's trying to analyze creates a circular dependency - the workflow can't be analyzed until it's complete, but it can't complete until the analysis is done. To solve this, use a two-workflow architecture:
+
+1. **Test Workflow**: Runs your tests and dispatches an event on failure
+2. **Triage Workflow**: Listens for the dispatch event and runs the analysis
+
 ## Quick Start
 
-Simply add the Adept Triage Agent after your test steps. It will analyze failures and return a JSON object you can use however you need:
+### Step 1: Create the Triage Workflow
+
+First, create a separate workflow file (e.g., `.github/workflows/triage-failed-tests.yml`):
 
 ```yaml
-- name: Analyze Test Failure
-  if: failure()
-  uses: adept-at/adept-triage-agent@v1.0.0
-  id: triage
-  with:
-    OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-    WORKFLOW_RUN_ID: ${{ github.run_id }}
-    JOB_NAME: ${{ github.job }}
+name: Triage Failed Tests
+
+on:
+  repository_dispatch:
+    types: [triage-failed-test]
+
+jobs:
+  triage:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Wait for workflow to complete
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const workflowRunId = parseInt('${{ github.event.client_payload.workflow_run_id }}');
+
+            // Poll for workflow completion (max 10 minutes)
+            let attempts = 0;
+            const maxAttempts = 60; // 60 * 10 seconds = 10 minutes
+
+            while (attempts < maxAttempts) {
+              const { data: run } = await github.rest.actions.getWorkflowRun({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                run_id: workflowRunId
+              });
+              
+              if (run.status === 'completed') {
+                console.log('Workflow completed');
+                break;
+              }
+              
+              attempts++;
+              if (attempts < maxAttempts) {
+                console.log(`Waiting 10 seconds... (attempt ${attempts}/${maxAttempts})`);
+                await new Promise(resolve => setTimeout(resolve, 10000));
+              }
+            }
+
+      - name: Run triage analysis
+        id: triage
+        uses: adept-at/adept-triage-agent@v1.0.2
+        with:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          WORKFLOW_RUN_ID: '${{ github.event.client_payload.workflow_run_id }}'
+          JOB_NAME: '${{ github.event.client_payload.job_name }}'
+
+      - name: Use triage results
+        run: |
+          echo "Verdict: ${{ steps.triage.outputs.verdict }}"
+          echo "Confidence: ${{ steps.triage.outputs.confidence }}"
+          echo "Summary: ${{ steps.triage.outputs.summary }}"
 ```
+
+### Step 2: Update Your Test Workflow
+
+In your test workflow, add a step to trigger the triage workflow on failure:
+
+```yaml
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        test: [test1, test2, test3]
+    steps:
+      - name: Run Tests
+        run: npm test
+
+      - name: Trigger triage workflow
+        if: failure()
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            await github.rest.repos.createDispatchEvent({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              event_type: 'triage-failed-test',
+              client_payload: {
+                workflow_run_id: context.runId.toString(),
+                job_name: '${{ github.job }} (${{ matrix.test }})',
+                // Include any other context you want to pass
+                spec: '${{ matrix.test }}',
+                branch: context.ref.replace('refs/heads/', ''),
+                commit_sha: context.sha
+              }
+            });
+```
+
+## Complete Example
+
+Here's a full example showing how to integrate the triage agent with Slack notifications:
+
+### Test Workflow (`.github/workflows/tests.yml`)
+
+```yaml
+name: Run Tests
+
+on: [push, pull_request]
+
+jobs:
+  cypress:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        containers: [spec1.cy.ts, spec2.cy.ts, spec3.cy.ts]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run Cypress tests
+        run: npx cypress run --spec ./cypress/e2e/${{ matrix.containers }}
+
+      - name: Send initial failure notification
+        if: failure()
+        run: |
+          curl -X POST -H 'Content-type: application/json' --data '{
+            "text": "❌ Test Failed: ${{ github.job }} - ${{ matrix.containers }}"
+          }' ${{ secrets.SLACK_WEBHOOK_URL }}
+
+      - name: Trigger triage analysis
+        if: failure()
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            await github.rest.repos.createDispatchEvent({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              event_type: 'triage-failed-test',
+              client_payload: {
+                workflow_run_id: context.runId.toString(),
+                job_name: '${{ github.job }}',
+                spec: '${{ matrix.containers }}',
+                pr_number: '${{ github.event.pull_request.number }}',
+                branch: context.ref.replace('refs/heads/', '')
+              }
+            });
+```
+
+### Triage Workflow (`.github/workflows/triage.yml`)
+
+```yaml
+name: Triage Failed Tests
+
+on:
+  repository_dispatch:
+    types: [triage-failed-test]
+
+jobs:
+  triage:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Wait for workflow completion
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const workflowRunId = parseInt('${{ github.event.client_payload.workflow_run_id }}');
+
+            // Wait for workflow to complete
+            let attempts = 0;
+            while (attempts < 60) {
+              const { data: run } = await github.rest.actions.getWorkflowRun({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                run_id: workflowRunId
+              });
+              
+              if (run.status === 'completed') break;
+              
+              attempts++;
+              await new Promise(resolve => setTimeout(resolve, 10000));
+            }
+
+      - name: Run triage analysis
+        id: triage
+        uses: adept-at/adept-triage-agent@v1.0.2
+        with:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          WORKFLOW_RUN_ID: '${{ github.event.client_payload.workflow_run_id }}'
+          JOB_NAME: '${{ github.event.client_payload.job_name }}'
+
+      - name: Send triage results to Slack
+        run: |
+          VERDICT="${{ steps.triage.outputs.verdict }}"
+          CONFIDENCE="${{ steps.triage.outputs.confidence }}"
+          SUMMARY="${{ steps.triage.outputs.summary }}"
+
+          # Determine emoji based on verdict
+          if [ "$VERDICT" = "TEST_ISSUE" ]; then
+            EMOJI="⚠️"
+          elif [ "$VERDICT" = "PRODUCT_ISSUE" ]; then
+            EMOJI="🚨"
+          else
+            EMOJI="❓"
+          fi
+
+          curl -X POST -H 'Content-type: application/json' --data '{
+            "text": "'"$EMOJI"' AI Triage Result for ${{ github.event.client_payload.spec }}",
+            "attachments": [{
+              "color": "warning",
+              "fields": [
+                {"title": "Verdict", "value": "'"$VERDICT"'", "short": true},
+                {"title": "Confidence", "value": "'"$CONFIDENCE"'%", "short": true},
+                {"title": "Summary", "value": "'"$SUMMARY"'"}
+              ]
+            }]
+          }' ${{ secrets.SLACK_WEBHOOK_URL }}
+```
+
+## Why Separate Workflows?
+
+The triage agent needs to analyze the complete workflow run, including:
+
+- All job logs
+- Test artifacts
+- Screenshots
+- Timing information
+
+This information is only available after the workflow completes. Running the triage agent within the same workflow creates a deadlock:
+
+- The workflow can't complete until all steps (including triage) finish
+- The triage can't run until the workflow completes
+
+By using separate workflows with repository dispatch events, we ensure the test workflow completes fully before analysis begins.
 
 ## Inputs
 
@@ -44,15 +275,21 @@ Simply add the Adept Triage Agent after your test steps. It will analyze failure
 
 ## Complete Integration Example
 
-The triage agent is designed to seamlessly integrate with your existing workflows. Just add the action after your test steps, and use the returned JSON however you need.
+The triage agent requires a two-workflow approach for proper integration:
+
+1. **Test Workflow**: Runs tests and dispatches events on failure
+2. **Triage Workflow**: Analyzes failures and sends notifications
 
 ### Key Integration Points:
 
-1. **Add the triage action** after your test steps (with `if: failure()`)
-2. **Get the triage JSON** from `${{ steps.triage.outputs.triage_json }}`
-3. **Add it to your existing systems** - Slack, Discord, JIRA, dashboards, etc.
+1. **Test workflow dispatches an event** on failure with workflow context
+2. **Triage workflow waits** for the test workflow to complete
+3. **Triage analysis runs** and returns structured JSON results
+4. **Results are sent** to your notification systems (Slack, Discord, JIRA, etc.)
 
-Here's a real-world example showing integration with an existing Slack notification:
+Here's a real-world example with matrix strategy and Slack notifications:
+
+### Test Workflow Example
 
 ```yaml
 name: preview-url-saucelabs
@@ -71,120 +308,129 @@ jobs:
       - name: Generate matrix
         id: set-matrix
         run: |
-          DIRECTORY="cypress/skills-preview-url"
+          DIRECTORY="cypress/preview"
           FILES=$(ls -1 "$DIRECTORY" | jq -R -s -c 'split("\n")[:-1]')
           echo "matrix=$FILES" >> $GITHUB_OUTPUT
 
   previewUrlTest:
     needs: generate-matrix
     runs-on: ubuntu-latest
-    timeout-minutes: 7
     strategy:
       fail-fast: false
       matrix:
         containers: ${{ fromJson(needs.generate-matrix.outputs.matrix) }}
     steps:
       - uses: actions/checkout@v4
-      - name: Use Node.js 20
-        uses: actions/setup-node@v4
-        with:
-          node-version: 20.x
-          registry-url: https://npm.pkg.github.com
-          scope: '@adept-at'
-      - name: Cache node_modules
-        id: cache-node-modules
-        uses: actions/cache@v4
-        with:
-          path: node_modules
-          key: ${{ runner.os }}-node-${{ hashFiles('**/package-lock.json') }}
-      - name: NPM CI
-        if: steps.cache-node-modules.outputs.cache-hit != 'true'
-        run: npm ci
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.READ_GH_PACKAGES }}
-      - name: Cache Cypress Binary
-        id: cache-cypress
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/Cypress
-          key: ${{ runner.os }}-cypress-${{ hashFiles('**/package-lock.json') }}
-      - name: Run Cypress Install
-        if: steps.cache-cypress.outputs.cache-hit != 'true'
-        run: npx cypress install
-      - name: run cypress
-        run: >
-          npx cypress run --spec ./cypress/skills-preview-url/${{ matrix.containers }}
-          -C cypress.skillbuilder-vercel.sauce.config.ts
-          -c baseUrl=${{ github.event.client_payload.target_url }}
-          -b chrome
+      - name: Run Cypress
+        run: |
+          npx cypress run --spec ./cypress/preview/${{ matrix.containers }}
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          SAUCE_ACCESS_KEY: ${{ secrets.SAUCE_ACCESS_KEY }}
-          SAUCE_USERNAME: ${{ secrets.SAUCE_USERNAME }}
 
-      # Upload artifacts for triage analysis
-      - uses: actions/upload-artifact@v4
-        if: failure()
-        with:
-          name: cy-logs-${{ matrix.containers }}-${{ github.run_id }}
-          path: |
-            cypress/logs/*
-            cypress/videos/*
-            cypress/screenshots/*
-          if-no-files-found: ignore
-
-      # ========== ADD THIS SECTION ==========
-      # Run AI Triage Analysis
-      - name: Analyze Test Failure with AI
-        if: failure()
-        uses: adept-at/adept-triage-agent@v1.0.0
-        id: triage
-        with:
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          WORKFLOW_RUN_ID: ${{ github.run_id }}
-          JOB_NAME: '${{ github.job }} (${{ matrix.containers }})'
-      # ======================================
-
-      # Update your existing notification to include triage results
-      - name: Notify on failure
+      - name: Send failure notification
         if: failure()
         run: |
-          PR_NUMBER=$(echo ${{ github.event.client_payload.pr_number }})
-          COMMIT_SHA=${{ github.event.client_payload.sha }}
-          REPO_URL=${{ github.event.client_payload.repo }}
+          curl -X POST -H 'Content-type: application/json' --data '{
+            "text": "❌ Test Failed: ${{ matrix.containers }} on branch ${{ github.ref }}"
+          }' ${{ secrets.SLACK_WEBHOOK_URL }}
 
-          # Get the branch name associated with the commit
-          BRANCH_NAME=${{ github.event.client_payload.branch }}
+      - name: Trigger triage workflow
+        if: failure()
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            await github.rest.repos.createDispatchEvent({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              event_type: 'triage-failed-test',
+              client_payload: {
+                workflow_run_id: context.runId.toString(),
+                job_name: '${{ github.job }}',
+                spec: '${{ matrix.containers }}',
+                pr_number: '${{ github.event.client_payload.pr_number }}',
+                preview_url: '${{ github.event.client_payload.target_url }}'
+              }
+            });
+```
 
-          if [ -n "$PR_NUMBER" ]; then
-            LINK_TEXT="PR #$PR_NUMBER"
-            LINK_URL="https://github.com/$REPO_URL/pull/$PR_NUMBER"
-          else
-            LINK_TEXT="GitHub Actions Run"
-            LINK_URL="https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-          fi
-          LINK="<$LINK_URL|$LINK_TEXT>"
+### Corresponding Triage Workflow
 
-          PREVIEW_URL="${{ github.event.client_payload.target_url }}"
+```yaml
+name: AI Test Failure Triage
 
-          # Get the complete triage JSON
+on:
+  repository_dispatch:
+    types: [triage-failed-test]
+
+jobs:
+  analyze-and-notify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Wait for workflow completion
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const workflowRunId = parseInt('${{ github.event.client_payload.workflow_run_id }}');
+
+            // Wait up to 10 minutes for workflow to complete
+            for (let i = 0; i < 60; i++) {
+              const { data: run } = await github.rest.actions.getWorkflowRun({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                run_id: workflowRunId
+              });
+              
+              if (run.status === 'completed') break;
+              await new Promise(resolve => setTimeout(resolve, 10000));
+            }
+
+      - name: Run AI triage analysis
+        id: triage
+        uses: adept-at/adept-triage-agent@v1.0.2
+        with:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          WORKFLOW_RUN_ID: '${{ github.event.client_payload.workflow_run_id }}'
+          JOB_NAME: '${{ github.event.client_payload.job_name }}'
+
+      - name: Parse triage results
+        id: parse
+        run: |
           TRIAGE_JSON='${{ steps.triage.outputs.triage_json }}'
+          echo "verdict=$(echo "$TRIAGE_JSON" | jq -r '.verdict')" >> $GITHUB_OUTPUT
+          echo "confidence=$(echo "$TRIAGE_JSON" | jq -r '.confidence')" >> $GITHUB_OUTPUT
+          echo "summary=$(echo "$TRIAGE_JSON" | jq -r '.summary')" >> $GITHUB_OUTPUT
+
+      - name: Send enriched Slack notification
+        run: |
+          VERDICT="${{ steps.parse.outputs.verdict }}"
+          CONFIDENCE="${{ steps.parse.outputs.confidence }}"
+          SUMMARY="${{ steps.parse.outputs.summary }}"
+          SPEC="${{ github.event.client_payload.spec }}"
+
+          # Choose color based on verdict
+          COLOR="warning"
+          if [ "$VERDICT" = "PRODUCT_ISSUE" ]; then
+            COLOR="danger"
+          fi
 
           curl -X POST -H 'Content-type: application/json' --data '{
-            "text": ":exclamation: Job Failed in skillbuilder preview url Workflow | 
-              Repo: '${GITHUB_REPOSITORY}' | 
-              Message: ${{ job.status }} | 
-              Job: ${{ github.job }} | 
-              Spec: ${{ matrix.containers }} | 
-              Branch: '"$BRANCH_NAME"' | 
-              PR_NUMBER: '"$PR_NUMBER"' | 
-              Commit: '"${COMMIT_SHA:0:7}"' | 
-              Preview URL: '"$PREVIEW_URL"' | 
-              Action URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }} | 
-              Details: '"$LINK"'",
-          !!!
-          }' ${{ secrets.CYPRESS_SLACK_WEBHOOK_URL }}
+            "attachments": [{
+              "color": "'"$COLOR"'",
+              "title": "AI Triage Results for '"$SPEC"'",
+              "fields": [
+                {"title": "Verdict", "value": "'"$VERDICT"'", "short": true},
+                {"title": "Confidence", "value": "'"$CONFIDENCE"'%", "short": true},
+                {"title": "Summary", "value": "'"$SUMMARY"'"}
+              ],
+              "actions": [{
+                "type": "button",
+                "text": "View Workflow",
+                "url": "https://github.com/${{ github.repository }}/actions/runs/${{ github.event.client_payload.workflow_run_id }}"
+              }]
+            }]
+          }' ${{ secrets.SLACK_WEBHOOK_URL }}
 ```
 
 ## Output Format
@@ -239,7 +485,7 @@ To analyze all failed jobs in a workflow:
 ```yaml
 - name: Analyze All Failures
   if: failure()
-  uses: adept-at/adept-triage-agent@v1.0.0
+  uses: adept-at/adept-triage-agent@v1.0.2
   with:
     OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
     # Omit JOB_NAME to analyze all failed jobs
@@ -264,7 +510,7 @@ The action works with any test framework that produces logs and screenshots:
 
 - name: AI Triage
   if: failure()
-  uses: adept-at/adept-triage-agent@v1.0.0
+  uses: adept-at/adept-triage-agent@v1.0.2
   with:
     OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
 ```
@@ -275,7 +521,7 @@ Adjust the confidence threshold for more or less strict verdicts:
 
 ```yaml
 - name: Strict Analysis
-  uses: adept-at/adept-triage-agent@v1.0.0
+  uses: adept-at/adept-triage-agent@v1.0.2
   with:
     OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
     CONFIDENCE_THRESHOLD: '90' # Require 90% confidence
@@ -291,28 +537,11 @@ Adjust the confidence threshold for more or less strict verdicts:
 
 ## Best Practices
 
-1. **Always Upload Artifacts**: Screenshots significantly improve analysis accuracy
-
-   ```yaml
-   - uses: actions/upload-artifact@v4
-     if: failure()
-     with:
-       path: |
-         cypress/screenshots/
-         test-results/
-   ```
-
-2. **Use Matrix Strategy Names**: Include matrix values in job names for better tracking
-
-   ```yaml
-   JOB_NAME: '${{ github.job }} (${{ matrix.browser }} - ${{ matrix.container }})'
-   ```
-
-3. **Integrate with Alerting**: Use different alert levels based on verdict
-   ```yaml
-   if: steps.triage.outputs.verdict == 'PRODUCT_ISSUE'
-   run: echo "<!channel> Production bug detected!"
-   ```
+1. **Always use separate workflows** - Never run the triage agent in the same workflow it's analyzing
+2. **Pass meaningful context** - Include job names, test specs, PR numbers, etc. in your dispatch payload
+3. **Handle timeouts gracefully** - The wait step should have a reasonable timeout (10 minutes is usually sufficient)
+4. **Don't block on triage** - Let your test workflow complete even if triage dispatch fails
+5. **Enrich notifications** - Use the triage results to make your existing notifications more informative
 
 ## Requirements
 

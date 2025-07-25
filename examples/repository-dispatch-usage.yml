@@ -1,0 +1,285 @@
+# Example showing the two-workflow architecture using repository dispatch
+
+# FILE 1: .github/workflows/cypress-tests.yml
+# This is your test workflow that triggers triage on failure
+name: Cypress E2E Tests
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+
+jobs:
+  cypress:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        containers: [auth.cy.ts, dashboard.cy.ts, settings.cy.ts]
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          
+      - name: Install dependencies
+        run: npm ci
+        
+      - name: Run Cypress tests
+        run: npx cypress run --spec cypress/e2e/${{ matrix.containers }}
+        env:
+          CYPRESS_BASE_URL: ${{ vars.CYPRESS_BASE_URL }}
+          
+      - name: Upload artifacts on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cypress-artifacts-${{ matrix.containers }}-${{ github.run_id }}
+          path: |
+            cypress/screenshots/**
+            cypress/videos/**
+            
+      - name: Trigger triage workflow
+        if: failure()
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const context_payload = {
+              workflow_run_id: context.runId.toString(),
+              job_name: '${{ github.job }} (${{ matrix.containers }})',
+              spec: '${{ matrix.containers }}',
+              branch: context.ref.replace('refs/heads/', ''),
+              commit_sha: context.sha,
+              actor: context.actor
+            };
+            
+            // Add PR info if this is a PR
+            if (context.eventName === 'pull_request') {
+              context_payload.pr_number = context.payload.pull_request.number;
+              context_payload.pr_title = context.payload.pull_request.title;
+            }
+            
+            console.log('Triggering triage workflow with payload:', context_payload);
+            
+            await github.rest.repos.createDispatchEvent({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              event_type: 'triage-failed-test',
+              client_payload: context_payload
+            });
+
+---
+
+# FILE 2: .github/workflows/triage-failures.yml
+# This workflow analyzes test failures and sends notifications
+name: AI Test Failure Triage
+
+on:
+  repository_dispatch:
+    types: [triage-failed-test]
+
+jobs:
+  analyze:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate inputs
+        run: |
+          echo "Received triage request for:"
+          echo "  Workflow Run ID: ${{ github.event.client_payload.workflow_run_id }}"
+          echo "  Job Name: ${{ github.event.client_payload.job_name }}"
+          echo "  Spec: ${{ github.event.client_payload.spec }}"
+          echo "  Branch: ${{ github.event.client_payload.branch }}"
+          echo "  Actor: ${{ github.event.client_payload.actor }}"
+          
+      - name: Wait for workflow completion
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const workflowRunId = parseInt('${{ github.event.client_payload.workflow_run_id }}');
+            
+            console.log(`Waiting for workflow ${workflowRunId} to complete...`);
+            
+            let attempts = 0;
+            const maxAttempts = 60; // 10 minutes max wait
+            
+            while (attempts < maxAttempts) {
+              const { data: run } = await github.rest.actions.getWorkflowRun({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                run_id: workflowRunId
+              });
+              
+              console.log(`Status: ${run.status}, Conclusion: ${run.conclusion}`);
+              
+              if (run.status === 'completed') {
+                console.log('Workflow completed!');
+                return run;
+              }
+              
+              attempts++;
+              if (attempts < maxAttempts) {
+                console.log(`Waiting 10 seconds... (${attempts}/${maxAttempts})`);
+                await new Promise(resolve => setTimeout(resolve, 10000));
+              }
+            }
+            
+            throw new Error('Timeout waiting for workflow completion');
+            
+      - name: Run AI triage analysis
+        id: triage
+        uses: adept-at/adept-triage-agent@v1.0.2
+        with:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          WORKFLOW_RUN_ID: '${{ github.event.client_payload.workflow_run_id }}'
+          JOB_NAME: '${{ github.event.client_payload.job_name }}'
+          
+      - name: Parse results
+        id: parse
+        run: |
+          TRIAGE_JSON='${{ steps.triage.outputs.triage_json }}'
+          echo "verdict=$(echo "$TRIAGE_JSON" | jq -r '.verdict')" >> $GITHUB_OUTPUT
+          echo "confidence=$(echo "$TRIAGE_JSON" | jq -r '.confidence')" >> $GITHUB_OUTPUT
+          echo "summary=$(echo "$TRIAGE_JSON" | jq -r '.summary')" >> $GITHUB_OUTPUT
+          echo "reasoning=$(echo "$TRIAGE_JSON" | jq -r '.reasoning')" >> $GITHUB_OUTPUT
+          
+      - name: Comment on PR
+        if: github.event.client_payload.pr_number
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const verdict = '${{ steps.parse.outputs.verdict }}';
+            const confidence = '${{ steps.parse.outputs.confidence }}';
+            const summary = '${{ steps.parse.outputs.summary }}';
+            const reasoning = '${{ steps.parse.outputs.reasoning }}';
+            const spec = '${{ github.event.client_payload.spec }}';
+            
+            const emoji = verdict === 'TEST_ISSUE' ? '🧪' : '🐛';
+            const label = verdict === 'TEST_ISSUE' ? 'flaky-test' : 'bug';
+            
+            // Add label to PR
+            await github.rest.issues.addLabels({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: ${{ github.event.client_payload.pr_number }},
+              labels: [label]
+            });
+            
+            // Add comment
+            const body = `## ${emoji} AI Test Failure Analysis
+            
+            **Test:** ${spec}
+            **Verdict:** ${verdict} (${confidence}% confidence)
+            
+            **Summary:** ${summary}
+            
+            <details>
+            <summary>Detailed Analysis</summary>
+            
+            ${reasoning}
+            
+            </details>
+            
+            ---
+            *This analysis was performed by AI and may not be 100% accurate.*`;
+            
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: ${{ github.event.client_payload.pr_number }},
+              body
+            });
+            
+      - name: Create issue for product bugs
+        if: steps.parse.outputs.verdict == 'PRODUCT_ISSUE'
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const summary = '${{ steps.parse.outputs.summary }}';
+            const reasoning = '${{ steps.parse.outputs.reasoning }}';
+            const spec = '${{ github.event.client_payload.spec }}';
+            const actor = '${{ github.event.client_payload.actor }}';
+            const branch = '${{ github.event.client_payload.branch }}';
+            const workflowRunId = '${{ github.event.client_payload.workflow_run_id }}';
+            
+            const body = `## 🐛 Product Bug Detected
+            
+            AI analysis has detected a product issue in the test suite.
+            
+            **Test:** ${spec}
+            **Branch:** ${branch}
+            **Triggered by:** @${actor}
+            **Workflow Run:** [View Run](https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${workflowRunId})
+            
+            ### Summary
+            ${summary}
+            
+            ### Detailed Analysis
+            ${reasoning}
+            
+            ---
+            *This issue was automatically created by AI test failure triage.*`;
+            
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: `🐛 [AI Detected] Product issue in ${spec}`,
+              body,
+              labels: ['bug', 'ai-detected', 'needs-triage']
+            });
+            
+      - name: Send Slack notification
+        if: always()
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        run: |
+          VERDICT="${{ steps.parse.outputs.verdict }}"
+          CONFIDENCE="${{ steps.parse.outputs.confidence }}"
+          SUMMARY="${{ steps.parse.outputs.summary }}"
+          SPEC="${{ github.event.client_payload.spec }}"
+          ACTOR="${{ github.event.client_payload.actor }}"
+          WORKFLOW_URL="https://github.com/${{ github.repository }}/actions/runs/${{ github.event.client_payload.workflow_run_id }}"
+          
+          # Determine notification style based on verdict
+          if [ "$VERDICT" = "PRODUCT_ISSUE" ]; then
+            COLOR="danger"
+            EMOJI="🚨"
+            PRETEXT="<!channel> Product bug detected in tests!"
+          elif [ "$VERDICT" = "TEST_ISSUE" ]; then
+            COLOR="warning"
+            EMOJI="🧪"
+            PRETEXT="Test flakiness detected"
+          else
+            COLOR="warning"
+            EMOJI="❓"
+            PRETEXT="Test failure analyzed"
+          fi
+          
+          # Send to Slack
+          curl -X POST -H 'Content-type: application/json' --data "{
+            \"username\": \"AI Test Triage\",
+            \"icon_emoji\": \":robot_face:\",
+            \"attachments\": [{
+              \"color\": \"$COLOR\",
+              \"pretext\": \"$PRETEXT\",
+              \"title\": \"$EMOJI Test Failure: $SPEC\",
+              \"title_link\": \"$WORKFLOW_URL\",
+              \"fields\": [
+                {\"title\": \"Verdict\", \"value\": \"$VERDICT\", \"short\": true},
+                {\"title\": \"Confidence\", \"value\": \"$CONFIDENCE%\", \"short\": true},
+                {\"title\": \"Triggered by\", \"value\": \"$ACTOR\", \"short\": true},
+                {\"title\": \"Branch\", \"value\": \"${{ github.event.client_payload.branch }}\", \"short\": true}
+              ],
+              \"text\": \"$SUMMARY\",
+              \"footer\": \"AI Triage Agent\",
+              \"ts\": $(date +%s)
+            }]
+          }" $SLACK_WEBHOOK_URL 
