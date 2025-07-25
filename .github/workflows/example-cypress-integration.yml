@@ -1,0 +1,110 @@
+name: Cypress Tests with Auto-Triage
+
+on:
+  repository_dispatch:
+    types: [trigger-skill-preview-sauce]
+
+jobs:
+  generate-matrix:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.set-matrix.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Generate matrix
+        id: set-matrix
+        run: |
+          DIRECTORY="cypress/skills-preview-url"
+          FILES=$(ls -1 "$DIRECTORY" | jq -R -s -c 'split("\n")[:-1]')
+          echo "matrix=$FILES" >> $GITHUB_OUTPUT
+
+  previewUrlTest:
+    needs: generate-matrix
+    runs-on: ubuntu-latest
+    timeout-minutes: 7
+    strategy:
+      fail-fast: false
+      matrix:
+        containers: ${{ fromJson(needs.generate-matrix.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Use Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20.x
+          
+      - name: Install dependencies
+        run: npm ci
+        
+      - name: Run Cypress
+        id: cypress
+        run: >
+          npx cypress run --spec ./cypress/skills-preview-url/${{ matrix.containers }}
+          -C cypress.skillbuilder-vercel.sauce.config.ts
+          -c baseUrl=${{ github.event.client_payload.target_url }}
+          -b chrome
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          SAUCE_ACCESS_KEY: ${{ secrets.SAUCE_ACCESS_KEY }}
+          SAUCE_USERNAME: ${{ secrets.SAUCE_USERNAME }}
+      
+      # THIS IS THE ONLY ADDITION NEEDED - Just add this step!
+      - name: Triage Test Failures
+        if: failure()
+        id: triage
+        uses: ./  # For published action, use: adept-at/adept-triage-agent@v1
+        with:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: cy-logs-${{ matrix.containers }}-${{ github.run_id }}
+          path: |
+            cypress/logs/*
+            cypress/videos/*
+            cypress/screenshots/*
+          if-no-files-found: ignore
+          
+      - name: Notify on failure
+        if: failure()
+        run: |
+          # Include triage results in notification
+          VERDICT="${{ steps.triage.outputs.verdict }}"
+          CONFIDENCE="${{ steps.triage.outputs.confidence }}"
+          SUMMARY="${{ steps.triage.outputs.summary }}"
+          
+          PR_NUMBER=$(echo ${{ github.event.client_payload.pr_number }})
+          COMMIT_SHA=${{ github.event.client_payload.sha }}
+          REPO_URL=${{ github.event.client_payload.repo }}
+          BRANCH_NAME=${{ github.event.client_payload.branch }}
+          PREVIEW_URL="${{ github.event.client_payload.target_url }}"
+
+          if [ -n "$PR_NUMBER" ]; then
+            LINK_TEXT="PR #$PR_NUMBER"
+            LINK_URL="https://github.com/$REPO_URL/pull/$PR_NUMBER"
+          else
+            LINK_TEXT="GitHub Actions Run"
+            LINK_URL="https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          fi
+          LINK="<$LINK_URL|$LINK_TEXT>"
+          
+          # Customize notification based on verdict
+          if [[ "$VERDICT" == "PRODUCT_ISSUE" ]]; then
+            EMOJI=":rotating_light:"
+            URGENCY="<!channel> URGENT: Product Issue Detected"
+          else
+            EMOJI=":test_tube:"
+            URGENCY="Test Issue Detected"
+          fi
+
+          curl -X POST -H 'Content-type: application/json' --data '{
+            "text": "'"$EMOJI"' '"$URGENCY"' | 
+              Verdict: '"$VERDICT"' ('"$CONFIDENCE"'% confidence) | 
+              Summary: '"$SUMMARY"' | 
+              Spec: ${{ matrix.containers }} | 
+              Branch: '"$BRANCH_NAME"' | 
+              Preview URL: '"$PREVIEW_URL"' | 
+              Details: '"$LINK"'"
+          }' ${{ secrets.CYPRESS_SLACK_WEBHOOK_URL }} 

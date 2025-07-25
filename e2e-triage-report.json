@@ -1,0 +1,76 @@
+{
+  "workflowRunId": 16228900246,
+  "repository": "adept-at/lib-cypress-canary",
+  "workflowName": "preview-url-saucelabs",
+  "workflowUrl": "https://github.com/adept-at/lib-cypress-canary/actions/runs/16228900246",
+  "failureTime": "2025-07-11T20:14:05Z",
+  "conclusion": "failure",
+  "summary": {
+    "totalFailures": 3,
+    "testIssues": 2,
+    "productIssues": 1
+  },
+  "failures": [
+    {
+      "jobName": "previewUrlTest (lexical.mobile.preview.url.sca.js)",
+      "jobId": 45827255748,
+      "jobUrl": "https://github.com/adept-at/lib-cypress-canary/actions/runs/16228900246/job/45827255748",
+      "failedStep": "run cypress",
+      "verdict": "PRODUCT_ISSUE",
+      "confidence": 100,
+      "reasoning": "The test failed on the assertion that a dropdown button (with selector [aria-label=\"dropdown\"]) should be visible, but it was not. The logs and screenshot together show that the button was not visible because it was covered by another element (`<div class=\"css-gya850 e2rityt0\">`). The Cypress error message explicitly states: 'This element <button...> is not visible because it has CSS property: position: fixed and it's being covered by another element.' This is a classic symptom of a UI layering/z-index/product rendering bug, not a test flakiness or selector issue. The test code is correct in expecting the button to be visible at this point, but the application UI is in a state where the button is not interactable due to being covered. The screenshot confirms that the UI is rendered, but the expected button is not visible or clickable due to overlay. This is a product bug in the UI, likely related to improper handling of overlays, modals, or z-index stacking contexts in the product code.",
+      "summary": "🐛 **Product Issue**: The test failed on the assertion that a dropdown button (with selector [aria-label=\"dropdown\"]) should be visible, but it was not\n\n📸 Analysis includes 1 screenshot\n\nKey indicators: Cypress assertion failed: expected button to be visible but it was covered by another element, Error message: 'This element ... is not visible because it has CSS property: position: fixed and it's being covered by another element', Screenshot shows UI rendered but button is not interactable due to overlay",
+      "indicators": [
+        "Cypress assertion failed: expected button to be visible but it was covered by another element",
+        "Error message: 'This element ... is not visible because it has CSS property: position: fixed and it's being covered by another element'",
+        "Screenshot shows UI rendered but button is not interactable due to overlay",
+        "No evidence of selector typo, timing issue, or test flakiness",
+        "Stack trace points to product UI state, not test code logic"
+      ],
+      "hasArtifacts": true
+    },
+    {
+      "jobName": "previewUrlTest (lexical.preview.url.sca.dark.js)",
+      "jobId": 45827255759,
+      "jobUrl": "https://github.com/adept-at/lib-cypress-canary/actions/runs/16228900246/job/45827255759",
+      "failedStep": "run cypress",
+      "verdict": "TEST_ISSUE",
+      "confidence": 100,
+      "reasoning": "The failure is due to an assertion that expected <div.css-18y2oiz> (the auto-save indicator) to be visible, but it was not. The screenshot shows the application in a 'Congrats! You’ve made it to the end of this skill!' state, with the 'Finish skill' button visible and no error messages, alerts, or error dialogs present. The UI appears to have completed the workflow successfully, and there is no indication of a crash, missing data, or broken functionality. The logs confirm that all prior steps and API calls succeeded (status 200), and there are no application errors. The assertion failure is likely due to the test expecting the auto-save indicator to be visible at a time when the UI has already transitioned to the completion state, possibly due to a timing or synchronization issue in the test code. This is a common sign of a flaky or brittle test, not a product bug.",
+      "summary": "🧪 **Test Issue**: The failure is due to an assertion that expected <div\n\n📸 Analysis includes 1 screenshot\n\nKey indicators: AssertionError: expected <div.css-18y2oiz> to be visible, Screenshot shows normal UI with no errors or alerts, UI is in a completed state ('Congrats!')",
+      "indicators": [
+        "AssertionError: expected <div.css-18y2oiz> to be visible",
+        "Screenshot shows normal UI with no errors or alerts",
+        "UI is in a completed state ('Congrats!')",
+        "No 500/404/API errors in logs",
+        "All previous assertions and steps passed",
+        "No evidence of missing or broken functionality"
+      ],
+      "hasArtifacts": true
+    },
+    {
+      "jobName": "previewUrlTest (lexical.preview.url.sca.js)",
+      "jobId": 45827255760,
+      "jobUrl": "https://github.com/adept-at/lib-cypress-canary/actions/runs/16228900246/job/45827255760",
+      "failedStep": "run cypress",
+      "verdict": "TEST_ISSUE",
+      "confidence": 100,
+      "reasoning": "The failure is an assertion error: `expected <div.css-ne532o> to be visible`. The logs and screenshot show that the test is asserting visibility of an 'auto-save-indicator' element, but it is not visible at the time of the assertion. The screenshot shows the application UI in a normal, non-error state, with a 'Congrats! You've made it to the end of this skill!' message and no error dialogs, alerts, or broken UI elements. There are no HTTP 500/404 errors, no application crashes, and no evidence of missing or malfunctioning product features. The logs also state that the element is not visible because it is covered by another element (`<div class=\"css-19ajheb e1gwl51l0\">`). This is a classic test flakiness or synchronization issue, where the test expects an element to be visible but the UI state is not as expected due to timing or overlay issues. This is further supported by the stack trace pointing to the test helper code, not product code. The application itself appears to be functioning correctly.",
+      "summary": "🧪 **Test Issue**: The failure is an assertion error: `expected <div\n\n📸 Analysis includes 1 screenshot\n\nKey indicators: AssertionError: expected <div.css-ne532o> to be visible, Element not visible due to being covered by another element, No product error messages or broken UI in screenshot",
+      "indicators": [
+        "AssertionError: expected <div.css-ne532o> to be visible",
+        "Element not visible due to being covered by another element",
+        "No product error messages or broken UI in screenshot",
+        "Application UI shows normal completion state",
+        "No HTTP/network/product errors in logs",
+        "Stack trace points to test helper code"
+      ],
+      "hasArtifacts": true
+    }
+  ],
+  "metadata": {
+    "analyzedAt": "2025-07-25T18:56:27.148Z",
+    "triageVersion": "1.0.0",
+    "aiModel": "gpt-4.1"
+  }
+}

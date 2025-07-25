@@ -1,0 +1,76 @@
+name: Test
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    
+    strategy:
+      matrix:
+        node-version: [18.x, 20.x]
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Use Node.js ${{ matrix.node-version }}
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ matrix.node-version }}
+        cache: 'npm'
+    
+    - name: Install dependencies
+      run: npm ci
+    
+    - name: Run linter
+      run: npm run lint
+      
+    - name: Run tests
+      run: npm test
+      
+    - name: Build action
+      run: npm run build
+      
+    - name: Package action
+      run: npm run package
+      
+    - name: Upload build artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: dist-${{ matrix.node-version }}
+        path: dist/
+        
+  integration-test:
+    runs-on: ubuntu-latest
+    needs: test
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Download artifacts
+      uses: actions/download-artifact@v4
+      with:
+        name: dist-20.x
+        path: dist/
+        
+    - name: Test action with direct error
+      uses: ./
+      id: test-direct
+      with:
+        OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        ERROR_MESSAGE: "TypeError: Cannot read property 'id' of undefined at UserService.getUser"
+        
+    - name: Verify output
+      run: |
+        echo "Verdict: ${{ steps.test-direct.outputs.verdict }}"
+        echo "Confidence: ${{ steps.test-direct.outputs.confidence }}"
+        echo "Summary: ${{ steps.test-direct.outputs.summary }}"
+        
+        if [[ "${{ steps.test-direct.outputs.verdict }}" != "PRODUCT_ISSUE" && "${{ steps.test-direct.outputs.verdict }}" != "TEST_ISSUE" ]]; then
+          echo "Invalid verdict output"
+          exit 1
+        fi 

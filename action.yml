@@ -1,0 +1,44 @@
+name: 'Adept Triage Agent'
+description: 'AI-powered test failure triage to determine if failures are test or product issues'
+author: 'Adept'
+branding:
+  icon: 'search'
+  color: 'blue'
+
+inputs:
+  GITHUB_TOKEN:
+    description: 'GitHub token for API access'
+    required: false
+    default: ${{ github.token }}
+  OPENAI_API_KEY:
+    description: 'OpenAI API key for AI analysis'
+    required: true
+  ERROR_MESSAGE:
+    description: 'Error message to analyze (optional if using workflow artifacts)'
+    required: false
+  WORKFLOW_RUN_ID:
+    description: 'Workflow run ID to fetch logs from'
+    required: false
+  JOB_NAME:
+    description: 'Specific job name to analyze'
+    required: false
+  CONFIDENCE_THRESHOLD:
+    description: 'Minimum confidence level for verdict (0-100)'
+    required: false
+    default: '70'
+
+outputs:
+  verdict:
+    description: 'TEST_ISSUE or PRODUCT_ISSUE'
+  confidence:
+    description: 'Confidence score (0-100)'
+  reasoning:
+    description: 'Detailed explanation of the decision'
+  summary:
+    description: 'Brief summary for PR comments'
+  triage_json:
+    description: 'Complete triage analysis as JSON string'
+
+runs:
+  using: 'node20'
+  main: 'dist/index.js' 
