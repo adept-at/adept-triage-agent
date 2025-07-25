@@ -6,7 +6,7 @@ yarn-error.log*
 .npm
 
 # TypeScript
-dist/
+# dist/ - commented out for GitHub Actions
 *.tsbuildinfo
 
 # Testing
