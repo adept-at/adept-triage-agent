@@ -38,7 +38,7 @@ export class OpenAIClient {
           model,
           messages,
           temperature: 0.3,
-          max_tokens: 4096,  // Maximum tokens for best response quality
+          max_tokens: 32768,  // GPT-4.1 supports up to 32,768 output tokens
           response_format: { type: 'json_object' as const }
         };
         

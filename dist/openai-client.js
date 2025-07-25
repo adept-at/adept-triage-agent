@@ -68,7 +68,7 @@ class OpenAIClient {
                     model,
                     messages,
                     temperature: 0.3,
-                    max_tokens: 4096,
+                    max_tokens: 32768,
                     response_format: { type: 'json_object' }
                 };
                 const response = await this.openai.chat.completions.create(requestParams);

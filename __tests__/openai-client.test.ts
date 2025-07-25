@@ -76,7 +76,7 @@ describe('OpenAIClient', () => {
         expect.objectContaining({
           model: 'gpt-4.1',
           temperature: 0.3,
-          max_tokens: 4096,
+          max_tokens: 32768,
           response_format: { type: 'json_object' },
         })
       );
@@ -113,7 +113,7 @@ describe('OpenAIClient', () => {
         expect.objectContaining({
           model: 'gpt-4.1',
           temperature: 0.3,
-          max_tokens: 4096,
+          max_tokens: 32768,
           response_format: { type: 'json_object' },
         })
       );
