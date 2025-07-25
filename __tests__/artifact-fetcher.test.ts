@@ -182,8 +182,8 @@ describe('ArtifactFetcher', () => {
 
       const result = await artifactFetcher.fetchLogs('123', 456);
       
-      expect(result).toContain('Error: Something went wrong');
-      expect(result).toContain('Expected value to be true');
+      expect(result.some(line => line.includes('Error: Something went wrong'))).toBe(true);
+      expect(result.some(line => line.includes('Expected value to be true'))).toBe(true);
       expect(result.length).toBeGreaterThan(0);
     });
 

@@ -142,7 +142,8 @@ function extractJestError(logs: string): ErrorData | null {
 
 function extractCypressError(logs: string): ErrorData | null {
   // Strip ANSI color codes for cleaner text
-  const cleanLogs = logs.replace(/\x1b\[[0-9;]*m/g, '');
+  // eslint-disable-next-line no-control-regex
+  const cleanLogs = logs.replace(/\u001b\[[0-9;]*m/g, '');
   
   // Find the "failing" section - this is where Cypress reports test failures
   const failingIndex = cleanLogs.toLowerCase().indexOf('failing');
@@ -169,10 +170,18 @@ function extractCypressError(logs: string): ErrorData | null {
         const specMatch = cleanLogs.match(/Running:\s+(.+?)\s*(?:\(|$)/);
         const fileName = specMatch ? specMatch[1].trim() : undefined;
         
+        // Extract failure type
+        let failureType: string | undefined;
+        const errorTypeMatch = errorContext.match(/(?:^|\n)\s*(\w+Error):/);
+        if (errorTypeMatch) {
+          failureType = errorTypeMatch[1];
+        }
+        
         return {
           message: errorContext,
           framework: 'cypress',
-          fileName
+          fileName,
+          failureType
         };
       }
     }
@@ -271,11 +280,19 @@ function extractCypressError(logs: string): ErrorData | null {
     additionalContext.push(`Recent Cypress commands: ${cypressCommands.slice(-10).join(', ')}`);
   }
   
+  // Extract failure type (e.g., AssertionError, TimeoutError, etc.)
+  let failureType: string | undefined;
+  const errorTypeMatch = errorContext.match(/(?:^|\n)\s*(\w+Error):/);
+  if (errorTypeMatch) {
+    failureType = errorTypeMatch[1];
+  }
+
   return {
     message: errorContext.trim(),
     framework: 'cypress',
     testName,
     fileName,
+    failureType,
     context: additionalContext.length > 0 
       ? `Full test failure context. ${additionalContext.join('. ')}` 
       : 'Full test failure context for AI analysis'

@@ -157,7 +157,7 @@ function extractJestError(logs) {
     return null;
 }
 function extractCypressError(logs) {
-    const cleanLogs = logs.replace(/\x1b\[[0-9;]*m/g, '');
+    const cleanLogs = logs.replace(/\u001b\[[0-9;]*m/g, '');
     const failingIndex = cleanLogs.toLowerCase().indexOf('failing');
     if (failingIndex === -1) {
         const failurePatterns = [
@@ -176,10 +176,16 @@ function extractCypressError(logs) {
                 const errorContext = cleanLogs.substring(start, end);
                 const specMatch = cleanLogs.match(/Running:\s+(.+?)\s*(?:\(|$)/);
                 const fileName = specMatch ? specMatch[1].trim() : undefined;
+                let failureType;
+                const errorTypeMatch = errorContext.match(/(?:^|\n)\s*(\w+Error):/);
+                if (errorTypeMatch) {
+                    failureType = errorTypeMatch[1];
+                }
                 return {
                     message: errorContext,
                     framework: 'cypress',
-                    fileName
+                    fileName,
+                    failureType
                 };
             }
         }
@@ -252,11 +258,17 @@ function extractCypressError(logs) {
     if (cypressCommands.length > 0) {
         additionalContext.push(`Recent Cypress commands: ${cypressCommands.slice(-10).join(', ')}`);
     }
+    let failureType;
+    const errorTypeMatch = errorContext.match(/(?:^|\n)\s*(\w+Error):/);
+    if (errorTypeMatch) {
+        failureType = errorTypeMatch[1];
+    }
     return {
         message: errorContext.trim(),
         framework: 'cypress',
         testName,
         fileName,
+        failureType,
         context: additionalContext.length > 0
             ? `Full test failure context. ${additionalContext.join('. ')}`
             : 'Full test failure context for AI analysis'

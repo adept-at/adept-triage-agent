@@ -74,9 +74,9 @@ describe('OpenAIClient', () => {
 
       expect(mockCreate).toHaveBeenCalledWith(
         expect.objectContaining({
-          model: 'gpt-4',
+          model: 'gpt-4.1',
           temperature: 0.3,
-          max_tokens: 1500,
+          max_tokens: 4096,
           response_format: { type: 'json_object' },
         })
       );
@@ -113,7 +113,8 @@ describe('OpenAIClient', () => {
         expect.objectContaining({
           model: 'gpt-4.1',
           temperature: 0.3,
-          max_tokens: 1500,
+          max_tokens: 4096,
+          response_format: { type: 'json_object' },
         })
       );
 
@@ -158,45 +159,6 @@ describe('OpenAIClient', () => {
       });
     });
 
-    it('should exclude screenshots when falling back to GPT-3.5', async () => {
-      const errorDataWithScreenshots: ErrorData = {
-        ...mockErrorData,
-        screenshots: [{
-          name: 'test.png',
-          path: 'test.png',
-          base64Data: 'data',
-        }],
-      };
-
-      const mockResponse = {
-        choices: [{
-          message: {
-            content: JSON.stringify({
-              verdict: 'TEST_ISSUE',
-              reasoning: 'Fallback analysis without screenshots',
-              indicators: [],
-            }),
-          },
-        }],
-      };
-
-      // Fail all GPT-4 Vision attempts
-      mockCreate
-        .mockRejectedValueOnce(new Error('Error 1'))
-        .mockRejectedValueOnce(new Error('Error 2'))
-        .mockRejectedValueOnce(new Error('Error 3'))
-        .mockResolvedValueOnce(mockResponse); // GPT-3.5 succeeds
-
-      const result = await client.analyze(errorDataWithScreenshots, mockExamples);
-
-      expect(result.verdict).toBe('TEST_ISSUE');
-      
-      // Verify GPT-3.5 was called without image content
-      const gpt35Call = mockCreate.mock.calls[3][0];
-      expect(gpt35Call.model).toBe('gpt-3.5-turbo-0125');
-      expect(gpt35Call.messages[1].content).toBeTypeOf('string');
-    });
-
     it('should retry on failure and succeed', async () => {
       const mockResponse = {
         choices: [{
@@ -220,36 +182,16 @@ describe('OpenAIClient', () => {
       expect(mockCreate).toHaveBeenCalledTimes(2);
     });
 
-    it('should fallback to GPT-3.5 after all retries fail', async () => {
-      const mockResponse = {
-        choices: [{
-          message: {
-            content: JSON.stringify({
-              verdict: 'TEST_ISSUE',
-              reasoning: 'Fallback analysis',
-              indicators: [],
-            }),
-          },
-        }],
-      };
-
+    it('should throw error after all retries fail', async () => {
       mockCreate
         .mockRejectedValueOnce(new Error('Error 1'))
         .mockRejectedValueOnce(new Error('Error 2'))
-        .mockRejectedValueOnce(new Error('Error 3'))
-        .mockResolvedValueOnce(mockResponse); // GPT-3.5 succeeds
+        .mockRejectedValueOnce(new Error('Error 3'));
 
-      const result = await client.analyze(mockErrorData, mockExamples);
+      await expect(client.analyze(mockErrorData, mockExamples))
+        .rejects.toThrow('Failed to get analysis from OpenAI after 3 attempts');
 
-      expect(result.verdict).toBe('TEST_ISSUE');
-      expect(mockCreate).toHaveBeenCalledTimes(4);
-      
-      // Check that GPT-3.5 was called
-      expect(mockCreate).toHaveBeenLastCalledWith(
-        expect.objectContaining({
-          model: 'gpt-3.5-turbo-0125',
-        })
-      );
+      expect(mockCreate).toHaveBeenCalledTimes(3);
     });
 
     it('should throw error when response is empty', async () => {
@@ -278,7 +220,7 @@ describe('OpenAIClient', () => {
         .mockRejectedValueOnce(new TypeError("Cannot read properties of undefined (reading 'choices')"));
 
       await expect(client.analyze(mockErrorData, mockExamples))
-        .rejects.toThrow('Fallback to GPT-3.5 also failed');
+        .rejects.toThrow('Failed to get analysis from OpenAI after 3 attempts');
     });
 
     it('should throw error when response has invalid verdict', async () => {
@@ -301,7 +243,7 @@ describe('OpenAIClient', () => {
         .mockRejectedValueOnce(new TypeError("Cannot read properties of undefined (reading 'choices')"));
 
       await expect(client.analyze(mockErrorData, mockExamples))
-        .rejects.toThrow('Fallback to GPT-3.5 also failed');
+        .rejects.toThrow('Failed to get analysis from OpenAI after 3 attempts');
     });
 
     it('should handle missing indicators in response', async () => {

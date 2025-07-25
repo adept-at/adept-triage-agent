@@ -1,7 +1,7 @@
 import * as core from '@actions/core';
 import * as github from '@actions/github';
 import { Octokit } from '@octokit/rest';
-import { analyzeFailure } from './analyzer';
+import { analyzeFailure, extractErrorFromLogs } from './analyzer';
 import { OpenAIClient } from './openai-client';
 import { ArtifactFetcher } from './artifact-fetcher';
 import { ErrorData, ActionInputs, Screenshot } from './types';
@@ -81,8 +81,33 @@ async function getErrorData(octokit: Octokit, artifactFetcher: ArtifactFetcher, 
   }
   
   // Get workflow context
-  const runId = context.runId.toString();
+  let runId = inputs.workflowRunId;
+  
+  // Check for workflow_run event
+  if (!runId && context.payload.workflow_run) {
+    runId = context.payload.workflow_run.id.toString();
+  }
+  
+  // Fall back to current run ID
+  if (!runId) {
+    runId = context.runId.toString();
+  }
+  
   const { owner, repo } = context.repo;
+  
+  // If workflow run ID is provided or using workflow_run event, check if it's completed
+  if (inputs.workflowRunId || context.payload.workflow_run) {
+    const workflowRun = await octokit.actions.getWorkflowRun({
+      owner,
+      repo,
+      run_id: parseInt(runId, 10)
+    });
+    
+    if (workflowRun.data.status !== 'completed') {
+      core.warning('Workflow run is not completed yet');
+      return null;
+    }
+  }
   
   // Get the failed job
   const jobs = await octokit.actions.listJobsForWorkflowRun({
@@ -94,7 +119,7 @@ async function getErrorData(octokit: Octokit, artifactFetcher: ArtifactFetcher, 
   
   const failedJob = jobs.data.jobs.find(job => job.conclusion === 'failure');
   if (!failedJob) {
-    core.warning('No failed job found in workflow');
+    core.warning('No failed jobs found');
     return null;
   }
   
@@ -132,6 +157,9 @@ async function getErrorData(octokit: Octokit, artifactFetcher: ArtifactFetcher, 
     core.warning(`Failed to fetch artifacts: ${error}`);
   }
   
+  // Try to extract structured error from logs
+  const extractedError = extractErrorFromLogs(fullLogs);
+  
   // Combine EVERYTHING into one context blob
   const combinedContext = [
     `=== JOB INFORMATION ===`,
@@ -148,12 +176,25 @@ async function getErrorData(octokit: Octokit, artifactFetcher: ArtifactFetcher, 
     `=== END OF LOGS ===`
   ].join('\n');
   
-  // Create a simple error data object with ALL context
+  // Create error data object, using extracted error if available
+  if (extractedError) {
+    return {
+      ...extractedError,
+      context: `Job: ${failedJob.name}. ${extractedError.context || 'Complete failure context including all logs and artifacts'}`,
+      testName: extractedError.testName || failedJob.name,
+      fileName: extractedError.fileName || failedJob.steps?.find(s => s.conclusion === 'failure')?.name || 'Unknown',
+      screenshots: screenshots,
+      logs: [combinedContext],
+      cypressArtifactLogs: artifactLogs
+    };
+  }
+  
+  // Fallback if no error could be extracted
   return {
     message: 'Test failure - see full context for details',
     framework: 'cypress',
     failureType: 'test-failure',
-    context: 'Complete failure context including all logs and artifacts',
+    context: `Job: ${failedJob.name}. Complete failure context including all logs and artifacts`,
     testName: failedJob.name,
     fileName: failedJob.steps?.find(s => s.conclusion === 'failure')?.name || 'Unknown',
     screenshots: screenshots,

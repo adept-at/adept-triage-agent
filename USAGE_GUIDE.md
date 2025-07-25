@@ -183,7 +183,7 @@ jobs:
               Preview URL: '"$PREVIEW_URL"' | 
               Action URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }} | 
               Details: '"$LINK"'",
-            "triage": '"$TRIAGE_JSON"'
+          !!!
           }' ${{ secrets.CYPRESS_SLACK_WEBHOOK_URL }}
 ```
 

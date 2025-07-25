@@ -164,7 +164,7 @@ function extractJestError(logs) {
     return null;
 }
 function extractCypressError(logs) {
-    const cleanLogs = logs.replace(/\x1b\[[0-9;]*m/g, '');
+    const cleanLogs = logs.replace(/\u001b\[[0-9;]*m/g, '');
     const failingIndex = cleanLogs.toLowerCase().indexOf('failing');
     if (failingIndex === -1) {
         const failurePatterns = [
@@ -183,10 +183,16 @@ function extractCypressError(logs) {
                 const errorContext = cleanLogs.substring(start, end);
                 const specMatch = cleanLogs.match(/Running:\s+(.+?)\s*(?:\(|$)/);
                 const fileName = specMatch ? specMatch[1].trim() : undefined;
+                let failureType;
+                const errorTypeMatch = errorContext.match(/(?:^|\n)\s*(\w+Error):/);
+                if (errorTypeMatch) {
+                    failureType = errorTypeMatch[1];
+                }
                 return {
                     message: errorContext,
                     framework: 'cypress',
-                    fileName
+                    fileName,
+                    failureType
                 };
             }
         }
@@ -259,11 +265,17 @@ function extractCypressError(logs) {
     if (cypressCommands.length > 0) {
         additionalContext.push(`Recent Cypress commands: ${cypressCommands.slice(-10).join(', ')}`);
     }
+    let failureType;
+    const errorTypeMatch = errorContext.match(/(?:^|\n)\s*(\w+Error):/);
+    if (errorTypeMatch) {
+        failureType = errorTypeMatch[1];
+    }
     return {
         message: errorContext.trim(),
         framework: 'cypress',
         testName,
         fileName,
+        failureType,
         context: additionalContext.length > 0
             ? `Full test failure context. ${additionalContext.join('. ')}`
             : 'Full test failure context for AI analysis'
@@ -762,8 +774,25 @@ async function getErrorData(octokit, artifactFetcher, inputs) {
             context: 'Error message provided directly via input'
         };
     }
-    const runId = context.runId.toString();
+    let runId = inputs.workflowRunId;
+    if (!runId && context.payload.workflow_run) {
+        runId = context.payload.workflow_run.id.toString();
+    }
+    if (!runId) {
+        runId = context.runId.toString();
+    }
     const { owner, repo } = context.repo;
+    if (inputs.workflowRunId || context.payload.workflow_run) {
+        const workflowRun = await octokit.actions.getWorkflowRun({
+            owner,
+            repo,
+            run_id: parseInt(runId, 10)
+        });
+        if (workflowRun.data.status !== 'completed') {
+            core.warning('Workflow run is not completed yet');
+            return null;
+        }
+    }
     const jobs = await octokit.actions.listJobsForWorkflowRun({
         owner,
         repo,
@@ -772,7 +801,7 @@ async function getErrorData(octokit, artifactFetcher, inputs) {
     });
     const failedJob = jobs.data.jobs.find(job => job.conclusion === 'failure');
     if (!failedJob) {
-        core.warning('No failed job found in workflow');
+        core.warning('No failed jobs found');
         return null;
     }
     core.info(`Analyzing failed job: ${failedJob.name}`);
@@ -802,6 +831,7 @@ async function getErrorData(octokit, artifactFetcher, inputs) {
     catch (error) {
         core.warning(`Failed to fetch artifacts: ${error}`);
     }
+    const extractedError = (0, analyzer_1.extractErrorFromLogs)(fullLogs);
     const combinedContext = [
         `=== JOB INFORMATION ===`,
         `Job Name: ${failedJob.name}`,
@@ -816,11 +846,22 @@ async function getErrorData(octokit, artifactFetcher, inputs) {
         ``,
         `=== END OF LOGS ===`
     ].join('\n');
+    if (extractedError) {
+        return {
+            ...extractedError,
+            context: `Job: ${failedJob.name}. ${extractedError.context || 'Complete failure context including all logs and artifacts'}`,
+            testName: extractedError.testName || failedJob.name,
+            fileName: extractedError.fileName || failedJob.steps?.find(s => s.conclusion === 'failure')?.name || 'Unknown',
+            screenshots: screenshots,
+            logs: [combinedContext],
+            cypressArtifactLogs: artifactLogs
+        };
+    }
     return {
         message: 'Test failure - see full context for details',
         framework: 'cypress',
         failureType: 'test-failure',
-        context: 'Complete failure context including all logs and artifacts',
+        context: `Job: ${failedJob.name}. Complete failure context including all logs and artifacts`,
         testName: failedJob.name,
         fileName: failedJob.steps?.find(s => s.conclusion === 'failure')?.name || 'Unknown',
         screenshots: screenshots,
@@ -888,25 +929,9 @@ class OpenAIClient {
         this.openai = new openai_1.default({ apiKey });
     }
     async analyze(errorData, examples) {
-        const modelOverride = process.env.OPENAI_MODEL_OVERRIDE;
-        const useO1Model = modelOverride === 'o1-preview' || modelOverride === 'o1-mini';
-        let model;
-        if (useO1Model && (!errorData.screenshots || errorData.screenshots.length === 0)) {
-            model = modelOverride;
-            core.info(`🧠 Using ${model} reasoning model (no vision support)`);
-        }
-        else if (errorData.screenshots && errorData.screenshots.length > 0) {
-            model = 'gpt-4.1';
-            if (useO1Model) {
-                core.warning('o1 models do not support vision. Falling back to GPT-4.1 for screenshot analysis.');
-            }
-        }
-        else {
-            model = modelOverride || 'gpt-4';
-        }
-        const messages = useO1Model
-            ? this.buildMessagesForO1(errorData, examples)
-            : this.buildMessages(errorData, examples);
+        const model = 'gpt-4.1';
+        core.info('🧠 Using GPT-4.1 model for analysis');
+        const messages = this.buildMessages(errorData, examples);
         if (errorData.screenshots && errorData.screenshots.length > 0) {
             core.info(`📸 Sending multimodal content to ${model}:`);
             core.info(`  - Text context: ${errorData.logs?.[0]?.length || 0} characters`);
@@ -925,11 +950,9 @@ class OpenAIClient {
                     model,
                     messages,
                     temperature: 0.3,
-                    max_tokens: 1500
+                    max_tokens: 4096,
+                    response_format: { type: 'json_object' }
                 };
-                if (!useO1Model) {
-                    requestParams.response_format = { type: 'json_object' };
-                }
                 const response = await this.openai.chat.completions.create(requestParams);
                 const content = response.choices[0]?.message?.content;
                 if (!content) {
@@ -942,42 +965,18 @@ class OpenAIClient {
             catch (error) {
                 core.warning(`OpenAI API attempt ${attempt} failed: ${error}`);
                 if (attempt === this.maxRetries) {
-                    return this.fallbackToGPT35(errorData, examples);
+                    throw new Error(`Failed to get analysis from OpenAI after ${this.maxRetries} attempts: ${error}`);
                 }
                 await this.delay(this.retryDelay * attempt);
             }
         }
         throw new Error('Failed to get analysis from OpenAI after all retries');
     }
-    async fallbackToGPT35(errorData, examples) {
-        core.info('Falling back to GPT-3.5-turbo');
-        const fallbackErrorData = { ...errorData, screenshots: undefined };
-        const messages = this.buildMessages(fallbackErrorData, examples);
-        try {
-            const response = await this.openai.chat.completions.create({
-                model: 'gpt-3.5-turbo-0125',
-                messages,
-                temperature: 0.3,
-                max_tokens: 1500,
-                response_format: { type: 'json_object' }
-            });
-            const content = response.choices[0]?.message?.content;
-            if (!content) {
-                throw new Error('Empty response from OpenAI GPT-3.5');
-            }
-            const result = this.parseResponse(content);
-            this.validateResponse(result);
-            return result;
-        }
-        catch (error) {
-            throw new Error(`Fallback to GPT-3.5 also failed: ${error}`);
-        }
-    }
     buildMessages(errorData, examples) {
         const messages = [
             {
                 role: 'system',
-                content: this.getSystemPrompt(errorData.screenshots && errorData.screenshots.length > 0)
+                content: this.getSystemPrompt()
             }
         ];
         const userContent = this.buildUserContent(errorData, examples);
@@ -994,17 +993,6 @@ class OpenAIClient {
             });
         }
         return messages;
-    }
-    buildMessagesForO1(errorData, examples) {
-        const systemPrompt = this.getSystemPrompt(false);
-        const userContent = this.buildUserContent(errorData, examples);
-        const combinedContent = `${systemPrompt}\n\n${userContent}\n\nIMPORTANT: Respond with a valid JSON object containing verdict, reasoning, and indicators fields.`;
-        return [
-            {
-                role: 'user',
-                content: combinedContent
-            }
-        ];
     }
     buildUserContent(errorData, examples) {
         if (errorData.screenshots && errorData.screenshots.length > 0) {
@@ -1040,14 +1028,15 @@ class OpenAIClient {
         }
         return this.buildPrompt(errorData, examples);
     }
-    getSystemPrompt(hasScreenshots = false) {
+    getSystemPrompt() {
         const basePrompt = `You are an expert at analyzing test failures and determining whether they are caused by issues in the test code itself (TEST_ISSUE) or actual bugs in the product code (PRODUCT_ISSUE).
 
 Your task is to analyze the complete test execution context including:
 - Full error messages and failure details
 - Stack traces showing where the error occurred
 - Test execution logs showing what happened before the failure
-- Console errors or warnings during test execution${hasScreenshots ? '\n- Screenshots showing the state when the test failed' : ''}
+- Console errors or warnings during test execution
+- Screenshots showing the state when the test failed (if provided)
 - Test environment and browser information
 
 Use all available context to make an informed determination.
@@ -1072,11 +1061,9 @@ PRODUCT_ISSUE indicators:
 - Null reference exceptions in product code
 - API contract violations
 - UI components not rendering correctly
-- Missing or broken functionality`;
-        if (hasScreenshots) {
-            return basePrompt + `
+- Missing or broken functionality
 
-When analyzing screenshots:
+When analyzing screenshots (if provided):
 - PRIORITIZE looking for any error messages, alerts, or error dialogs visible in the UI
 - Check for error states like "404 Not Found", "500 Internal Server Error", console errors displayed on screen
 - Look for missing or broken UI elements that indicate application failures
@@ -1090,18 +1077,12 @@ Screenshots often contain crucial error information that logs might miss. If an 
 
 Always respond with a JSON object containing:
 - verdict: "TEST_ISSUE" or "PRODUCT_ISSUE"
-- reasoning: detailed explanation of your decision including what you observed in the screenshots
+- reasoning: detailed explanation of your decision including what you observed in the screenshots (if any)
 - indicators: array of specific indicators that led to your verdict`;
-        }
-        return basePrompt + `
-
-Always respond with a JSON object containing:
-- verdict: "TEST_ISSUE" or "PRODUCT_ISSUE"
-- reasoning: detailed explanation of your decision
-- indicators: array of specific indicators that led to your verdict`;
+        return basePrompt;
     }
     buildPrompt(errorData, examples) {
-        let prompt = `You are an expert test failure analyzer. Your task is to determine whether a test failure is a TEST_ISSUE (problem with the test code) or a PRODUCT_ISSUE (bug in the product being tested).
+        const prompt = `You are an expert test failure analyzer. Your task is to determine whether a test failure is a TEST_ISSUE (problem with the test code) or a PRODUCT_ISSUE (bug in the product being tested).
 
 IMPORTANT: Carefully analyze the FULL LOGS provided to find the actual error. Look for patterns like:
 - TypeError: Cannot read properties of null (reading 'isValid')
@@ -1148,13 +1129,15 @@ Based on ALL the information provided (especially the full logs), determine if t
             core.info('Response is not JSON, attempting to parse structured text');
             const verdictMatch = content.match(/verdict[:\s]*["']?(TEST_ISSUE|PRODUCT_ISSUE)["']?/i);
             const reasoningMatch = content.match(/reasoning[:\s]*["']?([^"'\n]+)["']?/i);
-            const indicatorsMatch = content.match(/indicators[:\s]*\[([^\]]+)\]/i);
+            const indicatorsMatch = content.match(/indicators[:\s]*(?:\[([^\]]+)\]|([^\n]+))/i);
             if (verdictMatch && reasoningMatch) {
                 const verdict = verdictMatch[1];
                 const reasoning = reasoningMatch[1].trim();
-                const indicators = indicatorsMatch
-                    ? indicatorsMatch[1].split(',').map(i => i.trim().replace(/["']/g, ''))
-                    : [];
+                let indicators = [];
+                if (indicatorsMatch) {
+                    const indicatorString = indicatorsMatch[1] || indicatorsMatch[2];
+                    indicators = indicatorString.split(',').map(i => i.trim().replace(/["'\[\]]/g, ''));
+                }
                 return {
                     verdict,
                     reasoning,

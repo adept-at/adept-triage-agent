@@ -8,9 +8,11 @@ jest.mock('@actions/github');
 jest.mock('@octokit/rest');
 jest.mock('../src/analyzer');
 jest.mock('../src/openai-client');
+jest.mock('../src/artifact-fetcher');
 
 // Import analyzer functions
 import { analyzeFailure, extractErrorFromLogs } from '../src/analyzer';
+import { ArtifactFetcher } from '../src/artifact-fetcher';
 import { run } from '../src/index';
 
 describe('GitHub Action', () => {
@@ -19,6 +21,7 @@ describe('GitHub Action', () => {
   let mockOctokit: jest.Mocked<Octokit>;
   let mockAnalyzeFailure: jest.MockedFunction<typeof analyzeFailure>;
   let mockExtractErrorFromLogs: jest.MockedFunction<typeof extractErrorFromLogs>;
+  let mockArtifactFetcher: jest.Mocked<ArtifactFetcher>;
 
   beforeEach(() => {
     jest.clearAllMocks();
@@ -42,6 +45,7 @@ describe('GitHub Action', () => {
         repo: 'test-repo',
       },
       payload: {},
+      runId: 999999,
     };
 
     // Setup Octokit mocks
@@ -57,6 +61,15 @@ describe('GitHub Action', () => {
     // Setup analyzer mocks
     mockAnalyzeFailure = analyzeFailure as jest.MockedFunction<typeof analyzeFailure>;
     mockExtractErrorFromLogs = extractErrorFromLogs as jest.MockedFunction<typeof extractErrorFromLogs>;
+    
+    // Setup ArtifactFetcher mock
+    mockArtifactFetcher = {
+      fetchScreenshots: jest.fn().mockResolvedValue([]),
+      fetchLogs: jest.fn().mockResolvedValue([]),
+      fetchCypressArtifactLogs: jest.fn().mockResolvedValue('')
+    } as any;
+    
+    (ArtifactFetcher as jest.MockedClass<typeof ArtifactFetcher>).mockImplementation(() => mockArtifactFetcher);
   });
 
   describe('with direct error message', () => {
@@ -287,6 +300,13 @@ describe('GitHub Action', () => {
 
     it('should handle no error data available', async () => {
       // No error message, no workflow run ID, no event context
+      // Mock no failed jobs
+      mockOctokit.actions.listJobsForWorkflowRun.mockResolvedValueOnce({
+        data: {
+          jobs: []
+        }
+      } as any);
+      
       await run();
 
       expect(mockCore.setFailed).toHaveBeenCalledWith('No error data found to analyze');
