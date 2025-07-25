@@ -5,6 +5,18 @@ import { Screenshot } from './types';
 import AdmZip from 'adm-zip';
 import * as path from 'path';
 
+interface GitHubArtifact {
+  id: number;
+  name: string;
+  size_in_bytes: number;
+  url?: string;
+  archive_download_url?: string;
+  expired?: boolean;
+  created_at?: string | null;
+  updated_at?: string | null;
+  expires_at?: string | null;
+}
+
 export class ArtifactFetcher {
   constructor(private octokit: Octokit) {}
 
@@ -207,7 +219,7 @@ export class ArtifactFetcher {
     }
   }
 
-  private async processArtifactForLogs(artifact: any): Promise<string> {
+  private async processArtifactForLogs(artifact: GitHubArtifact): Promise<string> {
     const { owner, repo } = github.context.repo;
     let logs = '';
     

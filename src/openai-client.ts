@@ -68,8 +68,8 @@ export class OpenAIClient {
     throw new Error('Failed to get analysis from OpenAI after all retries');
   }
 
-  private buildMessages(errorData: ErrorData, examples: FewShotExample[]): any[] {
-    const messages: any[] = [
+  private buildMessages(errorData: ErrorData, examples: FewShotExample[]): OpenAI.Chat.Completions.ChatCompletionMessageParam[] {
+    const messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [
       {
         role: 'system',
         content: this.getSystemPrompt()
@@ -95,10 +95,10 @@ export class OpenAIClient {
     return messages;
   }
 
-  private buildUserContent(errorData: ErrorData, examples: FewShotExample[]): any[] | string {
+  private buildUserContent(errorData: ErrorData, examples: FewShotExample[]): string | Array<OpenAI.Chat.Completions.ChatCompletionContentPartText | OpenAI.Chat.Completions.ChatCompletionContentPartImage> {
     // If we have screenshots, build multimodal content
     if (errorData.screenshots && errorData.screenshots.length > 0) {
-      const content: any[] = [];
+      const content: Array<OpenAI.Chat.Completions.ChatCompletionContentPartText | OpenAI.Chat.Completions.ChatCompletionContentPartImage> = [];
       
       // Add text content
       content.push({
@@ -125,7 +125,7 @@ export class OpenAIClient {
               url: `data:image/png;base64,${screenshot.base64Data}`,
               detail: 'high'
             }
-          });
+          } as OpenAI.Chat.Completions.ChatCompletionContentPartImage);
           
           // Add screenshot context
           content.push({
@@ -260,7 +260,7 @@ Based on ALL the information provided (especially the full logs), determine if t
         if (indicatorsMatch) {
           // Handle both formats: [item1, item2] and item1, item2
           const indicatorString = indicatorsMatch[1] || indicatorsMatch[2];
-          indicators = indicatorString.split(',').map(i => i.trim().replace(/["'\[\]]/g, ''));
+          indicators = indicatorString.split(',').map(i => i.trim().replace(/["'[\]]/g, ''));
         }
         
         return {
@@ -284,17 +284,18 @@ Based on ALL the information provided (especially the full logs), determine if t
     }
   }
 
-  private validateResponse(response: any): void {
-    if (!response.verdict || !['TEST_ISSUE', 'PRODUCT_ISSUE'].includes(response.verdict)) {
+  private validateResponse(response: unknown): void {
+    const resp = response as Record<string, unknown>;
+    if (!resp.verdict || !['TEST_ISSUE', 'PRODUCT_ISSUE'].includes(resp.verdict as string)) {
       throw new Error('Invalid verdict in response');
     }
     
-    if (!response.reasoning || typeof response.reasoning !== 'string') {
+    if (!resp.reasoning || typeof resp.reasoning !== 'string') {
       throw new Error('Missing or invalid reasoning in response');
     }
     
-    if (!response.indicators || !Array.isArray(response.indicators)) {
-      response.indicators = [];
+    if (!resp.indicators || !Array.isArray(resp.indicators)) {
+      (resp as any).indicators = [];
     }
   }
 

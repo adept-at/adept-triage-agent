@@ -254,7 +254,7 @@ Based on ALL the information provided (especially the full logs), determine if t
                 let indicators = [];
                 if (indicatorsMatch) {
                     const indicatorString = indicatorsMatch[1] || indicatorsMatch[2];
-                    indicators = indicatorString.split(',').map(i => i.trim().replace(/["'\[\]]/g, ''));
+                    indicators = indicatorString.split(',').map(i => i.trim().replace(/["'[\]]/g, ''));
                 }
                 return {
                     verdict,
@@ -274,14 +274,15 @@ Based on ALL the information provided (especially the full logs), determine if t
         }
     }
     validateResponse(response) {
-        if (!response.verdict || !['TEST_ISSUE', 'PRODUCT_ISSUE'].includes(response.verdict)) {
+        const resp = response;
+        if (!resp.verdict || !['TEST_ISSUE', 'PRODUCT_ISSUE'].includes(resp.verdict)) {
             throw new Error('Invalid verdict in response');
         }
-        if (!response.reasoning || typeof response.reasoning !== 'string') {
+        if (!resp.reasoning || typeof resp.reasoning !== 'string') {
             throw new Error('Missing or invalid reasoning in response');
         }
-        if (!response.indicators || !Array.isArray(response.indicators)) {
-            response.indicators = [];
+        if (!resp.indicators || !Array.isArray(resp.indicators)) {
+            resp.indicators = [];
         }
     }
     delay(ms) {

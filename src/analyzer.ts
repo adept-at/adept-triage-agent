@@ -1,5 +1,5 @@
 import { OpenAIClient } from './openai-client';
-import { AnalysisResult, ErrorData, FewShotExample, LogExtractor } from './types';
+import { AnalysisResult, ErrorData, FewShotExample, LogExtractor, OpenAIResponse } from './types';
 import * as core from '@actions/core';
 
 const FEW_SHOT_EXAMPLES: FewShotExample[] = [
@@ -369,7 +369,7 @@ function extractStackTrace(content: string): string {
   return stackLines.join('\n');
 }
 
-function calculateConfidence(response: any, errorData: ErrorData): number {
+function calculateConfidence(response: OpenAIResponse, errorData: ErrorData): number {
   let confidence = 70; // Base confidence
   
   // Increase confidence based on clear indicators
@@ -407,7 +407,7 @@ function calculateConfidence(response: any, errorData: ErrorData): number {
   return Math.min(confidence, 100);
 }
 
-function generateSummary(response: any, errorData: ErrorData): string {
+function generateSummary(response: OpenAIResponse, errorData: ErrorData): string {
   const verdictEmoji = response.verdict === 'TEST_ISSUE' ? '🧪' : '🐛';
   const verdictText = response.verdict === 'TEST_ISSUE' ? 'Test Issue' : 'Product Issue';
   
