@@ -726,6 +726,27 @@ async function run() {
         const artifactFetcher = new artifact_fetcher_1.ArtifactFetcher(octokit);
         const errorData = await getErrorData(octokit, artifactFetcher, inputs);
         if (!errorData) {
+            const context = github.context;
+            const { owner, repo } = context.repo;
+            const runId = inputs.workflowRunId || context.runId.toString();
+            try {
+                const workflowRun = await octokit.actions.getWorkflowRun({
+                    owner,
+                    repo,
+                    run_id: parseInt(runId, 10)
+                });
+                if (workflowRun.data.status !== 'completed') {
+                    core.warning(`Workflow run ${runId} is still in progress (status: ${workflowRun.data.status})`);
+                    core.setOutput('verdict', 'PENDING');
+                    core.setOutput('confidence', '0');
+                    core.setOutput('reasoning', 'Workflow is still running. Please wait for it to complete before running triage analysis.');
+                    core.setOutput('summary', 'Analysis pending - workflow not completed');
+                    return;
+                }
+            }
+            catch (error) {
+                core.debug(`Error checking workflow status: ${error}`);
+            }
             core.setFailed('No error data found to analyze');
             return;
         }
@@ -767,6 +788,7 @@ function getInputs() {
 }
 async function getErrorData(octokit, artifactFetcher, inputs) {
     const context = github.context;
+    const { owner, repo } = context.repo;
     if (inputs.errorMessage) {
         return {
             message: inputs.errorMessage,
@@ -781,8 +803,8 @@ async function getErrorData(octokit, artifactFetcher, inputs) {
     if (!runId) {
         runId = context.runId.toString();
     }
-    const { owner, repo } = context.repo;
-    if (inputs.workflowRunId || context.payload.workflow_run) {
+    const isCurrentJob = inputs.jobName && (inputs.jobName === context.job || inputs.jobName.includes(context.job));
+    if (!isCurrentJob && (inputs.workflowRunId || context.payload.workflow_run)) {
         const workflowRun = await octokit.actions.getWorkflowRun({
             owner,
             repo,
@@ -793,18 +815,39 @@ async function getErrorData(octokit, artifactFetcher, inputs) {
             return null;
         }
     }
+    else if (isCurrentJob) {
+        core.info(`Analyzing current job: ${inputs.jobName} (workflow still in progress)`);
+    }
     const jobs = await octokit.actions.listJobsForWorkflowRun({
         owner,
         repo,
         run_id: parseInt(runId, 10),
         filter: 'latest'
     });
-    const failedJob = jobs.data.jobs.find(job => job.conclusion === 'failure');
-    if (!failedJob) {
-        core.warning('No failed jobs found');
-        return null;
+    let targetJob;
+    if (inputs.jobName) {
+        targetJob = jobs.data.jobs.find(job => job.name === inputs.jobName);
+        if (!targetJob) {
+            core.warning(`Job '${inputs.jobName}' not found`);
+            return null;
+        }
+        if (isCurrentJob && targetJob.status === 'in_progress') {
+            core.info('Current job is still in progress, analyzing available logs...');
+        }
+        else if (targetJob.conclusion !== 'failure' && targetJob.status === 'completed') {
+            core.warning(`Job '${inputs.jobName}' did not fail (conclusion: ${targetJob.conclusion})`);
+            return null;
+        }
     }
-    core.info(`Analyzing failed job: ${failedJob.name}`);
+    else {
+        targetJob = jobs.data.jobs.find(job => job.conclusion === 'failure');
+        if (!targetJob) {
+            core.warning('No failed jobs found');
+            return null;
+        }
+    }
+    const failedJob = targetJob;
+    core.info(`Analyzing job: ${failedJob.name} (status: ${failedJob.status}, conclusion: ${failedJob.conclusion || 'none'})`);
     let fullLogs = '';
     try {
         const logsResponse = await octokit.actions.downloadJobLogsForWorkflowRun({

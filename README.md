@@ -26,6 +26,7 @@ AI-powered GitHub Action that automatically triages test failures to determine i
 ## Multimodal Analysis
 
 The triage agent uses GPT-4.1's multimodal capabilities to analyze both logs and screenshots together:
+
 - 📸 Automatically fetches screenshots from test artifacts
 - 🔍 Analyzes visual UI state alongside error logs
 - 🎯 Provides more accurate verdicts with visual evidence
@@ -62,7 +63,7 @@ jobs:
     steps:
       - name: Run Cypress Tests
         run: npx cypress run
-        
+
       - name: Upload artifacts
         if: failure()
         uses: actions/upload-artifact@v4
@@ -110,7 +111,7 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
             const workflowRunId = parseInt('${{ github.event.client_payload.workflow_run_id }}');
-            
+
             // Wait for workflow to complete
             for (let i = 0; i < 60; i++) {
               const { data: run } = await github.rest.actions.getWorkflowRun({
@@ -140,9 +141,9 @@ jobs:
             const verdict = '${{ steps.triage.outputs.verdict }}';
             const confidence = '${{ steps.triage.outputs.confidence }}';
             const summary = '${{ steps.triage.outputs.summary }}';
-            
+
             const emoji = verdict === 'TEST_ISSUE' ? '🧪' : '🐛';
-            
+
             github.rest.issues.createComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
@@ -194,7 +195,7 @@ Instead of repository dispatch, you can use the `workflow_run` event:
 name: Analyze Test Failures
 on:
   workflow_run:
-    workflows: ["E2E Tests"]
+    workflows: ['E2E Tests']
     types: [completed]
 
 jobs:
@@ -228,7 +229,7 @@ Integrate AI triage results into your Slack notifications in the triage workflow
   run: |
     VERDICT="${{ steps.triage.outputs.verdict }}"
     SUMMARY="${{ steps.triage.outputs.summary }}"
-    
+
     if [[ "$VERDICT" == "PRODUCT_ISSUE" ]]; then
       COLOR="danger"
       EMOJI="🚨"
@@ -238,7 +239,7 @@ Integrate AI triage results into your Slack notifications in the triage workflow
       EMOJI="🧪"
       PRIORITY="FYI:"
     fi
-    
+
     curl -X POST -H 'Content-type: application/json' --data "{
       \"text\": \"$PRIORITY Test failure in ${{ github.event.client_payload.job_name }}\",
       \"attachments\": [{
@@ -254,23 +255,23 @@ Integrate AI triage results into your Slack notifications in the triage workflow
 
 ## Inputs
 
-| Input | Description | Required | Default |
-|-------|-------------|----------|---------|
-| `GITHUB_TOKEN` | GitHub token for API access | No | `${{ github.token }}` |
-| `OPENAI_API_KEY` | OpenAI API key for AI analysis | Yes | - |
-| `ERROR_MESSAGE` | Error message to analyze (optional if using workflow artifacts) | No | - |
-| `WORKFLOW_RUN_ID` | Workflow run ID to fetch logs from | No | - |
-| `JOB_NAME` | Specific job name to analyze | No | - |
-| `CONFIDENCE_THRESHOLD` | Minimum confidence level for verdict (0-100) | No | `70` |
+| Input                  | Description                                                     | Required | Default               |
+| ---------------------- | --------------------------------------------------------------- | -------- | --------------------- |
+| `GITHUB_TOKEN`         | GitHub token for API access                                     | No       | `${{ github.token }}` |
+| `OPENAI_API_KEY`       | OpenAI API key for AI analysis                                  | Yes      | -                     |
+| `ERROR_MESSAGE`        | Error message to analyze (optional if using workflow artifacts) | No       | -                     |
+| `WORKFLOW_RUN_ID`      | Workflow run ID to fetch logs from                              | No       | -                     |
+| `JOB_NAME`             | Specific job name to analyze                                    | No       | -                     |
+| `CONFIDENCE_THRESHOLD` | Minimum confidence level for verdict (0-100)                    | No       | `70`                  |
 
 ## Outputs
 
-| Output | Description |
-|--------|-------------|
-| `verdict` | Classification result: `TEST_ISSUE` or `PRODUCT_ISSUE` |
-| `confidence` | Confidence score (0-100) |
-| `reasoning` | Detailed explanation of the decision |
-| `summary` | Brief summary suitable for PR comments |
+| Output        | Description                                             |
+| ------------- | ------------------------------------------------------- |
+| `verdict`     | Classification result: `TEST_ISSUE` or `PRODUCT_ISSUE`  |
+| `confidence`  | Confidence score (0-100)                                |
+| `reasoning`   | Detailed explanation of the decision                    |
+| `summary`     | Brief summary suitable for PR comments                  |
 | `triage_json` | Complete analysis as JSON string (includes all details) |
 
 ## Setup
@@ -297,6 +298,7 @@ Integrate AI triage results into your Slack notifications in the triage workflow
 ## Example Classifications
 
 ### Test Issues
+
 - Timeout waiting for elements in UI tests
 - Mock function not being called as expected
 - Test data file not found
@@ -304,6 +306,7 @@ Integrate AI triage results into your Slack notifications in the triage workflow
 - Incorrect test assertions
 
 ### Product Issues
+
 - 500 Internal Server Error from API calls
 - Database connection failures
 - Required field validation errors
@@ -350,4 +353,4 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ## Acknowledgments
 
-Built with ❤️ by the Adept team. 
+Built with ❤️ by the Adept team.

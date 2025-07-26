@@ -1,0 +1,156 @@
+name: preview-url-saucelabs-with-triage
+
+on:
+  repository_dispatch:
+    types: [trigger-skill-preview-sauce]
+
+jobs:
+  generate-matrix:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.set-matrix.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Generate matrix
+        id: set-matrix
+        run: |
+          DIRECTORY="cypress/skills-preview-url"
+          FILES=$(ls -1 "$DIRECTORY" | jq -R -s -c 'split("\n")[:-1]')
+          echo "matrix=$FILES" >> $GITHUB_OUTPUT
+
+  previewUrlTest:
+    needs: generate-matrix
+    runs-on: ubuntu-latest
+    timeout-minutes: 7
+    strategy:
+      fail-fast: false
+      matrix:
+        containers: ${{ fromJson(needs.generate-matrix.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Use Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20.x
+          registry-url: https://npm.pkg.github.com
+          scope: '@adept-at'
+      - name: Cache node_modules
+        id: cache-node-modules
+        uses: actions/cache@v4
+        with:
+          path: node_modules
+          key: ${{ runner.os }}-node-${{ hashFiles('**/package-lock.json') }}
+      - name: NPM CI
+        if: steps.cache-node-modules.outputs.cache-hit != 'true'
+        run: npm ci
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.READ_GH_PACKAGES }}
+      - name: Cache Cypress Binary
+        id: cache-cypress
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/Cypress
+          key: ${{ runner.os }}-cypress-${{ hashFiles('**/package-lock.json') }}
+      - name: Run Cypress Install
+        if: steps.cache-cypress.outputs.cache-hit != 'true'
+        run: npx cypress install
+      - name: run cypress
+        run: >
+          npx cypress run --spec ./cypress/skills-preview-url/${{ matrix.containers }}
+          -C cypress.skillbuilder-vercel.sauce.config.ts
+          -c baseUrl=${{ github.event.client_payload.target_url  }}
+          -b chrome
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          SAUCE_ACCESS_KEY: ${{ secrets.SAUCE_ACCESS_KEY }}
+          SAUCE_USERNAME: ${{ secrets.SAUCE_USERNAME }}
+      
+      # Upload artifacts for triage analysis
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: cy-logs-${{ matrix.containers }}-${{ github.run_id }}
+          path: |
+            cypress/logs/*
+            cypress/videos/*
+            cypress/screenshots/*
+          if-no-files-found: ignore
+      
+      # ========== NEW: AI TRIAGE ANALYSIS ==========
+      - name: Analyze Test Failure with AI
+        if: failure()
+        uses: adept-at/adept-triage-agent@v1.0.1
+        id: triage
+        with:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          WORKFLOW_RUN_ID: ${{ github.run_id }}
+          JOB_NAME: '${{ github.job }} (${{ matrix.containers }})'
+      # =============================================
+      
+      - name: Notify on failure
+        if: failure()
+        run: |
+          PR_NUMBER=$(echo ${{ github.event.client_payload.pr_number }})
+          COMMIT_SHA=${{ github.event.client_payload.sha }}
+          REPO_URL=${{ github.event.client_payload.repo }}
+
+          # Get the branch name associated with the commit
+          BRANCH_NAME=${{ github.event.client_payload.branch }}
+
+          if [ -n "$PR_NUMBER" ]; then
+            LINK_TEXT="PR #$PR_NUMBER"
+            LINK_URL="https://github.com/$REPO_URL/pull/$PR_NUMBER"
+          else
+            LINK_TEXT="GitHub Actions Run"
+            LINK_URL="https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          fi
+          LINK="<$LINK_URL|$LINK_TEXT>"
+
+          PREVIEW_URL="${{ github.event.client_payload.target_url }}"
+
+          # Get triage results
+          TRIAGE_JSON='${{ steps.triage.outputs.triage_json }}'
+          VERDICT="${{ steps.triage.outputs.verdict }}"
+          CONFIDENCE="${{ steps.triage.outputs.confidence }}"
+          SUMMARY="${{ steps.triage.outputs.summary }}"
+
+          # Escape the triage JSON for inclusion in the curl command
+          ESCAPED_TRIAGE=$(echo "$TRIAGE_JSON" | jq -c . | sed 's/"/\\"/g')
+
+          curl -X POST -H 'Content-type: application/json' --data '{
+            "text": ":exclamation: Job Failed in skillbuilder preview url Workflow | 
+              Repo: '${GITHUB_REPOSITORY}' | 
+              Message: ${{ job.status }} | 
+              Job: ${{ github.job }} | 
+              Spec: ${{ matrix.containers }} | 
+              Branch: '"$BRANCH_NAME"' | 
+              PR_NUMBER: '"$PR_NUMBER"' | 
+              Commit: '"${COMMIT_SHA:0:7}"' | 
+              Preview URL: '"$PREVIEW_URL"' | 
+              Action URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }} | 
+              Details: '"$LINK"'",
+            "attachments": [{
+              "color": "'"$([ "$VERDICT" == "PRODUCT_ISSUE" ] && echo "danger" || echo "warning")"'",
+              "title": "AI Triage Analysis",
+              "fields": [
+                {
+                  "title": "Verdict",
+                  "value": "'"$VERDICT"'",
+                  "short": true
+                },
+                {
+                  "title": "Confidence",
+                  "value": "'"$CONFIDENCE"'%",
+                  "short": true
+                },
+                {
+                  "title": "Summary",
+                  "value": "'"$SUMMARY"'",
+                  "short": false
+                }
+              ],
+              "footer": "Adept Triage Agent",
+              "ts": '"$(date +%s)"'
+            }]
+          }' ${{ secrets.CYPRESS_SLACK_WEBHOOK_URL }} 

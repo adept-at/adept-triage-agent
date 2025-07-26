@@ -20,6 +20,31 @@ async function run(): Promise<void> {
     const errorData = await getErrorData(octokit, artifactFetcher, inputs);
     
     if (!errorData) {
+      // Check if this is due to workflow still running
+      const context = github.context;
+      const { owner, repo } = context.repo;
+      const runId = inputs.workflowRunId || context.runId.toString();
+      
+      try {
+        const workflowRun = await octokit.actions.getWorkflowRun({
+          owner,
+          repo,
+          run_id: parseInt(runId, 10)
+        });
+        
+        if (workflowRun.data.status !== 'completed') {
+          core.warning(`Workflow run ${runId} is still in progress (status: ${workflowRun.data.status})`);
+          core.setOutput('verdict', 'PENDING');
+          core.setOutput('confidence', '0');
+          core.setOutput('reasoning', 'Workflow is still running. Please wait for it to complete before running triage analysis.');
+          core.setOutput('summary', 'Analysis pending - workflow not completed');
+          // Exit with success since this is an expected state, not an error
+          return;
+        }
+      } catch (error) {
+        core.debug(`Error checking workflow status: ${error}`);
+      }
+      
       core.setFailed('No error data found to analyze');
       return;
     }
@@ -68,11 +93,16 @@ function getInputs(): ActionInputs {
   };
 }
 
-async function getErrorData(octokit: Octokit, artifactFetcher: ArtifactFetcher, inputs: ActionInputs): Promise<ErrorData | null> {
+async function getErrorData(
+  octokit: Octokit,
+  artifactFetcher: ArtifactFetcher,
+  inputs: ActionInputs
+): Promise<ErrorData | null> {
   const context = github.context;
+  const { owner, repo } = context.repo;
   
+  // If direct error message is provided, use it
   if (inputs.errorMessage) {
-    // Direct error message provided
     return {
       message: inputs.errorMessage,
       framework: 'unknown',
@@ -80,7 +110,7 @@ async function getErrorData(octokit: Octokit, artifactFetcher: ArtifactFetcher, 
     };
   }
   
-  // Get workflow context
+  // Determine the workflow run ID
   let runId = inputs.workflowRunId;
   
   // Check for workflow_run event
@@ -93,10 +123,11 @@ async function getErrorData(octokit: Octokit, artifactFetcher: ArtifactFetcher, 
     runId = context.runId.toString();
   }
   
-  const { owner, repo } = context.repo;
+  // Special handling for current job analysis
+  const isCurrentJob = inputs.jobName && (inputs.jobName === context.job || inputs.jobName.includes(context.job));
   
-  // If workflow run ID is provided or using workflow_run event, check if it's completed
-  if (inputs.workflowRunId || context.payload.workflow_run) {
+  // Check if workflow is completed when analyzing a different workflow
+  if (!isCurrentJob && (inputs.workflowRunId || context.payload.workflow_run)) {
     const workflowRun = await octokit.actions.getWorkflowRun({
       owner,
       repo,
@@ -107,6 +138,8 @@ async function getErrorData(octokit: Octokit, artifactFetcher: ArtifactFetcher, 
       core.warning('Workflow run is not completed yet');
       return null;
     }
+  } else if (isCurrentJob) {
+    core.info(`Analyzing current job: ${inputs.jobName} (workflow still in progress)`);
   }
   
   // Get the failed job
@@ -117,13 +150,34 @@ async function getErrorData(octokit: Octokit, artifactFetcher: ArtifactFetcher, 
     filter: 'latest'
   });
   
-  const failedJob = jobs.data.jobs.find(job => job.conclusion === 'failure');
-  if (!failedJob) {
-    core.warning('No failed jobs found');
-    return null;
+  let targetJob;
+  
+  if (inputs.jobName) {
+    // Look for specific job by name
+    targetJob = jobs.data.jobs.find(job => job.name === inputs.jobName);
+    if (!targetJob) {
+      core.warning(`Job '${inputs.jobName}' not found`);
+      return null;
+    }
+    
+    // For current job, we might not have a conclusion yet
+    if (isCurrentJob && targetJob.status === 'in_progress') {
+      core.info('Current job is still in progress, analyzing available logs...');
+    } else if (targetJob.conclusion !== 'failure' && targetJob.status === 'completed') {
+      core.warning(`Job '${inputs.jobName}' did not fail (conclusion: ${targetJob.conclusion})`);
+      return null;
+    }
+  } else {
+    // Look for any failed job
+    targetJob = jobs.data.jobs.find(job => job.conclusion === 'failure');
+    if (!targetJob) {
+      core.warning('No failed jobs found');
+      return null;
+    }
   }
   
-  core.info(`Analyzing failed job: ${failedJob.name}`);
+  const failedJob = targetJob;
+  core.info(`Analyzing job: ${failedJob.name} (status: ${failedJob.status}, conclusion: ${failedJob.conclusion || 'none'})`);
   
   // Get ALL job logs - no filtering
   let fullLogs = '';
@@ -209,4 +263,4 @@ export { run };
 // Run the action if this is the main module
 if (require.main === module) {
   run();
-} 
+}

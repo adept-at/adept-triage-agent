@@ -219,7 +219,7 @@ describe('GitHub Action', () => {
 
       await run();
 
-      expect(mockCore.warning).toHaveBeenCalledWith('No failed jobs found');
+      expect(mockCore.warning).toHaveBeenCalledWith(`Job 'test-job' not found`);
       expect(mockCore.setFailed).toHaveBeenCalledWith('No error data found to analyze');
     });
   });
