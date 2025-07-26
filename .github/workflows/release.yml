@@ -54,7 +54,8 @@ jobs:
           ```yaml
           - uses: adept-at/adept-triage-agent@${{ github.ref_name || github.event.inputs.version }}
             with:
-              OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+              GITHUB_TOKEN: ${{ '${{ secrets.GITHUB_TOKEN }}' }}
+              OPENAI_API_KEY: ${{ '${{ secrets.OPENAI_API_KEY }}' }}
           ```
           
           See [README](https://github.com/${{ github.repository }}/blob/main/README.md) for detailed usage instructions.
