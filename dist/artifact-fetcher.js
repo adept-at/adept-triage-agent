@@ -320,7 +320,22 @@ class ArtifactFetcher {
             return prDiff;
         }
         catch (error) {
-            core.warning(`Failed to fetch PR diff: ${error}`);
+            if (error.status === 404 || error.status === 403) {
+                const isCurrentRepo = !repository || repository === `${github.context.repo.owner}/${github.context.repo.repo}`;
+                if (!isCurrentRepo) {
+                    core.warning(`Failed to fetch PR diff: ${error}`);
+                    core.warning(`This appears to be a cross-repository access issue. The GitHub Actions token may not have permission to access ${repository}.`);
+                    core.warning(`To fix this, use a Personal Access Token (PAT) with 'repo' scope instead of the default GITHUB_TOKEN.`);
+                    core.warning(`See https://github.com/adept-at/adept-triage-agent/blob/main/README_CROSS_REPO_PR.md for detailed instructions.`);
+                }
+                else {
+                    core.warning(`Failed to fetch PR diff: ${error}`);
+                    core.warning(`PR #${prNumber} may not exist or the token lacks permissions to access it.`);
+                }
+            }
+            else {
+                core.warning(`Failed to fetch PR diff: ${error}`);
+            }
             return null;
         }
     }

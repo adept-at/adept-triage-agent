@@ -284,6 +284,48 @@ describe('ArtifactFetcher', () => {
       expect(core.warning).toHaveBeenCalledWith('Failed to fetch PR diff: Error: PR not found');
     });
     
+    it('should provide helpful cross-repo error message on 404', async () => {
+      const error = new Error('Not Found') as any;
+      error.status = 404;
+      
+      mockOctokit.pulls = {
+        get: jest.fn().mockRejectedValue(error)
+      } as any;
+      
+      const result = await artifactFetcher.fetchPRDiff('123', 'different-owner/different-repo');
+      
+      expect(result).toBeNull();
+      expect(core.warning).toHaveBeenCalledWith(`Failed to fetch PR diff: ${error}`);
+      expect(core.warning).toHaveBeenCalledWith(
+        'This appears to be a cross-repository access issue. The GitHub Actions token may not have permission to access different-owner/different-repo.'
+      );
+      expect(core.warning).toHaveBeenCalledWith(
+        "To fix this, use a Personal Access Token (PAT) with 'repo' scope instead of the default GITHUB_TOKEN."
+      );
+    });
+    
+    it('should provide different message for same-repo 404 error', async () => {
+      const error = new Error('Not Found') as any;
+      error.status = 404;
+      
+      mockOctokit.pulls = {
+        get: jest.fn().mockRejectedValue(error)
+      } as any;
+      
+      // When no repository is specified, it uses the current repo
+      const result = await artifactFetcher.fetchPRDiff('999');
+      
+      expect(result).toBeNull();
+      expect(core.warning).toHaveBeenCalledWith(`Failed to fetch PR diff: ${error}`);
+      expect(core.warning).toHaveBeenCalledWith(
+        'PR #999 may not exist or the token lacks permissions to access it.'
+      );
+      // Should NOT show cross-repo warning
+      expect(core.warning).not.toHaveBeenCalledWith(
+        expect.stringContaining('cross-repository access issue')
+      );
+    });
+    
     it('should handle large PRs with pagination', async () => {
       const mockFiles = Array.from({ length: 100 }, (_, i) => ({
         filename: `file${i}.js`,

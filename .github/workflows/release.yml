@@ -14,80 +14,80 @@ jobs:
   release:
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v4
-    
-    - name: Use Node.js
-      uses: actions/setup-node@v4
-      with:
-        node-version: '20.x'
-        cache: 'npm'
-    
-    - name: Install dependencies
-      run: npm ci
-    
-    - name: Run tests
-      run: npm test
-    
-    - name: Build and package
-      run: |
-        npm run build
-        npm run package
-    
-    - name: Create Release
-      id: create_release
-      uses: actions/create-release@v1
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      with:
-        tag_name: ${{ github.ref_name || github.event.inputs.version }}
-        release_name: Release ${{ github.ref_name || github.event.inputs.version }}
-        body: |
-          ## Changes in this Release
-          
-          ### Features
-          - AI-powered test failure triage
-          - Support for multiple test frameworks
-          - Confidence scoring
-          - GitHub workflow integration
-          
-          ### Installation
-          ```yaml
-          - uses: adept-at/adept-triage-agent@${{ github.ref_name || github.event.inputs.version }}
-            with:
-              GITHUB_TOKEN: ${{ '${{ secrets.GITHUB_TOKEN }}' }}
-              OPENAI_API_KEY: ${{ '${{ secrets.OPENAI_API_KEY }}' }}
-          ```
-          
-          See [README](https://github.com/${{ github.repository }}/blob/main/README.md) for detailed usage instructions.
-        draft: false
-        prerelease: false
-    
-    - name: Upload Release Asset
-      uses: actions/upload-release-asset@v1
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      with:
-        upload_url: ${{ steps.create_release.outputs.upload_url }}
-        asset_path: ./dist/index.js
-        asset_name: index.js
-        asset_content_type: application/javascript
-        
+      - uses: actions/checkout@v4
+
+      - name: Use Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20.x'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run tests
+        run: npm test
+
+      - name: Build and package
+        run: |
+          npm run build
+          npm run package
+
+      - name: Create Release
+        id: create_release
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ github.ref_name || github.event.inputs.version }}
+          release_name: Release ${{ github.ref_name || github.event.inputs.version }}
+          body: |
+            ## Changes in this Release
+
+            ### Features
+            - AI-powered test failure triage
+            - Support for multiple test frameworks
+            - Confidence scoring
+            - GitHub workflow integration
+
+            ### Installation
+            ```yaml
+            - uses: adept-at/adept-triage-agent@${{ github.ref_name || github.event.inputs.version }}
+              with:
+                GITHUB_TOKEN: ${{ '${{ secrets.GITHUB_TOKEN }}' }}
+                OPENAI_API_KEY: ${{ '${{ secrets.OPENAI_API_KEY }}' }}
+            ```
+
+            See [README](https://github.com/${{ github.repository }}/blob/main/README.md) for detailed usage instructions.
+          draft: false
+          prerelease: false
+
+      - name: Upload Release Asset
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: ./dist/index.js
+          asset_name: index.js
+          asset_content_type: application/javascript
+
   update-major-tag:
     runs-on: ubuntu-latest
     needs: release
     if: startsWith(github.ref, 'refs/tags/v')
-    
+
     steps:
-    - uses: actions/checkout@v4
-    
-    - name: Update major version tag
-      run: |
-        VERSION=${GITHUB_REF#refs/tags/v}
-        MAJOR_VERSION=$(echo $VERSION | cut -d. -f1)
-        
-        git config user.name github-actions
-        git config user.email github-actions@github.com
-        
-        # Force update the major version tag
-        git tag -fa "v$MAJOR_VERSION" -m "Update major version tag to $VERSION"
-        git push origin "v$MAJOR_VERSION" --force 
+      - uses: actions/checkout@v4
+
+      - name: Update major version tag
+        run: |
+          VERSION=${GITHUB_REF#refs/tags/v}
+          MAJOR_VERSION=$(echo $VERSION | cut -d. -f1)
+
+          git config user.name github-actions
+          git config user.email github-actions@github.com
+
+          # Force update the major version tag
+          git tag -fa "v$MAJOR_VERSION" -m "Update major version tag to $VERSION"
+          git push origin "v$MAJOR_VERSION" --force
