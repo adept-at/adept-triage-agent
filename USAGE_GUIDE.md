@@ -527,6 +527,45 @@ Adjust the confidence threshold for more or less strict verdicts:
     CONFIDENCE_THRESHOLD: '90' # Require 90% confidence
 ```
 
+### Minimal Usage (Only Workflow ID)
+
+If you only have a workflow run ID and want the agent to automatically find the failed job:
+
+```yaml
+name: Minimal Triage
+on:
+  workflow_dispatch:
+    inputs:
+      workflow_run_id:
+        description: 'Workflow run ID to analyze'
+        required: true
+
+jobs:
+  triage:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Analyze Test Failure
+        uses: adept-at/adept-triage-agent@v1.0.2
+        with:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          WORKFLOW_RUN_ID: ${{ github.event.inputs.workflow_run_id }}
+          # No PR_NUMBER, COMMIT_SHA, or JOB_NAME needed
+          # Agent will automatically:
+          # - Find the first failed job
+          # - Collect all available logs
+          # - Fetch screenshots and artifacts
+          # - Analyze with whatever data is available
+```
+
+The agent handles missing optional inputs gracefully:
+
+- **No PR_NUMBER**: PR diff analysis is skipped
+- **No JOB_NAME**: Automatically finds the first failed job
+- **No COMMIT_SHA**: Not required for analysis
+- **No REPOSITORY**: Uses current repository context
+
+Even if some data collection fails (e.g., screenshots unavailable), the agent will proceed with whatever data it can gather.
+
 ## How It Works
 
 1. **Log Collection**: The action fetches all logs from the failed job(s)

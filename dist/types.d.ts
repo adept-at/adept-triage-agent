@@ -10,6 +10,7 @@ export interface ErrorData {
     screenshots?: Screenshot[];
     logs?: string[];
     cypressArtifactLogs?: string;
+    prDiff?: PRDiff;
 }
 export interface Screenshot {
     name: string;
@@ -42,6 +43,23 @@ export interface ActionInputs {
     workflowRunId?: string;
     jobName?: string;
     confidenceThreshold: number;
+    prNumber?: string;
+    commitSha?: string;
+    repository?: string;
+}
+export interface PRDiff {
+    files: PRDiffFile[];
+    totalChanges: number;
+    additions: number;
+    deletions: number;
+}
+export interface PRDiffFile {
+    filename: string;
+    status: string;
+    additions: number;
+    deletions: number;
+    changes: number;
+    patch?: string;
 }
 export interface LogExtractor {
     framework: string;

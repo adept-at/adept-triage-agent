@@ -89,7 +89,10 @@ function getInputs(): ActionInputs {
     errorMessage: core.getInput('ERROR_MESSAGE'),
     workflowRunId: core.getInput('WORKFLOW_RUN_ID'),
     jobName: core.getInput('JOB_NAME'),
-    confidenceThreshold: parseInt(core.getInput('CONFIDENCE_THRESHOLD') || '70', 10)
+    confidenceThreshold: parseInt(core.getInput('CONFIDENCE_THRESHOLD') || '70', 10),
+    prNumber: core.getInput('PR_NUMBER'),
+    commitSha: core.getInput('COMMIT_SHA'),
+    repository: core.getInput('REPOSITORY')
   };
 }
 
@@ -179,8 +182,9 @@ async function getErrorData(
   const failedJob = targetJob;
   core.info(`Analyzing job: ${failedJob.name} (status: ${failedJob.status}, conclusion: ${failedJob.conclusion || 'none'})`);
   
-  // Get ALL job logs - no filtering
+  // Get job logs for error extraction only
   let fullLogs = '';
+  let extractedError: ErrorData | null = null;
   try {
     const logsResponse = await octokit.actions.downloadJobLogsForWorkflowRun({
       owner,
@@ -188,7 +192,16 @@ async function getErrorData(
       job_id: failedJob.id
     });
     fullLogs = logsResponse.data as unknown as string;
-    core.info(`Downloaded ${fullLogs.length} characters of logs`);
+    core.info(`Downloaded ${fullLogs.length} characters of logs for error extraction`);
+    
+    // Extract structured error from logs immediately
+    extractedError = extractErrorFromLogs(fullLogs);
+    
+    // If we have a PR diff coming, limit the GitHub logs to just the extracted error context
+    if (inputs.prNumber && extractedError) {
+      // We'll use the extracted error context instead of full logs
+      core.info('PR diff available - using extracted error context only');
+    }
   } catch (error) {
     core.warning(`Failed to download job logs: ${error}`);
   }
@@ -197,38 +210,98 @@ async function getErrorData(
   let artifactLogs = '';
   let screenshots: Screenshot[] = [];
   
+  // Fetch screenshots independently
   try {
-    // Fetch screenshots
     screenshots = await artifactFetcher.fetchScreenshots(runId, failedJob.name);
     core.info(`Found ${screenshots.length} screenshots`);
-    
-    // Fetch Cypress artifact logs
+  } catch (error) {
+    core.warning(`Failed to fetch screenshots: ${error}`);
+    // Continue with empty screenshots array
+  }
+  
+  // Fetch Cypress artifact logs independently
+  try {
     artifactLogs = await artifactFetcher.fetchCypressArtifactLogs(runId, failedJob.name);
     if (artifactLogs) {
       core.info(`Found Cypress artifact logs (${artifactLogs.length} characters)`);
     }
   } catch (error) {
-    core.warning(`Failed to fetch artifacts: ${error}`);
+    core.warning(`Failed to fetch Cypress artifact logs: ${error}`);
+    // Continue with empty artifact logs
   }
   
-  // Try to extract structured error from logs
-  const extractedError = extractErrorFromLogs(fullLogs);
+  // Fetch PR diff if PR number is provided
+  let prDiff = null;
+  if (inputs.prNumber) {
+    try {
+      prDiff = await artifactFetcher.fetchPRDiff(inputs.prNumber, inputs.repository);
+      if (prDiff) {
+        core.info(`Successfully fetched PR diff with ${prDiff.totalChanges} changed files`);
+      }
+    } catch (error) {
+      core.warning(`Failed to fetch PR diff: ${error}`);
+    }
+  }
   
-  // Combine EVERYTHING into one context blob
-  const combinedContext = [
+  // Build optimized context based on available data
+  const contextParts: string[] = [
     `=== JOB INFORMATION ===`,
     `Job Name: ${failedJob.name}`,
     `Job URL: ${failedJob.html_url}`,
     `Failed Step: ${failedJob.steps?.find(s => s.conclusion === 'failure')?.name || 'Unknown'}`,
-    ``,
-    `=== GITHUB ACTIONS LOGS ===`,
-    fullLogs,
-    ``,
-    `=== CYPRESS ARTIFACT LOGS ===`,
-    artifactLogs || 'No Cypress logs found',
-    ``,
-    `=== END OF LOGS ===`
-  ].join('\n');
+    ``
+  ];
+
+  // If we have extracted error, include it prominently
+  if (extractedError && extractedError.message) {
+    contextParts.push(
+      `=== EXTRACTED ERROR CONTEXT ===`,
+      extractedError.message,
+      ``
+    );
+  }
+
+  // Always include Cypress artifact logs if available
+  if (artifactLogs) {
+    contextParts.push(
+      `=== CYPRESS ARTIFACT LOGS ===`,
+      artifactLogs,
+      ``
+    );
+  }
+
+  // Include GitHub Actions logs only if:
+  // 1. No PR diff is available (we have more token budget)
+  // 2. OR no error was extracted (we need the full context)
+  // 3. Limit to last 50KB if including to save tokens
+  if (!inputs.prNumber || !extractedError) {
+    const maxLogSize = 50000; // 50KB limit for GitHub logs when included
+    const truncatedLogs = fullLogs.length > maxLogSize 
+      ? `${fullLogs.substring(fullLogs.length - maxLogSize)}\n\n[Logs truncated to last ${maxLogSize} characters]`
+      : fullLogs;
+    
+    contextParts.push(
+      `=== GITHUB ACTIONS LOGS (TRUNCATED) ===`,
+      truncatedLogs,
+      ``
+    );
+  }
+
+  contextParts.push(`=== END OF LOGS ===`);
+  const combinedContext = contextParts.join('\n');
+  
+  // Validate we have at least some meaningful data
+  const hasLogs = !!(fullLogs && fullLogs.length > 0);
+  const hasScreenshots = !!(screenshots && screenshots.length > 0);
+  const hasArtifactLogs = !!(artifactLogs && artifactLogs.length > 0);
+  const hasPRDiff = !!(prDiff && prDiff.files && prDiff.files.length > 0);
+  
+  if (!hasLogs && !hasScreenshots && !hasArtifactLogs && !hasPRDiff) {
+    core.warning('No meaningful data collected for analysis (no logs, screenshots, artifacts, or PR diff)');
+    core.info('Attempting analysis with minimal context...');
+  } else {
+    core.info(`Data collected for analysis: logs=${hasLogs}, screenshots=${hasScreenshots}, artifactLogs=${hasArtifactLogs}, prDiff=${hasPRDiff}`);
+  }
   
   // Create error data object, using extracted error if available
   if (extractedError) {
@@ -239,7 +312,8 @@ async function getErrorData(
       fileName: extractedError.fileName || failedJob.steps?.find(s => s.conclusion === 'failure')?.name || 'Unknown',
       screenshots: screenshots,
       logs: [combinedContext],
-      cypressArtifactLogs: artifactLogs
+      cypressArtifactLogs: artifactLogs,
+      prDiff: prDiff || undefined
     };
   }
   
@@ -253,7 +327,8 @@ async function getErrorData(
     fileName: failedJob.steps?.find(s => s.conclusion === 'failure')?.name || 'Unknown',
     screenshots: screenshots,
     logs: [combinedContext],
-    cypressArtifactLogs: artifactLogs
+    cypressArtifactLogs: artifactLogs,
+    prDiff: prDiff || undefined
   };
 }
 

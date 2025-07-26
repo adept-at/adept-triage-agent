@@ -11,42 +11,37 @@ AI-powered GitHub Action that automatically triages test failures to determine i
 - **[API Reference](#inputs)** - Input/output specifications
 - **[Examples](examples/)** - Sample workflows for different scenarios
 
-## Features
+## 🎯 Features
 
-- 🤖 Uses OpenAI GPT-4.1 to analyze test failures intelligently
-- 🔍 Automatically extracts error messages from workflow logs
-- 🎯 Distinguishes between test flakiness and real product bugs
-- 📊 Provides confidence scores and detailed reasoning
-- 🔧 Framework-aware parsing (Jest, Cypress, Mocha, Playwright)
-- 📸 **Multimodal Analysis: Analyzes screenshots with logs for better accuracy**
-- 📁 Automatically downloads and processes all test artifacts
-- 🔄 Two-workflow architecture for reliable analysis
-- 🧠 Support for o1-preview/o1-mini models via environment variable
+- 🧠 **Intelligent Analysis**: Uses OpenAI GPT-4 to understand test failure context
+- 🖼️ **Screenshot Analysis**: Automatically fetches and analyzes test screenshots when available
+- 📊 **Confidence Scoring**: Provides confidence levels for each verdict
+- 🔄 **Flexible Integration**: Works with various CI/CD workflows
+- 📝 **PR Diff Analysis**: Analyzes code changes from pull requests to better determine if failures are related to the changes
 
-## Multimodal Analysis
+### PR Diff Analysis (New!)
 
-The triage agent uses GPT-4.1's multimodal capabilities to analyze both logs and screenshots together:
+When PR information is provided, the agent will:
 
-- 📸 Automatically fetches screenshots from test artifacts
-- 🔍 Analyzes visual UI state alongside error logs
-- 🎯 Provides more accurate verdicts with visual evidence
-- 📈 Boosts confidence scores by 10% when screenshots are available
-- 🧩 Correlates visual bugs (overlapping elements, missing UI) with log errors
+- Fetch the complete diff of changed files
+- Analyze correlations between test failures and modified code
+- Consider whether failing tests are related to the PR changes
+- Provide more accurate verdicts based on code context
 
-For best results, ensure your workflow uploads artifacts:
+To enable PR diff analysis, provide these additional inputs:
 
 ```yaml
-- name: Upload Test Artifacts
-  if: failure()
-  uses: actions/upload-artifact@v3
+- uses: adept-at/adept-triage-agent@v1.1.0
   with:
-    name: cypress-artifacts
-    path: |
-      cypress/screenshots/**
-      cypress/videos/**
+    GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+    WORKFLOW_RUN_ID: ${{ github.event.workflow_run.id }}
+    PR_NUMBER: ${{ github.event.pull_request.number }}
+    COMMIT_SHA: ${{ github.sha }}
+    REPOSITORY: ${{ github.repository }}
 ```
 
-## Usage
+## 🚀 Quick Start
 
 ### Important: Two-Workflow Architecture Required
 
@@ -255,14 +250,17 @@ Integrate AI triage results into your Slack notifications in the triage workflow
 
 ## Inputs
 
-| Input                  | Description                                                     | Required | Default               |
-| ---------------------- | --------------------------------------------------------------- | -------- | --------------------- |
-| `GITHUB_TOKEN`         | GitHub token for API access                                     | No       | `${{ github.token }}` |
-| `OPENAI_API_KEY`       | OpenAI API key for AI analysis                                  | Yes      | -                     |
-| `ERROR_MESSAGE`        | Error message to analyze (optional if using workflow artifacts) | No       | -                     |
-| `WORKFLOW_RUN_ID`      | Workflow run ID to fetch logs from                              | No       | -                     |
-| `JOB_NAME`             | Specific job name to analyze                                    | No       | -                     |
-| `CONFIDENCE_THRESHOLD` | Minimum confidence level for verdict (0-100)                    | No       | `70`                  |
+| Input                  | Description                                                     | Required | Default                    |
+| ---------------------- | --------------------------------------------------------------- | -------- | -------------------------- |
+| `GITHUB_TOKEN`         | GitHub token for API access                                     | No       | `${{ github.token }}`      |
+| `OPENAI_API_KEY`       | OpenAI API key for AI analysis                                  | Yes      | -                          |
+| `ERROR_MESSAGE`        | Error message to analyze (optional if using workflow artifacts) | No       | -                          |
+| `WORKFLOW_RUN_ID`      | Workflow run ID to fetch logs from                              | No       | -                          |
+| `JOB_NAME`             | Specific job name to analyze                                    | No       | -                          |
+| `CONFIDENCE_THRESHOLD` | Minimum confidence level for verdict (0-100)                    | No       | `70`                       |
+| `PR_NUMBER`            | Pull request number to fetch diff from                          | No       | -                          |
+| `COMMIT_SHA`           | Commit SHA associated with the test failure                     | No       | -                          |
+| `REPOSITORY`           | Repository in owner/repo format                                 | No       | `${{ github.repository }}` |
 
 ## Outputs
 

@@ -1,6 +1,6 @@
 import OpenAI from 'openai';
 import * as core from '@actions/core';
-import { OpenAIResponse, FewShotExample, ErrorData } from './types';
+import { OpenAIResponse, FewShotExample, ErrorData, PRDiff } from './types';
 
 export class OpenAIClient {
   private openai: OpenAI;
@@ -189,9 +189,16 @@ When analyzing screenshots (if provided):
 
 Screenshots often contain crucial error information that logs might miss. If an error is visible in a screenshot, it should be a key factor in your analysis.
 
+When PR changes are provided:
+- Analyze if the test failure is related to the changed code
+- If a test is failing and it tests functionality that was modified in the PR, lean towards PRODUCT_ISSUE
+- If a test is failing in an area unrelated to the PR changes, it's more likely a TEST_ISSUE
+- Look for correlations between changed files and the failing test file/functionality
+- Consider if the PR introduced breaking changes that the test correctly caught
+
 Always respond with a JSON object containing:
 - verdict: "TEST_ISSUE" or "PRODUCT_ISSUE"
-- reasoning: detailed explanation of your decision including what you observed in the screenshots (if any)
+- reasoning: detailed explanation of your decision including what you observed in the screenshots (if any) and how PR changes influenced your decision (if applicable)
 - indicators: array of specific indicators that led to your verdict`;
     
     return basePrompt;
@@ -229,14 +236,83 @@ Error Context:
 - File: ${errorData.fileName || 'unknown'}
 ${errorData.context ? `- Additional Context: ${errorData.context}` : ''}
 
+${errorData.prDiff ? this.formatPRDiffSection(errorData.prDiff) : ''}
+
 Full Logs and Context:
 ${errorData.logs ? errorData.logs.join('\n\n') : 'No logs available'}
 
 ${errorData.screenshots?.length ? `\nScreenshots Available: ${errorData.screenshots.length} screenshot(s) captured` : ''}
 
-Based on ALL the information provided (especially the full logs), determine if this is a TEST_ISSUE or PRODUCT_ISSUE and explain your reasoning. Look carefully through the logs to find the actual error message and stack trace.`;
+Based on ALL the information provided (especially the PR changes if available), determine if this is a TEST_ISSUE or PRODUCT_ISSUE and explain your reasoning. Look carefully through the logs to find the actual error message and stack trace.`;
 
     return prompt;
+  }
+
+  private formatPRDiffSection(prDiff: PRDiff): string {
+    let section = `\nPR Changes Analysis:
+- Total files changed: ${prDiff.totalChanges}
+- Lines added: ${prDiff.additions}
+- Lines deleted: ${prDiff.deletions}
+
+Changed Files Summary:
+`;
+
+    // Prioritize files related to the test failure
+    // Show up to 30 files but with limited patch context
+    const maxFiles = 30;
+    const maxPatchLines = 20; // Reduced from 30 to save tokens
+    
+    const relevantFiles = prDiff.files.slice(0, maxFiles);
+    
+    for (const file of relevantFiles) {
+      section += `\n${file.filename} (+${file.additions}/-${file.deletions})`;
+      
+      if (file.patch && file.patch.length > 0) {
+        // For large patches, focus on the most important parts
+        const patchLines = file.patch.split('\n');
+        
+        if (patchLines.length <= maxPatchLines) {
+          // Small patch, include everything
+          section += '\n```diff\n' + file.patch + '\n```\n';
+        } else {
+          // Large patch, extract key sections
+          const addedLines = patchLines.filter(line => line.startsWith('+') && !line.startsWith('+++'));
+          const removedLines = patchLines.filter(line => line.startsWith('-') && !line.startsWith('---'));
+          const contextLines = patchLines.filter(line => line.startsWith('@@'));
+          
+          // Build a condensed view
+          let condensedPatch = [];
+          
+          // Include hunks
+          if (contextLines.length > 0) {
+            condensedPatch.push(contextLines[0]);
+          }
+          
+          // Include some key changes
+          const changedLinesToShow = Math.min(10, addedLines.length + removedLines.length);
+          condensedPatch = condensedPatch.concat(
+            removedLines.slice(0, Math.floor(changedLinesToShow / 2)),
+            addedLines.slice(0, Math.ceil(changedLinesToShow / 2))
+          );
+          
+          if (condensedPatch.length > 0) {
+            section += '\n```diff\n' + condensedPatch.join('\n') + '\n... (patch truncated)\n```\n';
+          }
+        }
+      }
+    }
+
+    if (prDiff.files.length > maxFiles) {
+      section += `\n... and ${prDiff.files.length - maxFiles} more files`;
+    }
+
+    section += `\n\nCRITICAL: When analyzing test failures with PR changes:
+1. Check if the failing test file or related files were modified in the PR
+2. Look for changes that could break existing functionality
+3. Consider if new code introduced bugs that tests are correctly catching
+4. If test is failing in code areas NOT touched by the PR, it's more likely a TEST_ISSUE`;
+
+    return section;
   }
 
   private parseResponse(content: string): OpenAIResponse {
@@ -295,7 +371,7 @@ Based on ALL the information provided (especially the full logs), determine if t
     }
     
     if (!resp.indicators || !Array.isArray(resp.indicators)) {
-      (resp as any).indicators = [];
+      resp.indicators = [];
     }
   }
 

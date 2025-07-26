@@ -282,6 +282,112 @@ class ArtifactFetcher {
         }
         return [...new Set(errorContext)];
     }
+    async fetchPRDiff(prNumber, repository) {
+        try {
+            const { owner, repo } = repository
+                ? { owner: repository.split('/')[0], repo: repository.split('/')[1] }
+                : github.context.repo;
+            core.info(`Fetching PR diff for PR #${prNumber} in ${owner}/${repo}`);
+            const prResponse = await this.octokit.pulls.get({
+                owner,
+                repo,
+                pull_number: parseInt(prNumber, 10)
+            });
+            const filesResponse = await this.octokit.pulls.listFiles({
+                owner,
+                repo,
+                pull_number: parseInt(prNumber, 10),
+                per_page: 100
+            });
+            const files = filesResponse.data.map(file => ({
+                filename: file.filename,
+                status: file.status,
+                additions: file.additions,
+                deletions: file.deletions,
+                changes: file.changes,
+                patch: file.patch
+            }));
+            const sortedFiles = this.sortFilesByRelevance(files);
+            const prDiff = {
+                files: sortedFiles,
+                totalChanges: prResponse.data.changed_files,
+                additions: prResponse.data.additions,
+                deletions: prResponse.data.deletions
+            };
+            core.info(`PR #${prNumber} has ${prDiff.totalChanges} changed files with +${prDiff.additions}/-${prDiff.deletions} lines`);
+            const filesSummary = sortedFiles.slice(0, 10).map(f => `  - ${f.filename} (+${f.additions}/-${f.deletions})`).join('\n');
+            core.info(`Changed files (sorted by relevance):\n${filesSummary}${files.length > 10 ? `\n  ... and ${files.length - 10} more files` : ''}`);
+            return prDiff;
+        }
+        catch (error) {
+            core.warning(`Failed to fetch PR diff: ${error}`);
+            return null;
+        }
+    }
+    sortFilesByRelevance(files) {
+        return files.sort((a, b) => {
+            const aIsTest = this.isTestFile(a.filename);
+            const bIsTest = this.isTestFile(b.filename);
+            if (aIsTest && !bIsTest)
+                return -1;
+            if (!aIsTest && bIsTest)
+                return 1;
+            const aIsSource = this.isSourceFile(a.filename);
+            const bIsSource = this.isSourceFile(b.filename);
+            if (aIsSource && !bIsSource)
+                return -1;
+            if (!aIsSource && bIsSource)
+                return 1;
+            const aChanges = a.additions + a.deletions;
+            const bChanges = b.additions + b.deletions;
+            if (aChanges !== bChanges) {
+                return bChanges - aChanges;
+            }
+            const aIsConfig = this.isConfigFile(a.filename);
+            const bIsConfig = this.isConfigFile(b.filename);
+            if (aIsConfig && !bIsConfig)
+                return -1;
+            if (!aIsConfig && bIsConfig)
+                return 1;
+            return a.filename.localeCompare(b.filename);
+        });
+    }
+    isTestFile(filename) {
+        const testPatterns = [
+            /\.test\.[jt]sx?$/,
+            /\.spec\.[jt]sx?$/,
+            /\.cy\.[jt]sx?$/,
+            /__tests__\//,
+            /cypress\//,
+            /e2e\//,
+            /test\//
+        ];
+        return testPatterns.some(pattern => pattern.test(filename));
+    }
+    isSourceFile(filename) {
+        const sourcePatterns = [
+            /\.[jt]sx?$/,
+            /\.vue$/,
+            /\.py$/,
+            /\.go$/,
+            /\.java$/,
+            /\.cs$/
+        ];
+        return sourcePatterns.some(pattern => pattern.test(filename)) && !this.isTestFile(filename);
+    }
+    isConfigFile(filename) {
+        const configPatterns = [
+            /package\.json$/,
+            /tsconfig\.json$/,
+            /\.config\.[jt]s$/,
+            /webpack\./,
+            /vite\./,
+            /rollup\./,
+            /\.yml$/,
+            /\.yaml$/
+        ];
+        return configPatterns.some(pattern => pattern.test(filename));
+    }
 }
 exports.ArtifactFetcher = ArtifactFetcher;
 //# sourceMappingURL=artifact-fetcher.js.map

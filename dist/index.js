@@ -666,6 +666,112 @@ class ArtifactFetcher {
         }
         return [...new Set(errorContext)];
     }
+    async fetchPRDiff(prNumber, repository) {
+        try {
+            const { owner, repo } = repository
+                ? { owner: repository.split('/')[0], repo: repository.split('/')[1] }
+                : github.context.repo;
+            core.info(`Fetching PR diff for PR #${prNumber} in ${owner}/${repo}`);
+            const prResponse = await this.octokit.pulls.get({
+                owner,
+                repo,
+                pull_number: parseInt(prNumber, 10)
+            });
+            const filesResponse = await this.octokit.pulls.listFiles({
+                owner,
+                repo,
+                pull_number: parseInt(prNumber, 10),
+                per_page: 100
+            });
+            const files = filesResponse.data.map(file => ({
+                filename: file.filename,
+                status: file.status,
+                additions: file.additions,
+                deletions: file.deletions,
+                changes: file.changes,
+                patch: file.patch
+            }));
+            const sortedFiles = this.sortFilesByRelevance(files);
+            const prDiff = {
+                files: sortedFiles,
+                totalChanges: prResponse.data.changed_files,
+                additions: prResponse.data.additions,
+                deletions: prResponse.data.deletions
+            };
+            core.info(`PR #${prNumber} has ${prDiff.totalChanges} changed files with +${prDiff.additions}/-${prDiff.deletions} lines`);
+            const filesSummary = sortedFiles.slice(0, 10).map(f => `  - ${f.filename} (+${f.additions}/-${f.deletions})`).join('\n');
+            core.info(`Changed files (sorted by relevance):\n${filesSummary}${files.length > 10 ? `\n  ... and ${files.length - 10} more files` : ''}`);
+            return prDiff;
+        }
+        catch (error) {
+            core.warning(`Failed to fetch PR diff: ${error}`);
+            return null;
+        }
+    }
+    sortFilesByRelevance(files) {
+        return files.sort((a, b) => {
+            const aIsTest = this.isTestFile(a.filename);
+            const bIsTest = this.isTestFile(b.filename);
+            if (aIsTest && !bIsTest)
+                return -1;
+            if (!aIsTest && bIsTest)
+                return 1;
+            const aIsSource = this.isSourceFile(a.filename);
+            const bIsSource = this.isSourceFile(b.filename);
+            if (aIsSource && !bIsSource)
+                return -1;
+            if (!aIsSource && bIsSource)
+                return 1;
+            const aChanges = a.additions + a.deletions;
+            const bChanges = b.additions + b.deletions;
+            if (aChanges !== bChanges) {
+                return bChanges - aChanges;
+            }
+            const aIsConfig = this.isConfigFile(a.filename);
+            const bIsConfig = this.isConfigFile(b.filename);
+            if (aIsConfig && !bIsConfig)
+                return -1;
+            if (!aIsConfig && bIsConfig)
+                return 1;
+            return a.filename.localeCompare(b.filename);
+        });
+    }
+    isTestFile(filename) {
+        const testPatterns = [
+            /\.test\.[jt]sx?$/,
+            /\.spec\.[jt]sx?$/,
+            /\.cy\.[jt]sx?$/,
+            /__tests__\//,
+            /cypress\//,
+            /e2e\//,
+            /test\//
+        ];
+        return testPatterns.some(pattern => pattern.test(filename));
+    }
+    isSourceFile(filename) {
+        const sourcePatterns = [
+            /\.[jt]sx?$/,
+            /\.vue$/,
+            /\.py$/,
+            /\.go$/,
+            /\.java$/,
+            /\.cs$/
+        ];
+        return sourcePatterns.some(pattern => pattern.test(filename)) && !this.isTestFile(filename);
+    }
+    isConfigFile(filename) {
+        const configPatterns = [
+            /package\.json$/,
+            /tsconfig\.json$/,
+            /\.config\.[jt]s$/,
+            /webpack\./,
+            /vite\./,
+            /rollup\./,
+            /\.yml$/,
+            /\.yaml$/
+        ];
+        return configPatterns.some(pattern => pattern.test(filename));
+    }
 }
 exports.ArtifactFetcher = ArtifactFetcher;
 //# sourceMappingURL=artifact-fetcher.js.map
@@ -783,7 +889,10 @@ function getInputs() {
         errorMessage: core.getInput('ERROR_MESSAGE'),
         workflowRunId: core.getInput('WORKFLOW_RUN_ID'),
         jobName: core.getInput('JOB_NAME'),
-        confidenceThreshold: parseInt(core.getInput('CONFIDENCE_THRESHOLD') || '70', 10)
+        confidenceThreshold: parseInt(core.getInput('CONFIDENCE_THRESHOLD') || '70', 10),
+        prNumber: core.getInput('PR_NUMBER'),
+        commitSha: core.getInput('COMMIT_SHA'),
+        repository: core.getInput('REPOSITORY')
     };
 }
 async function getErrorData(octokit, artifactFetcher, inputs) {
@@ -849,6 +958,7 @@ async function getErrorData(octokit, artifactFetcher, inputs) {
     const failedJob = targetJob;
     core.info(`Analyzing job: ${failedJob.name} (status: ${failedJob.status}, conclusion: ${failedJob.conclusion || 'none'})`);
     let fullLogs = '';
+    let extractedError = null;
     try {
         const logsResponse = await octokit.actions.downloadJobLogsForWorkflowRun({
             owner,
@@ -856,7 +966,11 @@ async function getErrorData(octokit, artifactFetcher, inputs) {
             job_id: failedJob.id
         });
         fullLogs = logsResponse.data;
-        core.info(`Downloaded ${fullLogs.length} characters of logs`);
+        core.info(`Downloaded ${fullLogs.length} characters of logs for error extraction`);
+        extractedError = (0, analyzer_1.extractErrorFromLogs)(fullLogs);
+        if (inputs.prNumber && extractedError) {
+            core.info('PR diff available - using extracted error context only');
+        }
     }
     catch (error) {
         core.warning(`Failed to download job logs: ${error}`);
@@ -866,29 +980,64 @@ async function getErrorData(octokit, artifactFetcher, inputs) {
     try {
         screenshots = await artifactFetcher.fetchScreenshots(runId, failedJob.name);
         core.info(`Found ${screenshots.length} screenshots`);
+    }
+    catch (error) {
+        core.warning(`Failed to fetch screenshots: ${error}`);
+    }
+    try {
         artifactLogs = await artifactFetcher.fetchCypressArtifactLogs(runId, failedJob.name);
         if (artifactLogs) {
             core.info(`Found Cypress artifact logs (${artifactLogs.length} characters)`);
         }
     }
     catch (error) {
-        core.warning(`Failed to fetch artifacts: ${error}`);
+        core.warning(`Failed to fetch Cypress artifact logs: ${error}`);
     }
-    const extractedError = (0, analyzer_1.extractErrorFromLogs)(fullLogs);
-    const combinedContext = [
+    let prDiff = null;
+    if (inputs.prNumber) {
+        try {
+            prDiff = await artifactFetcher.fetchPRDiff(inputs.prNumber, inputs.repository);
+            if (prDiff) {
+                core.info(`Successfully fetched PR diff with ${prDiff.totalChanges} changed files`);
+            }
+        }
+        catch (error) {
+            core.warning(`Failed to fetch PR diff: ${error}`);
+        }
+    }
+    const contextParts = [
         `=== JOB INFORMATION ===`,
         `Job Name: ${failedJob.name}`,
         `Job URL: ${failedJob.html_url}`,
         `Failed Step: ${failedJob.steps?.find(s => s.conclusion === 'failure')?.name || 'Unknown'}`,
-        ``,
-        `=== GITHUB ACTIONS LOGS ===`,
-        fullLogs,
-        ``,
-        `=== CYPRESS ARTIFACT LOGS ===`,
-        artifactLogs || 'No Cypress logs found',
-        ``,
-        `=== END OF LOGS ===`
-    ].join('\n');
+        ``
+    ];
+    if (extractedError && extractedError.message) {
+        contextParts.push(`=== EXTRACTED ERROR CONTEXT ===`, extractedError.message, ``);
+    }
+    if (artifactLogs) {
+        contextParts.push(`=== CYPRESS ARTIFACT LOGS ===`, artifactLogs, ``);
+    }
+    if (!inputs.prNumber || !extractedError) {
+        const maxLogSize = 50000;
+        const truncatedLogs = fullLogs.length > maxLogSize
+            ? `${fullLogs.substring(fullLogs.length - maxLogSize)}\n\n[Logs truncated to last ${maxLogSize} characters]`
+            : fullLogs;
+        contextParts.push(`=== GITHUB ACTIONS LOGS (TRUNCATED) ===`, truncatedLogs, ``);
+    }
+    contextParts.push(`=== END OF LOGS ===`);
+    const combinedContext = contextParts.join('\n');
+    const hasLogs = !!(fullLogs && fullLogs.length > 0);
+    const hasScreenshots = !!(screenshots && screenshots.length > 0);
+    const hasArtifactLogs = !!(artifactLogs && artifactLogs.length > 0);
+    const hasPRDiff = !!(prDiff && prDiff.files && prDiff.files.length > 0);
+    if (!hasLogs && !hasScreenshots && !hasArtifactLogs && !hasPRDiff) {
+        core.warning('No meaningful data collected for analysis (no logs, screenshots, artifacts, or PR diff)');
+        core.info('Attempting analysis with minimal context...');
+    }
+    else {
+        core.info(`Data collected for analysis: logs=${hasLogs}, screenshots=${hasScreenshots}, artifactLogs=${hasArtifactLogs}, prDiff=${hasPRDiff}`);
+    }
     if (extractedError) {
         return {
             ...extractedError,
@@ -897,7 +1046,8 @@ async function getErrorData(octokit, artifactFetcher, inputs) {
             fileName: extractedError.fileName || failedJob.steps?.find(s => s.conclusion === 'failure')?.name || 'Unknown',
             screenshots: screenshots,
             logs: [combinedContext],
-            cypressArtifactLogs: artifactLogs
+            cypressArtifactLogs: artifactLogs,
+            prDiff: prDiff || undefined
         };
     }
     return {
@@ -909,7 +1059,8 @@ async function getErrorData(octokit, artifactFetcher, inputs) {
         fileName: failedJob.steps?.find(s => s.conclusion === 'failure')?.name || 'Unknown',
         screenshots: screenshots,
         logs: [combinedContext],
-        cypressArtifactLogs: artifactLogs
+        cypressArtifactLogs: artifactLogs,
+        prDiff: prDiff || undefined
     };
 }
 if (require.main === require.cache[eval('__filename')]) {
@@ -1118,9 +1269,16 @@ When analyzing screenshots (if provided):
 
 Screenshots often contain crucial error information that logs might miss. If an error is visible in a screenshot, it should be a key factor in your analysis.
 
+When PR changes are provided:
+- Analyze if the test failure is related to the changed code
+- If a test is failing and it tests functionality that was modified in the PR, lean towards PRODUCT_ISSUE
+- If a test is failing in an area unrelated to the PR changes, it's more likely a TEST_ISSUE
+- Look for correlations between changed files and the failing test file/functionality
+- Consider if the PR introduced breaking changes that the test correctly caught
+
 Always respond with a JSON object containing:
 - verdict: "TEST_ISSUE" or "PRODUCT_ISSUE"
-- reasoning: detailed explanation of your decision including what you observed in the screenshots (if any)
+- reasoning: detailed explanation of your decision including what you observed in the screenshots (if any) and how PR changes influenced your decision (if applicable)
 - indicators: array of specific indicators that led to your verdict`;
         return basePrompt;
     }
@@ -1156,13 +1314,59 @@ Error Context:
 - File: ${errorData.fileName || 'unknown'}
 ${errorData.context ? `- Additional Context: ${errorData.context}` : ''}
 
+${errorData.prDiff ? this.formatPRDiffSection(errorData.prDiff) : ''}
+
 Full Logs and Context:
 ${errorData.logs ? errorData.logs.join('\n\n') : 'No logs available'}
 
 ${errorData.screenshots?.length ? `\nScreenshots Available: ${errorData.screenshots.length} screenshot(s) captured` : ''}
 
-Based on ALL the information provided (especially the full logs), determine if this is a TEST_ISSUE or PRODUCT_ISSUE and explain your reasoning. Look carefully through the logs to find the actual error message and stack trace.`;
+Based on ALL the information provided (especially the PR changes if available), determine if this is a TEST_ISSUE or PRODUCT_ISSUE and explain your reasoning. Look carefully through the logs to find the actual error message and stack trace.`;
         return prompt;
+    }
+    formatPRDiffSection(prDiff) {
+        let section = `\nPR Changes Analysis:
+- Total files changed: ${prDiff.totalChanges}
+- Lines added: ${prDiff.additions}
+- Lines deleted: ${prDiff.deletions}
+
+Changed Files Summary:
+`;
+        const maxFiles = 30;
+        const maxPatchLines = 20;
+        const relevantFiles = prDiff.files.slice(0, maxFiles);
+        for (const file of relevantFiles) {
+            section += `\n${file.filename} (+${file.additions}/-${file.deletions})`;
+            if (file.patch && file.patch.length > 0) {
+                const patchLines = file.patch.split('\n');
+                if (patchLines.length <= maxPatchLines) {
+                    section += '\n```diff\n' + file.patch + '\n```\n';
+                }
+                else {
+                    const addedLines = patchLines.filter(line => line.startsWith('+') && !line.startsWith('+++'));
+                    const removedLines = patchLines.filter(line => line.startsWith('-') && !line.startsWith('---'));
+                    const contextLines = patchLines.filter(line => line.startsWith('@@'));
+                    let condensedPatch = [];
+                    if (contextLines.length > 0) {
+                        condensedPatch.push(contextLines[0]);
+                    }
+                    const changedLinesToShow = Math.min(10, addedLines.length + removedLines.length);
+                    condensedPatch = condensedPatch.concat(removedLines.slice(0, Math.floor(changedLinesToShow / 2)), addedLines.slice(0, Math.ceil(changedLinesToShow / 2)));
+                    if (condensedPatch.length > 0) {
+                        section += '\n```diff\n' + condensedPatch.join('\n') + '\n... (patch truncated)\n```\n';
+                    }
+                }
+            }
+        }
+        if (prDiff.files.length > maxFiles) {
+            section += `\n... and ${prDiff.files.length - maxFiles} more files`;
+        }
+        section += `\n\nCRITICAL: When analyzing test failures with PR changes:
+1. Check if the failing test file or related files were modified in the PR
+2. Look for changes that could break existing functionality
+3. Consider if new code introduced bugs that tests are correctly catching
+4. If test is failing in code areas NOT touched by the PR, it's more likely a TEST_ISSUE`;
+        return section;
     }
     parseResponse(content) {
         try {

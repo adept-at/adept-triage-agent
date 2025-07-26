@@ -9,6 +9,7 @@ export declare class OpenAIClient {
     private buildUserContent;
     private getSystemPrompt;
     private buildPrompt;
+    private formatPRDiffSection;
     private parseResponse;
     private validateResponse;
     private delay;

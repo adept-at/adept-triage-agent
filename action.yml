@@ -26,6 +26,16 @@ inputs:
     description: 'Minimum confidence level for verdict (0-100)'
     required: false
     default: '70'
+  PR_NUMBER:
+    description: 'Pull request number to fetch diff from'
+    required: false
+  COMMIT_SHA:
+    description: 'Commit SHA associated with the test failure'
+    required: false
+  REPOSITORY:
+    description: 'Repository in owner/repo format'
+    required: false
+    default: ${{ github.repository }}
 
 outputs:
   verdict:
