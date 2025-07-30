@@ -77,6 +77,8 @@ jobs:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           WORKFLOW_RUN_ID: '${{ github.event.client_payload.workflow_run_id }}'
           JOB_NAME: '${{ github.event.client_payload.job_name }}'
+          # Uncomment to optimize for Cypress-only projects:
+          # TEST_FRAMEWORKS: 'cypress'
 
       - name: Use triage results
         run: |
@@ -288,6 +290,7 @@ By using separate workflows with repository dispatch events, we ensure the test 
 | `JOB_NAME`             | No       | All failed jobs       | Specific job name to analyze                                                                                                                                                                                                                      |
 | `ERROR_MESSAGE`        | No       | From logs/artifacts   | Error message to analyze (if not using artifacts)                                                                                                                                                                                                 |
 | `CONFIDENCE_THRESHOLD` | No       | `70`                  | Minimum confidence level for verdict (0-100)                                                                                                                                                                                                      |
+| `TEST_FRAMEWORKS`      | No       | `cypress`             | Test framework to use. Currently only supports "cypress".                                                                                                                                                                                         |
 
 ## Outputs
 
@@ -551,17 +554,17 @@ To analyze all failed jobs in a workflow:
 The action works with any test framework that produces logs and screenshots:
 
 ```yaml
-# Jest/Playwright example
-- name: Run Tests
-  run: npm test
+# Cypress example with artifacts
+- name: Run Cypress Tests
+  run: npm run cypress:run
 
 - uses: actions/upload-artifact@v4
   if: failure()
   with:
-    name: test-results
+    name: cypress-artifacts
     path: |
-      test-results/
-      screenshots/
+      cypress/screenshots/
+      cypress/videos/
 
 - name: AI Triage
   if: failure()
@@ -580,6 +583,18 @@ Adjust the confidence threshold for more or less strict verdicts:
   with:
     OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
     CONFIDENCE_THRESHOLD: '90' # Require 90% confidence
+```
+
+### Error Extraction
+
+The action is optimized for Cypress test framework and looks for Cypress-specific error patterns:
+
+```yaml
+- name: Analyze Cypress Tests
+  uses: adept-at/adept-triage-agent@v1.3.1
+  with:
+    OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+    TEST_FRAMEWORKS: 'cypress'
 ```
 
 ### Minimal Usage (Only Workflow ID)
