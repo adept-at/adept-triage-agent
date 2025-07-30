@@ -858,10 +858,22 @@ async function run() {
                 });
                 if (workflowRun.data.status !== 'completed') {
                     core.warning(`Workflow run ${runId} is still in progress (status: ${workflowRun.data.status})`);
+                    const pendingTriageJson = {
+                        verdict: 'PENDING',
+                        confidence: 0,
+                        reasoning: 'Workflow is still running. Please wait for it to complete before running triage analysis.',
+                        summary: 'Analysis pending - workflow not completed',
+                        indicators: [],
+                        metadata: {
+                            analyzedAt: new Date().toISOString(),
+                            workflowStatus: workflowRun.data.status
+                        }
+                    };
                     core.setOutput('verdict', 'PENDING');
                     core.setOutput('confidence', '0');
                     core.setOutput('reasoning', 'Workflow is still running. Please wait for it to complete before running triage analysis.');
                     core.setOutput('summary', 'Analysis pending - workflow not completed');
+                    core.setOutput('triage_json', JSON.stringify(pendingTriageJson));
                     return;
                 }
             }
@@ -874,16 +886,43 @@ async function run() {
         const result = await (0, analyzer_1.analyzeFailure)(openaiClient, errorData);
         if (result.confidence < inputs.confidenceThreshold) {
             core.warning(`Confidence ${result.confidence}% is below threshold ${inputs.confidenceThreshold}%`);
+            const inconclusiveTriageJson = {
+                verdict: 'INCONCLUSIVE',
+                confidence: result.confidence,
+                reasoning: `Low confidence: ${result.reasoning}`,
+                summary: 'Analysis inconclusive due to low confidence',
+                indicators: result.indicators || [],
+                metadata: {
+                    analyzedAt: new Date().toISOString(),
+                    confidenceThreshold: inputs.confidenceThreshold,
+                    hasScreenshots: (errorData.screenshots && errorData.screenshots.length > 0) || false,
+                    logSize: errorData.logs?.join('').length || 0
+                }
+            };
             core.setOutput('verdict', 'INCONCLUSIVE');
             core.setOutput('confidence', result.confidence.toString());
             core.setOutput('reasoning', `Low confidence: ${result.reasoning}`);
             core.setOutput('summary', 'Analysis inconclusive due to low confidence');
+            core.setOutput('triage_json', JSON.stringify(inconclusiveTriageJson));
             return;
         }
+        const triageJson = {
+            verdict: result.verdict,
+            confidence: result.confidence,
+            reasoning: result.reasoning,
+            summary: result.summary,
+            indicators: result.indicators || [],
+            metadata: {
+                analyzedAt: new Date().toISOString(),
+                hasScreenshots: (errorData.screenshots && errorData.screenshots.length > 0) || false,
+                logSize: errorData.logs?.join('').length || 0
+            }
+        };
         core.setOutput('verdict', result.verdict);
         core.setOutput('confidence', result.confidence.toString());
         core.setOutput('reasoning', result.reasoning);
         core.setOutput('summary', result.summary);
+        core.setOutput('triage_json', JSON.stringify(triageJson));
         core.info(`Verdict: ${result.verdict}`);
         core.info(`Confidence: ${result.confidence}%`);
         core.info(`Summary: ${result.summary}`);

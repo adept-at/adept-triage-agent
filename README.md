@@ -339,6 +339,24 @@ npm run build
 - All API keys should be stored as secrets
 - The action runs in your GitHub Actions environment
 
+## Versioning Strategy
+
+We follow semantic versioning and provide multiple ways to reference this action:
+
+- **`@v1`** - Recommended for production. Automatically updates to the latest v1.x.x release
+- **`@v1.3.1`** - Pin to a specific version
+- **`@main`** - Latest development version (use with caution)
+
+Example:
+
+```yaml
+# Recommended - automatically gets backward-compatible updates
+uses: adept-at/adept-triage-agent@v1
+
+# Specific version - no automatic updates
+uses: adept-at/adept-triage-agent@v1.3.1
+```
+
 ## License
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.

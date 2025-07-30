@@ -15,6 +15,13 @@ Running the triage agent within the same workflow that it's trying to analyze cr
 1. **Test Workflow**: Runs your tests and dispatches an event on failure
 2. **Triage Workflow**: Listens for the dispatch event and runs the analysis
 
+## Version Compatibility
+
+We recommend using the major version tag for automatic updates:
+
+- **`@v1`** - Automatically gets backward-compatible updates (recommended)
+- **`@v1.3.1`** - Pin to specific version if needed
+
 ## Quick Start
 
 ### Step 1: Create the Triage Workflow
@@ -64,7 +71,7 @@ jobs:
 
       - name: Run triage analysis
         id: triage
-        uses: adept-at/adept-triage-agent@v1.0.2
+        uses: adept-at/adept-triage-agent@v1.3.1
         with:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
@@ -201,7 +208,7 @@ jobs:
 
       - name: Run triage analysis
         id: triage
-        uses: adept-at/adept-triage-agent@v1.0.2
+        uses: adept-at/adept-triage-agent@v1.3.1
         with:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
@@ -265,13 +272,18 @@ By using separate workflows with repository dispatch events, we ensure the test 
 
 ## Outputs
 
-| Output        | Description                      | Example                                                |
-| ------------- | -------------------------------- | ------------------------------------------------------ |
-| `verdict`     | Classification of the failure    | `TEST_ISSUE` or `PRODUCT_ISSUE`                        |
-| `confidence`  | Confidence score (0-100)         | `95`                                                   |
-| `reasoning`   | Detailed explanation             | "The test failed due to a timing issue..."             |
-| `summary`     | Brief summary for notifications  | "🧪 Test Issue: Timing issue with auto-save indicator" |
-| `triage_json` | Complete triage analysis as JSON | See [Output Format](#output-format)                    |
+| Output        | Description                      | Example                                                     |
+| ------------- | -------------------------------- | ----------------------------------------------------------- |
+| `verdict`     | Classification of the failure    | `TEST_ISSUE`, `PRODUCT_ISSUE`, `INCONCLUSIVE`, or `PENDING` |
+| `confidence`  | Confidence score (0-100)         | `95`                                                        |
+| `reasoning`   | Detailed explanation             | "The test failed due to a timing issue..."                  |
+| `summary`     | Brief summary for notifications  | "🧪 Test Issue: Timing issue with auto-save indicator"      |
+| `triage_json` | Complete triage analysis as JSON | See [Output Format](#output-format)                         |
+
+### Special Verdicts
+
+- **`PENDING`**: The workflow is still running and analysis cannot be performed yet
+- **`INCONCLUSIVE`**: The analysis completed but confidence is below the threshold
 
 ## Complete Integration Example
 
@@ -388,7 +400,7 @@ jobs:
 
       - name: Run AI triage analysis
         id: triage
-        uses: adept-at/adept-triage-agent@v1.0.2
+        uses: adept-at/adept-triage-agent@v1.3.1
         with:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           WORKFLOW_RUN_ID: '${{ github.event.client_payload.workflow_run_id }}'
@@ -451,13 +463,17 @@ The `triage_json` output contains the complete analysis as a JSON string. This i
     "Screenshot shows UI rendered but button not interactable"
   ],
   "metadata": {
-    "aiModel": "gpt-4.1",
     "analyzedAt": "2025-07-25T18:56:27.148Z",
     "hasScreenshots": true,
     "logSize": 143246
   }
 }
 ```
+
+Additional fields in metadata for special cases:
+
+- **INCONCLUSIVE verdict**: includes `confidenceThreshold` field
+- **PENDING verdict**: includes `workflowStatus` field
 
 ### Integration Example:
 
@@ -485,7 +501,7 @@ To analyze all failed jobs in a workflow:
 ```yaml
 - name: Analyze All Failures
   if: failure()
-  uses: adept-at/adept-triage-agent@v1.0.2
+  uses: adept-at/adept-triage-agent@v1.3.1
   with:
     OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
     # Omit JOB_NAME to analyze all failed jobs
@@ -510,7 +526,7 @@ The action works with any test framework that produces logs and screenshots:
 
 - name: AI Triage
   if: failure()
-  uses: adept-at/adept-triage-agent@v1.0.2
+  uses: adept-at/adept-triage-agent@v1.3.1
   with:
     OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
 ```
@@ -521,7 +537,7 @@ Adjust the confidence threshold for more or less strict verdicts:
 
 ```yaml
 - name: Strict Analysis
-  uses: adept-at/adept-triage-agent@v1.0.2
+  uses: adept-at/adept-triage-agent@v1.3.1
   with:
     OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
     CONFIDENCE_THRESHOLD: '90' # Require 90% confidence
@@ -545,7 +561,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Analyze Test Failure
-        uses: adept-at/adept-triage-agent@v1.0.2
+        uses: adept-at/adept-triage-agent@v1.3.1
         with:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           WORKFLOW_RUN_ID: ${{ github.event.inputs.workflow_run_id }}
