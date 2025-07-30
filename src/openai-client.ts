@@ -18,6 +18,23 @@ export class OpenAIClient {
     
     const messages = this.buildMessages(errorData, examples);
     
+    // Debug: Log the actual prompt content
+    if (messages[1] && messages[1].role === 'user') {
+      const userMessage = messages[1].content;
+      if (typeof userMessage === 'string') {
+        // Check if structured summary is in the prompt
+        if (userMessage.includes('QUICK ANALYSIS SUMMARY')) {
+          core.info('📊 Structured summary header included in prompt!');
+          // Log first 500 chars of the summary section
+          const summaryStart = userMessage.indexOf('QUICK ANALYSIS SUMMARY');
+          const summarySection = userMessage.substring(summaryStart, summaryStart + 500);
+          core.info(`Summary preview:\n${summarySection}...`);
+        } else {
+          core.info('⚠️  Structured summary header NOT found in prompt');
+        }
+      }
+    }
+    
     // Log what we're sending
     if (errorData.screenshots && errorData.screenshots.length > 0) {
       core.info(`📸 Sending multimodal content to ${model}:`);
@@ -28,6 +45,15 @@ export class OpenAIClient {
       });
     } else {
       core.info(`📝 Sending text-only content to ${model}`);
+    }
+    
+    // Debug: Check if structured summary exists in errorData
+    if (errorData.structuredSummary) {
+      core.info('📊 ErrorData contains structured summary!');
+      core.info(`  - Error Type: ${errorData.structuredSummary.primaryError.type}`);
+      core.info(`  - Test File: ${errorData.structuredSummary.testContext.testFile}`);
+    } else {
+      core.info('⚠️  ErrorData does NOT contain structured summary');
     }
     
     for (let attempt = 1; attempt <= this.maxRetries; attempt++) {
@@ -189,6 +215,12 @@ When analyzing screenshots (if provided):
 
 Screenshots often contain crucial error information that logs might miss. If an error is visible in a screenshot, it should be a key factor in your analysis.
 
+COMMON MISCLASSIFICATION PATTERNS TO AVOID:
+- Don't classify as TEST_ISSUE just because error happens in test file - check if it's exposing a real product bug
+- Don't classify as PRODUCT_ISSUE just because of a timeout - many timeouts are test synchronization issues
+- GraphQL/API errors during tests often indicate real product issues, not test problems
+- "Element not found" can be either - check if UI actually rendered correctly in screenshots
+
 When PR changes are provided:
 - Analyze if the test failure is related to the changed code
 - If a test is failing and it tests functionality that was modified in the PR, lean towards PRODUCT_ISSUE
@@ -196,16 +228,86 @@ When PR changes are provided:
 - Look for correlations between changed files and the failing test file/functionality
 - Consider if the PR introduced breaking changes that the test correctly caught
 
+When determining a PRODUCT_ISSUE and PR changes are available:
+- CRITICALLY IMPORTANT: Identify specific files and line numbers from the PR diff that likely contain the bug
+- Correlate error stack traces with changed code locations
+- Match error messages and symptoms to specific code changes in the diff
+- Suggest which modified functions, methods, or components should be investigated
+- Look for patterns like:
+  * New null checks missing → NullPointerException
+  * Changed API calls → Network errors
+  * Modified component logic → Rendering issues
+  * Updated validation → Form submission failures
+- Include these source code locations in your reasoning with specific file paths and line numbers
+
+CONFIDENCE LEVELS:
+- HIGH (90-100%): Clear error patterns, obvious indicators, or explicit messages
+- MEDIUM (60-89%): Multiple indicators pointing same direction but some ambiguity
+- LOW (0-59%): Conflicting indicators or insufficient information
+
 Always respond with a JSON object containing:
 - verdict: "TEST_ISSUE" or "PRODUCT_ISSUE"
 - reasoning: detailed explanation of your decision including what you observed in the screenshots (if any) and how PR changes influenced your decision (if applicable)
-- indicators: array of specific indicators that led to your verdict`;
+- indicators: array of specific indicators that led to your verdict
+- suggestedSourceLocations: (ONLY for PRODUCT_ISSUE) array of objects with {file: "path/to/file", lines: "line range", reason: "why this location is suspicious"}`;
     
     return basePrompt;
   }
 
   private buildPrompt(errorData: ErrorData, examples: FewShotExample[]): string {
-    const prompt = `You are an expert test failure analyzer. Your task is to determine whether a test failure is a TEST_ISSUE (problem with the test code) or a PRODUCT_ISSUE (bug in the product being tested).
+    // Build summary header if structured summary is available
+    let summaryHeader = '';
+    if (errorData.structuredSummary) {
+      const summary = errorData.structuredSummary;
+      summaryHeader = `## QUICK ANALYSIS SUMMARY
+
+`;
+      summaryHeader += `**Error Type:** ${summary.primaryError.type}\n`;
+      summaryHeader += `**Error Message:** ${summary.primaryError.message}\n`;
+      
+      if (summary.primaryError.location) {
+        const loc = summary.primaryError.location;
+        summaryHeader += `**Error Location:** ${loc.file}:${loc.line} (${loc.isTestCode ? 'Test Code' : loc.isAppCode ? 'App Code' : 'Other'})\n`;
+      }
+      
+      summaryHeader += `\n**Test Context:**\n`;
+      summaryHeader += `- Test: ${summary.testContext.testName}\n`;
+      summaryHeader += `- File: ${summary.testContext.testFile}\n`;
+      summaryHeader += `- Framework: ${summary.testContext.framework}\n`;
+      if (summary.testContext.browser) {
+        summaryHeader += `- Browser: ${summary.testContext.browser}\n`;
+      }
+      if (summary.testContext.duration) {
+        summaryHeader += `- Duration: ${summary.testContext.duration}\n`;
+      }
+      
+      summaryHeader += `\n**Failure Indicators:**\n`;
+      const indicators = [];
+      if (summary.failureIndicators.hasNetworkErrors) indicators.push('Network Errors');
+      if (summary.failureIndicators.hasNullPointerErrors) indicators.push('Null Pointer Errors');
+      if (summary.failureIndicators.hasTimeoutErrors) indicators.push('Timeout Errors');
+      if (summary.failureIndicators.hasDOMErrors) indicators.push('DOM Errors');
+      if (summary.failureIndicators.hasAssertionErrors) indicators.push('Assertion Errors');
+      summaryHeader += `- Detected: ${indicators.length > 0 ? indicators.join(', ') : 'None'}\n`;
+      
+      if (summary.prRelevance) {
+        summaryHeader += `\n**PR Impact Analysis:**\n`;
+        summaryHeader += `- Test File Modified: ${summary.prRelevance.testFileModified ? 'YES' : 'NO'}\n`;
+        summaryHeader += `- Related Source Files Modified: ${summary.prRelevance.relatedSourceFilesModified.length > 0 ? summary.prRelevance.relatedSourceFilesModified.join(', ') : 'None'}\n`;
+        summaryHeader += `- Risk Score: ${summary.prRelevance.riskScore.toUpperCase()}\n`;
+      }
+      
+      summaryHeader += `\n**Key Metrics:**\n`;
+      summaryHeader += `- Screenshots Available: ${summary.keyMetrics.hasScreenshots ? 'YES' : 'NO'}\n`;
+      if (summary.keyMetrics.lastCommand) {
+        summaryHeader += `- Last Cypress Command: ${summary.keyMetrics.lastCommand}\n`;
+      }
+      summaryHeader += `- Log Size: ${summary.keyMetrics.logSize} characters\n`;
+      
+      summaryHeader += `\n---\n\n`;
+    }
+    
+    const prompt = `${summaryHeader}You are an expert test failure analyzer. Your task is to determine whether a test failure is a TEST_ISSUE (problem with the test code) or a PRODUCT_ISSUE (bug in the product being tested).
 
 IMPORTANT: Carefully analyze the FULL LOGS provided to find the actual error. Look for patterns like:
 - TypeError: Cannot read properties of null (reading 'isValid')
@@ -310,7 +412,13 @@ Changed Files Summary:
 1. Check if the failing test file or related files were modified in the PR
 2. Look for changes that could break existing functionality
 3. Consider if new code introduced bugs that tests are correctly catching
-4. If test is failing in code areas NOT touched by the PR, it's more likely a TEST_ISSUE`;
+4. If test is failing in code areas NOT touched by the PR, it's more likely a TEST_ISSUE
+
+FOR PRODUCT_ISSUES: You MUST analyze the diff patches above to:
+- Identify the EXACT file paths and line numbers that likely contain the bug
+- Match error symptoms to specific code changes
+- Provide actionable source locations developers can investigate
+- Example: "The null pointer error likely comes from the removed null check at src/components/UserForm.tsx lines 45-47"`;
 
     return section;
   }

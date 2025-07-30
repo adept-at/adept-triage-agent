@@ -42,8 +42,24 @@ var __importStar = (this && this.__importStar) || (function () {
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.analyzeFailure = analyzeFailure;
 exports.extractErrorFromLogs = extractErrorFromLogs;
+exports.createStructuredErrorSummary = createStructuredErrorSummary;
 const core = __importStar(__nccwpck_require__(7484));
 const FEW_SHOT_EXAMPLES = [
+    {
+        error: 'Intentional failure for triage agent testing: expected false to be true',
+        verdict: 'TEST_ISSUE',
+        reasoning: 'Explicit "Intentional failure" message indicates this is a deliberate test failure for testing the triage agent itself, not a product bug.'
+    },
+    {
+        error: 'Error: ENOENT: no such file or directory, open "/tmp/test-fixtures/data.json"',
+        verdict: 'TEST_ISSUE',
+        reasoning: 'Missing test fixture file in temporary directory indicates test setup/environment issue, not a product code problem.'
+    },
+    {
+        error: 'ReferenceError: process.env.API_KEY is undefined',
+        verdict: 'TEST_ISSUE',
+        reasoning: 'Missing environment variable typically indicates test environment configuration issue rather than product bug.'
+    },
     {
         error: 'TimeoutError: Waiting for element to be visible: #submit-button',
         verdict: 'TEST_ISSUE',
@@ -83,17 +99,19 @@ const FEW_SHOT_EXAMPLES = [
         error: 'CypressError: cy.visit() failed trying to load: http://localhost:3000 - Connection refused',
         verdict: 'PRODUCT_ISSUE',
         reasoning: 'Connection refused when visiting the application URL indicates the application server is not running or accessible.'
+    },
+    {
+        error: 'TypeError: Cannot read property "name" of null - at UserProfile.render (src/components/UserProfile.tsx:45)',
+        verdict: 'PRODUCT_ISSUE',
+        reasoning: 'Null pointer error in production code. With PR changes showing removal of null check at UserProfile.tsx line 44-46, this is clearly a product bug. Suggested fix: restore the null check for user.name.'
+    },
+    {
+        error: 'GraphQL error: Variable "$userId" of required type "ID!" was not provided',
+        verdict: 'PRODUCT_ISSUE',
+        reasoning: 'Missing required GraphQL variable indicates the API call is not properly constructed. PR diff shows changes to API calls in src/api/userQueries.ts lines 23-28 where userId parameter was refactored.'
     }
 ];
 const LOG_EXTRACTORS = [
-    {
-        framework: 'jest',
-        patterns: [
-            /FAIL\s+(.+)\s+\([\d.]+\s*s\)\s*\n\s*●\s*(.+)\s*\n\s*([\s\S]+?)(?=\n\s*(?:PASS|FAIL|$))/g,
-            /Error:\s*(.+)\n\s*at\s+(.+)/g
-        ],
-        extract: extractJestError
-    },
     {
         framework: 'cypress',
         patterns: [
@@ -104,14 +122,6 @@ const LOG_EXTRACTORS = [
             /\d+\)\s+.+:\s*\n\s*(TypeError|ReferenceError|SyntaxError):\s*(.+)/g
         ],
         extract: extractCypressError
-    },
-    {
-        framework: 'mocha',
-        patterns: [
-            /\d+\)\s+(.+):\s*\n\s*(.+)\n([\s\S]+?)(?=\n\s*at)/g,
-            /Error:\s*(.+)\n\s*at\s+(.+)/g
-        ],
-        extract: extractMochaError
     }
 ];
 async function analyzeFailure(client, errorData) {
@@ -128,7 +138,8 @@ async function analyzeFailure(client, errorData) {
             confidence,
             reasoning: response.reasoning,
             summary,
-            indicators: response.indicators
+            indicators: response.indicators,
+            suggestedSourceLocations: response.suggestedSourceLocations
         };
     }
     catch (error) {
@@ -136,30 +147,24 @@ async function analyzeFailure(client, errorData) {
         throw error;
     }
 }
-function extractErrorFromLogs(logs) {
-    for (const extractor of LOG_EXTRACTORS) {
+function extractErrorFromLogs(logs, testFrameworks) {
+    const frameworksToUse = testFrameworks && testFrameworks.trim() !== ''
+        ? testFrameworks.toLowerCase().split(',').map(f => f.trim())
+        : ['cypress'];
+    let extractorsToUse = LOG_EXTRACTORS.filter(extractor => frameworksToUse.includes(extractor.framework));
+    if (extractorsToUse.length === 0) {
+        core.warning('No valid test frameworks specified, using all extractors');
+        extractorsToUse = LOG_EXTRACTORS;
+    }
+    for (const extractor of extractorsToUse) {
         const errorData = extractor.extract(logs);
         if (errorData) {
             core.info(`Extracted error using ${extractor.framework} patterns`);
             return errorData;
         }
     }
-    return extractGenericError(logs);
-}
-function extractJestError(logs) {
-    const failPattern = /FAIL\s+(.+)\s+\([\d.]+\s*s\)\s*\n\s*●\s*(.+)\s*\n\s*([\s\S]+?)(?=\n\s*(?:PASS|FAIL|Test Suites:|$))/;
-    const match = logs.match(failPattern);
-    if (match) {
-        const [, fileName, testName, errorContent] = match;
-        const errorMessage = errorContent.trim().split('\n')[0];
-        const stackTrace = extractStackTrace(errorContent);
-        return {
-            message: errorMessage,
-            stackTrace,
-            framework: 'jest',
-            testName,
-            fileName
-        };
+    if (!testFrameworks || testFrameworks.trim() === '') {
+        return extractGenericError(logs);
     }
     return null;
 }
@@ -270,7 +275,7 @@ function extractCypressError(logs) {
     if (errorTypeMatch) {
         failureType = errorTypeMatch[1];
     }
-    return {
+    const errorData = {
         message: errorContext.trim(),
         framework: 'cypress',
         testName,
@@ -280,21 +285,8 @@ function extractCypressError(logs) {
             ? `Full test failure context. ${additionalContext.join('. ')}`
             : 'Full test failure context for AI analysis'
     };
-}
-function extractMochaError(logs) {
-    const errorPattern = /\d+\)\s+(.+):\s*\n\s*(.+)\n([\s\S]+?)(?=\n\s*at)/;
-    const match = logs.match(errorPattern);
-    if (match) {
-        const [, testName, errorMessage, content] = match;
-        const stackTrace = extractStackTrace(content);
-        return {
-            message: errorMessage,
-            stackTrace,
-            framework: 'mocha',
-            testName
-        };
-    }
-    return null;
+    errorData.structuredSummary = createStructuredErrorSummary(errorData);
+    return errorData;
 }
 function extractGenericError(logs) {
     const errorPatterns = [
@@ -336,6 +328,106 @@ function extractStackTrace(content) {
         }
     }
     return stackLines.join('\n');
+}
+function createStructuredErrorSummary(errorData) {
+    const errorTypeMatch = errorData.message.match(/^(\w+):\s*(.+)/m) ||
+        errorData.message.match(/(\w+Error):\s*(.+)/m);
+    const errorType = errorTypeMatch ? errorTypeMatch[1] : errorData.failureType || 'UnknownError';
+    const errorMessage = errorTypeMatch ? errorTypeMatch[2].trim() : errorData.message.substring(0, 200);
+    let location;
+    if (errorData.stackTrace) {
+        const stackLines = errorData.stackTrace.split('\n').filter(line => line.includes(' at '));
+        const appFrames = stackLines.filter(line => !line.includes('node_modules'));
+        const topFrame = appFrames[0] || stackLines[0];
+        if (topFrame) {
+            const locationMatch = topFrame.match(/at .*? \((.+?):(\d+):\d+\)/) ||
+                topFrame.match(/at (.+?):(\d+):\d+/);
+            if (locationMatch) {
+                const file = locationMatch[1];
+                const line = parseInt(locationMatch[2]);
+                const isTestCode = file.includes('.test.') || file.includes('.spec.') || file.includes('.cy.');
+                const isAppCode = !isTestCode && !file.includes('node_modules');
+                location = { file, line, isTestCode, isAppCode };
+            }
+        }
+    }
+    if (!location && errorData.message) {
+        const messageLocationMatch = errorData.message.match(/(?:at |Error at )([^\s:]+\.(?:tsx?|jsx?)):(\d+)(?::\d+)?/);
+        if (messageLocationMatch) {
+            const file = messageLocationMatch[1];
+            const line = parseInt(messageLocationMatch[2]);
+            const isTestCode = file.includes('.test.') || file.includes('.spec.') || file.includes('.cy.');
+            const isAppCode = !isTestCode && !file.includes('node_modules');
+            location = { file, line, isTestCode, isAppCode };
+        }
+    }
+    const testContext = {
+        testName: errorData.testName || 'Unknown Test',
+        testFile: errorData.fileName || 'Unknown File',
+        framework: errorData.framework || 'unknown'
+    };
+    const durationMatch = errorData.context?.match(/Execution Time: ([^,]+)/);
+    if (durationMatch) {
+        testContext.duration = durationMatch[1];
+    }
+    const browserMatch = errorData.context?.match(/Browser: ([^,.]+)/);
+    if (browserMatch) {
+        testContext.browser = browserMatch[1];
+    }
+    const messageAndLogs = errorData.message + ' ' + (errorData.logs?.join(' ') || '');
+    const failureIndicators = {
+        hasNetworkErrors: /ECONNREFUSED|ETIMEDOUT|ERR_NETWORK|fetch failed|50\d|40[34]/.test(messageAndLogs),
+        hasNullPointerErrors: /Cannot read prop(?:erty|erties)(?:\s+["'][^"']+["'])?\s+of\s+(?:null|undefined)|null is not an object|TypeError.*of\s+(?:null|undefined)/.test(messageAndLogs),
+        hasTimeoutErrors: /Timed out|TimeoutError|timeout/i.test(messageAndLogs),
+        hasDOMErrors: /element is detached|not found|could not find element|failed because this element/.test(messageAndLogs),
+        hasAssertionErrors: /AssertionError|expected .+ to|assert/i.test(messageAndLogs)
+    };
+    let prRelevance;
+    if (errorData.prDiff) {
+        const testFileModified = errorData.prDiff.files.some(f => errorData.fileName && f.filename.includes(errorData.fileName));
+        const relatedSourceFiles = errorData.prDiff.files
+            .filter(f => {
+            const isSourceFile = /\.[jt]sx?$/.test(f.filename) &&
+                !f.filename.includes('.test.') &&
+                !f.filename.includes('.spec.');
+            return isSourceFile && location?.file && f.filename.includes(location.file.split('/').pop() || '');
+        })
+            .map(f => f.filename);
+        let riskScore = 'none';
+        if (testFileModified) {
+            riskScore = 'medium';
+        }
+        if (relatedSourceFiles.length > 0) {
+            riskScore = 'high';
+        }
+        if (errorData.prDiff.totalChanges > 50) {
+            riskScore = riskScore === 'none' ? 'low' : riskScore;
+        }
+        prRelevance = {
+            testFileModified,
+            relatedSourceFilesModified: relatedSourceFiles,
+            riskScore
+        };
+    }
+    const commandsMatch = errorData.context?.match(/Recent Cypress commands: (.+)/);
+    const commands = commandsMatch ? commandsMatch[1].split(', ') : [];
+    const keyMetrics = {
+        totalCypressCommands: commands.length > 0 ? commands.length : undefined,
+        lastCommand: commands.length > 0 ? commands[commands.length - 1] : undefined,
+        hasScreenshots: !!(errorData.screenshots && errorData.screenshots.length > 0),
+        logSize: errorData.logs ? errorData.logs.join('').length : 0
+    };
+    return {
+        primaryError: {
+            type: errorType,
+            message: errorMessage,
+            location
+        },
+        testContext,
+        failureIndicators,
+        prRelevance,
+        keyMetrics
+    };
 }
 function calculateConfidence(response, errorData) {
     let confidence = 70;
@@ -704,7 +796,8 @@ class ArtifactFetcher {
             return prDiff;
         }
         catch (error) {
-            if (error.status === 404 || error.status === 403) {
+            const errorWithStatus = error;
+            if (errorWithStatus.status === 404 || errorWithStatus.status === 403) {
                 const isCurrentRepo = !repository || repository === `${github.context.repo.owner}/${github.context.repo.repo}`;
                 if (!isCurrentRepo) {
                     core.warning(`Failed to fetch PR diff: ${error}`);
@@ -912,6 +1005,7 @@ async function run() {
             reasoning: result.reasoning,
             summary: result.summary,
             indicators: result.indicators || [],
+            ...(result.verdict === 'PRODUCT_ISSUE' && result.suggestedSourceLocations ? { suggestedSourceLocations: result.suggestedSourceLocations } : {}),
             metadata: {
                 analyzedAt: new Date().toISOString(),
                 hasScreenshots: (errorData.screenshots && errorData.screenshots.length > 0) || false,
@@ -926,6 +1020,13 @@ async function run() {
         core.info(`Verdict: ${result.verdict}`);
         core.info(`Confidence: ${result.confidence}%`);
         core.info(`Summary: ${result.summary}`);
+        if (result.verdict === 'PRODUCT_ISSUE' && result.suggestedSourceLocations && result.suggestedSourceLocations.length > 0) {
+            core.info('\n🎯 Suggested Source Locations to Investigate:');
+            result.suggestedSourceLocations.forEach((location, index) => {
+                core.info(`  ${index + 1}. ${location.file} (lines ${location.lines})`);
+                core.info(`     Reason: ${location.reason}`);
+            });
+        }
     }
     catch (error) {
         if (error instanceof Error) {
@@ -946,18 +1047,21 @@ function getInputs() {
         confidenceThreshold: parseInt(core.getInput('CONFIDENCE_THRESHOLD') || '70', 10),
         prNumber: core.getInput('PR_NUMBER'),
         commitSha: core.getInput('COMMIT_SHA'),
-        repository: core.getInput('REPOSITORY')
+        repository: core.getInput('REPOSITORY'),
+        testFrameworks: core.getInput('TEST_FRAMEWORKS')
     };
 }
 async function getErrorData(octokit, artifactFetcher, inputs) {
     const context = github.context;
     const { owner, repo } = context.repo;
     if (inputs.errorMessage) {
-        return {
+        const errorData = {
             message: inputs.errorMessage,
             framework: 'unknown',
             context: 'Error message provided directly via input'
         };
+        errorData.structuredSummary = (0, analyzer_1.createStructuredErrorSummary)(errorData);
+        return errorData;
     }
     let runId = inputs.workflowRunId;
     if (!runId && context.payload.workflow_run) {
@@ -1021,7 +1125,7 @@ async function getErrorData(octokit, artifactFetcher, inputs) {
         });
         fullLogs = logsResponse.data;
         core.info(`Downloaded ${fullLogs.length} characters of logs for error extraction`);
-        extractedError = (0, analyzer_1.extractErrorFromLogs)(fullLogs);
+        extractedError = (0, analyzer_1.extractErrorFromLogs)(fullLogs, inputs.testFrameworks);
         if (inputs.prNumber && extractedError) {
             core.info('PR diff available - using extracted error context only');
         }
@@ -1093,7 +1197,7 @@ async function getErrorData(octokit, artifactFetcher, inputs) {
         core.info(`Data collected for analysis: logs=${hasLogs}, screenshots=${hasScreenshots}, artifactLogs=${hasArtifactLogs}, prDiff=${hasPRDiff}`);
     }
     if (extractedError) {
-        return {
+        const errorData = {
             ...extractedError,
             context: `Job: ${failedJob.name}. ${extractedError.context || 'Complete failure context including all logs and artifacts'}`,
             testName: extractedError.testName || failedJob.name,
@@ -1103,8 +1207,12 @@ async function getErrorData(octokit, artifactFetcher, inputs) {
             cypressArtifactLogs: artifactLogs,
             prDiff: prDiff || undefined
         };
+        if (!errorData.structuredSummary) {
+            errorData.structuredSummary = (0, analyzer_1.createStructuredErrorSummary)(errorData);
+        }
+        return errorData;
     }
-    return {
+    const fallbackError = {
         message: 'Test failure - see full context for details',
         framework: 'cypress',
         failureType: 'test-failure',
@@ -1116,6 +1224,8 @@ async function getErrorData(octokit, artifactFetcher, inputs) {
         cypressArtifactLogs: artifactLogs,
         prDiff: prDiff || undefined
     };
+    fallbackError.structuredSummary = (0, analyzer_1.createStructuredErrorSummary)(fallbackError);
+    return fallbackError;
 }
 if (require.main === require.cache[eval('__filename')]) {
     run();
@@ -1180,6 +1290,20 @@ class OpenAIClient {
         const model = 'gpt-4.1';
         core.info('🧠 Using GPT-4.1 model for analysis');
         const messages = this.buildMessages(errorData, examples);
+        if (messages[1] && messages[1].role === 'user') {
+            const userMessage = messages[1].content;
+            if (typeof userMessage === 'string') {
+                if (userMessage.includes('QUICK ANALYSIS SUMMARY')) {
+                    core.info('📊 Structured summary header included in prompt!');
+                    const summaryStart = userMessage.indexOf('QUICK ANALYSIS SUMMARY');
+                    const summarySection = userMessage.substring(summaryStart, summaryStart + 500);
+                    core.info(`Summary preview:\n${summarySection}...`);
+                }
+                else {
+                    core.info('⚠️  Structured summary header NOT found in prompt');
+                }
+            }
+        }
         if (errorData.screenshots && errorData.screenshots.length > 0) {
             core.info(`📸 Sending multimodal content to ${model}:`);
             core.info(`  - Text context: ${errorData.logs?.[0]?.length || 0} characters`);
@@ -1190,6 +1314,14 @@ class OpenAIClient {
         }
         else {
             core.info(`📝 Sending text-only content to ${model}`);
+        }
+        if (errorData.structuredSummary) {
+            core.info('📊 ErrorData contains structured summary!');
+            core.info(`  - Error Type: ${errorData.structuredSummary.primaryError.type}`);
+            core.info(`  - Test File: ${errorData.structuredSummary.testContext.testFile}`);
+        }
+        else {
+            core.info('⚠️  ErrorData does NOT contain structured summary');
         }
         for (let attempt = 1; attempt <= this.maxRetries; attempt++) {
             try {
@@ -1323,6 +1455,12 @@ When analyzing screenshots (if provided):
 
 Screenshots often contain crucial error information that logs might miss. If an error is visible in a screenshot, it should be a key factor in your analysis.
 
+COMMON MISCLASSIFICATION PATTERNS TO AVOID:
+- Don't classify as TEST_ISSUE just because error happens in test file - check if it's exposing a real product bug
+- Don't classify as PRODUCT_ISSUE just because of a timeout - many timeouts are test synchronization issues
+- GraphQL/API errors during tests often indicate real product issues, not test problems
+- "Element not found" can be either - check if UI actually rendered correctly in screenshots
+
 When PR changes are provided:
 - Analyze if the test failure is related to the changed code
 - If a test is failing and it tests functionality that was modified in the PR, lean towards PRODUCT_ISSUE
@@ -1330,14 +1468,81 @@ When PR changes are provided:
 - Look for correlations between changed files and the failing test file/functionality
 - Consider if the PR introduced breaking changes that the test correctly caught
 
+When determining a PRODUCT_ISSUE and PR changes are available:
+- CRITICALLY IMPORTANT: Identify specific files and line numbers from the PR diff that likely contain the bug
+- Correlate error stack traces with changed code locations
+- Match error messages and symptoms to specific code changes in the diff
+- Suggest which modified functions, methods, or components should be investigated
+- Look for patterns like:
+  * New null checks missing → NullPointerException
+  * Changed API calls → Network errors
+  * Modified component logic → Rendering issues
+  * Updated validation → Form submission failures
+- Include these source code locations in your reasoning with specific file paths and line numbers
+
+CONFIDENCE LEVELS:
+- HIGH (90-100%): Clear error patterns, obvious indicators, or explicit messages
+- MEDIUM (60-89%): Multiple indicators pointing same direction but some ambiguity
+- LOW (0-59%): Conflicting indicators or insufficient information
+
 Always respond with a JSON object containing:
 - verdict: "TEST_ISSUE" or "PRODUCT_ISSUE"
 - reasoning: detailed explanation of your decision including what you observed in the screenshots (if any) and how PR changes influenced your decision (if applicable)
-- indicators: array of specific indicators that led to your verdict`;
+- indicators: array of specific indicators that led to your verdict
+- suggestedSourceLocations: (ONLY for PRODUCT_ISSUE) array of objects with {file: "path/to/file", lines: "line range", reason: "why this location is suspicious"}`;
         return basePrompt;
     }
     buildPrompt(errorData, examples) {
-        const prompt = `You are an expert test failure analyzer. Your task is to determine whether a test failure is a TEST_ISSUE (problem with the test code) or a PRODUCT_ISSUE (bug in the product being tested).
+        let summaryHeader = '';
+        if (errorData.structuredSummary) {
+            const summary = errorData.structuredSummary;
+            summaryHeader = `## QUICK ANALYSIS SUMMARY
+
+`;
+            summaryHeader += `**Error Type:** ${summary.primaryError.type}\n`;
+            summaryHeader += `**Error Message:** ${summary.primaryError.message}\n`;
+            if (summary.primaryError.location) {
+                const loc = summary.primaryError.location;
+                summaryHeader += `**Error Location:** ${loc.file}:${loc.line} (${loc.isTestCode ? 'Test Code' : loc.isAppCode ? 'App Code' : 'Other'})\n`;
+            }
+            summaryHeader += `\n**Test Context:**\n`;
+            summaryHeader += `- Test: ${summary.testContext.testName}\n`;
+            summaryHeader += `- File: ${summary.testContext.testFile}\n`;
+            summaryHeader += `- Framework: ${summary.testContext.framework}\n`;
+            if (summary.testContext.browser) {
+                summaryHeader += `- Browser: ${summary.testContext.browser}\n`;
+            }
+            if (summary.testContext.duration) {
+                summaryHeader += `- Duration: ${summary.testContext.duration}\n`;
+            }
+            summaryHeader += `\n**Failure Indicators:**\n`;
+            const indicators = [];
+            if (summary.failureIndicators.hasNetworkErrors)
+                indicators.push('Network Errors');
+            if (summary.failureIndicators.hasNullPointerErrors)
+                indicators.push('Null Pointer Errors');
+            if (summary.failureIndicators.hasTimeoutErrors)
+                indicators.push('Timeout Errors');
+            if (summary.failureIndicators.hasDOMErrors)
+                indicators.push('DOM Errors');
+            if (summary.failureIndicators.hasAssertionErrors)
+                indicators.push('Assertion Errors');
+            summaryHeader += `- Detected: ${indicators.length > 0 ? indicators.join(', ') : 'None'}\n`;
+            if (summary.prRelevance) {
+                summaryHeader += `\n**PR Impact Analysis:**\n`;
+                summaryHeader += `- Test File Modified: ${summary.prRelevance.testFileModified ? 'YES' : 'NO'}\n`;
+                summaryHeader += `- Related Source Files Modified: ${summary.prRelevance.relatedSourceFilesModified.length > 0 ? summary.prRelevance.relatedSourceFilesModified.join(', ') : 'None'}\n`;
+                summaryHeader += `- Risk Score: ${summary.prRelevance.riskScore.toUpperCase()}\n`;
+            }
+            summaryHeader += `\n**Key Metrics:**\n`;
+            summaryHeader += `- Screenshots Available: ${summary.keyMetrics.hasScreenshots ? 'YES' : 'NO'}\n`;
+            if (summary.keyMetrics.lastCommand) {
+                summaryHeader += `- Last Cypress Command: ${summary.keyMetrics.lastCommand}\n`;
+            }
+            summaryHeader += `- Log Size: ${summary.keyMetrics.logSize} characters\n`;
+            summaryHeader += `\n---\n\n`;
+        }
+        const prompt = `${summaryHeader}You are an expert test failure analyzer. Your task is to determine whether a test failure is a TEST_ISSUE (problem with the test code) or a PRODUCT_ISSUE (bug in the product being tested).
 
 IMPORTANT: Carefully analyze the FULL LOGS provided to find the actual error. Look for patterns like:
 - TypeError: Cannot read properties of null (reading 'isValid')
@@ -1419,7 +1624,13 @@ Changed Files Summary:
 1. Check if the failing test file or related files were modified in the PR
 2. Look for changes that could break existing functionality
 3. Consider if new code introduced bugs that tests are correctly catching
-4. If test is failing in code areas NOT touched by the PR, it's more likely a TEST_ISSUE`;
+4. If test is failing in code areas NOT touched by the PR, it's more likely a TEST_ISSUE
+
+FOR PRODUCT_ISSUES: You MUST analyze the diff patches above to:
+- Identify the EXACT file paths and line numbers that likely contain the bug
+- Match error symptoms to specific code changes
+- Provide actionable source locations developers can investigate
+- Example: "The null pointer error likely comes from the removed null check at src/components/UserForm.tsx lines 45-47"`;
         return section;
     }
     parseResponse(content) {

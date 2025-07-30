@@ -1,7 +1,7 @@
 import * as core from '@actions/core';
 import * as github from '@actions/github';
 import { Octokit } from '@octokit/rest';
-import { analyzeFailure, extractErrorFromLogs } from './analyzer';
+import { analyzeFailure, extractErrorFromLogs, createStructuredErrorSummary } from './analyzer';
 import { OpenAIClient } from './openai-client';
 import { ArtifactFetcher } from './artifact-fetcher';
 import { ErrorData, ActionInputs, Screenshot } from './types';
@@ -95,6 +95,7 @@ async function run(): Promise<void> {
       reasoning: result.reasoning,
       summary: result.summary,
       indicators: result.indicators || [],
+      ...(result.verdict === 'PRODUCT_ISSUE' && result.suggestedSourceLocations ? { suggestedSourceLocations: result.suggestedSourceLocations } : {}),
       metadata: {
         analyzedAt: new Date().toISOString(),
         hasScreenshots: (errorData.screenshots && errorData.screenshots.length > 0) || false,
@@ -113,6 +114,15 @@ async function run(): Promise<void> {
     core.info(`Verdict: ${result.verdict}`);
     core.info(`Confidence: ${result.confidence}%`);
     core.info(`Summary: ${result.summary}`);
+    
+    // Log suggested source locations for PRODUCT_ISSUE
+    if (result.verdict === 'PRODUCT_ISSUE' && result.suggestedSourceLocations && result.suggestedSourceLocations.length > 0) {
+      core.info('\n🎯 Suggested Source Locations to Investigate:');
+      result.suggestedSourceLocations.forEach((location, index) => {
+        core.info(`  ${index + 1}. ${location.file} (lines ${location.lines})`);
+        core.info(`     Reason: ${location.reason}`);
+      });
+    }
     
   } catch (error) {
     if (error instanceof Error) {
@@ -133,7 +143,8 @@ function getInputs(): ActionInputs {
     confidenceThreshold: parseInt(core.getInput('CONFIDENCE_THRESHOLD') || '70', 10),
     prNumber: core.getInput('PR_NUMBER'),
     commitSha: core.getInput('COMMIT_SHA'),
-    repository: core.getInput('REPOSITORY')
+    repository: core.getInput('REPOSITORY'),
+    testFrameworks: core.getInput('TEST_FRAMEWORKS')
   };
 }
 
@@ -147,11 +158,16 @@ async function getErrorData(
   
   // If direct error message is provided, use it
   if (inputs.errorMessage) {
-    return {
+    const errorData: ErrorData = {
       message: inputs.errorMessage,
       framework: 'unknown',
       context: 'Error message provided directly via input'
     };
+    
+    // Create structured summary even for direct messages
+    errorData.structuredSummary = createStructuredErrorSummary(errorData);
+    
+    return errorData;
   }
   
   // Determine the workflow run ID
@@ -236,7 +252,7 @@ async function getErrorData(
     core.info(`Downloaded ${fullLogs.length} characters of logs for error extraction`);
     
     // Extract structured error from logs immediately
-    extractedError = extractErrorFromLogs(fullLogs);
+    extractedError = extractErrorFromLogs(fullLogs, inputs.testFrameworks);
     
     // If we have a PR diff coming, limit the GitHub logs to just the extracted error context
     if (inputs.prNumber && extractedError) {
@@ -346,7 +362,7 @@ async function getErrorData(
   
   // Create error data object, using extracted error if available
   if (extractedError) {
-    return {
+    const errorData: ErrorData = {
       ...extractedError,
       context: `Job: ${failedJob.name}. ${extractedError.context || 'Complete failure context including all logs and artifacts'}`,
       testName: extractedError.testName || failedJob.name,
@@ -356,10 +372,17 @@ async function getErrorData(
       cypressArtifactLogs: artifactLogs,
       prDiff: prDiff || undefined
     };
+    
+    // Ensure we have structured summary (might already exist from extraction)
+    if (!errorData.structuredSummary) {
+      errorData.structuredSummary = createStructuredErrorSummary(errorData);
+    }
+    
+    return errorData;
   }
   
   // Fallback if no error could be extracted
-  return {
+  const fallbackError: ErrorData = {
     message: 'Test failure - see full context for details',
     framework: 'cypress',
     failureType: 'test-failure',
@@ -371,6 +394,11 @@ async function getErrorData(
     cypressArtifactLogs: artifactLogs,
     prDiff: prDiff || undefined
   };
+  
+  // Create structured summary for fallback case
+  fallbackError.structuredSummary = createStructuredErrorSummary(fallbackError);
+  
+  return fallbackError;
 }
 
 // Export for testing

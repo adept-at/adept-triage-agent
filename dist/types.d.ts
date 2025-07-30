@@ -11,6 +11,7 @@ export interface ErrorData {
     logs?: string[];
     cypressArtifactLogs?: string;
     prDiff?: PRDiff;
+    structuredSummary?: StructuredErrorSummary;
 }
 export interface Screenshot {
     name: string;
@@ -25,11 +26,18 @@ export interface AnalysisResult {
     reasoning: string;
     summary: string;
     indicators?: string[];
+    suggestedSourceLocations?: SourceLocation[];
+}
+export interface SourceLocation {
+    file: string;
+    lines: string;
+    reason: string;
 }
 export interface OpenAIResponse {
     verdict: Verdict;
     reasoning: string;
     indicators: string[];
+    suggestedSourceLocations?: SourceLocation[];
 }
 export interface FewShotExample {
     error: string;
@@ -46,6 +54,7 @@ export interface ActionInputs {
     prNumber?: string;
     commitSha?: string;
     repository?: string;
+    testFrameworks?: string;
 }
 export interface PRDiff {
     files: PRDiffFile[];
@@ -65,5 +74,42 @@ export interface LogExtractor {
     framework: string;
     patterns: RegExp[];
     extract: (log: string) => ErrorData | null;
+}
+export interface StructuredErrorSummary {
+    primaryError: {
+        type: string;
+        message: string;
+        location?: {
+            file: string;
+            line: number;
+            isTestCode: boolean;
+            isAppCode: boolean;
+        };
+    };
+    testContext: {
+        testName: string;
+        testFile: string;
+        duration?: string;
+        browser?: string;
+        framework: string;
+    };
+    failureIndicators: {
+        hasNetworkErrors: boolean;
+        hasNullPointerErrors: boolean;
+        hasTimeoutErrors: boolean;
+        hasDOMErrors: boolean;
+        hasAssertionErrors: boolean;
+    };
+    prRelevance?: {
+        testFileModified: boolean;
+        relatedSourceFilesModified: string[];
+        riskScore: 'high' | 'medium' | 'low' | 'none';
+    };
+    keyMetrics: {
+        totalCypressCommands?: number;
+        lastCommand?: string;
+        hasScreenshots: boolean;
+        logSize: number;
+    };
 }
 //# sourceMappingURL=types.d.ts.map

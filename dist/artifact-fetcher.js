@@ -320,7 +320,8 @@ class ArtifactFetcher {
             return prDiff;
         }
         catch (error) {
-            if (error.status === 404 || error.status === 403) {
+            const errorWithStatus = error;
+            if (errorWithStatus.status === 404 || errorWithStatus.status === 403) {
                 const isCurrentRepo = !repository || repository === `${github.context.repo.owner}/${github.context.repo.repo}`;
                 if (!isCurrentRepo) {
                     core.warning(`Failed to fetch PR diff: ${error}`);

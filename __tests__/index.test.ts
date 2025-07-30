@@ -562,7 +562,7 @@ describe('GitHub Action', () => {
         run_id: 12345,
       });
 
-      expect(mockExtractErrorFromLogs).toHaveBeenCalledWith(mockLogs);
+      expect(mockExtractErrorFromLogs).toHaveBeenCalledWith(mockLogs, '');
       expect(mockCore.setOutput).toHaveBeenCalledWith('verdict', 'PRODUCT_ISSUE');
       expect(mockCore.setOutput).toHaveBeenCalledWith('confidence', '90');
     });
@@ -651,6 +651,191 @@ describe('GitHub Action', () => {
         repo: 'test-repo',
         run_id: 67890,
       });
+    });
+  });
+
+  describe('suggestedSourceLocations integration', () => {
+    it('should include suggestedSourceLocations in triage JSON for PRODUCT_ISSUE', async () => {
+      mockCore.getInput.mockImplementation((name: string) => {
+        const inputs: Record<string, string> = {
+          'GITHUB_TOKEN': 'github-token',
+          'OPENAI_API_KEY': 'openai-key',
+          'ERROR_MESSAGE': 'TypeError: Cannot read property name of null',
+          'PR_NUMBER': '123',
+        };
+        return inputs[name] || '';
+      });
+
+      const mockPRDiff = {
+        files: [{
+          filename: 'src/components/UserProfile.tsx',
+          status: 'modified',
+          additions: 10,
+          deletions: 5,
+          changes: 15,
+          patch: '@@ -45,7 +45,6 @@\n-  if (!user || !user.name) return null;\n   return <div>{user.name}</div>;',
+        }],
+        totalChanges: 1,
+        additions: 10,
+        deletions: 5,
+      };
+
+      mockArtifactFetcher.fetchPRDiff = jest.fn().mockResolvedValueOnce(mockPRDiff);
+
+      const suggestedLocations = [{
+        file: 'src/components/UserProfile.tsx',
+        lines: '45-47',
+        reason: 'Removed null check causing null pointer error',
+      }];
+
+      mockAnalyzeFailure.mockResolvedValueOnce({
+        verdict: 'PRODUCT_ISSUE',
+        confidence: 95,
+        reasoning: 'Null pointer error due to removed null check',
+        summary: '🐛 Product Issue: Null pointer in UserProfile component',
+        indicators: ['TypeError', 'null check removed'],
+        suggestedSourceLocations: suggestedLocations,
+      });
+
+      await run();
+
+      // Verify triage JSON includes suggestedSourceLocations
+      expect(mockCore.setOutput).toHaveBeenCalledWith(
+        'triage_json',
+        expect.stringContaining('"suggestedSourceLocations"')
+      );
+
+      // Parse the JSON to verify structure
+      const triageJsonCall = mockCore.setOutput.mock.calls.find(
+        call => call[0] === 'triage_json'
+      );
+      const triageJson = JSON.parse(triageJsonCall[1]);
+      
+      expect(triageJson.suggestedSourceLocations).toEqual(suggestedLocations);
+      expect(triageJson.verdict).toBe('PRODUCT_ISSUE');
+
+      // Verify logging of source locations
+      expect(mockCore.info).toHaveBeenCalledWith('\n🎯 Suggested Source Locations to Investigate:');
+      expect(mockCore.info).toHaveBeenCalledWith('  1. src/components/UserProfile.tsx (lines 45-47)');
+      expect(mockCore.info).toHaveBeenCalledWith('     Reason: Removed null check causing null pointer error');
+    });
+
+    it('should not include suggestedSourceLocations for TEST_ISSUE', async () => {
+      mockCore.getInput.mockImplementation((name: string) => {
+        const inputs: Record<string, string> = {
+          'GITHUB_TOKEN': 'github-token',
+          'OPENAI_API_KEY': 'openai-key',
+          'ERROR_MESSAGE': 'TimeoutError: Waiting for element',
+        };
+        return inputs[name] || '';
+      });
+
+      mockAnalyzeFailure.mockResolvedValueOnce({
+        verdict: 'TEST_ISSUE',
+        confidence: 85,
+        reasoning: 'Element timing issue',
+        summary: '🧪 Test Issue: Timing issue with element',
+        indicators: ['timeout'],
+      });
+
+      await run();
+
+      // Verify triage JSON doesn't include suggestedSourceLocations
+      const triageJsonCall = mockCore.setOutput.mock.calls.find(
+        call => call[0] === 'triage_json'
+      );
+      const triageJson = JSON.parse(triageJsonCall[1]);
+      
+      expect(triageJson.suggestedSourceLocations).toBeUndefined();
+      expect(triageJson.verdict).toBe('TEST_ISSUE');
+
+      // Verify no source location logging
+      expect(mockCore.info).not.toHaveBeenCalledWith('\n🎯 Suggested Source Locations to Investigate:');
+    });
+
+    it('should handle empty suggestedSourceLocations array', async () => {
+      mockCore.getInput.mockImplementation((name: string) => {
+        const inputs: Record<string, string> = {
+          'GITHUB_TOKEN': 'github-token',
+          'OPENAI_API_KEY': 'openai-key',
+          'ERROR_MESSAGE': '500 Internal Server Error',
+        };
+        return inputs[name] || '';
+      });
+
+      mockAnalyzeFailure.mockResolvedValueOnce({
+        verdict: 'PRODUCT_ISSUE',
+        confidence: 80,
+        reasoning: 'Server error',
+        summary: '🐛 Product Issue: Server error',
+        indicators: ['500 error'],
+        suggestedSourceLocations: [],
+      });
+
+      await run();
+
+      // Verify triage JSON includes empty array
+      const triageJsonCall = mockCore.setOutput.mock.calls.find(
+        call => call[0] === 'triage_json'
+      );
+      const triageJson = JSON.parse(triageJsonCall[1]);
+      
+      expect(triageJson.suggestedSourceLocations).toEqual([]);
+
+      // Verify no source location logging when array is empty
+      expect(mockCore.info).not.toHaveBeenCalledWith('\n🎯 Suggested Source Locations to Investigate:');
+    });
+  });
+
+  describe('test framework filtering', () => {
+    it('should pass TEST_FRAMEWORKS to extractErrorFromLogs when provided', async () => {
+      mockCore.getInput.mockImplementation((name: string) => {
+        const inputs: Record<string, string> = {
+          'GITHUB_TOKEN': 'github-token',
+          'OPENAI_API_KEY': 'openai-key',
+          'WORKFLOW_RUN_ID': '12345',
+          'TEST_FRAMEWORKS': 'cypress'
+        };
+        return inputs[name] || '';
+      });
+
+      mockOctokit.actions!.getWorkflowRun = jest.fn().mockResolvedValue({
+        data: { status: 'completed' }
+      }) as any;
+
+      mockOctokit.actions!.listJobsForWorkflowRun = jest.fn().mockResolvedValue({
+        data: {
+          jobs: [{
+            id: 1,
+            name: 'test-job',
+            conclusion: 'failure',
+            html_url: 'https://github.com/test/test/runs/1',
+            steps: []
+          }]
+        }
+      }) as any;
+
+      const mockLogs = 'CypressError: Test failed';
+      mockOctokit.actions!.downloadJobLogsForWorkflowRun = jest.fn().mockResolvedValue({
+        data: mockLogs
+      }) as any;
+
+      mockExtractErrorFromLogs.mockReturnValueOnce({
+        message: 'CypressError: Test failed',
+        framework: 'cypress'
+      });
+
+      mockAnalyzeFailure.mockResolvedValueOnce({
+        verdict: 'TEST_ISSUE',
+        confidence: 85,
+        reasoning: 'Cypress timing issue',
+        summary: 'Test Issue'
+      });
+
+      await run();
+
+      // Verify TEST_FRAMEWORKS was passed to extractErrorFromLogs
+      expect(mockExtractErrorFromLogs).toHaveBeenCalledWith(mockLogs, 'cypress');
     });
   });
 

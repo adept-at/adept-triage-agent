@@ -264,5 +264,112 @@ describe('OpenAIClient', () => {
 
       expect(result.indicators).toEqual([]);
     });
+
+    it('should include suggestedSourceLocations for PRODUCT_ISSUE with PR diff', async () => {
+      const errorDataWithPRDiff: ErrorData = {
+        ...mockErrorData,
+        prDiff: {
+          files: [{
+            filename: 'src/components/UserProfile.tsx',
+            status: 'modified',
+            additions: 10,
+            deletions: 5,
+            changes: 15,
+            patch: '@@ -45,7 +45,6 @@ export function UserProfile() {\n-  if (!user || !user.name) return null;\n   return <div>{user.name}</div>;',
+          }],
+          totalChanges: 1,
+          additions: 10,
+          deletions: 5,
+        },
+      };
+
+      const mockResponse = {
+        choices: [{
+          message: {
+            content: JSON.stringify({
+              verdict: 'PRODUCT_ISSUE',
+              reasoning: 'Null pointer error due to removed null check in UserProfile component',
+              indicators: ['TypeError', 'Cannot read property name of null'],
+              suggestedSourceLocations: [{
+                file: 'src/components/UserProfile.tsx',
+                lines: '45-47',
+                reason: 'Removed null check for user.name causing null pointer error',
+              }],
+            }),
+          },
+        }],
+      };
+
+      mockCreate.mockResolvedValueOnce(mockResponse);
+
+      const result = await client.analyze(errorDataWithPRDiff, mockExamples);
+
+      expect(result.verdict).toBe('PRODUCT_ISSUE');
+      expect(result.suggestedSourceLocations).toEqual([{
+        file: 'src/components/UserProfile.tsx',
+        lines: '45-47',
+        reason: 'Removed null check for user.name causing null pointer error',
+      }]);
+    });
+
+    it('should not include suggestedSourceLocations for TEST_ISSUE', async () => {
+      const errorDataWithPRDiff: ErrorData = {
+        ...mockErrorData,
+        prDiff: {
+          files: [{
+            filename: 'src/utils/helper.ts',
+            status: 'modified',
+            additions: 5,
+            deletions: 3,
+            changes: 8,
+            patch: '@@ -10,3 +10,5 @@\n+export function newHelper() {\n+  return true;\n+}',
+          }],
+          totalChanges: 1,
+          additions: 5,
+          deletions: 3,
+        },
+      };
+
+      const mockResponse = {
+        choices: [{
+          message: {
+            content: JSON.stringify({
+              verdict: 'TEST_ISSUE',
+              reasoning: 'Test timeout due to missing wait for element',
+              indicators: ['TimeoutError', 'element not visible'],
+            }),
+          },
+        }],
+      };
+
+      mockCreate.mockResolvedValueOnce(mockResponse);
+
+      const result = await client.analyze(errorDataWithPRDiff, mockExamples);
+
+      expect(result.verdict).toBe('TEST_ISSUE');
+      expect(result.suggestedSourceLocations).toBeUndefined();
+    });
+
+    it('should handle response with empty suggestedSourceLocations array', async () => {
+      const mockResponse = {
+        choices: [{
+          message: {
+            content: JSON.stringify({
+              verdict: 'PRODUCT_ISSUE',
+              reasoning: 'Product issue but no specific location identified',
+              indicators: ['500 error'],
+              suggestedSourceLocations: [],
+            }),
+          },
+        }],
+      };
+
+      mockCreate.mockResolvedValueOnce(mockResponse);
+
+      const result = await client.analyze(mockErrorData, mockExamples);
+
+      expect(result.verdict).toBe('PRODUCT_ISSUE');
+      expect(result.suggestedSourceLocations).toEqual([]);
+    });
   });
 }); 

@@ -385,9 +385,10 @@ export class ArtifactFetcher {
       core.info(`Changed files (sorted by relevance):\n${filesSummary}${files.length > 10 ? `\n  ... and ${files.length - 10} more files` : ''}`);
 
       return prDiff;
-    } catch (error: any) {
+    } catch (error) {
       // Provide more helpful error messages for common issues
-      if (error.status === 404 || error.status === 403) {
+      const errorWithStatus = error as { status?: number; message?: string };
+      if (errorWithStatus.status === 404 || errorWithStatus.status === 403) {
         const isCurrentRepo = !repository || repository === `${github.context.repo.owner}/${github.context.repo.repo}`;
         
         if (!isCurrentRepo) {

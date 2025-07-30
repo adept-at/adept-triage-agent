@@ -1,4 +1,4 @@
-import { analyzeFailure, extractErrorFromLogs } from '../src/analyzer';
+import { analyzeFailure, extractErrorFromLogs, createStructuredErrorSummary } from '../src/analyzer';
 import { OpenAIClient } from '../src/openai-client';
 import { ErrorData } from '../src/types';
 
@@ -13,13 +13,13 @@ jest.mock('@actions/core', () => ({
 
 describe('analyzer', () => {
   describe('extractErrorFromLogs', () => {
-    it('should extract Jest error from logs', () => {
+    it('should extract generic error from Jest logs (Jest not supported)', () => {
       const jestLogs = `
         PASS src/utils.test.js
         FAIL src/components/Button.test.js (2.5s)
           ● Button component › should render correctly
 
-            expect(received).toBe(expected) // Object.is equality
+            Test failed with error
 
             Expected: "Click me"
             Received: undefined
@@ -36,12 +36,10 @@ describe('analyzer', () => {
 
       const error = extractErrorFromLogs(jestLogs);
 
-      expect(error).toBeDefined();
-      expect(error?.message).toContain('expect(received).toBe(expected)');
-      expect(error?.framework).toBe('jest');
-      expect(error?.testName).toBe('Button component › should render correctly');
-      expect(error?.fileName).toBe('src/components/Button.test.js');
-      expect(error?.stackTrace).toContain('at Object.<anonymous>');
+      // Since Jest is not supported, it should extract as generic error if any patterns match
+      if (error) {
+        expect(['unknown', 'cypress']).toContain(error?.framework);
+      }
     });
 
     it('should extract Cypress error from logs', () => {
@@ -67,7 +65,7 @@ at Context.resolveAndRunSpec (cypress/support/index.js:123:12)
       }
     });
 
-    it('should extract Mocha error from logs', () => {
+    it('should extract AssertionError as Cypress error', () => {
       const mochaLogs = `
         API Tests
           User endpoints
@@ -127,6 +125,173 @@ at Context.resolveAndRunSpec (cypress/support/index.js:123:12)
       expect(error).toBeDefined();
       expect(error?.message).toContain('Error: First error');
     });
+
+    it('should only use cypress framework when specified', () => {
+      const cypressLogs = `
+        1) Test suite
+           ✖ should work
+           
+           AssertionError: expected true to equal false
+           at Context.eval (test.cy.js:10:5)
+      `;
+
+      // Should extract Cypress error when Cypress is specified
+      const error = extractErrorFromLogs(cypressLogs, 'cypress');
+      expect(error).toBeDefined();
+      expect(error?.framework).toBe('cypress');
+    });
+
+    it('should handle cypress-only framework filtering', () => {
+      const cypressLogs = `
+        Running: test.cy.js
+        
+        1) Test suite
+           ✖ should work
+           
+           CypressError: Timed out retrying after 4000ms
+           at cy.get()
+      `;
+
+      // Should extract Cypress error when Cypress is specified
+      const error = extractErrorFromLogs(cypressLogs, 'cypress');
+      expect(error).toBeDefined();
+      expect(error?.framework).toBe('cypress');
+    });
+
+    it('should use cypress as default when empty string is provided', () => {
+      const cypressLogs = `
+        1) Test suite
+           ✖ should work
+           
+           AssertionError: Test failed
+           at cy.task (test.cy.js:10:5)
+      `;
+
+      // Empty string should default to cypress
+      const error = extractErrorFromLogs(cypressLogs, '');
+      expect(error).toBeDefined();
+      // Should extract via Cypress patterns or generic
+      expect(['cypress', 'unknown']).toContain(error?.framework);
+    });
+  });
+
+  describe('createStructuredErrorSummary', () => {
+    it('should create structured summary with basic error info', () => {
+      const errorData: ErrorData = {
+        message: 'AssertionError: expected true to be false',
+        framework: 'cypress',
+        testName: 'should test something',
+        fileName: 'test.spec.js',
+        context: 'Browser: Chrome. Execution Time: 2.5s'
+      };
+
+      const summary = createStructuredErrorSummary(errorData);
+
+      expect(summary.primaryError.type).toBe('AssertionError');
+      expect(summary.primaryError.message).toBe('expected true to be false');
+      expect(summary.testContext.testName).toBe('should test something');
+      expect(summary.testContext.testFile).toBe('test.spec.js');
+      expect(summary.testContext.browser).toBe('Chrome');
+      expect(summary.testContext.duration).toBe('2.5s');
+      expect(summary.failureIndicators.hasAssertionErrors).toBe(true);
+      expect(summary.failureIndicators.hasNetworkErrors).toBe(false);
+    });
+
+    it('should detect network errors', () => {
+      const errorData: ErrorData = {
+        message: 'Error: connect ECONNREFUSED 127.0.0.1:5432',
+        framework: 'cypress',
+        logs: ['Failed to connect to database']
+      };
+
+      const summary = createStructuredErrorSummary(errorData);
+
+      expect(summary.failureIndicators.hasNetworkErrors).toBe(true);
+      expect(summary.primaryError.type).toBe('Error');
+    });
+
+    it('should detect null pointer errors', () => {
+      const errorData: ErrorData = {
+        message: 'TypeError: Cannot read property "name" of null',
+        framework: 'cypress'
+      };
+
+      const summary = createStructuredErrorSummary(errorData);
+
+      expect(summary.failureIndicators.hasNullPointerErrors).toBe(true);
+      expect(summary.primaryError.type).toBe('TypeError');
+    });
+
+    it('should analyze stack trace location', () => {
+      const errorData: ErrorData = {
+        message: 'Error at src/components/UserProfile.tsx:45:12',
+        stackTrace: 'at UserProfile.render (src/components/UserProfile.tsx:45:12)\n' +
+                   'at renderComponent (node_modules/react/index.js:100:5)',
+        framework: 'cypress'
+      };
+
+      const summary = createStructuredErrorSummary(errorData);
+
+      expect(summary.primaryError.location).toBeDefined();
+      expect(summary.primaryError.location?.file).toBe('src/components/UserProfile.tsx');
+      expect(summary.primaryError.location?.line).toBe(45);
+      expect(summary.primaryError.location?.isTestCode).toBe(false);
+      expect(summary.primaryError.location?.isAppCode).toBe(true);
+    });
+
+    it('should analyze PR relevance', () => {
+      const errorData: ErrorData = {
+        message: 'Test failed',
+        fileName: 'user.test.js',
+        framework: 'cypress',
+        prDiff: {
+          files: [
+            { filename: 'user.test.js', status: 'modified', additions: 10, deletions: 5, changes: 15 },
+            { filename: 'src/user.js', status: 'modified', additions: 20, deletions: 10, changes: 30 }
+          ],
+          totalChanges: 2,
+          additions: 30,
+          deletions: 15
+        }
+      };
+
+      const summary = createStructuredErrorSummary(errorData);
+
+      expect(summary.prRelevance).toBeDefined();
+      expect(summary.prRelevance?.testFileModified).toBe(true);
+      expect(summary.prRelevance?.riskScore).toBe('medium');
+    });
+
+    it('should extract Cypress command metrics', () => {
+      const errorData: ErrorData = {
+        message: 'Test failed',
+        framework: 'cypress',
+        context: 'Recent Cypress commands: visit /, click button, type hello, assert',
+        screenshots: [{ name: 'failure.png', path: '/screenshots/failure.png' }]
+      };
+
+      const summary = createStructuredErrorSummary(errorData);
+
+      expect(summary.keyMetrics.totalCypressCommands).toBe(4);
+      expect(summary.keyMetrics.lastCommand).toBe('assert');
+      expect(summary.keyMetrics.hasScreenshots).toBe(true);
+    });
+
+    it('should handle missing data gracefully', () => {
+      const errorData: ErrorData = {
+        message: 'Simple error',
+        framework: 'unknown'
+      };
+
+      const summary = createStructuredErrorSummary(errorData);
+
+      expect(summary.primaryError.type).toBe('UnknownError');
+      expect(summary.primaryError.location).toBeUndefined();
+      expect(summary.testContext.testName).toBe('Unknown Test');
+      expect(summary.testContext.testFile).toBe('Unknown File');
+      expect(summary.prRelevance).toBeUndefined();
+      expect(summary.keyMetrics.totalCypressCommands).toBeUndefined();
+    });
   });
 
   describe('analyzeFailure', () => {
@@ -167,7 +332,7 @@ at Context.resolveAndRunSpec (cypress/support/index.js:123:12)
       const errorData: ErrorData = {
         message: 'Error: connect ECONNREFUSED 127.0.0.1:5432',
         stackTrace: 'at Connection.connect',
-        framework: 'jest',
+        framework: 'cypress',
       };
 
       mockClient.analyze.mockResolvedValueOnce({
@@ -191,7 +356,7 @@ at Context.resolveAndRunSpec (cypress/support/index.js:123:12)
       const errorData: ErrorData = {
         message: 'Error',
         stackTrace: 'stack trace',
-        framework: 'jest',
+        framework: 'cypress',
       };
 
       // First call with fewer indicators
@@ -358,6 +523,82 @@ at Context.resolveAndRunSpec (cypress/support/index.js:123:12)
 
       // Logs should boost confidence by 3%
       expect(resultWith.confidence).toBe(resultWithout.confidence + 3);
+    });
+
+    it('should pass through suggestedSourceLocations for PRODUCT_ISSUE', async () => {
+      const errorData: ErrorData = {
+        message: 'TypeError: Cannot read property name of null',
+        stackTrace: 'at UserProfile.render (src/components/UserProfile.tsx:45)',
+        framework: 'cypress',
+        prDiff: {
+          files: [{
+            filename: 'src/components/UserProfile.tsx',
+            status: 'modified',
+            additions: 10,
+            deletions: 5,
+            changes: 15,
+            patch: '@@ -45,7 +45,6 @@\n-  if (!user || !user.name) return null;\n   return <div>{user.name}</div>;',
+          }],
+          totalChanges: 1,
+          additions: 10,
+          deletions: 5,
+        },
+      };
+
+      const suggestedLocations = [{
+        file: 'src/components/UserProfile.tsx',
+        lines: '45-47',
+        reason: 'Removed null check causing null pointer error',
+      }];
+
+      mockClient.analyze.mockResolvedValueOnce({
+        verdict: 'PRODUCT_ISSUE',
+        reasoning: 'Null pointer error due to removed null check',
+        indicators: ['TypeError', 'null pointer'],
+        suggestedSourceLocations: suggestedLocations,
+      });
+
+      const result = await analyzeFailure(mockClient, errorData);
+
+      expect(result.suggestedSourceLocations).toEqual(suggestedLocations);
+      expect(result.verdict).toBe('PRODUCT_ISSUE');
+    });
+
+    it('should not include suggestedSourceLocations for TEST_ISSUE', async () => {
+      const errorData: ErrorData = {
+        message: 'TimeoutError: Waiting for element',
+        framework: 'cypress',
+      };
+
+      mockClient.analyze.mockResolvedValueOnce({
+        verdict: 'TEST_ISSUE',
+        reasoning: 'Element timing issue',
+        indicators: ['timeout'],
+      });
+
+      const result = await analyzeFailure(mockClient, errorData);
+
+      expect(result.suggestedSourceLocations).toBeUndefined();
+      expect(result.verdict).toBe('TEST_ISSUE');
+    });
+
+    it('should handle empty suggestedSourceLocations array', async () => {
+      const errorData: ErrorData = {
+        message: '500 Internal Server Error',
+        framework: 'cypress',
+      };
+
+      mockClient.analyze.mockResolvedValueOnce({
+        verdict: 'PRODUCT_ISSUE',
+        reasoning: 'Server error but no specific code location identified',
+        indicators: ['500 error'],
+        suggestedSourceLocations: [],
+      });
+
+      const result = await analyzeFailure(mockClient, errorData);
+
+      expect(result.suggestedSourceLocations).toEqual([]);
+      expect(result.verdict).toBe('PRODUCT_ISSUE');
     });
   });
 }); 

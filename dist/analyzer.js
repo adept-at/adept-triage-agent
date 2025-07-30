@@ -35,8 +35,24 @@ var __importStar = (this && this.__importStar) || (function () {
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.analyzeFailure = analyzeFailure;
 exports.extractErrorFromLogs = extractErrorFromLogs;
+exports.createStructuredErrorSummary = createStructuredErrorSummary;
 const core = __importStar(require("@actions/core"));
 const FEW_SHOT_EXAMPLES = [
+    {
+        error: 'Intentional failure for triage agent testing: expected false to be true',
+        verdict: 'TEST_ISSUE',
+        reasoning: 'Explicit "Intentional failure" message indicates this is a deliberate test failure for testing the triage agent itself, not a product bug.'
+    },
+    {
+        error: 'Error: ENOENT: no such file or directory, open "/tmp/test-fixtures/data.json"',
+        verdict: 'TEST_ISSUE',
+        reasoning: 'Missing test fixture file in temporary directory indicates test setup/environment issue, not a product code problem.'
+    },
+    {
+        error: 'ReferenceError: process.env.API_KEY is undefined',
+        verdict: 'TEST_ISSUE',
+        reasoning: 'Missing environment variable typically indicates test environment configuration issue rather than product bug.'
+    },
     {
         error: 'TimeoutError: Waiting for element to be visible: #submit-button',
         verdict: 'TEST_ISSUE',
@@ -76,17 +92,19 @@ const FEW_SHOT_EXAMPLES = [
         error: 'CypressError: cy.visit() failed trying to load: http://localhost:3000 - Connection refused',
         verdict: 'PRODUCT_ISSUE',
         reasoning: 'Connection refused when visiting the application URL indicates the application server is not running or accessible.'
+    },
+    {
+        error: 'TypeError: Cannot read property "name" of null - at UserProfile.render (src/components/UserProfile.tsx:45)',
+        verdict: 'PRODUCT_ISSUE',
+        reasoning: 'Null pointer error in production code. With PR changes showing removal of null check at UserProfile.tsx line 44-46, this is clearly a product bug. Suggested fix: restore the null check for user.name.'
+    },
+    {
+        error: 'GraphQL error: Variable "$userId" of required type "ID!" was not provided',
+        verdict: 'PRODUCT_ISSUE',
+        reasoning: 'Missing required GraphQL variable indicates the API call is not properly constructed. PR diff shows changes to API calls in src/api/userQueries.ts lines 23-28 where userId parameter was refactored.'
     }
 ];
 const LOG_EXTRACTORS = [
-    {
-        framework: 'jest',
-        patterns: [
-            /FAIL\s+(.+)\s+\([\d.]+\s*s\)\s*\n\s*●\s*(.+)\s*\n\s*([\s\S]+?)(?=\n\s*(?:PASS|FAIL|$))/g,
-            /Error:\s*(.+)\n\s*at\s+(.+)/g
-        ],
-        extract: extractJestError
-    },
     {
         framework: 'cypress',
         patterns: [
@@ -97,14 +115,6 @@ const LOG_EXTRACTORS = [
             /\d+\)\s+.+:\s*\n\s*(TypeError|ReferenceError|SyntaxError):\s*(.+)/g
         ],
         extract: extractCypressError
-    },
-    {
-        framework: 'mocha',
-        patterns: [
-            /\d+\)\s+(.+):\s*\n\s*(.+)\n([\s\S]+?)(?=\n\s*at)/g,
-            /Error:\s*(.+)\n\s*at\s+(.+)/g
-        ],
-        extract: extractMochaError
     }
 ];
 async function analyzeFailure(client, errorData) {
@@ -121,7 +131,8 @@ async function analyzeFailure(client, errorData) {
             confidence,
             reasoning: response.reasoning,
             summary,
-            indicators: response.indicators
+            indicators: response.indicators,
+            suggestedSourceLocations: response.suggestedSourceLocations
         };
     }
     catch (error) {
@@ -129,30 +140,24 @@ async function analyzeFailure(client, errorData) {
         throw error;
     }
 }
-function extractErrorFromLogs(logs) {
-    for (const extractor of LOG_EXTRACTORS) {
+function extractErrorFromLogs(logs, testFrameworks) {
+    const frameworksToUse = testFrameworks && testFrameworks.trim() !== ''
+        ? testFrameworks.toLowerCase().split(',').map(f => f.trim())
+        : ['cypress'];
+    let extractorsToUse = LOG_EXTRACTORS.filter(extractor => frameworksToUse.includes(extractor.framework));
+    if (extractorsToUse.length === 0) {
+        core.warning('No valid test frameworks specified, using all extractors');
+        extractorsToUse = LOG_EXTRACTORS;
+    }
+    for (const extractor of extractorsToUse) {
         const errorData = extractor.extract(logs);
         if (errorData) {
             core.info(`Extracted error using ${extractor.framework} patterns`);
             return errorData;
         }
     }
-    return extractGenericError(logs);
-}
-function extractJestError(logs) {
-    const failPattern = /FAIL\s+(.+)\s+\([\d.]+\s*s\)\s*\n\s*●\s*(.+)\s*\n\s*([\s\S]+?)(?=\n\s*(?:PASS|FAIL|Test Suites:|$))/;
-    const match = logs.match(failPattern);
-    if (match) {
-        const [, fileName, testName, errorContent] = match;
-        const errorMessage = errorContent.trim().split('\n')[0];
-        const stackTrace = extractStackTrace(errorContent);
-        return {
-            message: errorMessage,
-            stackTrace,
-            framework: 'jest',
-            testName,
-            fileName
-        };
+    if (!testFrameworks || testFrameworks.trim() === '') {
+        return extractGenericError(logs);
     }
     return null;
 }
@@ -263,7 +268,7 @@ function extractCypressError(logs) {
     if (errorTypeMatch) {
         failureType = errorTypeMatch[1];
     }
-    return {
+    const errorData = {
         message: errorContext.trim(),
         framework: 'cypress',
         testName,
@@ -273,21 +278,8 @@ function extractCypressError(logs) {
             ? `Full test failure context. ${additionalContext.join('. ')}`
             : 'Full test failure context for AI analysis'
     };
-}
-function extractMochaError(logs) {
-    const errorPattern = /\d+\)\s+(.+):\s*\n\s*(.+)\n([\s\S]+?)(?=\n\s*at)/;
-    const match = logs.match(errorPattern);
-    if (match) {
-        const [, testName, errorMessage, content] = match;
-        const stackTrace = extractStackTrace(content);
-        return {
-            message: errorMessage,
-            stackTrace,
-            framework: 'mocha',
-            testName
-        };
-    }
-    return null;
+    errorData.structuredSummary = createStructuredErrorSummary(errorData);
+    return errorData;
 }
 function extractGenericError(logs) {
     const errorPatterns = [
@@ -329,6 +321,106 @@ function extractStackTrace(content) {
         }
     }
     return stackLines.join('\n');
+}
+function createStructuredErrorSummary(errorData) {
+    const errorTypeMatch = errorData.message.match(/^(\w+):\s*(.+)/m) ||
+        errorData.message.match(/(\w+Error):\s*(.+)/m);
+    const errorType = errorTypeMatch ? errorTypeMatch[1] : errorData.failureType || 'UnknownError';
+    const errorMessage = errorTypeMatch ? errorTypeMatch[2].trim() : errorData.message.substring(0, 200);
+    let location;
+    if (errorData.stackTrace) {
+        const stackLines = errorData.stackTrace.split('\n').filter(line => line.includes(' at '));
+        const appFrames = stackLines.filter(line => !line.includes('node_modules'));
+        const topFrame = appFrames[0] || stackLines[0];
+        if (topFrame) {
+            const locationMatch = topFrame.match(/at .*? \((.+?):(\d+):\d+\)/) ||
+                topFrame.match(/at (.+?):(\d+):\d+/);
+            if (locationMatch) {
+                const file = locationMatch[1];
+                const line = parseInt(locationMatch[2]);
+                const isTestCode = file.includes('.test.') || file.includes('.spec.') || file.includes('.cy.');
+                const isAppCode = !isTestCode && !file.includes('node_modules');
+                location = { file, line, isTestCode, isAppCode };
+            }
+        }
+    }
+    if (!location && errorData.message) {
+        const messageLocationMatch = errorData.message.match(/(?:at |Error at )([^\s:]+\.(?:tsx?|jsx?)):(\d+)(?::\d+)?/);
+        if (messageLocationMatch) {
+            const file = messageLocationMatch[1];
+            const line = parseInt(messageLocationMatch[2]);
+            const isTestCode = file.includes('.test.') || file.includes('.spec.') || file.includes('.cy.');
+            const isAppCode = !isTestCode && !file.includes('node_modules');
+            location = { file, line, isTestCode, isAppCode };
+        }
+    }
+    const testContext = {
+        testName: errorData.testName || 'Unknown Test',
+        testFile: errorData.fileName || 'Unknown File',
+        framework: errorData.framework || 'unknown'
+    };
+    const durationMatch = errorData.context?.match(/Execution Time: ([^,]+)/);
+    if (durationMatch) {
+        testContext.duration = durationMatch[1];
+    }
+    const browserMatch = errorData.context?.match(/Browser: ([^,.]+)/);
+    if (browserMatch) {
+        testContext.browser = browserMatch[1];
+    }
+    const messageAndLogs = errorData.message + ' ' + (errorData.logs?.join(' ') || '');
+    const failureIndicators = {
+        hasNetworkErrors: /ECONNREFUSED|ETIMEDOUT|ERR_NETWORK|fetch failed|50\d|40[34]/.test(messageAndLogs),
+        hasNullPointerErrors: /Cannot read prop(?:erty|erties)(?:\s+["'][^"']+["'])?\s+of\s+(?:null|undefined)|null is not an object|TypeError.*of\s+(?:null|undefined)/.test(messageAndLogs),
+        hasTimeoutErrors: /Timed out|TimeoutError|timeout/i.test(messageAndLogs),
+        hasDOMErrors: /element is detached|not found|could not find element|failed because this element/.test(messageAndLogs),
+        hasAssertionErrors: /AssertionError|expected .+ to|assert/i.test(messageAndLogs)
+    };
+    let prRelevance;
+    if (errorData.prDiff) {
+        const testFileModified = errorData.prDiff.files.some(f => errorData.fileName && f.filename.includes(errorData.fileName));
+        const relatedSourceFiles = errorData.prDiff.files
+            .filter(f => {
+            const isSourceFile = /\.[jt]sx?$/.test(f.filename) &&
+                !f.filename.includes('.test.') &&
+                !f.filename.includes('.spec.');
+            return isSourceFile && location?.file && f.filename.includes(location.file.split('/').pop() || '');
+        })
+            .map(f => f.filename);
+        let riskScore = 'none';
+        if (testFileModified) {
+            riskScore = 'medium';
+        }
+        if (relatedSourceFiles.length > 0) {
+            riskScore = 'high';
+        }
+        if (errorData.prDiff.totalChanges > 50) {
+            riskScore = riskScore === 'none' ? 'low' : riskScore;
+        }
+        prRelevance = {
+            testFileModified,
+            relatedSourceFilesModified: relatedSourceFiles,
+            riskScore
+        };
+    }
+    const commandsMatch = errorData.context?.match(/Recent Cypress commands: (.+)/);
+    const commands = commandsMatch ? commandsMatch[1].split(', ') : [];
+    const keyMetrics = {
+        totalCypressCommands: commands.length > 0 ? commands.length : undefined,
+        lastCommand: commands.length > 0 ? commands[commands.length - 1] : undefined,
+        hasScreenshots: !!(errorData.screenshots && errorData.screenshots.length > 0),
+        logSize: errorData.logs ? errorData.logs.join('').length : 0
+    };
+    return {
+        primaryError: {
+            type: errorType,
+            message: errorMessage,
+            location
+        },
+        testContext,
+        failureIndicators,
+        prRelevance,
+        keyMetrics
+    };
 }
 function calculateConfidence(response, errorData) {
     let confidence = 70;
