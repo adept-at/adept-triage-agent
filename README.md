@@ -13,7 +13,7 @@ AI-powered GitHub Action that automatically triages test failures to determine i
 
 ## 🎯 Features
 
-- 🧠 **Intelligent Analysis**: Uses OpenAI GPT-4 to understand test failure context
+- 🧠 **Intelligent Analysis**: Uses OpenAI GPT-4.1 to understand test failure context
 - 🖼️ **Screenshot Analysis**: Automatically fetches and analyzes test screenshots when available
 - 📊 **Confidence Scoring**: Provides confidence levels for each verdict
 - 🔄 **Flexible Integration**: Works with various CI/CD workflows
@@ -31,7 +31,7 @@ When PR information is provided, the agent will:
 To enable PR diff analysis, provide these additional inputs:
 
 ```yaml
-- uses: adept-at/adept-triage-agent@v1.1.0
+- uses: adept-at/adept-triage-agent@v1
   with:
     GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
@@ -279,13 +279,35 @@ Integrate AI triage results into your Slack notifications in the triage workflow
 
 ## Outputs
 
-| Output        | Description                                             |
-| ------------- | ------------------------------------------------------- |
-| `verdict`     | Classification result: `TEST_ISSUE` or `PRODUCT_ISSUE`  |
-| `confidence`  | Confidence score (0-100)                                |
-| `reasoning`   | Detailed explanation of the decision                    |
-| `summary`     | Brief summary suitable for PR comments                  |
-| `triage_json` | Complete analysis as JSON string (includes all details) |
+| Output        | Description                                                                        |
+| ------------- | ---------------------------------------------------------------------------------- |
+| `verdict`     | Classification result: `TEST_ISSUE`, `PRODUCT_ISSUE`, `INCONCLUSIVE`, or `PENDING` |
+| `confidence`  | Confidence score (0-100)                                                           |
+| `reasoning`   | Detailed explanation of the decision                                               |
+| `summary`     | Brief summary suitable for PR comments                                             |
+| `triage_json` | Complete analysis as JSON string (includes all details)                            |
+
+### Special Verdicts
+
+- **`PENDING`**: The workflow is still running and cannot be analyzed yet
+- **`INCONCLUSIVE`**: The analysis completed but confidence is below the threshold
+
+### Example triage_json Output
+
+```json
+{
+  "verdict": "TEST_ISSUE",
+  "confidence": 95,
+  "reasoning": "The test failed due to a timing issue...",
+  "summary": "🧪 Test Issue: Timing issue with auto-save indicator",
+  "indicators": ["timeout", "element not found", "async wait"],
+  "metadata": {
+    "analyzedAt": "2024-07-30T10:15:30.000Z",
+    "hasScreenshots": true,
+    "logSize": 145632
+  }
+}
+```
 
 ## Setup
 
@@ -303,7 +325,7 @@ Integrate AI triage results into your Slack notifications in the triage workflow
 ## How It Works
 
 1. **Error Extraction**: The action extracts error messages, stack traces, and relevant context from test logs
-2. **AI Analysis**: Uses GPT-4 with carefully crafted prompts to analyze the failure
+2. **AI Analysis**: Uses GPT-4.1 with carefully crafted prompts to analyze the failure
 3. **Classification**: Determines whether the failure is a test issue or product issue
 4. **Confidence Scoring**: Calculates confidence based on the clarity of indicators
 5. **Output Generation**: Provides structured output with verdict, confidence, and reasoning
@@ -328,7 +350,7 @@ Integrate AI triage results into your Slack notifications in the triage workflow
 
 ## Contributing
 
-We welcome contributions! Please see our [Contributing Guide](CONTRIBUTING.md) for details.
+We welcome contributions!
 
 ### Development Setup
 
@@ -359,7 +381,7 @@ npm run build
 We follow semantic versioning and provide multiple ways to reference this action:
 
 - **`@v1`** - Recommended for production. Automatically updates to the latest v1.x.x release
-- **`@v1.3.1`** - Pin to a specific version
+- **`@v1.4.0`** - Pin to a specific version
 - **`@main`** - Latest development version (use with caution)
 
 Example:
@@ -369,7 +391,7 @@ Example:
 uses: adept-at/adept-triage-agent@v1
 
 # Specific version - no automatic updates
-uses: adept-at/adept-triage-agent@v1.3.1
+uses: adept-at/adept-triage-agent@v1.4.0
 ```
 
 ## License
