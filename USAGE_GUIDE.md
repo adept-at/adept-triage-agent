@@ -147,9 +147,15 @@ jobs:
       - name: Send initial failure notification
         if: failure()
         run: |
-          curl -X POST -H 'Content-type: application/json' --data '{
-            "text": "❌ Test Failed: ${{ github.job }} - ${{ matrix.containers }}"
-          }' ${{ secrets.SLACK_WEBHOOK_URL }}
+          # Use jq for consistent JSON formatting
+          PAYLOAD=$(jq -n \
+            --arg text "❌ Test Failed: ${{ github.job }} - ${{ matrix.containers }}" \
+            '{ text: $text }')
+          
+          curl -X POST \
+            -H 'Content-type: application/json' \
+            -d "$PAYLOAD" \
+            ${{ secrets.SLACK_WEBHOOK_URL }}
 
       - name: Trigger triage analysis
         if: failure()
@@ -220,6 +226,7 @@ jobs:
           VERDICT="${{ steps.triage.outputs.verdict }}"
           CONFIDENCE="${{ steps.triage.outputs.confidence }}"
           SUMMARY="${{ steps.triage.outputs.summary }}"
+          SPEC="${{ github.event.client_payload.spec }}"
 
           # Determine emoji based on verdict
           if [ "$VERDICT" = "TEST_ISSUE" ]; then
@@ -230,17 +237,29 @@ jobs:
             EMOJI="❓"
           fi
 
-          curl -X POST -H 'Content-type: application/json' --data '{
-            "text": "'"$EMOJI"' AI Triage Result for ${{ github.event.client_payload.spec }}",
-            "attachments": [{
-              "color": "warning",
-              "fields": [
-                {"title": "Verdict", "value": "'"$VERDICT"'", "short": true},
-                {"title": "Confidence", "value": "'"$CONFIDENCE"'%", "short": true},
-                {"title": "Summary", "value": "'"$SUMMARY"'"}
-              ]
-            }]
-          }' ${{ secrets.SLACK_WEBHOOK_URL }}
+          # Use jq for proper JSON formatting and escaping
+          PAYLOAD=$(jq -n \
+            --arg emoji "$EMOJI" \
+            --arg spec "$SPEC" \
+            --arg verdict "$VERDICT" \
+            --arg confidence "$CONFIDENCE%" \
+            --arg summary "$SUMMARY" \
+            '{
+              text: ($emoji + " AI Triage Result for " + $spec),
+              attachments: [{
+                color: "warning",
+                fields: [
+                  {title: "Verdict", value: $verdict, short: true},
+                  {title: "Confidence", value: $confidence, short: true},
+                  {title: "Summary", value: $summary}
+                ]
+              }]
+            }')
+
+          curl -X POST \
+            -H 'Content-type: application/json' \
+            -d "$PAYLOAD" \
+            ${{ secrets.SLACK_WEBHOOK_URL }}
 ```
 
 ## Why Separate Workflows?
@@ -342,9 +361,15 @@ jobs:
       - name: Send failure notification
         if: failure()
         run: |
-          curl -X POST -H 'Content-type: application/json' --data '{
-            "text": "❌ Test Failed: ${{ matrix.containers }} on branch ${{ github.ref }}"
-          }' ${{ secrets.SLACK_WEBHOOK_URL }}
+          # Use jq for consistent JSON formatting
+          PAYLOAD=$(jq -n \
+            --arg text "❌ Test Failed: ${{ matrix.containers }} on branch ${{ github.ref }}" \
+            '{ text: $text }')
+          
+          curl -X POST \
+            -H 'Content-type: application/json' \
+            -d "$PAYLOAD" \
+            ${{ secrets.SLACK_WEBHOOK_URL }}
 
       - name: Trigger triage workflow
         if: failure()
@@ -420,6 +445,7 @@ jobs:
           CONFIDENCE="${{ steps.parse.outputs.confidence }}"
           SUMMARY="${{ steps.parse.outputs.summary }}"
           SPEC="${{ github.event.client_payload.spec }}"
+          WORKFLOW_URL="https://github.com/${{ github.repository }}/actions/runs/${{ github.event.client_payload.workflow_run_id }}"
 
           # Choose color based on verdict
           COLOR="warning"
@@ -427,22 +453,35 @@ jobs:
             COLOR="danger"
           fi
 
-          curl -X POST -H 'Content-type: application/json' --data '{
-            "attachments": [{
-              "color": "'"$COLOR"'",
-              "title": "AI Triage Results for '"$SPEC"'",
-              "fields": [
-                {"title": "Verdict", "value": "'"$VERDICT"'", "short": true},
-                {"title": "Confidence", "value": "'"$CONFIDENCE"'%", "short": true},
-                {"title": "Summary", "value": "'"$SUMMARY"'"}
-              ],
-              "actions": [{
-                "type": "button",
-                "text": "View Workflow",
-                "url": "https://github.com/${{ github.repository }}/actions/runs/${{ github.event.client_payload.workflow_run_id }}"
+          # Use jq for proper JSON formatting and escaping
+          PAYLOAD=$(jq -n \
+            --arg color "$COLOR" \
+            --arg spec "$SPEC" \
+            --arg verdict "$VERDICT" \
+            --arg confidence "$CONFIDENCE%" \
+            --arg summary "$SUMMARY" \
+            --arg workflow_url "$WORKFLOW_URL" \
+            '{
+              attachments: [{
+                color: $color,
+                title: ("AI Triage Results for " + $spec),
+                fields: [
+                  {title: "Verdict", value: $verdict, short: true},
+                  {title: "Confidence", value: $confidence, short: true},
+                  {title: "Summary", value: $summary}
+                ],
+                actions: [{
+                  type: "button",
+                  text: "View Workflow",
+                  url: $workflow_url
+                }]
               }]
-            }]
-          }' ${{ secrets.SLACK_WEBHOOK_URL }}
+            }')
+
+          curl -X POST \
+            -H 'Content-type: application/json' \
+            -d "$PAYLOAD" \
+            ${{ secrets.SLACK_WEBHOOK_URL }}
 ```
 
 ## Output Format

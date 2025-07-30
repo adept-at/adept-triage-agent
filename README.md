@@ -121,7 +121,7 @@ jobs:
 
       - name: Analyze failure
         id: triage
-        uses: adept-at/adept-triage-agent@v1.0.2
+        uses: adept-at/adept-triage-agent@v1
         with:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           WORKFLOW_RUN_ID: '${{ github.event.client_payload.workflow_run_id }}'
@@ -199,7 +199,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Triage Test Failures
-        uses: adept-at/adept-triage-agent@v1.0.2
+        uses: adept-at/adept-triage-agent@v1
         with:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           WORKFLOW_RUN_ID: ${{ github.event.workflow_run.id }}
@@ -215,7 +215,7 @@ Integrate AI triage results into your Slack notifications in the triage workflow
 # In your triage workflow
 - name: Analyze failure
   id: triage
-  uses: adept-at/adept-triage-agent@v1.0.2
+  uses: adept-at/adept-triage-agent@v1  # Automatically gets v1.x.x updates
   with:
     OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
     WORKFLOW_RUN_ID: '${{ github.event.client_payload.workflow_run_id }}'
@@ -224,7 +224,9 @@ Integrate AI triage results into your Slack notifications in the triage workflow
   run: |
     VERDICT="${{ steps.triage.outputs.verdict }}"
     SUMMARY="${{ steps.triage.outputs.summary }}"
-
+    CONFIDENCE="${{ steps.triage.outputs.confidence }}"
+    JOB_NAME="${{ github.event.client_payload.job_name }}"
+    
     if [[ "$VERDICT" == "PRODUCT_ISSUE" ]]; then
       COLOR="danger"
       EMOJI="🚨"
@@ -234,18 +236,31 @@ Integrate AI triage results into your Slack notifications in the triage workflow
       EMOJI="🧪"
       PRIORITY="FYI:"
     fi
-
-    curl -X POST -H 'Content-type: application/json' --data "{
-      \"text\": \"$PRIORITY Test failure in ${{ github.event.client_payload.job_name }}\",
-      \"attachments\": [{
-        \"color\": \"$COLOR\",
-        \"fields\": [
-          {\"title\": \"$EMOJI Verdict\", \"value\": \"$VERDICT\", \"short\": true},
-          {\"title\": \"Confidence\", \"value\": \"${{ steps.triage.outputs.confidence }}%\", \"short\": true},
-          {\"title\": \"Summary\", \"value\": \"$SUMMARY\"}
-        ]
-      }]
-    }" ${{ secrets.SLACK_WEBHOOK_URL }}
+    
+    # Use jq for proper JSON formatting and escaping
+    PAYLOAD=$(jq -n \
+      --arg text "$PRIORITY Test failure in $JOB_NAME" \
+      --arg color "$COLOR" \
+      --arg emoji "$EMOJI" \
+      --arg verdict "$VERDICT" \
+      --arg confidence "$CONFIDENCE%" \
+      --arg summary "$SUMMARY" \
+      '{
+        text: $text,
+        attachments: [{
+          color: $color,
+          fields: [
+            {title: ($emoji + " Verdict"), value: $verdict, short: true},
+            {title: "Confidence", value: $confidence, short: true},
+            {title: "Summary", value: $summary}
+          ]
+        }]
+      }')
+    
+    curl -X POST \
+      -H 'Content-type: application/json' \
+      -d "$PAYLOAD" \
+      ${{ secrets.SLACK_WEBHOOK_URL }}
 ```
 
 ## Inputs
