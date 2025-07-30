@@ -47,6 +47,10 @@ To enable PR diff analysis, provide these additional inputs:
 
 ⚠️ **The Adept Triage Agent must run in a separate workflow from your tests** to avoid circular dependencies.
 
+### Note on Authentication
+
+The default `GITHUB_TOKEN` works perfectly when the triage agent runs in the same repository as your source code. You only need a Personal Access Token (PAT) if you're running the triage agent from a different repository. See [Cross-Repository Access](./README_CROSS_REPO_PR.md) for details.
+
 ### Step 1: Update Your Test Workflow
 
 Add a dispatch trigger when tests fail:
@@ -215,7 +219,7 @@ Integrate AI triage results into your Slack notifications in the triage workflow
 # In your triage workflow
 - name: Analyze failure
   id: triage
-  uses: adept-at/adept-triage-agent@v1  # Automatically gets v1.x.x updates
+  uses: adept-at/adept-triage-agent@v1 # Automatically gets v1.x.x updates
   with:
     OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
     WORKFLOW_RUN_ID: '${{ github.event.client_payload.workflow_run_id }}'
@@ -226,7 +230,7 @@ Integrate AI triage results into your Slack notifications in the triage workflow
     SUMMARY="${{ steps.triage.outputs.summary }}"
     CONFIDENCE="${{ steps.triage.outputs.confidence }}"
     JOB_NAME="${{ github.event.client_payload.job_name }}"
-    
+
     if [[ "$VERDICT" == "PRODUCT_ISSUE" ]]; then
       COLOR="danger"
       EMOJI="🚨"
@@ -236,7 +240,7 @@ Integrate AI triage results into your Slack notifications in the triage workflow
       EMOJI="🧪"
       PRIORITY="FYI:"
     fi
-    
+
     # Use jq for proper JSON formatting and escaping
     PAYLOAD=$(jq -n \
       --arg text "$PRIORITY Test failure in $JOB_NAME" \
@@ -256,7 +260,7 @@ Integrate AI triage results into your Slack notifications in the triage workflow
           ]
         }]
       }')
-    
+
     curl -X POST \
       -H 'Content-type: application/json' \
       -d "$PAYLOAD" \
@@ -265,17 +269,17 @@ Integrate AI triage results into your Slack notifications in the triage workflow
 
 ## Inputs
 
-| Input                  | Description                                                     | Required | Default                    |
-| ---------------------- | --------------------------------------------------------------- | -------- | -------------------------- |
-| `GITHUB_TOKEN`         | GitHub token for API access                                     | No       | `${{ github.token }}`      |
-| `OPENAI_API_KEY`       | OpenAI API key for AI analysis                                  | Yes      | -                          |
-| `ERROR_MESSAGE`        | Error message to analyze (optional if using workflow artifacts) | No       | -                          |
-| `WORKFLOW_RUN_ID`      | Workflow run ID to fetch logs from                              | No       | -                          |
-| `JOB_NAME`             | Specific job name to analyze                                    | No       | -                          |
-| `CONFIDENCE_THRESHOLD` | Minimum confidence level for verdict (0-100)                    | No       | `70`                       |
-| `PR_NUMBER`            | Pull request number to fetch diff from                          | No       | -                          |
-| `COMMIT_SHA`           | Commit SHA associated with the test failure                     | No       | -                          |
-| `REPOSITORY`           | Repository in owner/repo format                                 | No       | `${{ github.repository }}` |
+| Input                  | Description                                                                                                                                                                                                                    | Required | Default                    |
+| ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------- | -------------------------- |
+| `GITHUB_TOKEN`         | GitHub token for API access. **Note**: A PAT is only needed when running the triage agent in a different repository than the source code being analyzed. See [Cross-Repository Access](./README_CROSS_REPO_PR.md) for details. | No       | `${{ github.token }}`      |
+| `OPENAI_API_KEY`       | OpenAI API key for AI analysis                                                                                                                                                                                                 | Yes      | -                          |
+| `ERROR_MESSAGE`        | Error message to analyze (optional if using workflow artifacts)                                                                                                                                                                | No       | -                          |
+| `WORKFLOW_RUN_ID`      | Workflow run ID to fetch logs from                                                                                                                                                                                             | No       | -                          |
+| `JOB_NAME`             | Specific job name to analyze                                                                                                                                                                                                   | No       | -                          |
+| `CONFIDENCE_THRESHOLD` | Minimum confidence level for verdict (0-100)                                                                                                                                                                                   | No       | `70`                       |
+| `PR_NUMBER`            | Pull request number to fetch diff from                                                                                                                                                                                         | No       | -                          |
+| `COMMIT_SHA`           | Commit SHA associated with the test failure                                                                                                                                                                                    | No       | -                          |
+| `REPOSITORY`           | Repository in owner/repo format                                                                                                                                                                                                | No       | `${{ github.repository }}` |
 
 ## Outputs
 

@@ -151,7 +151,7 @@ jobs:
           PAYLOAD=$(jq -n \
             --arg text "❌ Test Failed: ${{ github.job }} - ${{ matrix.containers }}" \
             '{ text: $text }')
-          
+
           curl -X POST \
             -H 'Content-type: application/json' \
             -d "$PAYLOAD" \
@@ -280,14 +280,14 @@ By using separate workflows with repository dispatch events, we ensure the test 
 
 ## Inputs
 
-| Input                  | Required | Default               | Description                                       |
-| ---------------------- | -------- | --------------------- | ------------------------------------------------- |
-| `OPENAI_API_KEY`       | ✅ Yes   | -                     | Your OpenAI API key for AI analysis               |
-| `GITHUB_TOKEN`         | No       | `${{ github.token }}` | GitHub token for API access                       |
-| `WORKFLOW_RUN_ID`      | No       | Current run           | The workflow run ID to analyze                    |
-| `JOB_NAME`             | No       | All failed jobs       | Specific job name to analyze                      |
-| `ERROR_MESSAGE`        | No       | From logs/artifacts   | Error message to analyze (if not using artifacts) |
-| `CONFIDENCE_THRESHOLD` | No       | `70`                  | Minimum confidence level for verdict (0-100)      |
+| Input                  | Required | Default               | Description                                                                                                                                                                                                                                       |
+| ---------------------- | -------- | --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `OPENAI_API_KEY`       | ✅ Yes   | -                     | Your OpenAI API key for AI analysis                                                                                                                                                                                                               |
+| `GITHUB_TOKEN`         | No       | `${{ github.token }}` | GitHub token for API access. **Note**: A Personal Access Token (PAT) is only needed when the triage agent runs in a different repository than the source code being tested. See [Cross-Repository Access](./README_CROSS_REPO_PR.md) for details. |
+| `WORKFLOW_RUN_ID`      | No       | Current run           | The workflow run ID to analyze                                                                                                                                                                                                                    |
+| `JOB_NAME`             | No       | All failed jobs       | Specific job name to analyze                                                                                                                                                                                                                      |
+| `ERROR_MESSAGE`        | No       | From logs/artifacts   | Error message to analyze (if not using artifacts)                                                                                                                                                                                                 |
+| `CONFIDENCE_THRESHOLD` | No       | `70`                  | Minimum confidence level for verdict (0-100)                                                                                                                                                                                                      |
 
 ## Outputs
 
@@ -365,7 +365,7 @@ jobs:
           PAYLOAD=$(jq -n \
             --arg text "❌ Test Failed: ${{ matrix.containers }} on branch ${{ github.ref }}" \
             '{ text: $text }')
-          
+
           curl -X POST \
             -H 'Content-type: application/json' \
             -d "$PAYLOAD" \

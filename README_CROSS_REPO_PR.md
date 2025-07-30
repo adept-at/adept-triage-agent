@@ -1,5 +1,15 @@
 # Cross-Repository PR Access in GitHub Actions
 
+## When You Need a PAT Token
+
+A Personal Access Token (PAT) is **only required** when the Adept Triage Agent runs in a different repository than the source code being tested.
+
+### Examples:
+
+- ✅ **PAT Required**: Triage agent in `org/triage-workflows` analyzing failures from `org/main-app`
+- ✅ **PAT Required**: Centralized workflow repository analyzing tests from multiple other repositories
+- ❌ **PAT Not Required**: Triage agent and test code both in the same repository `org/main-app`
+
 ## Problem
 
 When the Adept Triage Agent runs in a GitHub Actions workflow and tries to fetch PR information from a different repository (e.g., `adept-at/learn-webapp`), it fails with:
