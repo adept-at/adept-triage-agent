@@ -67,6 +67,21 @@ const FEW_SHOT_EXAMPLES: FewShotExample[] = [
     error: 'GraphQL error: Variable "$userId" of required type "ID!" was not provided',
     verdict: 'PRODUCT_ISSUE',
     reasoning: 'Missing required GraphQL variable indicates the API call is not properly constructed. PR diff shows changes to API calls in src/api/userQueries.ts lines 23-28 where userId parameter was refactored.'
+  },
+  {
+    error: 'AssertionError: expected [alt="Skill Image"] to exist in the DOM',
+    verdict: 'TEST_ISSUE',
+    reasoning: 'Element with alt text not found in DOM indicates timing or rendering issue. The element may be covered by overlays, tabs, or not yet rendered. Tests should wait for parent containers to load first and consider checking existence vs visibility.'
+  },
+  {
+    error: 'Expected to find element: [data-testid="component-container"], but never found it',
+    verdict: 'TEST_ISSUE',
+    reasoning: 'Test looking for specific data-testid that is not found suggests either the element hasn\'t rendered yet, selector has changed, or element is conditionally rendered. This is a test synchronization issue.'
+  },
+  {
+    error: 'AssertionError: Timed out retrying after 15000ms: Expected to find element: [alt="Skill Image"], but never found it.',
+    verdict: 'TEST_ISSUE',
+    reasoning: 'Long timeout (15s) still failing suggests the element exists but in an unexpected state (covered by overlay, not visible, or conditionally rendered). Tests should verify parent containers are loaded and consider using .should("exist") instead of visibility checks when elements may be obscured.'
   }
 ];
 
@@ -421,6 +436,16 @@ export function createStructuredErrorSummary(errorData: ErrorData): StructuredEr
     framework: errorData.framework || 'unknown'
   };
   
+  // Detect viewport/rendering context
+  const isMobileTest = (errorData.testName?.toLowerCase().includes('mobile') || 
+                        errorData.fileName?.toLowerCase().includes('mobile') ||
+                        errorData.context?.toLowerCase().includes('mobile') ||
+                        false);
+  
+  const hasViewportContext = isMobileTest || 
+                             (errorData.context?.toLowerCase().includes('viewport') || false) ||
+                             (errorData.context?.toLowerCase().includes('responsive') || false);
+  
   // Extract duration from context if available
   const durationMatch = errorData.context?.match(/Execution Time: ([^,]+)/);
   if (durationMatch) {
@@ -440,7 +465,13 @@ export function createStructuredErrorSummary(errorData: ErrorData): StructuredEr
     hasNullPointerErrors: /Cannot read prop(?:erty|erties)(?:\s+["'][^"']+["'])?\s+of\s+(?:null|undefined)|null is not an object|TypeError.*of\s+(?:null|undefined)/.test(messageAndLogs),
     hasTimeoutErrors: /Timed out|TimeoutError|timeout/i.test(messageAndLogs),
     hasDOMErrors: /element is detached|not found|could not find element|failed because this element/.test(messageAndLogs),
-    hasAssertionErrors: /AssertionError|expected .+ to|assert/i.test(messageAndLogs)
+    hasAssertionErrors: /AssertionError|expected .+ to|assert/i.test(messageAndLogs),
+    isMobileTest: isMobileTest,
+    hasLongTimeout: /Timed out .+ after (?:1[0-9]|[2-9][0-9])\d{3}ms/.test(messageAndLogs), // Timeout > 10 seconds
+    hasAltTextSelector: /\[alt=["'][^"']+["']\]/.test(messageAndLogs), // Looking for alt text selectors
+    hasElementExistenceCheck: /to exist|should.*exist/.test(messageAndLogs),
+    hasVisibilityIssue: /not visible|be\.visible|covered by|obscured|overlay|modal/i.test(messageAndLogs),
+    hasViewportContext: hasViewportContext
   };
   
   // Analyze PR relevance if available

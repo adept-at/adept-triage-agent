@@ -191,6 +191,11 @@ TEST_ISSUE indicators:
 - Test framework errors
 - Element not found due to incorrect selectors
 - Test synchronization issues
+- Elements covered by overlays, tabs, modals, or other UI components
+- Elements that exist but are not visible or accessible
+- Viewport-specific rendering differences (mobile vs desktop)
+- Long timeouts (>10s) that still fail, suggesting element state issues rather than missing functionality
+- Tests checking visibility when elements may be legitimately obscured or conditionally rendered
 
 PRODUCT_ISSUE indicators:
 - Application errors (500, 404, etc.)
@@ -220,6 +225,9 @@ COMMON MISCLASSIFICATION PATTERNS TO AVOID:
 - Don't classify as PRODUCT_ISSUE just because of a timeout - many timeouts are test synchronization issues
 - GraphQL/API errors during tests often indicate real product issues, not test problems
 - "Element not found" can be either - check if UI actually rendered correctly in screenshots
+- When elements with alt text or aria-labels are "not found" but the screenshot shows the UI rendered correctly, the element is likely covered/obscured by overlays, tabs, or modals (TEST_ISSUE)
+- Long timeouts (>10s) that still fail often indicate the element exists but isn't in the expected state (covered, not visible, or conditionally rendered) rather than actual missing functionality
+- If placeholder content is visible instead of expected content, but no errors are shown, this may be normal application state rather than a bug
 
 When PR changes are provided:
 - Analyze if the test failure is related to the changed code
@@ -283,6 +291,21 @@ Always respond with a JSON object containing:
       
       summaryHeader += `\n**Failure Indicators:**\n`;
       const indicators = [];
+      if (summary.failureIndicators.hasVisibilityIssue) {
+        indicators.push('Visibility/Overlay Issue');
+      }
+      if (summary.failureIndicators.hasLongTimeout) {
+        indicators.push('Long Timeout (>10s)');
+      }
+      if (summary.failureIndicators.hasAltTextSelector) {
+        indicators.push('Alt Text Selector Used');
+      }
+      if (summary.failureIndicators.hasElementExistenceCheck) {
+        indicators.push('Element Existence Check');
+      }
+      if (summary.failureIndicators.hasViewportContext) {
+        indicators.push('Viewport/Responsive Context');
+      }
       if (summary.failureIndicators.hasNetworkErrors) indicators.push('Network Errors');
       if (summary.failureIndicators.hasNullPointerErrors) indicators.push('Null Pointer Errors');
       if (summary.failureIndicators.hasTimeoutErrors) indicators.push('Timeout Errors');

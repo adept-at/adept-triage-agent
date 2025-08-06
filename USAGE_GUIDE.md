@@ -20,7 +20,7 @@ Running the triage agent within the same workflow that it's trying to analyze cr
 We recommend using the major version tag for automatic updates:
 
 - **`@v1`** - Automatically gets backward-compatible updates (recommended)
-- **`@v1.3.1`** - Pin to specific version if needed
+- **`@v1.5.1`** - Pin to specific version if needed
 
 ## Quick Start
 
@@ -71,7 +71,7 @@ jobs:
 
       - name: Run triage analysis
         id: triage
-        uses: adept-at/adept-triage-agent@v1.3.1
+        uses: adept-at/adept-triage-agent@v1
         with:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
@@ -216,7 +216,7 @@ jobs:
 
       - name: Run triage analysis
         id: triage
-        uses: adept-at/adept-triage-agent@v1.3.1
+        uses: adept-at/adept-triage-agent@v1
         with:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
@@ -282,15 +282,18 @@ By using separate workflows with repository dispatch events, we ensure the test 
 
 ## Inputs
 
-| Input                  | Required | Default               | Description                                                                                                                                                                                                                                       |
-| ---------------------- | -------- | --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `OPENAI_API_KEY`       | ✅ Yes   | -                     | Your OpenAI API key for AI analysis                                                                                                                                                                                                               |
-| `GITHUB_TOKEN`         | No       | `${{ github.token }}` | GitHub token for API access. **Note**: A Personal Access Token (PAT) is only needed when the triage agent runs in a different repository than the source code being tested. See [Cross-Repository Access](./README_CROSS_REPO_PR.md) for details. |
-| `WORKFLOW_RUN_ID`      | No       | Current run           | The workflow run ID to analyze                                                                                                                                                                                                                    |
-| `JOB_NAME`             | No       | All failed jobs       | Specific job name to analyze                                                                                                                                                                                                                      |
-| `ERROR_MESSAGE`        | No       | From logs/artifacts   | Error message to analyze (if not using artifacts)                                                                                                                                                                                                 |
-| `CONFIDENCE_THRESHOLD` | No       | `70`                  | Minimum confidence level for verdict (0-100)                                                                                                                                                                                                      |
-| `TEST_FRAMEWORKS`      | No       | `cypress`             | Test framework to use. Currently only supports "cypress".                                                                                                                                                                                         |
+| Input                  | Required | Default                    | Description                                                                                                                                                                                                                                       |
+| ---------------------- | -------- | -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `OPENAI_API_KEY`       | ✅ Yes   | -                          | Your OpenAI API key for AI analysis                                                                                                                                                                                                               |
+| `GITHUB_TOKEN`         | No       | `${{ github.token }}`      | GitHub token for API access. **Note**: A Personal Access Token (PAT) is only needed when the triage agent runs in a different repository than the source code being tested. See [Cross-Repository Access](./README_CROSS_REPO_PR.md) for details. |
+| `WORKFLOW_RUN_ID`      | No       | Current run                | The workflow run ID to analyze                                                                                                                                                                                                                    |
+| `JOB_NAME`             | No       | All failed jobs            | Specific job name to analyze                                                                                                                                                                                                                      |
+| `ERROR_MESSAGE`        | No       | From logs/artifacts        | Error message to analyze (if not using artifacts)                                                                                                                                                                                                 |
+| `CONFIDENCE_THRESHOLD` | No       | `70`                       | Minimum confidence level for verdict (0-100)                                                                                                                                                                                                      |
+| `PR_NUMBER`            | No       | -                          | Pull request number to fetch diff from (enables PR diff analysis)                                                                                                                                                                                 |
+| `COMMIT_SHA`           | No       | -                          | Commit SHA associated with the test failure                                                                                                                                                                                                       |
+| `REPOSITORY`           | No       | `${{ github.repository }}` | Repository in owner/repo format                                                                                                                                                                                                                   |
+| `TEST_FRAMEWORKS`      | No       | `cypress`                  | Test framework to use. Currently only supports "cypress".                                                                                                                                                                                         |
 
 ## Outputs
 
@@ -428,7 +431,7 @@ jobs:
 
       - name: Run AI triage analysis
         id: triage
-        uses: adept-at/adept-triage-agent@v1.3.1
+        uses: adept-at/adept-triage-agent@v1
         with:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           WORKFLOW_RUN_ID: '${{ github.event.client_payload.workflow_run_id }}'
@@ -504,6 +507,13 @@ The `triage_json` output contains the complete analysis as a JSON string. This i
     "Cypress error: 'element is not visible'",
     "Screenshot shows UI rendered but button not interactable"
   ],
+  "suggestedSourceLocations": [
+    {
+      "file": "src/components/Dropdown.tsx",
+      "lines": "45-67",
+      "reason": "Component with z-index issue causing overlay problem"
+    }
+  ],
   "metadata": {
     "analyzedAt": "2025-07-25T18:56:27.148Z",
     "hasScreenshots": true,
@@ -516,6 +526,8 @@ Additional fields in metadata for special cases:
 
 - **INCONCLUSIVE verdict**: includes `confidenceThreshold` field
 - **PENDING verdict**: includes `workflowStatus` field
+
+The `suggestedSourceLocations` field is only included for `PRODUCT_ISSUE` verdicts and provides hints about which source files might contain the bug.
 
 ### Integration Example:
 
@@ -549,9 +561,29 @@ To analyze all failed jobs in a workflow:
     # Omit JOB_NAME to analyze all failed jobs
 ```
 
+### PR Diff Analysis
+
+When you provide a `PR_NUMBER`, the triage agent will:
+
+1. Fetch the PR diff to understand what code changed
+2. Analyze if the changes are related to the test failure
+3. Calculate a risk score (high/medium/low/none)
+4. Use this context to make more accurate verdicts
+
+This is especially useful for determining if a test failure is caused by recent code changes:
+
+```yaml
+- name: Run AI triage analysis
+  uses: adept-at/adept-triage-agent@v1
+  with:
+    OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+    WORKFLOW_RUN_ID: '${{ github.event.client_payload.workflow_run_id }}'
+    PR_NUMBER: '${{ github.event.pull_request.number }}' # Enable PR diff analysis
+```
+
 ### Using with Different Test Frameworks
 
-The action works with any test framework that produces logs and screenshots:
+The action currently supports Cypress test framework with optimized error extraction. While the `TEST_FRAMEWORKS` input accepts a value, only "cypress" is currently implemented:
 
 ```yaml
 # Cypress example with artifacts
@@ -568,9 +600,10 @@ The action works with any test framework that produces logs and screenshots:
 
 - name: AI Triage
   if: failure()
-  uses: adept-at/adept-triage-agent@v1.3.1
+  uses: adept-at/adept-triage-agent@v1
   with:
     OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+    TEST_FRAMEWORKS: 'cypress' # Currently the only supported framework
 ```
 
 ### Custom Confidence Thresholds
@@ -615,7 +648,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Analyze Test Failure
-        uses: adept-at/adept-triage-agent@v1.3.1
+        uses: adept-at/adept-triage-agent@v1
         with:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           WORKFLOW_RUN_ID: ${{ github.event.inputs.workflow_run_id }}
@@ -640,9 +673,23 @@ Even if some data collection fails (e.g., screenshots unavailable), the agent wi
 
 1. **Log Collection**: The action fetches all logs from the failed job(s)
 2. **Artifact Analysis**: Downloads and analyzes screenshots and test artifacts
-3. **AI Analysis**: Sends logs + screenshots to GPT-4.1 for multimodal analysis
-4. **Verdict Generation**: Determines if the failure is a test or product issue
-5. **Confidence Scoring**: Provides a confidence score based on evidence
+3. **Structured Error Extraction**: Automatically extracts and categorizes error information
+4. **PR Diff Analysis**: If PR number provided, analyzes code changes for relevance
+5. **AI Analysis**: Sends structured summary + logs + screenshots to GPT-4.1 for multimodal analysis
+6. **Verdict Generation**: Determines if the failure is a test or product issue
+7. **Confidence Scoring**: Provides a confidence score based on evidence
+
+### Structured Error Summary (v1.5.0+)
+
+The triage agent automatically creates a structured summary of the error before sending it to OpenAI, improving accuracy and speed. This includes:
+
+- **Error Classification**: Type (AssertionError, NetworkError, etc.) and location
+- **Test Context**: Test name, file, framework, browser, and duration
+- **Failure Indicators**: Detects network errors, null pointers, timeouts, DOM issues, assertions
+- **PR Impact Analysis**: Calculates risk score based on modified files
+- **Key Metrics**: Screenshot availability, last command, log size
+
+This pre-analysis helps GPT-4.1 make more accurate determinations between test issues and product bugs.
 
 ## Best Practices
 

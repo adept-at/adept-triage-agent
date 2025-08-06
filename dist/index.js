@@ -109,6 +109,21 @@ const FEW_SHOT_EXAMPLES = [
         error: 'GraphQL error: Variable "$userId" of required type "ID!" was not provided',
         verdict: 'PRODUCT_ISSUE',
         reasoning: 'Missing required GraphQL variable indicates the API call is not properly constructed. PR diff shows changes to API calls in src/api/userQueries.ts lines 23-28 where userId parameter was refactored.'
+    },
+    {
+        error: 'AssertionError: expected [alt="Skill Image"] to exist in the DOM',
+        verdict: 'TEST_ISSUE',
+        reasoning: 'Element with alt text not found in DOM indicates timing or rendering issue. The element may be covered by overlays, tabs, or not yet rendered. Tests should wait for parent containers to load first and consider checking existence vs visibility.'
+    },
+    {
+        error: 'Expected to find element: [data-testid="component-container"], but never found it',
+        verdict: 'TEST_ISSUE',
+        reasoning: 'Test looking for specific data-testid that is not found suggests either the element hasn\'t rendered yet, selector has changed, or element is conditionally rendered. This is a test synchronization issue.'
+    },
+    {
+        error: 'AssertionError: Timed out retrying after 15000ms: Expected to find element: [alt="Skill Image"], but never found it.',
+        verdict: 'TEST_ISSUE',
+        reasoning: 'Long timeout (15s) still failing suggests the element exists but in an unexpected state (covered by overlay, not visible, or conditionally rendered). Tests should verify parent containers are loaded and consider using .should("exist") instead of visibility checks when elements may be obscured.'
     }
 ];
 const LOG_EXTRACTORS = [
@@ -366,6 +381,13 @@ function createStructuredErrorSummary(errorData) {
         testFile: errorData.fileName || 'Unknown File',
         framework: errorData.framework || 'unknown'
     };
+    const isMobileTest = (errorData.testName?.toLowerCase().includes('mobile') ||
+        errorData.fileName?.toLowerCase().includes('mobile') ||
+        errorData.context?.toLowerCase().includes('mobile') ||
+        false);
+    const hasViewportContext = isMobileTest ||
+        (errorData.context?.toLowerCase().includes('viewport') || false) ||
+        (errorData.context?.toLowerCase().includes('responsive') || false);
     const durationMatch = errorData.context?.match(/Execution Time: ([^,]+)/);
     if (durationMatch) {
         testContext.duration = durationMatch[1];
@@ -380,7 +402,13 @@ function createStructuredErrorSummary(errorData) {
         hasNullPointerErrors: /Cannot read prop(?:erty|erties)(?:\s+["'][^"']+["'])?\s+of\s+(?:null|undefined)|null is not an object|TypeError.*of\s+(?:null|undefined)/.test(messageAndLogs),
         hasTimeoutErrors: /Timed out|TimeoutError|timeout/i.test(messageAndLogs),
         hasDOMErrors: /element is detached|not found|could not find element|failed because this element/.test(messageAndLogs),
-        hasAssertionErrors: /AssertionError|expected .+ to|assert/i.test(messageAndLogs)
+        hasAssertionErrors: /AssertionError|expected .+ to|assert/i.test(messageAndLogs),
+        isMobileTest: isMobileTest,
+        hasLongTimeout: /Timed out .+ after (?:1[0-9]|[2-9][0-9])\d{3}ms/.test(messageAndLogs),
+        hasAltTextSelector: /\[alt=["'][^"']+["']\]/.test(messageAndLogs),
+        hasElementExistenceCheck: /to exist|should.*exist/.test(messageAndLogs),
+        hasVisibilityIssue: /not visible|be\.visible|covered by|obscured|overlay|modal/i.test(messageAndLogs),
+        hasViewportContext: hasViewportContext
     };
     let prRelevance;
     if (errorData.prDiff) {
@@ -1431,6 +1459,11 @@ TEST_ISSUE indicators:
 - Test framework errors
 - Element not found due to incorrect selectors
 - Test synchronization issues
+- Elements covered by overlays, tabs, modals, or other UI components
+- Elements that exist but are not visible or accessible
+- Viewport-specific rendering differences (mobile vs desktop)
+- Long timeouts (>10s) that still fail, suggesting element state issues rather than missing functionality
+- Tests checking visibility when elements may be legitimately obscured or conditionally rendered
 
 PRODUCT_ISSUE indicators:
 - Application errors (500, 404, etc.)
@@ -1460,6 +1493,9 @@ COMMON MISCLASSIFICATION PATTERNS TO AVOID:
 - Don't classify as PRODUCT_ISSUE just because of a timeout - many timeouts are test synchronization issues
 - GraphQL/API errors during tests often indicate real product issues, not test problems
 - "Element not found" can be either - check if UI actually rendered correctly in screenshots
+- When elements with alt text or aria-labels are "not found" but the screenshot shows the UI rendered correctly, the element is likely covered/obscured by overlays, tabs, or modals (TEST_ISSUE)
+- Long timeouts (>10s) that still fail often indicate the element exists but isn't in the expected state (covered, not visible, or conditionally rendered) rather than actual missing functionality
+- If placeholder content is visible instead of expected content, but no errors are shown, this may be normal application state rather than a bug
 
 When PR changes are provided:
 - Analyze if the test failure is related to the changed code
@@ -1517,6 +1553,21 @@ Always respond with a JSON object containing:
             }
             summaryHeader += `\n**Failure Indicators:**\n`;
             const indicators = [];
+            if (summary.failureIndicators.hasVisibilityIssue) {
+                indicators.push('Visibility/Overlay Issue');
+            }
+            if (summary.failureIndicators.hasLongTimeout) {
+                indicators.push('Long Timeout (>10s)');
+            }
+            if (summary.failureIndicators.hasAltTextSelector) {
+                indicators.push('Alt Text Selector Used');
+            }
+            if (summary.failureIndicators.hasElementExistenceCheck) {
+                indicators.push('Element Existence Check');
+            }
+            if (summary.failureIndicators.hasViewportContext) {
+                indicators.push('Viewport/Responsive Context');
+            }
             if (summary.failureIndicators.hasNetworkErrors)
                 indicators.push('Network Errors');
             if (summary.failureIndicators.hasNullPointerErrors)

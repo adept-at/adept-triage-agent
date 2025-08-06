@@ -110,6 +110,12 @@ export interface StructuredErrorSummary {
     hasTimeoutErrors: boolean;
     hasDOMErrors: boolean;
     hasAssertionErrors: boolean;
+    isMobileTest: boolean;
+    hasLongTimeout: boolean;
+    hasAltTextSelector: boolean;
+    hasElementExistenceCheck: boolean;
+    hasVisibilityIssue: boolean;
+    hasViewportContext: boolean;
   };
   prRelevance?: {
     testFileModified: boolean;
