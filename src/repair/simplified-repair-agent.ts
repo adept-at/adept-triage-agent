@@ -62,7 +62,13 @@ export class SimplifiedRepairAgent {
       const fixRecommendation: FixRecommendation = {
         confidence: recommendation.confidence,
         summary: this.generateSummary(recommendation, repairContext),
-        proposedChanges: recommendation.changes || [],
+        proposedChanges: (recommendation.changes || []).map(change => ({
+          file: change.file,
+          line: change.line || 0, // Default to 0 if line is not specified
+          oldCode: change.oldCode || '',
+          newCode: change.newCode || '',
+          justification: change.justification
+        })),
         evidence: recommendation.evidence || [],
         reasoning: recommendation.reasoning || 'Fix based on error pattern analysis'
       };
