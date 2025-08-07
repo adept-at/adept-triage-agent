@@ -1,7 +1,25 @@
 import * as core from '@actions/core';
+import * as fs from 'fs';
 import { OpenAIClient } from '../openai-client';
 import { RepairContext, ErrorData } from '../types';
 import { FixRecommendation } from '../types';
+
+// Internal type for AI response structure
+interface AIRecommendation {
+  confidence: number;
+  reasoning: string;
+  changes: AIChange[];
+  evidence: string[];
+  rootCause: string;
+}
+
+interface AIChange {
+  file: string;
+  line?: number;
+  oldCode?: string;
+  newCode?: string;
+  justification: string;
+}
 
 /**
  * Simplified repair agent that generates fix recommendations
@@ -27,7 +45,6 @@ export class SimplifiedRepairAgent {
       
       // Save prompt for debugging (optional)
       if (process.env.DEBUG_FIX_RECOMMENDATION) {
-        const fs = require('fs');
         const promptFile = `fix-prompt-${Date.now()}.md`;
         fs.writeFileSync(promptFile, prompt);
         core.info(`  📝 Full prompt saved to ${promptFile}`);
@@ -179,7 +196,7 @@ Respond with JSON only. If you cannot provide a confident fix, set confidence be
   /**
    * Gets fix recommendation from OpenAI
    */
-  private async getRecommendationFromAI(prompt: string, context: RepairContext, fullErrorData?: ErrorData): Promise<any> {
+  private async getRecommendationFromAI(prompt: string, context: RepairContext, fullErrorData?: ErrorData): Promise<AIRecommendation | null> {
     try {
       // Use full error data if available, otherwise create minimal error data
       const errorData = fullErrorData || {
@@ -214,7 +231,7 @@ Respond with JSON only. If you cannot provide a confident fix, set confidence be
   /**
    * Extracts possible changes from text response
    */
-  private extractChangesFromText(_text: string, context: RepairContext): any[] {
+  private extractChangesFromText(_text: string, context: RepairContext): AIChange[] {
     const changes = [];
     
     // If we have a selector error, suggest updating the selector
@@ -245,7 +262,7 @@ Respond with JSON only. If you cannot provide a confident fix, set confidence be
   /**
    * Generates a human-readable summary of the fix
    */
-  private generateSummary(recommendation: any, context: RepairContext): string {
+  private generateSummary(recommendation: AIRecommendation, context: RepairContext): string {
     let summary = `## 🔧 Fix Recommendation for ${context.testName}\n\n`;
     
     summary += `### Problem Identified\n`;
@@ -263,7 +280,7 @@ Respond with JSON only. If you cannot provide a confident fix, set confidence be
     
     if (recommendation.changes && recommendation.changes.length > 0) {
       summary += `### Recommended Changes\n`;
-      recommendation.changes.forEach((change: any, index: number) => {
+      recommendation.changes.forEach((change: AIChange, index: number) => {
         summary += `\n#### Change ${index + 1}: ${change.file}\n`;
         if (change.line) {
           summary += `Line ${change.line}\n`;
