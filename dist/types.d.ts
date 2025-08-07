@@ -20,13 +20,48 @@ export interface Screenshot {
     url?: string;
     timestamp?: string;
 }
+export interface RepairContext {
+    testFile: string;
+    errorLine?: number;
+    testName: string;
+    errorType: string;
+    errorSelector?: string;
+    errorMessage: string;
+    workflowRunId: string;
+    jobName: string;
+    commitSha: string;
+    branch: string;
+    repository: string;
+    prNumber?: string;
+    targetAppPrNumber?: string;
+}
 export interface AnalysisResult {
     verdict: Verdict;
     confidence: number;
     reasoning: string;
-    summary: string;
+    summary?: string;
     indicators?: string[];
     suggestedSourceLocations?: SourceLocation[];
+    evidence?: string[];
+    suggestedAction?: string;
+    category?: string;
+    affectedTests?: string[];
+    patterns?: Record<string, unknown>;
+    repairContext?: RepairContext;
+    fixRecommendation?: FixRecommendation;
+}
+export interface FixRecommendation {
+    confidence: number;
+    summary: string;
+    proposedChanges: {
+        file: string;
+        line: number;
+        oldCode: string;
+        newCode: string;
+        justification: string;
+    }[];
+    evidence: string[];
+    reasoning: string;
 }
 export interface SourceLocation {
     file: string;

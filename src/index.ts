@@ -1,10 +1,12 @@
 import * as core from '@actions/core';
 import * as github from '@actions/github';
 import { Octokit } from '@octokit/rest';
-import { analyzeFailure, extractErrorFromLogs, createStructuredErrorSummary } from './analyzer';
+import { analyzeFailure, extractErrorFromLogs } from './simplified-analyzer';
 import { OpenAIClient } from './openai-client';
 import { ArtifactFetcher } from './artifact-fetcher';
-import { ErrorData, ActionInputs, Screenshot } from './types';
+import { ErrorData, ActionInputs, Screenshot, FixRecommendation } from './types';
+import { buildRepairContext } from './repair-context';
+import { SimplifiedRepairAgent } from './repair/simplified-repair-agent';
 
 async function run(): Promise<void> {
   try {
@@ -64,6 +66,42 @@ async function run(): Promise<void> {
     // Analyze with AI
     const result = await analyzeFailure(openaiClient, errorData);
     
+    // Generate fix recommendation for TEST_ISSUE verdicts
+    let fixRecommendation: FixRecommendation | null = null;
+    if (result.verdict === 'TEST_ISSUE') {
+      try {
+        core.info('\n🔧 Attempting to generate fix recommendation...');
+        
+        // Build repair context from error data
+        const repairContext = buildRepairContext({
+          testFile: errorData.fileName || 'unknown',
+          testName: errorData.testName || 'unknown',
+          errorMessage: errorData.message,
+          workflowRunId: inputs.workflowRunId || github.context.runId.toString(),
+          jobName: inputs.jobName || 'unknown',
+          commitSha: inputs.commitSha || github.context.sha,
+          branch: github.context.ref.replace('refs/heads/', ''),
+          repository: inputs.repository || `${github.context.repo.owner}/${github.context.repo.repo}`,
+          prNumber: inputs.prNumber,
+          targetAppPrNumber: inputs.prNumber // Assuming same for now
+        });
+        
+        // Initialize simplified repair agent
+        const repairAgent = new SimplifiedRepairAgent(inputs.openaiApiKey);
+        // Pass both repair context AND the full error data for complete context
+        fixRecommendation = await repairAgent.generateFixRecommendation(repairContext, errorData);
+        
+        if (fixRecommendation) {
+          core.info(`✅ Fix recommendation generated with ${fixRecommendation.confidence}% confidence`);
+          result.fixRecommendation = fixRecommendation;
+        } else {
+          core.info('❌ Could not generate fix recommendation');
+        }
+      } catch (error) {
+        core.warning(`Failed to generate fix recommendation: ${error}`);
+      }
+    }
+    
     // Check confidence threshold
     if (result.confidence < inputs.confidenceThreshold) {
       core.warning(`Confidence ${result.confidence}% is below threshold ${inputs.confidenceThreshold}%`);
@@ -96,10 +134,12 @@ async function run(): Promise<void> {
       summary: result.summary,
       indicators: result.indicators || [],
       ...(result.verdict === 'PRODUCT_ISSUE' && result.suggestedSourceLocations ? { suggestedSourceLocations: result.suggestedSourceLocations } : {}),
+      ...(result.verdict === 'TEST_ISSUE' && result.fixRecommendation ? { fixRecommendation: result.fixRecommendation } : {}),
       metadata: {
         analyzedAt: new Date().toISOString(),
         hasScreenshots: (errorData.screenshots && errorData.screenshots.length > 0) || false,
-        logSize: errorData.logs?.join('').length || 0
+        logSize: errorData.logs?.join('').length || 0,
+        hasFixRecommendation: !!result.fixRecommendation
       }
     };
     
@@ -109,6 +149,16 @@ async function run(): Promise<void> {
     core.setOutput('reasoning', result.reasoning);
     core.setOutput('summary', result.summary);
     core.setOutput('triage_json', JSON.stringify(triageJson));
+    
+    // Add fix recommendation outputs if available
+    if (result.fixRecommendation) {
+      core.setOutput('has_fix_recommendation', 'true');
+      core.setOutput('fix_recommendation', JSON.stringify(result.fixRecommendation));
+      core.setOutput('fix_summary', result.fixRecommendation.summary);
+      core.setOutput('fix_confidence', result.fixRecommendation.confidence.toString());
+    } else {
+      core.setOutput('has_fix_recommendation', 'false');
+    }
     
     // Log results
     core.info(`Verdict: ${result.verdict}`);
@@ -122,6 +172,16 @@ async function run(): Promise<void> {
         core.info(`  ${index + 1}. ${location.file} (lines ${location.lines})`);
         core.info(`     Reason: ${location.reason}`);
       });
+    }
+    
+    // Log fix recommendation for TEST_ISSUE
+    if (result.verdict === 'TEST_ISSUE' && result.fixRecommendation) {
+      core.info('\n🔧 Fix Recommendation Generated:');
+      core.info(`  Confidence: ${result.fixRecommendation.confidence}%`);
+      core.info(`  Changes: ${result.fixRecommendation.proposedChanges.length} file(s)`);
+      core.info(`  Evidence: ${result.fixRecommendation.evidence.length} item(s)`);
+      core.info('\n📝 Fix Summary:');
+      core.info(result.fixRecommendation.summary);
     }
     
   } catch (error) {
@@ -163,9 +223,6 @@ async function getErrorData(
       framework: 'unknown',
       context: 'Error message provided directly via input'
     };
-    
-    // Create structured summary even for direct messages
-    errorData.structuredSummary = createStructuredErrorSummary(errorData);
     
     return errorData;
   }
@@ -252,7 +309,7 @@ async function getErrorData(
     core.info(`Downloaded ${fullLogs.length} characters of logs for error extraction`);
     
     // Extract structured error from logs immediately
-    extractedError = extractErrorFromLogs(fullLogs, inputs.testFrameworks);
+    extractedError = extractErrorFromLogs(fullLogs);
     
     // If we have a PR diff coming, limit the GitHub logs to just the extracted error context
     if (inputs.prNumber && extractedError) {
@@ -373,11 +430,6 @@ async function getErrorData(
       prDiff: prDiff || undefined
     };
     
-    // Ensure we have structured summary (might already exist from extraction)
-    if (!errorData.structuredSummary) {
-      errorData.structuredSummary = createStructuredErrorSummary(errorData);
-    }
-    
     return errorData;
   }
   
@@ -394,9 +446,6 @@ async function getErrorData(
     cypressArtifactLogs: artifactLogs,
     prDiff: prDiff || undefined
   };
-  
-  // Create structured summary for fallback case
-  fallbackError.structuredSummary = createStructuredErrorSummary(fallbackError);
   
   return fallbackError;
 }

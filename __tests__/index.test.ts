@@ -6,12 +6,12 @@ import { Octokit } from '@octokit/rest';
 jest.mock('@actions/core');
 jest.mock('@actions/github');
 jest.mock('@octokit/rest');
-jest.mock('../src/analyzer');
+jest.mock('../src/simplified-analyzer');
 jest.mock('../src/openai-client');
 jest.mock('../src/artifact-fetcher');
 
 // Import analyzer functions
-import { analyzeFailure, extractErrorFromLogs } from '../src/analyzer';
+import { analyzeFailure, extractErrorFromLogs } from '../src/simplified-analyzer';
 import { ArtifactFetcher } from '../src/artifact-fetcher';
 import { run } from '../src/index';
 
@@ -562,7 +562,7 @@ describe('GitHub Action', () => {
         run_id: 12345,
       });
 
-      expect(mockExtractErrorFromLogs).toHaveBeenCalledWith(mockLogs, '');
+      expect(mockExtractErrorFromLogs).toHaveBeenCalledWith(mockLogs);
       expect(mockCore.setOutput).toHaveBeenCalledWith('verdict', 'PRODUCT_ISSUE');
       expect(mockCore.setOutput).toHaveBeenCalledWith('confidence', '90');
     });
@@ -788,7 +788,7 @@ describe('GitHub Action', () => {
   });
 
   describe('test framework filtering', () => {
-    it('should pass TEST_FRAMEWORKS to extractErrorFromLogs when provided', async () => {
+    it('should extract error from logs correctly', async () => {
       mockCore.getInput.mockImplementation((name: string) => {
         const inputs: Record<string, string> = {
           'GITHUB_TOKEN': 'github-token',
@@ -834,8 +834,8 @@ describe('GitHub Action', () => {
 
       await run();
 
-      // Verify TEST_FRAMEWORKS was passed to extractErrorFromLogs
-      expect(mockExtractErrorFromLogs).toHaveBeenCalledWith(mockLogs, 'cypress');
+      // Verify extractErrorFromLogs was called (simplified version doesn't use testFrameworks)
+      expect(mockExtractErrorFromLogs).toHaveBeenCalledWith(mockLogs);
     });
   });
 

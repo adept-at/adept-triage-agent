@@ -40,6 +40,10 @@ inputs:
     description: 'Test framework to use. Currently only supports "cypress".'
     required: false
     default: 'cypress'
+  OUTPUT_REPAIR_CONTEXT:
+    description: 'Boolean indicating if repair context should be output (only for TEST_ISSUE verdicts)'
+    required: false
+    default: 'false'
 
 outputs:
   verdict:
@@ -52,6 +56,18 @@ outputs:
     description: 'Brief summary for PR comments'
   triage_json:
     description: 'Complete triage analysis as JSON string'
+  repair_context:
+    description: 'Minimal context for repair agent (only populated for TEST_ISSUE verdicts when OUTPUT_REPAIR_CONTEXT is true)'
+  has_repair_context:
+    description: 'Boolean indicating if repair context is available'
+  has_fix_recommendation:
+    description: 'Boolean indicating if a fix recommendation was generated (TEST_ISSUE only)'
+  fix_recommendation:
+    description: 'Complete fix recommendation as JSON (when available)'
+  fix_summary:
+    description: 'Human-readable fix recommendation summary (when available)'
+  fix_confidence:
+    description: 'Confidence score for the fix recommendation (0-100)'
 
 runs:
   using: 'node20'

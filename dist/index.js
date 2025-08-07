@@ -1,503 +1,6 @@
 require('./sourcemap-register.js');/******/ (() => { // webpackBootstrap
 /******/ 	var __webpack_modules__ = ({
 
-/***/ 6959:
-/***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
-
-"use strict";
-
-var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
-    if (k2 === undefined) k2 = k;
-    var desc = Object.getOwnPropertyDescriptor(m, k);
-    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
-      desc = { enumerable: true, get: function() { return m[k]; } };
-    }
-    Object.defineProperty(o, k2, desc);
-}) : (function(o, m, k, k2) {
-    if (k2 === undefined) k2 = k;
-    o[k2] = m[k];
-}));
-var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
-    Object.defineProperty(o, "default", { enumerable: true, value: v });
-}) : function(o, v) {
-    o["default"] = v;
-});
-var __importStar = (this && this.__importStar) || (function () {
-    var ownKeys = function(o) {
-        ownKeys = Object.getOwnPropertyNames || function (o) {
-            var ar = [];
-            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
-            return ar;
-        };
-        return ownKeys(o);
-    };
-    return function (mod) {
-        if (mod && mod.__esModule) return mod;
-        var result = {};
-        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
-        __setModuleDefault(result, mod);
-        return result;
-    };
-})();
-Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.analyzeFailure = analyzeFailure;
-exports.extractErrorFromLogs = extractErrorFromLogs;
-exports.createStructuredErrorSummary = createStructuredErrorSummary;
-const core = __importStar(__nccwpck_require__(7484));
-const FEW_SHOT_EXAMPLES = [
-    {
-        error: 'Intentional failure for triage agent testing: expected false to be true',
-        verdict: 'TEST_ISSUE',
-        reasoning: 'Explicit "Intentional failure" message indicates this is a deliberate test failure for testing the triage agent itself, not a product bug.'
-    },
-    {
-        error: 'Error: ENOENT: no such file or directory, open "/tmp/test-fixtures/data.json"',
-        verdict: 'TEST_ISSUE',
-        reasoning: 'Missing test fixture file in temporary directory indicates test setup/environment issue, not a product code problem.'
-    },
-    {
-        error: 'ReferenceError: process.env.API_KEY is undefined',
-        verdict: 'TEST_ISSUE',
-        reasoning: 'Missing environment variable typically indicates test environment configuration issue rather than product bug.'
-    },
-    {
-        error: 'TimeoutError: Waiting for element to be visible: #submit-button',
-        verdict: 'TEST_ISSUE',
-        reasoning: 'The error indicates a UI element timing issue, which is typically a test synchronization problem rather than a product bug.'
-    },
-    {
-        error: 'Error: connect ECONNREFUSED 127.0.0.1:5432',
-        verdict: 'PRODUCT_ISSUE',
-        reasoning: 'Database connection refused indicates the application cannot connect to its database, which is a product infrastructure issue.'
-    },
-    {
-        error: 'AssertionError: expected mock function to have been called with "user123"',
-        verdict: 'TEST_ISSUE',
-        reasoning: 'Mock expectation failure suggests incorrect test setup or assertions rather than product code issues.'
-    },
-    {
-        error: 'CypressError: Timed out retrying after 4000ms: expected button to be visible',
-        verdict: 'TEST_ISSUE',
-        reasoning: 'Cypress timeout waiting for visibility typically indicates test flakiness or missing wait commands rather than actual product issues.'
-    },
-    {
-        error: 'AssertionError: Timed out retrying after 4000ms: Expected to find content: "Welcome" but never did',
-        verdict: 'PRODUCT_ISSUE',
-        reasoning: 'Missing expected content after proper wait time suggests the application is not rendering the expected text, indicating a product issue.'
-    },
-    {
-        error: 'CypressError: cy.click() failed because this element is detached from the DOM',
-        verdict: 'TEST_ISSUE',
-        reasoning: 'DOM detachment errors usually indicate race conditions in tests where elements are accessed before they are stable.'
-    },
-    {
-        error: 'Error: Network request failed with status 500: Internal Server Error',
-        verdict: 'PRODUCT_ISSUE',
-        reasoning: 'HTTP 500 errors indicate server-side failures in the application, which are product issues.'
-    },
-    {
-        error: 'CypressError: cy.visit() failed trying to load: http://localhost:3000 - Connection refused',
-        verdict: 'PRODUCT_ISSUE',
-        reasoning: 'Connection refused when visiting the application URL indicates the application server is not running or accessible.'
-    },
-    {
-        error: 'TypeError: Cannot read property "name" of null - at UserProfile.render (src/components/UserProfile.tsx:45)',
-        verdict: 'PRODUCT_ISSUE',
-        reasoning: 'Null pointer error in production code. With PR changes showing removal of null check at UserProfile.tsx line 44-46, this is clearly a product bug. Suggested fix: restore the null check for user.name.'
-    },
-    {
-        error: 'GraphQL error: Variable "$userId" of required type "ID!" was not provided',
-        verdict: 'PRODUCT_ISSUE',
-        reasoning: 'Missing required GraphQL variable indicates the API call is not properly constructed. PR diff shows changes to API calls in src/api/userQueries.ts lines 23-28 where userId parameter was refactored.'
-    },
-    {
-        error: 'AssertionError: expected [alt="Skill Image"] to exist in the DOM',
-        verdict: 'TEST_ISSUE',
-        reasoning: 'Element with alt text not found in DOM indicates timing or rendering issue. The element may be covered by overlays, tabs, or not yet rendered. Tests should wait for parent containers to load first and consider checking existence vs visibility.'
-    },
-    {
-        error: 'Expected to find element: [data-testid="component-container"], but never found it',
-        verdict: 'TEST_ISSUE',
-        reasoning: 'Test looking for specific data-testid that is not found suggests either the element hasn\'t rendered yet, selector has changed, or element is conditionally rendered. This is a test synchronization issue.'
-    },
-    {
-        error: 'AssertionError: Timed out retrying after 15000ms: Expected to find element: [alt="Skill Image"], but never found it.',
-        verdict: 'TEST_ISSUE',
-        reasoning: 'Long timeout (15s) still failing suggests the element exists but in an unexpected state (covered by overlay, not visible, or conditionally rendered). Tests should verify parent containers are loaded and consider using .should("exist") instead of visibility checks when elements may be obscured.'
-    }
-];
-const LOG_EXTRACTORS = [
-    {
-        framework: 'cypress',
-        patterns: [
-            /\d+\)\s+.+\s*\n\s*(?:✖|×|✗|Failed:|FAILED:)\s*.+/g,
-            /(AssertionError|CypressError|TimeoutError|TypeError|Error):\s*(.+)\n/g,
-            /Timed out .+ after \d+ms:/g,
-            /(?:✖|×|✗|FAIL|Failed)\s+.+?\s*\(\d+(?:\.\d+)?s?\)/g,
-            /\d+\)\s+.+:\s*\n\s*(TypeError|ReferenceError|SyntaxError):\s*(.+)/g
-        ],
-        extract: extractCypressError
-    }
-];
-async function analyzeFailure(client, errorData) {
-    try {
-        const screenshotInfo = errorData.screenshots && errorData.screenshots.length > 0
-            ? ` (with ${errorData.screenshots.length} screenshot${errorData.screenshots.length > 1 ? 's' : ''})`
-            : '';
-        core.info(`Analyzing error${screenshotInfo}: ${errorData.message.substring(0, 100)}...`);
-        const response = await client.analyze(errorData, FEW_SHOT_EXAMPLES);
-        const confidence = calculateConfidence(response, errorData);
-        const summary = generateSummary(response, errorData);
-        return {
-            verdict: response.verdict,
-            confidence,
-            reasoning: response.reasoning,
-            summary,
-            indicators: response.indicators,
-            suggestedSourceLocations: response.suggestedSourceLocations
-        };
-    }
-    catch (error) {
-        core.error(`Analysis failed: ${error}`);
-        throw error;
-    }
-}
-function extractErrorFromLogs(logs, testFrameworks) {
-    const frameworksToUse = testFrameworks && testFrameworks.trim() !== ''
-        ? testFrameworks.toLowerCase().split(',').map(f => f.trim())
-        : ['cypress'];
-    let extractorsToUse = LOG_EXTRACTORS.filter(extractor => frameworksToUse.includes(extractor.framework));
-    if (extractorsToUse.length === 0) {
-        core.warning('No valid test frameworks specified, using all extractors');
-        extractorsToUse = LOG_EXTRACTORS;
-    }
-    for (const extractor of extractorsToUse) {
-        const errorData = extractor.extract(logs);
-        if (errorData) {
-            core.info(`Extracted error using ${extractor.framework} patterns`);
-            return errorData;
-        }
-    }
-    if (!testFrameworks || testFrameworks.trim() === '') {
-        return extractGenericError(logs);
-    }
-    return null;
-}
-function extractCypressError(logs) {
-    const cleanLogs = logs.replace(/\u001b\[[0-9;]*m/g, '');
-    const failingIndex = cleanLogs.toLowerCase().indexOf('failing');
-    if (failingIndex === -1) {
-        const failurePatterns = [
-            /\d+\)\s+.*?\n.*?Error:/i,
-            /AssertionError:/i,
-            /CypressError:/i,
-            /TimeoutError:/i,
-            /Test failed:/i,
-            /✖|×|✗|FAIL/
-        ];
-        for (const pattern of failurePatterns) {
-            const match = cleanLogs.match(pattern);
-            if (match && match.index !== undefined) {
-                const start = Math.max(0, match.index - 500);
-                const end = Math.min(cleanLogs.length, match.index + 2000);
-                const errorContext = cleanLogs.substring(start, end);
-                const specMatch = cleanLogs.match(/Running:\s+(.+?)\s*(?:\(|$)/);
-                const fileName = specMatch ? specMatch[1].trim() : undefined;
-                let failureType;
-                const errorTypeMatch = errorContext.match(/(?:^|\n)\s*(\w+Error):/);
-                if (errorTypeMatch) {
-                    failureType = errorTypeMatch[1];
-                }
-                return {
-                    message: errorContext,
-                    framework: 'cypress',
-                    fileName,
-                    failureType
-                };
-            }
-        }
-        return null;
-    }
-    const contextStart = Math.max(0, failingIndex - 1000);
-    const contextEnd = Math.min(cleanLogs.length, failingIndex + 4000);
-    let errorContext = cleanLogs.substring(contextStart, contextEnd);
-    const afterFailingSection = errorContext.substring(failingIndex - contextStart + 200);
-    const endPatterns = [
-        /\n\s*\(Run .+ of .+\)/,
-        /\n.*\(Run Finished\)/,
-        /\n\s+┌[─]+┐/,
-        /\n\s+│\s+Tests:/,
-        /\n\s*\n\s*\n\s*\n/
-    ];
-    let earliestEnd = errorContext.length;
-    for (const pattern of endPatterns) {
-        const endMatch = afterFailingSection.match(pattern);
-        if (endMatch && endMatch.index !== undefined) {
-            const absoluteIndex = (failingIndex - contextStart + 200) + endMatch.index;
-            if (absoluteIndex < earliestEnd) {
-                earliestEnd = absoluteIndex;
-            }
-        }
-    }
-    errorContext = errorContext.substring(0, earliestEnd);
-    const specMatch = cleanLogs.match(/Running:\s+(.+?)\s*(?:\(|$)/);
-    const fileName = specMatch ? specMatch[1].trim() : undefined;
-    const testMatch = errorContext.match(/\d+\)\s+(.+?)(?:\n|:)/);
-    const testName = testMatch ? testMatch[1].trim() : undefined;
-    const additionalContext = [];
-    const browserMatch = cleanLogs.match(/Browser:\s*([^\n]+)/);
-    if (browserMatch) {
-        additionalContext.push(`Browser: ${browserMatch[1].trim()}`);
-    }
-    const suiteMatch = cleanLogs.match(/(?:Running|Spec):\s*([^\n]+)/);
-    if (suiteMatch) {
-        additionalContext.push(`Test Suite: ${suiteMatch[1].trim()}`);
-    }
-    const consoleErrorPattern = /cons:error.*?([^\n]+)/g;
-    const consoleErrors = [];
-    let consoleMatch;
-    while ((consoleMatch = consoleErrorPattern.exec(errorContext)) !== null) {
-        const errorMsg = consoleMatch[1].trim();
-        if (!consoleErrors.includes(errorMsg) &&
-            errorMsg !== 'Error: Invalid message' &&
-            errorMsg.includes('GraphqlError')) {
-            consoleErrors.push(errorMsg);
-        }
-    }
-    if (consoleErrors.length > 0) {
-        additionalContext.push(`GraphQL Errors during test: ${consoleErrors.join(', ')}`);
-    }
-    const timingMatch = errorContext.match(/(\d+)\s+passing.*?\(([^)]+)\)/);
-    if (timingMatch) {
-        additionalContext.push(`Execution Time: ${timingMatch[2]}`);
-    }
-    const cypressCommands = [];
-    const commandPattern = /cy:command\s+[✔✖]\s+(\w+)\s+([^\n]+)/g;
-    let commandMatch;
-    let commandCount = 0;
-    while ((commandMatch = commandPattern.exec(errorContext)) !== null && commandCount < 20) {
-        const command = `${commandMatch[1]} ${commandMatch[2].trim()}`;
-        if (!cypressCommands.includes(command)) {
-            cypressCommands.push(command);
-            commandCount++;
-        }
-    }
-    if (cypressCommands.length > 0) {
-        additionalContext.push(`Recent Cypress commands: ${cypressCommands.slice(-10).join(', ')}`);
-    }
-    let failureType;
-    const errorTypeMatch = errorContext.match(/(?:^|\n)\s*(\w+Error):/);
-    if (errorTypeMatch) {
-        failureType = errorTypeMatch[1];
-    }
-    const errorData = {
-        message: errorContext.trim(),
-        framework: 'cypress',
-        testName,
-        fileName,
-        failureType,
-        context: additionalContext.length > 0
-            ? `Full test failure context. ${additionalContext.join('. ')}`
-            : 'Full test failure context for AI analysis'
-    };
-    errorData.structuredSummary = createStructuredErrorSummary(errorData);
-    return errorData;
-}
-function extractGenericError(logs) {
-    const errorPatterns = [
-        /Error:\s*(.+)/,
-        /Failed:\s*(.+)/,
-        /Exception:\s*(.+)/,
-        /FAILED:\s*(.+)/
-    ];
-    for (const pattern of errorPatterns) {
-        const match = logs.match(pattern);
-        if (match) {
-            const message = match[1];
-            const stackTrace = extractStackTrace(logs.substring(match.index || 0));
-            return {
-                message,
-                stackTrace,
-                framework: 'unknown'
-            };
-        }
-    }
-    const lines = logs.split('\n').filter(line => line.trim());
-    if (lines.length > 0) {
-        return {
-            message: lines[0],
-            framework: 'unknown'
-        };
-    }
-    return null;
-}
-function extractStackTrace(content) {
-    const stackLines = [];
-    const lines = content.split('\n');
-    for (const line of lines) {
-        if (line.trim().startsWith('at ')) {
-            stackLines.push(line);
-        }
-        else if (stackLines.length > 0) {
-            break;
-        }
-    }
-    return stackLines.join('\n');
-}
-function createStructuredErrorSummary(errorData) {
-    const errorTypeMatch = errorData.message.match(/^(\w+):\s*(.+)/m) ||
-        errorData.message.match(/(\w+Error):\s*(.+)/m);
-    const errorType = errorTypeMatch ? errorTypeMatch[1] : errorData.failureType || 'UnknownError';
-    const errorMessage = errorTypeMatch ? errorTypeMatch[2].trim() : errorData.message.substring(0, 200);
-    let location;
-    if (errorData.stackTrace) {
-        const stackLines = errorData.stackTrace.split('\n').filter(line => line.includes(' at '));
-        const appFrames = stackLines.filter(line => !line.includes('node_modules'));
-        const topFrame = appFrames[0] || stackLines[0];
-        if (topFrame) {
-            const locationMatch = topFrame.match(/at .*? \((.+?):(\d+):\d+\)/) ||
-                topFrame.match(/at (.+?):(\d+):\d+/);
-            if (locationMatch) {
-                const file = locationMatch[1];
-                const line = parseInt(locationMatch[2]);
-                const isTestCode = file.includes('.test.') || file.includes('.spec.') || file.includes('.cy.');
-                const isAppCode = !isTestCode && !file.includes('node_modules');
-                location = { file, line, isTestCode, isAppCode };
-            }
-        }
-    }
-    if (!location && errorData.message) {
-        const messageLocationMatch = errorData.message.match(/(?:at |Error at )([^\s:]+\.(?:tsx?|jsx?)):(\d+)(?::\d+)?/);
-        if (messageLocationMatch) {
-            const file = messageLocationMatch[1];
-            const line = parseInt(messageLocationMatch[2]);
-            const isTestCode = file.includes('.test.') || file.includes('.spec.') || file.includes('.cy.');
-            const isAppCode = !isTestCode && !file.includes('node_modules');
-            location = { file, line, isTestCode, isAppCode };
-        }
-    }
-    const testContext = {
-        testName: errorData.testName || 'Unknown Test',
-        testFile: errorData.fileName || 'Unknown File',
-        framework: errorData.framework || 'unknown'
-    };
-    const isMobileTest = (errorData.testName?.toLowerCase().includes('mobile') ||
-        errorData.fileName?.toLowerCase().includes('mobile') ||
-        errorData.context?.toLowerCase().includes('mobile') ||
-        false);
-    const hasViewportContext = isMobileTest ||
-        (errorData.context?.toLowerCase().includes('viewport') || false) ||
-        (errorData.context?.toLowerCase().includes('responsive') || false);
-    const durationMatch = errorData.context?.match(/Execution Time: ([^,]+)/);
-    if (durationMatch) {
-        testContext.duration = durationMatch[1];
-    }
-    const browserMatch = errorData.context?.match(/Browser: ([^,.]+)/);
-    if (browserMatch) {
-        testContext.browser = browserMatch[1];
-    }
-    const messageAndLogs = errorData.message + ' ' + (errorData.logs?.join(' ') || '');
-    const failureIndicators = {
-        hasNetworkErrors: /ECONNREFUSED|ETIMEDOUT|ERR_NETWORK|fetch failed|50\d|40[34]/.test(messageAndLogs),
-        hasNullPointerErrors: /Cannot read prop(?:erty|erties)(?:\s+["'][^"']+["'])?\s+of\s+(?:null|undefined)|null is not an object|TypeError.*of\s+(?:null|undefined)/.test(messageAndLogs),
-        hasTimeoutErrors: /Timed out|TimeoutError|timeout/i.test(messageAndLogs),
-        hasDOMErrors: /element is detached|not found|could not find element|failed because this element/.test(messageAndLogs),
-        hasAssertionErrors: /AssertionError|expected .+ to|assert/i.test(messageAndLogs),
-        isMobileTest: isMobileTest,
-        hasLongTimeout: /Timed out .+ after (?:1[0-9]|[2-9][0-9])\d{3}ms/.test(messageAndLogs),
-        hasAltTextSelector: /\[alt=["'][^"']+["']\]/.test(messageAndLogs),
-        hasElementExistenceCheck: /to exist|should.*exist/.test(messageAndLogs),
-        hasVisibilityIssue: /not visible|be\.visible|covered by|obscured|overlay|modal/i.test(messageAndLogs),
-        hasViewportContext: hasViewportContext
-    };
-    let prRelevance;
-    if (errorData.prDiff) {
-        const testFileModified = errorData.prDiff.files.some(f => errorData.fileName && f.filename.includes(errorData.fileName));
-        const relatedSourceFiles = errorData.prDiff.files
-            .filter(f => {
-            const isSourceFile = /\.[jt]sx?$/.test(f.filename) &&
-                !f.filename.includes('.test.') &&
-                !f.filename.includes('.spec.');
-            return isSourceFile && location?.file && f.filename.includes(location.file.split('/').pop() || '');
-        })
-            .map(f => f.filename);
-        let riskScore = 'none';
-        if (testFileModified) {
-            riskScore = 'medium';
-        }
-        if (relatedSourceFiles.length > 0) {
-            riskScore = 'high';
-        }
-        if (errorData.prDiff.totalChanges > 50) {
-            riskScore = riskScore === 'none' ? 'low' : riskScore;
-        }
-        prRelevance = {
-            testFileModified,
-            relatedSourceFilesModified: relatedSourceFiles,
-            riskScore
-        };
-    }
-    const commandsMatch = errorData.context?.match(/Recent Cypress commands: (.+)/);
-    const commands = commandsMatch ? commandsMatch[1].split(', ') : [];
-    const keyMetrics = {
-        totalCypressCommands: commands.length > 0 ? commands.length : undefined,
-        lastCommand: commands.length > 0 ? commands[commands.length - 1] : undefined,
-        hasScreenshots: !!(errorData.screenshots && errorData.screenshots.length > 0),
-        logSize: errorData.logs ? errorData.logs.join('').length : 0
-    };
-    return {
-        primaryError: {
-            type: errorType,
-            message: errorMessage,
-            location
-        },
-        testContext,
-        failureIndicators,
-        prRelevance,
-        keyMetrics
-    };
-}
-function calculateConfidence(response, errorData) {
-    let confidence = 70;
-    if (response.indicators && response.indicators.length > 0) {
-        confidence += Math.min(response.indicators.length * 5, 20);
-    }
-    if (errorData.stackTrace) {
-        confidence += 5;
-    }
-    if (errorData.framework && errorData.framework !== 'unknown') {
-        confidence += 5;
-    }
-    if (errorData.screenshots && errorData.screenshots.length > 0) {
-        confidence += 10;
-        core.info(`Confidence boosted by 10% due to screenshot evidence`);
-    }
-    if (errorData.screenshots && errorData.screenshots.length > 1) {
-        confidence += 5;
-    }
-    if (errorData.logs && errorData.logs.length > 0) {
-        confidence += 3;
-    }
-    return Math.min(confidence, 100);
-}
-function generateSummary(response, errorData) {
-    const verdictEmoji = response.verdict === 'TEST_ISSUE' ? '🧪' : '🐛';
-    const verdictText = response.verdict === 'TEST_ISSUE' ? 'Test Issue' : 'Product Issue';
-    let summary = `${verdictEmoji} **${verdictText}**: `;
-    const firstSentence = response.reasoning.split(/[.!?]/)[0];
-    summary += firstSentence;
-    if (errorData.screenshots && errorData.screenshots.length > 0) {
-        summary += `\n\n📸 Analysis includes ${errorData.screenshots.length} screenshot${errorData.screenshots.length > 1 ? 's' : ''}`;
-    }
-    if (response.indicators && response.indicators.length > 0) {
-        summary += `\n\nKey indicators: ${response.indicators.slice(0, 3).join(', ')}`;
-    }
-    return summary;
-}
-//# sourceMappingURL=analyzer.js.map
-
-/***/ }),
-
 /***/ 5853:
 /***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
 
@@ -957,9 +460,11 @@ exports.run = run;
 const core = __importStar(__nccwpck_require__(7484));
 const github = __importStar(__nccwpck_require__(3228));
 const rest_1 = __nccwpck_require__(5772);
-const analyzer_1 = __nccwpck_require__(6959);
+const simplified_analyzer_1 = __nccwpck_require__(78);
 const openai_client_1 = __nccwpck_require__(191);
 const artifact_fetcher_1 = __nccwpck_require__(5853);
+const repair_context_1 = __nccwpck_require__(4026);
+const simplified_repair_agent_1 = __nccwpck_require__(9247);
 async function run() {
     try {
         const inputs = getInputs();
@@ -1004,7 +509,37 @@ async function run() {
             core.setFailed('No error data found to analyze');
             return;
         }
-        const result = await (0, analyzer_1.analyzeFailure)(openaiClient, errorData);
+        const result = await (0, simplified_analyzer_1.analyzeFailure)(openaiClient, errorData);
+        let fixRecommendation = null;
+        if (result.verdict === 'TEST_ISSUE') {
+            try {
+                core.info('\n🔧 Attempting to generate fix recommendation...');
+                const repairContext = (0, repair_context_1.buildRepairContext)({
+                    testFile: errorData.fileName || 'unknown',
+                    testName: errorData.testName || 'unknown',
+                    errorMessage: errorData.message,
+                    workflowRunId: inputs.workflowRunId || github.context.runId.toString(),
+                    jobName: inputs.jobName || 'unknown',
+                    commitSha: inputs.commitSha || github.context.sha,
+                    branch: github.context.ref.replace('refs/heads/', ''),
+                    repository: inputs.repository || `${github.context.repo.owner}/${github.context.repo.repo}`,
+                    prNumber: inputs.prNumber,
+                    targetAppPrNumber: inputs.prNumber
+                });
+                const repairAgent = new simplified_repair_agent_1.SimplifiedRepairAgent(inputs.openaiApiKey);
+                fixRecommendation = await repairAgent.generateFixRecommendation(repairContext, errorData);
+                if (fixRecommendation) {
+                    core.info(`✅ Fix recommendation generated with ${fixRecommendation.confidence}% confidence`);
+                    result.fixRecommendation = fixRecommendation;
+                }
+                else {
+                    core.info('❌ Could not generate fix recommendation');
+                }
+            }
+            catch (error) {
+                core.warning(`Failed to generate fix recommendation: ${error}`);
+            }
+        }
         if (result.confidence < inputs.confidenceThreshold) {
             core.warning(`Confidence ${result.confidence}% is below threshold ${inputs.confidenceThreshold}%`);
             const inconclusiveTriageJson = {
@@ -1034,10 +569,12 @@ async function run() {
             summary: result.summary,
             indicators: result.indicators || [],
             ...(result.verdict === 'PRODUCT_ISSUE' && result.suggestedSourceLocations ? { suggestedSourceLocations: result.suggestedSourceLocations } : {}),
+            ...(result.verdict === 'TEST_ISSUE' && result.fixRecommendation ? { fixRecommendation: result.fixRecommendation } : {}),
             metadata: {
                 analyzedAt: new Date().toISOString(),
                 hasScreenshots: (errorData.screenshots && errorData.screenshots.length > 0) || false,
-                logSize: errorData.logs?.join('').length || 0
+                logSize: errorData.logs?.join('').length || 0,
+                hasFixRecommendation: !!result.fixRecommendation
             }
         };
         core.setOutput('verdict', result.verdict);
@@ -1045,6 +582,15 @@ async function run() {
         core.setOutput('reasoning', result.reasoning);
         core.setOutput('summary', result.summary);
         core.setOutput('triage_json', JSON.stringify(triageJson));
+        if (result.fixRecommendation) {
+            core.setOutput('has_fix_recommendation', 'true');
+            core.setOutput('fix_recommendation', JSON.stringify(result.fixRecommendation));
+            core.setOutput('fix_summary', result.fixRecommendation.summary);
+            core.setOutput('fix_confidence', result.fixRecommendation.confidence.toString());
+        }
+        else {
+            core.setOutput('has_fix_recommendation', 'false');
+        }
         core.info(`Verdict: ${result.verdict}`);
         core.info(`Confidence: ${result.confidence}%`);
         core.info(`Summary: ${result.summary}`);
@@ -1054,6 +600,14 @@ async function run() {
                 core.info(`  ${index + 1}. ${location.file} (lines ${location.lines})`);
                 core.info(`     Reason: ${location.reason}`);
             });
+        }
+        if (result.verdict === 'TEST_ISSUE' && result.fixRecommendation) {
+            core.info('\n🔧 Fix Recommendation Generated:');
+            core.info(`  Confidence: ${result.fixRecommendation.confidence}%`);
+            core.info(`  Changes: ${result.fixRecommendation.proposedChanges.length} file(s)`);
+            core.info(`  Evidence: ${result.fixRecommendation.evidence.length} item(s)`);
+            core.info('\n📝 Fix Summary:');
+            core.info(result.fixRecommendation.summary);
         }
     }
     catch (error) {
@@ -1088,7 +642,6 @@ async function getErrorData(octokit, artifactFetcher, inputs) {
             framework: 'unknown',
             context: 'Error message provided directly via input'
         };
-        errorData.structuredSummary = (0, analyzer_1.createStructuredErrorSummary)(errorData);
         return errorData;
     }
     let runId = inputs.workflowRunId;
@@ -1153,7 +706,7 @@ async function getErrorData(octokit, artifactFetcher, inputs) {
         });
         fullLogs = logsResponse.data;
         core.info(`Downloaded ${fullLogs.length} characters of logs for error extraction`);
-        extractedError = (0, analyzer_1.extractErrorFromLogs)(fullLogs, inputs.testFrameworks);
+        extractedError = (0, simplified_analyzer_1.extractErrorFromLogs)(fullLogs);
         if (inputs.prNumber && extractedError) {
             core.info('PR diff available - using extracted error context only');
         }
@@ -1235,9 +788,6 @@ async function getErrorData(octokit, artifactFetcher, inputs) {
             cypressArtifactLogs: artifactLogs,
             prDiff: prDiff || undefined
         };
-        if (!errorData.structuredSummary) {
-            errorData.structuredSummary = (0, analyzer_1.createStructuredErrorSummary)(errorData);
-        }
         return errorData;
     }
     const fallbackError = {
@@ -1252,7 +802,6 @@ async function getErrorData(octokit, artifactFetcher, inputs) {
         cypressArtifactLogs: artifactLogs,
         prDiff: prDiff || undefined
     };
-    fallbackError.structuredSummary = (0, analyzer_1.createStructuredErrorSummary)(fallbackError);
     return fallbackError;
 }
 if (require.main === require.cache[eval('__filename')]) {
@@ -1736,6 +1285,685 @@ FOR PRODUCT_ISSUES: You MUST analyze the diff patches above to:
 }
 exports.OpenAIClient = OpenAIClient;
 //# sourceMappingURL=openai-client.js.map
+
+/***/ }),
+
+/***/ 4026:
+/***/ ((__unused_webpack_module, exports) => {
+
+"use strict";
+
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.classifyErrorType = classifyErrorType;
+exports.extractSelector = extractSelector;
+exports.buildRepairContext = buildRepairContext;
+exports.enhanceAnalysisWithRepairContext = enhanceAnalysisWithRepairContext;
+function classifyErrorType(error) {
+    const errorLower = error.toLowerCase();
+    if (errorLower.includes('expected to find element') ||
+        errorLower.includes('element not found') ||
+        errorLower.includes('could not find element') ||
+        errorLower.includes('never found it')) {
+        return 'ELEMENT_NOT_FOUND';
+    }
+    if (errorLower.includes('element is not visible') ||
+        errorLower.includes('is not visible') ||
+        errorLower.includes('visibility: hidden') ||
+        errorLower.includes('element exists but is not visible')) {
+        return 'ELEMENT_NOT_VISIBLE';
+    }
+    if (errorLower.includes('timed out') ||
+        errorLower.includes('timeouterror') ||
+        errorLower.includes('timeout of') ||
+        errorLower.includes('operation timed out')) {
+        return 'TIMEOUT';
+    }
+    if (errorLower.includes('assertionerror') ||
+        errorLower.includes('expected') ||
+        errorLower.includes('assert.equal') ||
+        errorLower.includes('to be truthy')) {
+        return 'ASSERTION_FAILED';
+    }
+    if (errorLower.includes('network') ||
+        errorLower.includes('fetch') ||
+        errorLower.includes('err_network')) {
+        return 'NETWORK_ERROR';
+    }
+    if (errorLower.includes('detached from the dom') ||
+        errorLower.includes('element is detached')) {
+        return 'ELEMENT_DETACHED';
+    }
+    if (errorLower.includes('covered by another element') ||
+        errorLower.includes('element is covered')) {
+        return 'ELEMENT_COVERED';
+    }
+    if (errorLower.includes('can only be called on') ||
+        errorLower.includes('invalid element type')) {
+        return 'INVALID_ELEMENT_TYPE';
+    }
+    return 'UNKNOWN';
+}
+function extractSelector(error) {
+    const priorityPatterns = [
+        /\b([a-zA-Z]+\[data-testid=["'][^"']+["']\])/g,
+        /\b([a-zA-Z]+\[data-test=["'][^"']+["']\])/g,
+        /\[data-testid=["']([^"']+)["']\]/g,
+        /\[data-testid="([^"]+)"\]/g,
+        /\[data-testid='([^']+)'\]/g,
+        /\[data-test=["']([^"']+)["']\]/g,
+        /\[data-test="([^"]+)"\]/g,
+        /\[data-test='([^']+)'\]/g,
+        /\[aria-label=["']([^"']+)["']\]/g,
+        /\[aria-label="([^"]+)"\]/g,
+        /\[aria-label='([^']+)'\]/g,
+        /\[alt=["']([^"']+)["']\]/g,
+        /\[alt="([^"]+)"\]/g,
+        /\[alt='([^']+)'\]/g,
+        /input\[type=["']([^"']+)["']\]/g,
+        /\[type=["']([^"']+)["']\]/g,
+        /\[([a-zA-Z-]+)=["']([^"']+)["']\]/g
+    ];
+    for (const pattern of priorityPatterns) {
+        const matches = Array.from(error.matchAll(pattern));
+        if (matches.length > 0) {
+            const match = matches[0];
+            return match[0];
+        }
+    }
+    const htmlPatterns = [
+        /<([a-zA-Z]+)[^>]*data-testid=["']([^"']+)["'][^>]*>/g,
+        /<([a-zA-Z]+)[^>]*data-test=["']([^"']+)["'][^>]*>/g,
+        /<([a-zA-Z]+)[^>]*id=["']([^"']+)["'][^>]*>/g,
+        /<([a-zA-Z]+)[^>]*class=["']([^"']+)["'][^>]*>/g,
+        /<input[^>]*#([a-zA-Z0-9_-]+)[^>]*>/g
+    ];
+    for (const pattern of htmlPatterns) {
+        const matches = Array.from(error.matchAll(pattern));
+        if (matches.length > 0) {
+            const match = matches[0];
+            if (pattern.source.includes('data-testid')) {
+                return `[data-testid="${match[2]}"]`;
+            }
+            else if (pattern.source.includes('data-test')) {
+                return `[data-test="${match[2]}"]`;
+            }
+            else if (pattern.source.includes('id=')) {
+                return '#' + match[2];
+            }
+            else if (pattern.source.includes('<input[^>]*#')) {
+                return '#' + match[1];
+            }
+            else if (pattern.source.includes('class=')) {
+                const classes = match[2].split(' ');
+                return '.' + classes[0];
+            }
+        }
+    }
+    const specialHtmlPatterns = [
+        /<input#([a-zA-Z0-9_-]+)>/g,
+        /<div\s+class=["']([^"']+)["']>/g
+    ];
+    for (const pattern of specialHtmlPatterns) {
+        const matches = Array.from(error.matchAll(pattern));
+        if (matches.length > 0) {
+            const match = matches[0];
+            if (pattern.source.includes('<input#')) {
+                return '#' + match[1];
+            }
+            else if (pattern.source.includes('class=')) {
+                return '.' + match[1].split(' ')[0];
+            }
+        }
+    }
+    const cssPatterns = [
+        /div\.([a-zA-Z0-9_-]+)\s*>\s*button\.([a-zA-Z0-9_-]+)/g,
+        /form#([a-zA-Z0-9_-]+)\s+input/g,
+        /\.([a-zA-Z][a-zA-Z0-9_-]*)/g,
+        /#([a-zA-Z][a-zA-Z0-9_-]*)/g
+    ];
+    for (const pattern of cssPatterns) {
+        const matches = Array.from(error.matchAll(pattern));
+        if (matches.length > 0) {
+            const match = matches[0];
+            if (pattern.source.includes('>') || pattern.source.includes('\\s+')) {
+                return match[0];
+            }
+            if (pattern.source.includes('\\.')) {
+                return '.' + match[1];
+            }
+            else if (pattern.source.includes('#')) {
+                return '#' + match[1];
+            }
+            else {
+                return match[0];
+            }
+        }
+    }
+    return undefined;
+}
+function buildRepairContext(analysisData) {
+    const errorType = classifyErrorType(analysisData.errorMessage);
+    const errorSelector = extractSelector(analysisData.errorMessage);
+    return {
+        testFile: analysisData.testFile,
+        errorLine: analysisData.errorLine,
+        testName: analysisData.testName,
+        errorType,
+        errorSelector,
+        errorMessage: analysisData.errorMessage,
+        workflowRunId: analysisData.workflowRunId,
+        jobName: analysisData.jobName,
+        commitSha: analysisData.commitSha,
+        branch: analysisData.branch,
+        repository: analysisData.repository,
+        prNumber: analysisData.prNumber,
+        targetAppPrNumber: analysisData.targetAppPrNumber
+    };
+}
+function enhanceAnalysisWithRepairContext(analysisResult, testData) {
+    if (analysisResult.verdict !== 'TEST_ISSUE') {
+        return analysisResult;
+    }
+    const repairContext = buildRepairContext(testData);
+    return {
+        ...analysisResult,
+        repairContext
+    };
+}
+//# sourceMappingURL=repair-context.js.map
+
+/***/ }),
+
+/***/ 9247:
+/***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
+
+"use strict";
+
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.SimplifiedRepairAgent = void 0;
+const core = __importStar(__nccwpck_require__(7484));
+const openai_client_1 = __nccwpck_require__(191);
+class SimplifiedRepairAgent {
+    openaiClient;
+    constructor(openaiApiKey) {
+        this.openaiClient = new openai_client_1.OpenAIClient(openaiApiKey);
+    }
+    async generateFixRecommendation(repairContext, errorData) {
+        try {
+            core.info('🔧 Generating fix recommendation...');
+            const prompt = this.buildPrompt(repairContext, errorData);
+            if (process.env.DEBUG_FIX_RECOMMENDATION) {
+                const fs = __nccwpck_require__(9896);
+                const promptFile = `fix-prompt-${Date.now()}.md`;
+                fs.writeFileSync(promptFile, prompt);
+                core.info(`  📝 Full prompt saved to ${promptFile}`);
+            }
+            const recommendation = await this.getRecommendationFromAI(prompt, repairContext, errorData);
+            if (!recommendation || recommendation.confidence < 50) {
+                core.info('Cannot generate confident fix recommendation');
+                return null;
+            }
+            const fixRecommendation = {
+                confidence: recommendation.confidence,
+                summary: this.generateSummary(recommendation, repairContext),
+                proposedChanges: recommendation.changes || [],
+                evidence: recommendation.evidence || [],
+                reasoning: recommendation.reasoning || 'Fix based on error pattern analysis'
+            };
+            core.info(`✅ Fix recommendation generated with ${fixRecommendation.confidence}% confidence`);
+            return fixRecommendation;
+        }
+        catch (error) {
+            core.warning(`Failed to generate fix recommendation: ${error}`);
+            return null;
+        }
+    }
+    buildPrompt(context, errorData) {
+        let contextInfo = `## Test Failure Context
+- **Test File:** ${context.testFile}
+- **Test Name:** ${context.testName}
+- **Error Type:** ${context.errorType}
+- **Error Message:** ${context.errorMessage}
+${context.errorSelector ? `- **Failed Selector:** ${context.errorSelector}` : ''}
+${context.errorLine ? `- **Error Line:** ${context.errorLine}` : ''}`;
+        if (errorData) {
+            core.info('\n📋 Adding full context to fix recommendation prompt:');
+            if (errorData.stackTrace) {
+                core.info('  ✅ Including stack trace');
+                contextInfo += `\n\n## Stack Trace\n\`\`\`\n${errorData.stackTrace}\n\`\`\``;
+            }
+            if (errorData.logs && errorData.logs.length > 0) {
+                core.info(`  ✅ Including ${errorData.logs.length} log entries (first 1000 chars)`);
+                const logPreview = errorData.logs.join('\n').substring(0, 1000);
+                contextInfo += `\n\n## Test Logs\n\`\`\`\n${logPreview}\n\`\`\``;
+            }
+            if (errorData.screenshots && errorData.screenshots.length > 0) {
+                core.info(`  ✅ Including ${errorData.screenshots.length} screenshot(s) metadata`);
+                contextInfo += `\n\n## Screenshots\n${errorData.screenshots.length} screenshot(s) available showing the UI state at failure`;
+                errorData.screenshots.forEach((screenshot, index) => {
+                    contextInfo += `\n- Screenshot ${index + 1}: ${screenshot.name}`;
+                    if (screenshot.timestamp) {
+                        contextInfo += ` (at ${screenshot.timestamp})`;
+                    }
+                });
+            }
+            if (errorData.cypressArtifactLogs) {
+                core.info('  ✅ Including Cypress artifact logs (first 1000 chars)');
+                const cypressPreview = errorData.cypressArtifactLogs.substring(0, 1000);
+                contextInfo += `\n\n## Cypress Logs\n\`\`\`\n${cypressPreview}\n\`\`\``;
+            }
+            if (errorData.prDiff) {
+                core.info(`  ✅ Including PR diff (${errorData.prDiff.totalChanges} files changed)`);
+                contextInfo += `\n\n## Pull Request Changes\n`;
+                contextInfo += `- **Total Files Changed:** ${errorData.prDiff.totalChanges}\n`;
+                contextInfo += `- **Lines Added:** ${errorData.prDiff.additions}\n`;
+                contextInfo += `- **Lines Deleted:** ${errorData.prDiff.deletions}\n`;
+                if (errorData.prDiff.files && errorData.prDiff.files.length > 0) {
+                    contextInfo += `\n### Changed Files (Most Relevant):\n`;
+                    const relevantFiles = errorData.prDiff.files.slice(0, 10);
+                    relevantFiles.forEach(file => {
+                        contextInfo += `\n#### ${file.filename} (${file.status})\n`;
+                        contextInfo += `- Changes: +${file.additions || 0}/-${file.deletions || 0} lines\n`;
+                        if (file.patch) {
+                            const patchPreview = file.patch.substring(0, 500);
+                            contextInfo += `\n\`\`\`diff\n${patchPreview}${file.patch.length > 500 ? '\n... (truncated)' : ''}\n\`\`\`\n`;
+                        }
+                    });
+                    if (errorData.prDiff.files.length > 10) {
+                        contextInfo += `\n... and ${errorData.prDiff.files.length - 10} more files changed\n`;
+                    }
+                }
+            }
+        }
+        else {
+            core.info('⚠️  No ErrorData provided - using minimal context');
+        }
+        return `You are a test repair expert. Analyze this test failure and provide a fix recommendation.
+
+${contextInfo}
+
+## Your Task
+Based on the error type and message, provide a fix recommendation. Focus on the most likely cause and solution.
+
+**Important:** If PR changes are provided, analyze whether recent code changes may have caused the test failure. Look for:
+- Changed selectors or UI components that the test depends on
+- Modified API endpoints or data structures
+- Changes to the test file itself
+- Timing or async behavior changes
+
+## Response Format (JSON)
+{
+  "confidence": 0-100,
+  "reasoning": "explanation of the issue and fix",
+  "changes": [
+    {
+      "file": "path/to/file",
+      "line": line_number_if_known,
+      "oldCode": "problematic code if identifiable",
+      "newCode": "suggested fix",
+      "justification": "why this fixes the issue"
+    }
+  ],
+  "evidence": ["facts supporting this fix"],
+  "rootCause": "brief description of root cause"
+}
+
+## Common Patterns to Consider:
+- ELEMENT_NOT_FOUND: Selector likely changed or element removed
+- TIMEOUT: Element may be loading slowly or conditionally rendered
+- ASSERTION_FAILED: Expected value may have changed
+- ELEMENT_NOT_VISIBLE: Element may be hidden or overlapped
+
+Respond with JSON only. If you cannot provide a confident fix, set confidence below 50.`;
+    }
+    async getRecommendationFromAI(prompt, context, fullErrorData) {
+        try {
+            const errorData = fullErrorData || {
+                message: prompt,
+                framework: 'cypress',
+                testName: context.testName,
+                fileName: context.testFile
+            };
+            const response = await this.openaiClient.analyze(errorData, []);
+            try {
+                const recommendation = JSON.parse(response.reasoning);
+                return recommendation;
+            }
+            catch {
+                return {
+                    confidence: 60,
+                    reasoning: response.reasoning,
+                    changes: this.extractChangesFromText(response.reasoning, context),
+                    evidence: response.indicators || [],
+                    rootCause: 'Error pattern suggests test needs update'
+                };
+            }
+        }
+        catch (error) {
+            core.warning(`AI analysis failed: ${error}`);
+            return null;
+        }
+    }
+    extractChangesFromText(_text, context) {
+        const changes = [];
+        if (context.errorSelector && context.errorType === 'ELEMENT_NOT_FOUND') {
+            changes.push({
+                file: context.testFile,
+                line: context.errorLine || 0,
+                oldCode: context.errorSelector,
+                newCode: '// TODO: Update selector to match current application',
+                justification: 'Selector not found - needs to be updated to match current DOM'
+            });
+        }
+        if (context.errorType === 'TIMEOUT') {
+            changes.push({
+                file: context.testFile,
+                line: context.errorLine || 0,
+                oldCode: '// Timeout occurred here',
+                newCode: 'cy.wait(1000); // Consider adding explicit wait or retry logic',
+                justification: 'Adding wait time to handle slow-loading elements'
+            });
+        }
+        return changes;
+    }
+    generateSummary(recommendation, context) {
+        let summary = `## 🔧 Fix Recommendation for ${context.testName}\n\n`;
+        summary += `### Problem Identified\n`;
+        summary += `- **Error Type:** ${context.errorType}\n`;
+        summary += `- **Root Cause:** ${recommendation.rootCause || 'Test needs update'}\n`;
+        if (context.errorSelector) {
+            summary += `- **Failed Selector:** \`${context.errorSelector}\`\n`;
+        }
+        summary += `\n`;
+        summary += `### Confidence: ${recommendation.confidence}%\n\n`;
+        summary += `### Analysis\n`;
+        summary += `${recommendation.reasoning}\n\n`;
+        if (recommendation.changes && recommendation.changes.length > 0) {
+            summary += `### Recommended Changes\n`;
+            recommendation.changes.forEach((change, index) => {
+                summary += `\n#### Change ${index + 1}: ${change.file}\n`;
+                if (change.line) {
+                    summary += `Line ${change.line}\n`;
+                }
+                summary += `**Justification:** ${change.justification}\n\n`;
+                if (change.oldCode) {
+                    summary += `**Current Code:**\n`;
+                    summary += `\`\`\`typescript\n${change.oldCode}\n\`\`\`\n\n`;
+                }
+                summary += `**Suggested Fix:**\n`;
+                summary += `\`\`\`typescript\n${change.newCode}\n\`\`\`\n\n`;
+            });
+        }
+        if (recommendation.evidence && recommendation.evidence.length > 0) {
+            summary += `### Supporting Evidence\n`;
+            recommendation.evidence.forEach((item) => {
+                summary += `- ${item}\n`;
+            });
+            summary += `\n`;
+        }
+        summary += `---\n`;
+        summary += `*This is an automated fix recommendation. Please review before applying.*\n`;
+        return summary;
+    }
+}
+exports.SimplifiedRepairAgent = SimplifiedRepairAgent;
+//# sourceMappingURL=simplified-repair-agent.js.map
+
+/***/ }),
+
+/***/ 78:
+/***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
+
+"use strict";
+
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.FEW_SHOT_EXAMPLES = void 0;
+exports.analyzeFailure = analyzeFailure;
+exports.extractErrorFromLogs = extractErrorFromLogs;
+const core = __importStar(__nccwpck_require__(7484));
+const FEW_SHOT_EXAMPLES = [
+    {
+        error: 'Intentional failure for triage agent testing',
+        verdict: 'TEST_ISSUE',
+        reasoning: 'Explicit "Intentional failure" indicates deliberate test failure for testing purposes.'
+    },
+    {
+        error: 'TimeoutError: Waiting for element to be visible: #submit-button',
+        verdict: 'TEST_ISSUE',
+        reasoning: 'Element visibility timeout typically indicates test synchronization issue, not product bug.'
+    },
+    {
+        error: 'AssertionError: Expected to find element: [data-testid="button"], but never found it',
+        verdict: 'TEST_ISSUE',
+        reasoning: 'Element not found errors are usually test issues - selector changed or timing problem.'
+    },
+    {
+        error: 'TypeError: Cannot read property "name" of null at UserProfile.render (src/components/UserProfile.tsx:45)',
+        verdict: 'PRODUCT_ISSUE',
+        reasoning: 'Null pointer error in production component code indicates product bug.'
+    },
+    {
+        error: 'Error: connect ECONNREFUSED 127.0.0.1:5432',
+        verdict: 'PRODUCT_ISSUE',
+        reasoning: 'Database connection refused indicates product infrastructure issue.'
+    },
+    {
+        error: 'Error: Network request failed with status 500: Internal Server Error',
+        verdict: 'PRODUCT_ISSUE',
+        reasoning: 'HTTP 500 errors indicate server-side failures in the application.'
+    }
+];
+exports.FEW_SHOT_EXAMPLES = FEW_SHOT_EXAMPLES;
+async function analyzeFailure(client, errorData) {
+    try {
+        core.info(`Analyzing error: ${errorData.message.substring(0, 100)}...`);
+        const response = await client.analyze(errorData, FEW_SHOT_EXAMPLES);
+        const confidence = calculateConfidence(response, errorData);
+        const summary = generateSummary(response, errorData);
+        const result = {
+            verdict: response.verdict,
+            confidence,
+            reasoning: response.reasoning,
+            summary,
+            indicators: response.indicators || [],
+            suggestedSourceLocations: response.suggestedSourceLocations
+        };
+        if (response.verdict === 'TEST_ISSUE') {
+            result.evidence = extractTestIssueEvidence(errorData);
+            result.category = categorizeTestIssue(errorData);
+        }
+        return result;
+    }
+    catch (error) {
+        core.error(`Analysis failed: ${error}`);
+        throw error;
+    }
+}
+function extractErrorFromLogs(logs) {
+    const cleanLogs = logs.replace(/\u001b\[[0-9;]*m/g, '');
+    const errorPatterns = [
+        { pattern: /(AssertionError|CypressError|TimeoutError):\s*(.+)/, framework: 'cypress' },
+        { pattern: /Timed out .+ after \d+ms:\s*(.+)/, framework: 'cypress' },
+        { pattern: /Expected to find .+:\s*(.+)/, framework: 'cypress' },
+        { pattern: /(TypeError|ReferenceError|SyntaxError|Error):\s*(.+)/, framework: 'javascript' },
+        { pattern: /✖\s+(.+)/, framework: 'unknown' },
+        { pattern: /FAIL\s+(.+)/, framework: 'unknown' },
+        { pattern: /Failed:\s*(.+)/, framework: 'unknown' }
+    ];
+    for (const { pattern, framework } of errorPatterns) {
+        const match = cleanLogs.match(pattern);
+        if (match) {
+            const errorIndex = match.index || 0;
+            const contextStart = Math.max(0, errorIndex - 200);
+            const contextEnd = Math.min(cleanLogs.length, errorIndex + 800);
+            const errorContext = cleanLogs.substring(contextStart, contextEnd);
+            const testNameMatch = errorContext.match(/(?:it|test|describe)\(['"`]([^'"`]+)['"`]/);
+            const testName = testNameMatch ? testNameMatch[1] : undefined;
+            const fileMatch = cleanLogs.match(/(?:Running:|File:|at)\s+([^\s]+\.(cy|spec|test)\.[jt]sx?)/);
+            const fileName = fileMatch ? fileMatch[1] : undefined;
+            return {
+                message: errorContext,
+                framework,
+                testName,
+                fileName,
+                failureType: match[1] || 'Error'
+            };
+        }
+    }
+    const lines = cleanLogs.split('\n').filter(line => line.trim());
+    const errorLine = lines.find(line => /error|fail|assert|expect|timeout/i.test(line));
+    if (errorLine) {
+        return {
+            message: errorLine,
+            framework: 'unknown'
+        };
+    }
+    return null;
+}
+function calculateConfidence(response, errorData) {
+    let confidence = 70;
+    const indicatorCount = response.indicators?.length || 0;
+    confidence += Math.min(indicatorCount * 5, 15);
+    if (errorData.screenshots?.length) {
+        confidence += 10;
+        if (errorData.screenshots.length > 1) {
+            confidence += 5;
+        }
+    }
+    if (errorData.logs?.length) {
+        confidence += 5;
+    }
+    if (errorData.prDiff) {
+        confidence += 5;
+    }
+    if (errorData.framework && errorData.framework !== 'unknown') {
+        confidence += 5;
+    }
+    return Math.min(confidence, 95);
+}
+function generateSummary(response, errorData) {
+    const verdict = response.verdict === 'TEST_ISSUE' ? '🧪 Test Issue' : '🐛 Product Issue';
+    const reasoning = response.reasoning.split(/[.!?]/)[0].trim();
+    let summary = `${verdict}: ${reasoning}`;
+    const contexts = [];
+    if (errorData.testName) {
+        contexts.push(`Test: "${errorData.testName}"`);
+    }
+    if (errorData.fileName) {
+        contexts.push(`File: ${errorData.fileName}`);
+    }
+    if (errorData.screenshots?.length) {
+        contexts.push(`${errorData.screenshots.length} screenshot(s) analyzed`);
+    }
+    if (contexts.length > 0) {
+        summary += `\n\nContext: ${contexts.join(' | ')}`;
+    }
+    return summary;
+}
+function extractTestIssueEvidence(errorData) {
+    const evidence = [];
+    const selectorMatch = errorData.message.match(/\[([^\]]+)\]|#[\w-]+|\.[\w-]+/);
+    if (selectorMatch) {
+        evidence.push(`Selector involved: ${selectorMatch[0]}`);
+    }
+    const timeoutMatch = errorData.message.match(/(\d+)ms/);
+    if (timeoutMatch) {
+        evidence.push(`Timeout: ${timeoutMatch[0]}`);
+    }
+    if (/not visible|covered|hidden|display:\s*none/.test(errorData.message)) {
+        evidence.push('Element visibility issue detected');
+    }
+    if (/async|await|promise|then/.test(errorData.message)) {
+        evidence.push('Possible async/timing issue');
+    }
+    return evidence;
+}
+function categorizeTestIssue(errorData) {
+    const message = errorData.message.toLowerCase();
+    if (/element.*not found|could not find|never found/.test(message)) {
+        return 'ELEMENT_NOT_FOUND';
+    }
+    if (/timeout|timed out/.test(message)) {
+        return 'TIMEOUT';
+    }
+    if (/not visible|visibility|covered|hidden/.test(message)) {
+        return 'VISIBILITY';
+    }
+    if (/assertion|expected.*to/.test(message)) {
+        return 'ASSERTION';
+    }
+    if (/network|fetch|api|request/.test(message)) {
+        return 'NETWORK';
+    }
+    return 'UNKNOWN';
+}
+//# sourceMappingURL=simplified-analyzer.js.map
 
 /***/ }),
 

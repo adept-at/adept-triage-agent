@@ -23,13 +23,57 @@ export interface Screenshot {
   timestamp?: string;
 }
 
+export interface RepairContext {
+  // Location information
+  testFile: string; // e.g., "cypress/e2e/auth/login.cy.ts"
+  errorLine?: number; // e.g., 47
+  testName: string; // e.g., "should login successfully"
+
+  // Failure identification
+  errorType: string; // e.g., "ELEMENT_NOT_FOUND", "TIMEOUT", "ASSERTION_FAILED"
+  errorSelector?: string; // e.g., ".submit-btn" (if applicable)
+  errorMessage: string; // Full error message
+
+  // Repository context
+  workflowRunId: string;
+  jobName: string;
+  commitSha: string;
+  branch: string;
+  repository: string;
+
+  // Optional PR context
+  prNumber?: string; // PR in test repo
+  targetAppPrNumber?: string; // PR in app being tested (if known)
+}
+
 export interface AnalysisResult {
   verdict: Verdict;
   confidence: number;
   reasoning: string;
-  summary: string;
+  summary?: string;
   indicators?: string[];
   suggestedSourceLocations?: SourceLocation[];
+  evidence?: string[];
+  suggestedAction?: string;
+  category?: string;
+  affectedTests?: string[];
+  patterns?: Record<string, unknown>;
+  repairContext?: RepairContext; // Only populated for TEST_ISSUE
+  fixRecommendation?: FixRecommendation; // Fix suggestion for TEST_ISSUE
+}
+
+export interface FixRecommendation {
+  confidence: number;
+  summary: string;
+  proposedChanges: {
+    file: string;
+    line: number;
+    oldCode: string;
+    newCode: string;
+    justification: string;
+  }[];
+  evidence: string[];
+  reasoning: string;
 }
 
 export interface SourceLocation {
