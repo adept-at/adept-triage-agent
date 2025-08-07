@@ -35,6 +35,7 @@ var __importStar = (this && this.__importStar) || (function () {
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.SimplifiedRepairAgent = void 0;
 const core = __importStar(require("@actions/core"));
+const fs = __importStar(require("fs"));
 const openai_client_1 = require("../openai-client");
 class SimplifiedRepairAgent {
     openaiClient;
@@ -46,7 +47,6 @@ class SimplifiedRepairAgent {
             core.info('🔧 Generating fix recommendation...');
             const prompt = this.buildPrompt(repairContext, errorData);
             if (process.env.DEBUG_FIX_RECOMMENDATION) {
-                const fs = require('fs');
                 const promptFile = `fix-prompt-${Date.now()}.md`;
                 fs.writeFileSync(promptFile, prompt);
                 core.info(`  📝 Full prompt saved to ${promptFile}`);
@@ -59,7 +59,13 @@ class SimplifiedRepairAgent {
             const fixRecommendation = {
                 confidence: recommendation.confidence,
                 summary: this.generateSummary(recommendation, repairContext),
-                proposedChanges: recommendation.changes || [],
+                proposedChanges: (recommendation.changes || []).map(change => ({
+                    file: change.file,
+                    line: change.line || 0,
+                    oldCode: change.oldCode || '',
+                    newCode: change.newCode || '',
+                    justification: change.justification
+                })),
                 evidence: recommendation.evidence || [],
                 reasoning: recommendation.reasoning || 'Fix based on error pattern analysis'
             };
