@@ -398,6 +398,52 @@ uses: adept-at/adept-triage-agent@v1
 uses: adept-at/adept-triage-agent@v1.4.0
 ```
 
+## Development
+
+### Building the Action
+
+```bash
+# Install dependencies
+npm install
+
+# Build TypeScript to JavaScript
+npm run build
+
+# Package with ncc
+npm run package
+
+# Or do both
+npm run all
+```
+
+### Creating a Release
+
+Before creating a release, ensure the `dist/` directory is up-to-date:
+
+```bash
+# Run pre-release checks and build
+npm run pre-release
+
+# If dist/ was updated, push the changes
+git push origin main
+
+# Create and push a release tag
+git tag v1.6.4
+git push origin v1.6.4
+```
+
+The `pre-release` script will:
+1. Check for uncommitted changes
+2. Build and package the action
+3. Automatically commit any dist/ updates
+4. Provide instructions for the release
+
+### Verification
+
+The repository includes automatic checks to ensure `dist/` is always up-to-date:
+- **check-dist.yml**: Verifies dist/ matches source on every push
+- **npm run verify-dist**: Local verification command
+
 ## License
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.

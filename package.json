@@ -10,7 +10,9 @@
     "test:watch": "jest --watch",
     "lint": "eslint src/**/*.ts",
     "package": "ncc build dist/index.js -o dist --source-map --license licenses.txt",
-    "all": "npm run build && npm run package"
+    "all": "npm run build && npm run package",
+    "pre-release": "./scripts/pre-release.sh",
+    "verify-dist": "npm run all && git diff --exit-code dist/"
   },
   "keywords": [
     "github-action",
