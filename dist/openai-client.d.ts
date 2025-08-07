@@ -1,3 +1,4 @@
+import OpenAI from 'openai';
 import { OpenAIResponse, FewShotExample, ErrorData } from './types';
 export declare class OpenAIClient {
     private openai;
@@ -13,5 +14,11 @@ export declare class OpenAIClient {
     private parseResponse;
     private validateResponse;
     private delay;
+    generateWithCustomPrompt(params: {
+        systemPrompt: string;
+        userContent: string | Array<OpenAI.Chat.Completions.ChatCompletionContentPartText | OpenAI.Chat.Completions.ChatCompletionContentPartImage>;
+        responseAsJson?: boolean;
+        temperature?: number;
+    }): Promise<string>;
 }
 //# sourceMappingURL=openai-client.d.ts.map

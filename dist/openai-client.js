@@ -465,6 +465,25 @@ FOR PRODUCT_ISSUES: You MUST analyze the diff patches above to:
     delay(ms) {
         return new Promise(resolve => setTimeout(resolve, ms));
     }
+    async generateWithCustomPrompt(params) {
+        const model = 'gpt-4.1';
+        const messages = [
+            { role: 'system', content: params.systemPrompt },
+            { role: 'user', content: params.userContent }
+        ];
+        const response = await this.openai.chat.completions.create({
+            model,
+            messages,
+            temperature: params.temperature ?? 0.3,
+            max_tokens: 32768,
+            response_format: params.responseAsJson ? { type: 'json_object' } : undefined
+        });
+        const content = response.choices[0]?.message?.content;
+        if (!content) {
+            throw new Error('Empty response from OpenAI');
+        }
+        return content;
+    }
 }
 exports.OpenAIClient = OpenAIClient;
 //# sourceMappingURL=openai-client.js.map

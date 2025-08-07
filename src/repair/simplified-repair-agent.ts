@@ -204,27 +204,95 @@ Respond with JSON only. If you cannot provide a confident fix, set confidence be
    */
   private async getRecommendationFromAI(prompt: string, context: RepairContext, fullErrorData?: ErrorData): Promise<AIRecommendation | null> {
     try {
-      // Use full error data if available, otherwise create minimal error data
+      const clientAny = this.openaiClient as unknown as {
+        generateWithCustomPrompt?: (args: {
+          systemPrompt: string;
+          userContent: Array<{ type: 'text'; text: string } | { type: 'image_url'; image_url: { url: string; detail?: 'low' | 'auto' | 'high' } }> | string;
+          responseAsJson?: boolean;
+          temperature?: number;
+        }) => Promise<string>;
+        analyze: (errorData: ErrorData, examples: []) => Promise<{ reasoning: string; indicators?: string[] }>;
+      };
+
+      if (typeof clientAny.generateWithCustomPrompt === 'function') {
+        // Build a repair-specific system prompt that enforces JSON output
+        const systemPrompt = `You are a test repair expert. Produce a concrete, review-ready fix plan for a Cypress TEST_ISSUE.
+
+You MUST respond in strict JSON only with this schema:
+{
+  "confidence": number (0-100),
+  "reasoning": string,
+  "rootCause": string,
+  "evidence": string[],
+  "changes": [
+    {
+      "file": string,
+      "line"?: number,
+      "oldCode"?: string,
+      "newCode": string,
+      "justification": string
+    }
+  ]
+}`;
+
+        // Compose multimodal user content: the textual prompt and any screenshots
+        const userParts: Array<
+          | { type: 'text'; text: string }
+          | { type: 'image_url'; image_url: { url: string; detail?: 'low' | 'auto' | 'high' } }
+        > = [
+          { type: 'text', text: prompt }
+        ];
+        if (fullErrorData?.screenshots && fullErrorData.screenshots.length > 0) {
+          for (const s of fullErrorData.screenshots) {
+            if (s.base64Data) {
+              userParts.push({
+                type: 'image_url',
+                image_url: { url: `data:image/png;base64,${s.base64Data}`, detail: 'high' }
+              });
+              userParts.push({ type: 'text', text: `Screenshot: ${s.name}${s.timestamp ? ` (at ${s.timestamp})` : ''}` });
+            }
+          }
+        }
+
+        const content = await clientAny.generateWithCustomPrompt({
+          systemPrompt,
+          userContent: userParts,
+          responseAsJson: true,
+          temperature: 0.3
+        });
+
+        try {
+          const recommendation = JSON.parse(content) as AIRecommendation;
+          return recommendation;
+        } catch (parseErr) {
+          core.warning(`Repair JSON parse failed, falling back to heuristic extraction: ${parseErr}`);
+          return {
+            confidence: 60,
+            reasoning: content,
+            changes: this.extractChangesFromText(content, context),
+            evidence: [],
+            rootCause: 'Derived from repair response text'
+          };
+        }
+      }
+
+      // Fallback to original triage-oriented analyze if custom method is not available (e.g., in tests)
       const errorData = fullErrorData || {
         message: prompt,
         framework: 'cypress',
         testName: context.testName,
         fileName: context.testFile
       };
-      
-      const response = await this.openaiClient.analyze(errorData, []);
-      
-      // Try to parse the reasoning as JSON (the fix recommendation)
+      const triageLike = await clientAny.analyze(errorData, []);
       try {
-        const recommendation = JSON.parse(response.reasoning);
+        const recommendation = JSON.parse(triageLike.reasoning) as AIRecommendation;
         return recommendation;
       } catch {
-        // If not JSON, create a basic recommendation from the response
         return {
           confidence: 60,
-          reasoning: response.reasoning,
-          changes: this.extractChangesFromText(response.reasoning, context),
-          evidence: response.indicators || [],
+          reasoning: triageLike.reasoning,
+          changes: this.extractChangesFromText(triageLike.reasoning, context),
+          evidence: triageLike.indicators || [],
           rootCause: 'Error pattern suggests test needs update'
         };
       }

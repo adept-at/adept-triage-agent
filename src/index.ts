@@ -426,10 +426,12 @@ async function getErrorData(
       fileName: extractedError.fileName || failedJob.steps?.find(s => s.conclusion === 'failure')?.name || 'Unknown',
       screenshots: screenshots,
       logs: [combinedContext],
-      cypressArtifactLogs: artifactLogs,
+      // Cap artifact logs to avoid bloating the prompt
+      cypressArtifactLogs: capArtifactLogs(artifactLogs),
       prDiff: prDiff || undefined
     };
-    
+    // Attach a minimal structured summary to improve prompt guidance
+    errorData.structuredSummary = buildStructuredSummary(errorData);
     return errorData;
   }
   
@@ -443,10 +445,11 @@ async function getErrorData(
     fileName: failedJob.steps?.find(s => s.conclusion === 'failure')?.name || 'Unknown',
     screenshots: screenshots,
     logs: [combinedContext],
-    cypressArtifactLogs: artifactLogs,
+    cypressArtifactLogs: capArtifactLogs(artifactLogs),
     prDiff: prDiff || undefined
   };
-  
+  // Attach a minimal structured summary here as well
+  fallbackError.structuredSummary = buildStructuredSummary(fallbackError);
   return fallbackError;
 }
 
@@ -456,4 +459,75 @@ export { run };
 // Run the action if this is the main module
 if (require.main === module) {
   run();
+}
+
+// Helper: cap potentially large artifact logs and focus on error slices
+function capArtifactLogs(raw: string): string {
+  if (!raw) return '';
+  const MAX = 20000; // 20KB soft cap
+  // Build the ANSI escape regex at runtime to avoid linter's control-regex warning
+  const esc = String.fromCharCode(27);
+  const ansiPattern = new RegExp(`${esc}\\[[0-9;]*m`, 'g');
+  const clean = raw.replace(ansiPattern, '');
+  if (clean.length <= MAX) return clean;
+
+  // Try to focus around error-like lines
+  const lines = clean.split('\n');
+  const errorRegex = /(error|failed|failure|exception|assertion|expected|timeout|cypress error)/i;
+  const focused: string[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    if (errorRegex.test(lines[i])) {
+      const start = Math.max(0, i - 10);
+      const end = Math.min(lines.length, i + 10);
+      focused.push(...lines.slice(start, end));
+    }
+  }
+  const uniqueFocused = Array.from(new Set(focused));
+  const focusedJoined = uniqueFocused.join('\n');
+  if (focusedJoined.length > 1000) {
+    return `${focusedJoined.substring(0, 10000)}\n\n[Artifact logs truncated]`;
+  }
+
+  // Fallback: head and tail
+  const head = clean.substring(0, Math.floor(MAX / 2));
+  const tail = clean.substring(clean.length - Math.floor(MAX / 2));
+  return `${head}\n\n[...truncated...]\n\n${tail}`;
+}
+
+// Helper: derive a minimal StructuredErrorSummary from existing ErrorData
+function buildStructuredSummary(err: ErrorData): import('./types').StructuredErrorSummary {
+  const hasTimeout = /\btimeout|timed out\b/i.test(err.message || '');
+  const hasAssertion = /assertion|expected\s+.*to/i.test(err.message || '');
+  const hasDom = /element|selector|not found|visible|covered|detached/i.test(err.message || '');
+  const hasNetwork = /network|fetch|graphql|api|500|404|502|503/i.test(err.message || '');
+  const hasNullPtr = /cannot read (properties|property) of null|undefined/i.test(err.message || '');
+
+  return {
+    primaryError: {
+      type: err.failureType || 'Error',
+      message: (err.message || '').slice(0, 500)
+    },
+    testContext: {
+      testName: err.testName || 'unknown',
+      testFile: err.fileName || 'unknown',
+      framework: err.framework || 'unknown'
+    },
+    failureIndicators: {
+      hasNetworkErrors: hasNetwork,
+      hasNullPointerErrors: hasNullPtr,
+      hasTimeoutErrors: hasTimeout,
+      hasDOMErrors: hasDom,
+      hasAssertionErrors: hasAssertion,
+      isMobileTest: false,
+      hasLongTimeout: hasTimeout,
+      hasAltTextSelector: /\[alt=/.test(err.message || ''),
+      hasElementExistenceCheck: /expected to find|never found/i.test(err.message || ''),
+      hasVisibilityIssue: /not visible|covered|hidden/i.test(err.message || ''),
+      hasViewportContext: false
+    },
+    keyMetrics: {
+      hasScreenshots: !!(err.screenshots && err.screenshots.length > 0),
+      logSize: err.logs?.join('').length || 0
+    }
+  } as import('./types').StructuredErrorSummary;
 }

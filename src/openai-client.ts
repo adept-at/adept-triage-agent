@@ -509,4 +509,38 @@ FOR PRODUCT_ISSUES: You MUST analyze the diff patches above to:
   private delay(ms: number): Promise<void> {
     return new Promise(resolve => setTimeout(resolve, ms));
   }
+
+  /**
+   * Generic chat entry point that allows callers to supply their own
+   * system prompt and user content (text or multimodal parts). This is used
+   * by the repair agent to request a structured JSON repair plan, without
+   * going through the triage-specific prompt path.
+   */
+  async generateWithCustomPrompt(params: {
+    systemPrompt: string;
+    userContent: string | Array<OpenAI.Chat.Completions.ChatCompletionContentPartText | OpenAI.Chat.Completions.ChatCompletionContentPartImage>;
+    responseAsJson?: boolean;
+    temperature?: number;
+  }): Promise<string> {
+    const model = 'gpt-4.1';
+    const messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [
+      { role: 'system', content: params.systemPrompt },
+      { role: 'user', content: params.userContent }
+    ];
+
+    const response = await this.openai.chat.completions.create({
+      model,
+      messages,
+      temperature: params.temperature ?? 0.3,
+      // Keep existing generous limit consistent with triage path
+      max_tokens: 32768,
+      response_format: params.responseAsJson ? { type: 'json_object' as const } : undefined
+    });
+
+    const content = response.choices[0]?.message?.content;
+    if (!content) {
+      throw new Error('Empty response from OpenAI');
+    }
+    return content;
+  }
 } 

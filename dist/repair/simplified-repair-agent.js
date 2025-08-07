@@ -177,23 +177,78 @@ Respond with JSON only. If you cannot provide a confident fix, set confidence be
     }
     async getRecommendationFromAI(prompt, context, fullErrorData) {
         try {
+            const clientAny = this.openaiClient;
+            if (typeof clientAny.generateWithCustomPrompt === 'function') {
+                const systemPrompt = `You are a test repair expert. Produce a concrete, review-ready fix plan for a Cypress TEST_ISSUE.
+
+You MUST respond in strict JSON only with this schema:
+{
+  "confidence": number (0-100),
+  "reasoning": string,
+  "rootCause": string,
+  "evidence": string[],
+  "changes": [
+    {
+      "file": string,
+      "line"?: number,
+      "oldCode"?: string,
+      "newCode": string,
+      "justification": string
+    }
+  ]
+}`;
+                const userParts = [
+                    { type: 'text', text: prompt }
+                ];
+                if (fullErrorData?.screenshots && fullErrorData.screenshots.length > 0) {
+                    for (const s of fullErrorData.screenshots) {
+                        if (s.base64Data) {
+                            userParts.push({
+                                type: 'image_url',
+                                image_url: { url: `data:image/png;base64,${s.base64Data}`, detail: 'high' }
+                            });
+                            userParts.push({ type: 'text', text: `Screenshot: ${s.name}${s.timestamp ? ` (at ${s.timestamp})` : ''}` });
+                        }
+                    }
+                }
+                const content = await clientAny.generateWithCustomPrompt({
+                    systemPrompt,
+                    userContent: userParts,
+                    responseAsJson: true,
+                    temperature: 0.3
+                });
+                try {
+                    const recommendation = JSON.parse(content);
+                    return recommendation;
+                }
+                catch (parseErr) {
+                    core.warning(`Repair JSON parse failed, falling back to heuristic extraction: ${parseErr}`);
+                    return {
+                        confidence: 60,
+                        reasoning: content,
+                        changes: this.extractChangesFromText(content, context),
+                        evidence: [],
+                        rootCause: 'Derived from repair response text'
+                    };
+                }
+            }
             const errorData = fullErrorData || {
                 message: prompt,
                 framework: 'cypress',
                 testName: context.testName,
                 fileName: context.testFile
             };
-            const response = await this.openaiClient.analyze(errorData, []);
+            const triageLike = await clientAny.analyze(errorData, []);
             try {
-                const recommendation = JSON.parse(response.reasoning);
+                const recommendation = JSON.parse(triageLike.reasoning);
                 return recommendation;
             }
             catch {
                 return {
                     confidence: 60,
-                    reasoning: response.reasoning,
-                    changes: this.extractChangesFromText(response.reasoning, context),
-                    evidence: response.indicators || [],
+                    reasoning: triageLike.reasoning,
+                    changes: this.extractChangesFromText(triageLike.reasoning, context),
+                    evidence: triageLike.indicators || [],
                     rootCause: 'Error pattern suggests test needs update'
                 };
             }

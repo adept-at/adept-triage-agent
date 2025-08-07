@@ -785,9 +785,10 @@ async function getErrorData(octokit, artifactFetcher, inputs) {
             fileName: extractedError.fileName || failedJob.steps?.find(s => s.conclusion === 'failure')?.name || 'Unknown',
             screenshots: screenshots,
             logs: [combinedContext],
-            cypressArtifactLogs: artifactLogs,
+            cypressArtifactLogs: capArtifactLogs(artifactLogs),
             prDiff: prDiff || undefined
         };
+        errorData.structuredSummary = buildStructuredSummary(errorData);
         return errorData;
     }
     const fallbackError = {
@@ -799,13 +800,77 @@ async function getErrorData(octokit, artifactFetcher, inputs) {
         fileName: failedJob.steps?.find(s => s.conclusion === 'failure')?.name || 'Unknown',
         screenshots: screenshots,
         logs: [combinedContext],
-        cypressArtifactLogs: artifactLogs,
+        cypressArtifactLogs: capArtifactLogs(artifactLogs),
         prDiff: prDiff || undefined
     };
+    fallbackError.structuredSummary = buildStructuredSummary(fallbackError);
     return fallbackError;
 }
 if (require.main === require.cache[eval('__filename')]) {
     run();
+}
+function capArtifactLogs(raw) {
+    if (!raw)
+        return '';
+    const MAX = 20000;
+    const esc = String.fromCharCode(27);
+    const ansiPattern = new RegExp(`${esc}\\[[0-9;]*m`, 'g');
+    const clean = raw.replace(ansiPattern, '');
+    if (clean.length <= MAX)
+        return clean;
+    const lines = clean.split('\n');
+    const errorRegex = /(error|failed|failure|exception|assertion|expected|timeout|cypress error)/i;
+    const focused = [];
+    for (let i = 0; i < lines.length; i++) {
+        if (errorRegex.test(lines[i])) {
+            const start = Math.max(0, i - 10);
+            const end = Math.min(lines.length, i + 10);
+            focused.push(...lines.slice(start, end));
+        }
+    }
+    const uniqueFocused = Array.from(new Set(focused));
+    const focusedJoined = uniqueFocused.join('\n');
+    if (focusedJoined.length > 1000) {
+        return `${focusedJoined.substring(0, 10000)}\n\n[Artifact logs truncated]`;
+    }
+    const head = clean.substring(0, Math.floor(MAX / 2));
+    const tail = clean.substring(clean.length - Math.floor(MAX / 2));
+    return `${head}\n\n[...truncated...]\n\n${tail}`;
+}
+function buildStructuredSummary(err) {
+    const hasTimeout = /\btimeout|timed out\b/i.test(err.message || '');
+    const hasAssertion = /assertion|expected\s+.*to/i.test(err.message || '');
+    const hasDom = /element|selector|not found|visible|covered|detached/i.test(err.message || '');
+    const hasNetwork = /network|fetch|graphql|api|500|404|502|503/i.test(err.message || '');
+    const hasNullPtr = /cannot read (properties|property) of null|undefined/i.test(err.message || '');
+    return {
+        primaryError: {
+            type: err.failureType || 'Error',
+            message: (err.message || '').slice(0, 500)
+        },
+        testContext: {
+            testName: err.testName || 'unknown',
+            testFile: err.fileName || 'unknown',
+            framework: err.framework || 'unknown'
+        },
+        failureIndicators: {
+            hasNetworkErrors: hasNetwork,
+            hasNullPointerErrors: hasNullPtr,
+            hasTimeoutErrors: hasTimeout,
+            hasDOMErrors: hasDom,
+            hasAssertionErrors: hasAssertion,
+            isMobileTest: false,
+            hasLongTimeout: hasTimeout,
+            hasAltTextSelector: /\[alt=/.test(err.message || ''),
+            hasElementExistenceCheck: /expected to find|never found/i.test(err.message || ''),
+            hasVisibilityIssue: /not visible|covered|hidden/i.test(err.message || ''),
+            hasViewportContext: false
+        },
+        keyMetrics: {
+            hasScreenshots: !!(err.screenshots && err.screenshots.length > 0),
+            logSize: err.logs?.join('').length || 0
+        }
+    };
 }
 //# sourceMappingURL=index.js.map
 
@@ -1282,6 +1347,25 @@ FOR PRODUCT_ISSUES: You MUST analyze the diff patches above to:
     delay(ms) {
         return new Promise(resolve => setTimeout(resolve, ms));
     }
+    async generateWithCustomPrompt(params) {
+        const model = 'gpt-4.1';
+        const messages = [
+            { role: 'system', content: params.systemPrompt },
+            { role: 'user', content: params.userContent }
+        ];
+        const response = await this.openai.chat.completions.create({
+            model,
+            messages,
+            temperature: params.temperature ?? 0.3,
+            max_tokens: 32768,
+            response_format: params.responseAsJson ? { type: 'json_object' } : undefined
+        });
+        const content = response.choices[0]?.message?.content;
+        if (!content) {
+            throw new Error('Empty response from OpenAI');
+        }
+        return content;
+    }
 }
 exports.OpenAIClient = OpenAIClient;
 //# sourceMappingURL=openai-client.js.map
@@ -1657,23 +1741,78 @@ Respond with JSON only. If you cannot provide a confident fix, set confidence be
     }
     async getRecommendationFromAI(prompt, context, fullErrorData) {
         try {
+            const clientAny = this.openaiClient;
+            if (typeof clientAny.generateWithCustomPrompt === 'function') {
+                const systemPrompt = `You are a test repair expert. Produce a concrete, review-ready fix plan for a Cypress TEST_ISSUE.
+
+You MUST respond in strict JSON only with this schema:
+{
+  "confidence": number (0-100),
+  "reasoning": string,
+  "rootCause": string,
+  "evidence": string[],
+  "changes": [
+    {
+      "file": string,
+      "line"?: number,
+      "oldCode"?: string,
+      "newCode": string,
+      "justification": string
+    }
+  ]
+}`;
+                const userParts = [
+                    { type: 'text', text: prompt }
+                ];
+                if (fullErrorData?.screenshots && fullErrorData.screenshots.length > 0) {
+                    for (const s of fullErrorData.screenshots) {
+                        if (s.base64Data) {
+                            userParts.push({
+                                type: 'image_url',
+                                image_url: { url: `data:image/png;base64,${s.base64Data}`, detail: 'high' }
+                            });
+                            userParts.push({ type: 'text', text: `Screenshot: ${s.name}${s.timestamp ? ` (at ${s.timestamp})` : ''}` });
+                        }
+                    }
+                }
+                const content = await clientAny.generateWithCustomPrompt({
+                    systemPrompt,
+                    userContent: userParts,
+                    responseAsJson: true,
+                    temperature: 0.3
+                });
+                try {
+                    const recommendation = JSON.parse(content);
+                    return recommendation;
+                }
+                catch (parseErr) {
+                    core.warning(`Repair JSON parse failed, falling back to heuristic extraction: ${parseErr}`);
+                    return {
+                        confidence: 60,
+                        reasoning: content,
+                        changes: this.extractChangesFromText(content, context),
+                        evidence: [],
+                        rootCause: 'Derived from repair response text'
+                    };
+                }
+            }
             const errorData = fullErrorData || {
                 message: prompt,
                 framework: 'cypress',
                 testName: context.testName,
                 fileName: context.testFile
             };
-            const response = await this.openaiClient.analyze(errorData, []);
+            const triageLike = await clientAny.analyze(errorData, []);
             try {
-                const recommendation = JSON.parse(response.reasoning);
+                const recommendation = JSON.parse(triageLike.reasoning);
                 return recommendation;
             }
             catch {
                 return {
                     confidence: 60,
-                    reasoning: response.reasoning,
-                    changes: this.extractChangesFromText(response.reasoning, context),
-                    evidence: response.indicators || [],
+                    reasoning: triageLike.reasoning,
+                    changes: this.extractChangesFromText(triageLike.reasoning, context),
+                    evidence: triageLike.indicators || [],
                     rootCause: 'Error pattern suggests test needs update'
                 };
             }
