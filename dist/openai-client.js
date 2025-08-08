@@ -47,8 +47,8 @@ class OpenAIClient {
         this.openai = new openai_1.default({ apiKey });
     }
     async analyze(errorData, examples) {
-        const model = 'gpt-4.1';
-        core.info('🧠 Using GPT-4.1 model for analysis');
+        const model = 'gpt-5';
+        core.info('🧠 Using GPT-5 model for analysis');
         const messages = this.buildMessages(errorData, examples);
         if (messages[1] && messages[1].role === 'user') {
             const userMessage = messages[1].content;
@@ -89,8 +89,8 @@ class OpenAIClient {
                 const requestParams = {
                     model,
                     messages,
-                    temperature: 0.3,
-                    max_tokens: 32768,
+                    temperature: 1,
+                    max_completion_tokens: 32768,
                     response_format: { type: 'json_object' }
                 };
                 const response = await this.openai.chat.completions.create(requestParams);
@@ -466,7 +466,7 @@ FOR PRODUCT_ISSUES: You MUST analyze the diff patches above to:
         return new Promise(resolve => setTimeout(resolve, ms));
     }
     async generateWithCustomPrompt(params) {
-        const model = 'gpt-4.1';
+        const model = 'gpt-5';
         const messages = [
             { role: 'system', content: params.systemPrompt },
             { role: 'user', content: params.userContent }
@@ -474,8 +474,8 @@ FOR PRODUCT_ISSUES: You MUST analyze the diff patches above to:
         const response = await this.openai.chat.completions.create({
             model,
             messages,
-            temperature: params.temperature ?? 0.3,
-            max_tokens: 32768,
+            temperature: params.temperature ?? 1,
+            max_completion_tokens: 32768,
             response_format: params.responseAsJson ? { type: 'json_object' } : undefined
         });
         const content = response.choices[0]?.message?.content;

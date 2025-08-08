@@ -12,9 +12,9 @@ export class OpenAIClient {
   }
 
   async analyze(errorData: ErrorData, examples: FewShotExample[]): Promise<OpenAIResponse> {
-    // Always use GPT-4.1 model
-    const model = 'gpt-4.1';
-    core.info('🧠 Using GPT-4.1 model for analysis');
+    // Use GPT-5 model
+    const model = 'gpt-5';
+    core.info('🧠 Using GPT-5 model for analysis');
     
     const messages = this.buildMessages(errorData, examples);
     
@@ -63,10 +63,12 @@ export class OpenAIClient {
         const requestParams = {
           model,
           messages,
-          temperature: 0.3,
-          max_tokens: 32768,  // GPT-4.1 supports up to 32,768 output tokens
+          // GPT-5 supports the default temperature only; set explicitly to 1
+          temperature: 1,
+          // GPT-5 uses max_completion_tokens instead of max_tokens
+          max_completion_tokens: 32768,
           response_format: { type: 'json_object' as const }
-        };
+        } as const;
         
         const response = await this.openai.chat.completions.create(requestParams);
 
@@ -522,7 +524,7 @@ FOR PRODUCT_ISSUES: You MUST analyze the diff patches above to:
     responseAsJson?: boolean;
     temperature?: number;
   }): Promise<string> {
-    const model = 'gpt-4.1';
+    const model = 'gpt-5';
     const messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [
       { role: 'system', content: params.systemPrompt },
       { role: 'user', content: params.userContent }
@@ -531,9 +533,10 @@ FOR PRODUCT_ISSUES: You MUST analyze the diff patches above to:
     const response = await this.openai.chat.completions.create({
       model,
       messages,
-      temperature: params.temperature ?? 0.3,
+      // GPT-5 supports the default temperature only; set to 1
+      temperature: params.temperature ?? 1,
       // Keep existing generous limit consistent with triage path
-      max_tokens: 32768,
+      max_completion_tokens: 32768,
       response_format: params.responseAsJson ? { type: 'json_object' as const } : undefined
     });
 

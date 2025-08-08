@@ -74,9 +74,9 @@ describe('OpenAIClient', () => {
 
       expect(mockCreate).toHaveBeenCalledWith(
         expect.objectContaining({
-          model: 'gpt-4.1',
-          temperature: 0.3,
-          max_tokens: 32768,
+          model: 'gpt-5',
+          temperature: 1,
+          max_completion_tokens: 32768,
           response_format: { type: 'json_object' },
         })
       );
@@ -111,9 +111,9 @@ describe('OpenAIClient', () => {
       expect(result.verdict).toBe('PRODUCT_ISSUE');
       expect(mockCreate).toHaveBeenCalledWith(
         expect.objectContaining({
-          model: 'gpt-4.1',
-          temperature: 0.3,
-          max_tokens: 32768,
+          model: 'gpt-5',
+          temperature: 1,
+          max_completion_tokens: 32768,
           response_format: { type: 'json_object' },
         })
       );
