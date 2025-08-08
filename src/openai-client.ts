@@ -533,8 +533,8 @@ FOR PRODUCT_ISSUES: You MUST analyze the diff patches above to:
     const response = await this.openai.chat.completions.create({
       model,
       messages,
-      // GPT-5 supports the default temperature only; set to 1
-      temperature: params.temperature ?? 1,
+      // GPT-5 supports only the default temperature; force 1 regardless of caller input
+      temperature: 1,
       // Keep existing generous limit consistent with triage path
       max_completion_tokens: 32768,
       response_format: params.responseAsJson ? { type: 'json_object' as const } : undefined

@@ -474,7 +474,7 @@ FOR PRODUCT_ISSUES: You MUST analyze the diff patches above to:
         const response = await this.openai.chat.completions.create({
             model,
             messages,
-            temperature: params.temperature ?? 1,
+            temperature: 1,
             max_completion_tokens: 32768,
             response_format: params.responseAsJson ? { type: 'json_object' } : undefined
         });

@@ -215,7 +215,6 @@ You MUST respond in strict JSON only with this schema:
                     systemPrompt,
                     userContent: userParts,
                     responseAsJson: true,
-                    temperature: 0.3
                 });
                 try {
                     const recommendation = JSON.parse(content);
