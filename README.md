@@ -416,6 +416,22 @@ npm run package
 npm run all
 ```
 
+### Git Hooks (Husky)
+
+This project uses Husky to ensure code quality and build consistency:
+
+**Pre-commit hook:**
+- Runs linting (`npm run lint`)
+- Builds the TypeScript code
+- Packages the action and updates `dist/` if needed
+- Automatically stages updated `dist/` files
+
+**Pre-push hook:**
+- Verifies `dist/` is up-to-date
+- Runs all tests
+
+These hooks prevent broken or unbuilt code from being committed or pushed to the repository.
+
 ### Creating a Release
 
 Before creating a release, ensure the `dist/` directory is up-to-date:

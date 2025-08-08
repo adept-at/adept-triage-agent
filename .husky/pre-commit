@@ -1,0 +1,30 @@
+#!/bin/sh
+
+# Exit on any error
+set -e
+
+echo "🔍 Running pre-commit checks..."
+
+# Run linter
+echo "📝 Running linter..."
+npm run lint
+
+# Build the project
+echo "🔨 Building project..."
+npm run build
+
+# Package the action
+echo "📦 Packaging action..."
+npm run package
+
+# Check if dist/ changed
+if [ -n "$(git diff --cached --name-only dist/)" ]; then
+  echo "✅ dist/ files are staged and will be committed"
+elif [ -n "$(git diff --name-only dist/)" ]; then
+  echo "⚠️  Warning: dist/ files have been updated but are not staged"
+  echo "📝 Adding updated dist/ files to commit..."
+  git add dist/
+  echo "✅ dist/ files have been added to the commit"
+fi
+
+echo "✅ Pre-commit checks passed!"

@@ -1,0 +1,23 @@
+#!/bin/sh
+
+# Exit on any error
+set -e
+
+echo "🚀 Running pre-push checks..."
+
+# Verify dist is up to date
+echo "🔍 Verifying dist/ is up-to-date..."
+npm run verify-dist
+
+if [ $? -ne 0 ]; then
+  echo "❌ dist/ is not up-to-date!"
+  echo "Please run 'npm run all' and commit the changes before pushing."
+  exit 1
+fi
+
+# Run tests
+echo "🧪 Running tests..."
+npm test
+
+echo "✅ All pre-push checks passed!"
+echo "🎉 Ready to push to remote repository"
