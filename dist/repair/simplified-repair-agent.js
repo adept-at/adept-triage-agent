@@ -37,6 +37,7 @@ exports.SimplifiedRepairAgent = void 0;
 const core = __importStar(require("@actions/core"));
 const fs = __importStar(require("fs"));
 const openai_client_1 = require("../openai-client");
+const slack_formatter_1 = require("../utils/slack-formatter");
 class SimplifiedRepairAgent {
     openaiClient;
     constructor(openaiApiKey) {
@@ -316,7 +317,7 @@ You MUST respond in strict JSON only with this schema:
         }
         summary += `---\n`;
         summary += `*This is an automated fix recommendation. Please review before applying.*\n`;
-        return summary;
+        return (0, slack_formatter_1.formatSummaryForSlack)(summary, false);
     }
 }
 exports.SimplifiedRepairAgent = SimplifiedRepairAgent;

@@ -1,6 +1,7 @@
 import { OpenAIClient } from './openai-client';
 import { AnalysisResult, ErrorData, FewShotExample, OpenAIResponse } from './types';
 import * as core from '@actions/core';
+import { truncateForSlack } from './utils/slack-formatter';
 
 /**
  * Simplified analyzer that focuses on core functionality
@@ -210,7 +211,8 @@ function generateSummary(response: OpenAIResponse, errorData: ErrorData): string
     summary += `\n\nContext: ${contexts.join(' | ')}`;
   }
   
-  return summary;
+  // Ensure summary fits within Slack's limits
+  return truncateForSlack(summary, 1000); // Keep main summaries concise
 }
 
 /**

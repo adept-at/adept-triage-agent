@@ -3,6 +3,7 @@ import * as fs from 'fs';
 import { OpenAIClient } from '../openai-client';
 import { RepairContext, ErrorData } from '../types';
 import { FixRecommendation } from '../types';
+import { formatSummaryForSlack } from '../utils/slack-formatter';
 
 // Internal type for AI response structure
 interface AIRecommendation {
@@ -382,6 +383,8 @@ You MUST respond in strict JSON only with this schema:
     summary += `---\n`;
     summary += `*This is an automated fix recommendation. Please review before applying.*\n`;
     
-    return summary;
+    // Apply Slack formatting to ensure it fits within limits
+    // This will remove code blocks if necessary and truncate to fit
+    return formatSummaryForSlack(summary, false); // Don't include code blocks for Slack
   }
 }

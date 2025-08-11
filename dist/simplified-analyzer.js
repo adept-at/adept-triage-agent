@@ -37,6 +37,7 @@ exports.FEW_SHOT_EXAMPLES = void 0;
 exports.analyzeFailure = analyzeFailure;
 exports.extractErrorFromLogs = extractErrorFromLogs;
 const core = __importStar(require("@actions/core"));
+const slack_formatter_1 = require("./utils/slack-formatter");
 const FEW_SHOT_EXAMPLES = [
     {
         error: 'Intentional failure for triage agent testing',
@@ -174,7 +175,7 @@ function generateSummary(response, errorData) {
     if (contexts.length > 0) {
         summary += `\n\nContext: ${contexts.join(' | ')}`;
     }
-    return summary;
+    return (0, slack_formatter_1.truncateForSlack)(summary, 1000);
 }
 function extractTestIssueEvidence(errorData) {
     const evidence = [];
