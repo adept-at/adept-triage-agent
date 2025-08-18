@@ -99,31 +99,67 @@ async function analyzeFailure(client, errorData) {
 function extractErrorFromLogs(logs) {
     const cleanLogs = logs.replace(/\u001b\[[0-9;]*m/g, '');
     const errorPatterns = [
-        { pattern: /(AssertionError|CypressError|TimeoutError):\s*(.+)/, framework: 'cypress' },
-        { pattern: /Timed out .+ after \d+ms:\s*(.+)/, framework: 'cypress' },
-        { pattern: /Expected to find .+:\s*(.+)/, framework: 'cypress' },
-        { pattern: /(TypeError|ReferenceError|SyntaxError|Error):\s*(.+)/, framework: 'javascript' },
-        { pattern: /✖\s+(.+)/, framework: 'unknown' },
-        { pattern: /FAIL\s+(.+)/, framework: 'unknown' },
-        { pattern: /Failed:\s*(.+)/, framework: 'unknown' }
+        { pattern: /TypeError: Cannot read propert(?:y|ies) .+ of (?:null|undefined).*/, framework: 'javascript', priority: 10 },
+        { pattern: /TypeError: Cannot access .+ of (?:null|undefined).*/, framework: 'javascript', priority: 10 },
+        { pattern: /(AssertionError|CypressError|TimeoutError):\s*(.+)/, framework: 'cypress', priority: 8 },
+        { pattern: /Timed out .+ after \d+ms:\s*(.+)/, framework: 'cypress', priority: 8 },
+        { pattern: /Expected to find .+:\s*(.+)/, framework: 'cypress', priority: 7 },
+        { pattern: /(TypeError|ReferenceError|SyntaxError):\s*(.+)/, framework: 'javascript', priority: 6 },
+        { pattern: /Error:\s*(.+)/, framework: 'javascript', priority: 5 },
+        { pattern: /✖\s+(.+)/, framework: 'unknown', priority: 3 },
+        { pattern: /FAIL\s+(.+)/, framework: 'unknown', priority: 2 },
+        { pattern: /Failed:\s*(.+)/, framework: 'unknown', priority: 1 }
     ];
-    for (const { pattern, framework } of errorPatterns) {
+    errorPatterns.sort((a, b) => (b.priority || 0) - (a.priority || 0));
+    for (const { pattern, framework, priority } of errorPatterns) {
         const match = cleanLogs.match(pattern);
         if (match) {
+            const beforeError = cleanLogs.substring(Math.max(0, (match.index || 0) - 100), match.index || 0);
+            if (beforeError.includes('cy:xhr') && beforeError.includes('Status: 200')) {
+                if ((priority || 0) < 5)
+                    continue;
+            }
             const errorIndex = match.index || 0;
-            const contextStart = Math.max(0, errorIndex - 200);
-            const contextEnd = Math.min(cleanLogs.length, errorIndex + 800);
+            const contextStart = Math.max(0, errorIndex - 500);
+            const contextEnd = Math.min(cleanLogs.length, errorIndex + 1500);
             const errorContext = cleanLogs.substring(contextStart, contextEnd);
-            const testNameMatch = errorContext.match(/(?:it|test|describe)\(['"`]([^'"`]+)['"`]/);
-            const testName = testNameMatch ? testNameMatch[1] : undefined;
-            const fileMatch = cleanLogs.match(/(?:Running:|File:|at)\s+([^\s]+\.(cy|spec|test)\.[jt]sx?)/);
-            const fileName = fileMatch ? fileMatch[1] : undefined;
+            const testNamePatterns = [
+                /(?:it|test|describe)\(['"`]([^'"`]+)['"`]/,
+                /\d+\)\s+(.+?)(?:\n|$)/,
+                /Running test:\s*(.+?)(?:\n|$)/,
+                /Test:\s*["']?(.+?)["']?(?:\n|$)/
+            ];
+            let testName;
+            for (const testPattern of testNamePatterns) {
+                const testNameMatch = errorContext.match(testPattern);
+                if (testNameMatch && testNameMatch[1]) {
+                    testName = testNameMatch[1].trim();
+                    break;
+                }
+            }
+            const filePatterns = [
+                /at\s+.+?\((.+?\.(js|ts|jsx|tsx)):\d+:\d+\)/,
+                /(?:Running:|File:|spec:)\s*([^\s]+\.(cy|spec|test)\.[jt]sx?)/,
+                /webpack:\/\/[^/]+\/(.+?\.(js|ts|jsx|tsx))/
+            ];
+            let fileName;
+            for (const filePattern of filePatterns) {
+                const fileMatch = errorContext.match(filePattern) || cleanLogs.match(filePattern);
+                if (fileMatch && fileMatch[1]) {
+                    fileName = fileMatch[1];
+                    break;
+                }
+            }
+            const errorType = match[0].split(':')[0] || 'Error';
+            core.debug(`Extracted error type: ${errorType}`);
+            core.debug(`Extracted test name: ${testName || 'unknown'}`);
+            core.debug(`Error preview: ${match[0].substring(0, 100)}...`);
             return {
                 message: errorContext,
                 framework,
                 testName,
                 fileName,
-                failureType: match[1] || 'Error'
+                failureType: errorType
             };
         }
     }

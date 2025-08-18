@@ -90,43 +90,94 @@ export function extractErrorFromLogs(logs: string): ErrorData | null {
   // Clean ANSI codes
   const cleanLogs = logs.replace(/\u001b\[[0-9;]*m/g, '');
   
-  // Look for common error patterns
+  // Look for common error patterns - PRIORITIZED ORDER
   const errorPatterns = [
-    // Cypress errors
-    { pattern: /(AssertionError|CypressError|TimeoutError):\s*(.+)/, framework: 'cypress' },
-    { pattern: /Timed out .+ after \d+ms:\s*(.+)/, framework: 'cypress' },
-    { pattern: /Expected to find .+:\s*(.+)/, framework: 'cypress' },
-    // JavaScript errors
-    { pattern: /(TypeError|ReferenceError|SyntaxError|Error):\s*(.+)/, framework: 'javascript' },
-    // Generic test failures
-    { pattern: /✖\s+(.+)/, framework: 'unknown' },
-    { pattern: /FAIL\s+(.+)/, framework: 'unknown' },
-    { pattern: /Failed:\s*(.+)/, framework: 'unknown' }
+    // Specific JavaScript errors with property access (high priority)
+    { pattern: /TypeError: Cannot read propert(?:y|ies) .+ of (?:null|undefined).*/, framework: 'javascript', priority: 10 },
+    { pattern: /TypeError: Cannot access .+ of (?:null|undefined).*/, framework: 'javascript', priority: 10 },
+    
+    // Cypress-specific errors
+    { pattern: /(AssertionError|CypressError|TimeoutError):\s*(.+)/, framework: 'cypress', priority: 8 },
+    { pattern: /Timed out .+ after \d+ms:\s*(.+)/, framework: 'cypress', priority: 8 },
+    { pattern: /Expected to find .+:\s*(.+)/, framework: 'cypress', priority: 7 },
+    
+    // General JavaScript errors
+    { pattern: /(TypeError|ReferenceError|SyntaxError):\s*(.+)/, framework: 'javascript', priority: 6 },
+    { pattern: /Error:\s*(.+)/, framework: 'javascript', priority: 5 },
+    
+    // Generic test failures (lower priority)
+    { pattern: /✖\s+(.+)/, framework: 'unknown', priority: 3 },
+    { pattern: /FAIL\s+(.+)/, framework: 'unknown', priority: 2 },
+    { pattern: /Failed:\s*(.+)/, framework: 'unknown', priority: 1 }
   ];
+  
+  // Sort by priority
+  errorPatterns.sort((a, b) => (b.priority || 0) - (a.priority || 0));
 
-  for (const { pattern, framework } of errorPatterns) {
+  for (const { pattern, framework, priority } of errorPatterns) {
     const match = cleanLogs.match(pattern);
     if (match) {
-      // Extract context around the error
+      // Skip XHR/network logs that aren't actual errors
+      const beforeError = cleanLogs.substring(Math.max(0, (match.index || 0) - 100), match.index || 0);
+      if (beforeError.includes('cy:xhr') && beforeError.includes('Status: 200')) {
+        // This might be a log line, not an actual error - skip if low priority
+        if ((priority || 0) < 5) continue;
+      }
+      
+      // Extract MORE context around the error (was 200/800, now 500/1500)
       const errorIndex = match.index || 0;
-      const contextStart = Math.max(0, errorIndex - 200);
-      const contextEnd = Math.min(cleanLogs.length, errorIndex + 800);
+      const contextStart = Math.max(0, errorIndex - 500);
+      const contextEnd = Math.min(cleanLogs.length, errorIndex + 1500);
       const errorContext = cleanLogs.substring(contextStart, contextEnd);
       
-      // Extract test name if available
-      const testNameMatch = errorContext.match(/(?:it|test|describe)\(['"`]([^'"`]+)['"`]/);
-      const testName = testNameMatch ? testNameMatch[1] : undefined;
+      // Extract test name if available - look for more patterns
+      const testNamePatterns = [
+        /(?:it|test|describe)\(['"`]([^'"`]+)['"`]/,
+        /\d+\)\s+(.+?)(?:\n|$)/,  // Numbered test output like "1) Test name"
+        /Running test:\s*(.+?)(?:\n|$)/,
+        /Test:\s*["']?(.+?)["']?(?:\n|$)/
+      ];
       
-      // Extract file name if available
-      const fileMatch = cleanLogs.match(/(?:Running:|File:|at)\s+([^\s]+\.(cy|spec|test)\.[jt]sx?)/);
-      const fileName = fileMatch ? fileMatch[1] : undefined;
+      let testName: string | undefined;
+      for (const testPattern of testNamePatterns) {
+        const testNameMatch = errorContext.match(testPattern);
+        if (testNameMatch && testNameMatch[1]) {
+          testName = testNameMatch[1].trim();
+          break;
+        }
+      }
+      
+      // Extract file name if available - more patterns
+      const filePatterns = [
+        /at\s+.+?\((.+?\.(js|ts|jsx|tsx)):\d+:\d+\)/,  // Stack trace format
+        /(?:Running:|File:|spec:)\s*([^\s]+\.(cy|spec|test)\.[jt]sx?)/,
+        /webpack:\/\/[^/]+\/(.+?\.(js|ts|jsx|tsx))/  // Webpack format  
+      ];
+      
+      let fileName: string | undefined;
+      for (const filePattern of filePatterns) {
+        // Look in error context first, then fall back to full logs
+        const fileMatch = errorContext.match(filePattern) || cleanLogs.match(filePattern);
+        if (fileMatch && fileMatch[1]) {
+          fileName = fileMatch[1];
+          break;
+        }
+      }
+      
+      // Get the actual error type from the match
+      const errorType = match[0].split(':')[0] || 'Error';
+      
+      // Log what we're extracting for debugging
+      core.debug(`Extracted error type: ${errorType}`);
+      core.debug(`Extracted test name: ${testName || 'unknown'}`);
+      core.debug(`Error preview: ${match[0].substring(0, 100)}...`);
       
       return {
         message: errorContext,
         framework,
         testName,
         fileName,
-        failureType: match[1] || 'Error'
+        failureType: errorType
       };
     }
   }
