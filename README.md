@@ -402,6 +402,8 @@ uses: adept-at/adept-triage-agent@v1.4.0
 
 ### Building the Action
 
+> ⚠️ **IMPORTANT**: The dist/index.js file MUST be properly bundled with ncc before committing. The pre-commit hooks handle this automatically, but if you bypass them, the action will fail when used.
+
 ```bash
 # Install dependencies
 npm install
@@ -409,12 +411,14 @@ npm install
 # Build TypeScript to JavaScript
 npm run build
 
-# Package with ncc
+# Package with ncc (REQUIRED - bundles all dependencies)
 npm run package
 
-# Or do both
+# Or do both (recommended)
 npm run all
 ```
+
+**Note**: Simply running `npm run build` is NOT sufficient. You must run `npm run package` or `npm run all` to properly bundle the action with its dependencies.
 
 ### Git Hooks (Husky)
 
