@@ -78,6 +78,40 @@ describe('extractErrorFromLogs', () => {
   });
 
   describe('Cypress-specific errors', () => {
+    it('should extract Cypress server verification errors', () => {
+      const logs = `
+Running Cypress tests...
+Starting Cypress...
+
+Cypress could not verify that this server is running:
+
+  > https://learn-webapp-65z7ixypt-adept-at.vercel.app
+
+We are verifying this server because it has been configured as your baseUrl.
+
+Cypress automatically waits until your server is accessible before running tests.
+
+We will try connecting to it 3 more times...
+We will try connecting to it 2 more times...
+We will try connecting to it 1 more time...
+
+Cypress failed to verify that your server is running.
+
+Please start this server and then run Cypress again.
+Error: Process completed with exit code 1.
+`;
+
+      const result = extractErrorFromLogs(logs);
+      
+      expect(result).toBeTruthy();
+      expect(result?.failureType).toBe('CypressServerVerificationError');
+      expect(result?.framework).toBe('cypress');
+      expect(result?.message).toContain('Cypress could not verify that this server is running');
+      expect(result?.message).toContain('https://learn-webapp-65z7ixypt-adept-at.vercel.app');
+      expect(result?.message).toContain('baseUrl');
+      expect(result?.message).toContain('Cypress failed to verify');
+    });
+
     it('should extract Cypress timeout errors', () => {
       const logs = `
 Running: test.cy.js

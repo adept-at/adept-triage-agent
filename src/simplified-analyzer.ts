@@ -18,6 +18,11 @@ const FEW_SHOT_EXAMPLES: FewShotExample[] = [
     reasoning: 'Explicit "Intentional failure" indicates deliberate test failure for testing purposes.'
   },
   {
+    error: 'Cypress could not verify that this server is running: https://example.vercel.app',
+    verdict: 'PRODUCT_ISSUE',
+    reasoning: 'Server not accessible indicates deployment/infrastructure issue - the application server is down or unreachable.'
+  },
+  {
     error: 'TimeoutError: Waiting for element to be visible: #submit-button',
     verdict: 'TEST_ISSUE',
     reasoning: 'Element visibility timeout typically indicates test synchronization issue, not product bug.'
@@ -87,11 +92,18 @@ export async function analyzeFailure(client: OpenAIClient, errorData: ErrorData)
  * Simplified error extraction from logs
  */
 export function extractErrorFromLogs(logs: string): ErrorData | null {
-  // Clean ANSI codes
-  const cleanLogs = logs.replace(/\u001b\[[0-9;]*m/g, '');
+  // Clean ANSI codes - build regex dynamically to avoid linter warning
+  const esc = String.fromCharCode(27);
+  const ansiPattern = new RegExp(`${esc}\\[[0-9;]*m`, 'g');
+  const cleanLogs = logs.replace(ansiPattern, '');
   
   // Look for common error patterns - PRIORITIZED ORDER
   const errorPatterns = [
+    // Cypress server verification errors (highest priority - happens before tests can even run)
+    { pattern: /Cypress could not verify that this server is running.*/, framework: 'cypress', priority: 12 },
+    { pattern: /Cypress failed to verify that your server is running.*/, framework: 'cypress', priority: 12 },
+    { pattern: /Please start this server and then run Cypress again.*/, framework: 'cypress', priority: 11 },
+    
     // Specific JavaScript errors with property access (high priority)
     { pattern: /TypeError: Cannot read propert(?:y|ies) .+ of (?:null|undefined).*/, framework: 'javascript', priority: 10 },
     { pattern: /TypeError: Cannot access .+ of (?:null|undefined).*/, framework: 'javascript', priority: 10 },
@@ -126,8 +138,17 @@ export function extractErrorFromLogs(logs: string): ErrorData | null {
       
       // Extract MORE context around the error (was 200/800, now 500/1500)
       const errorIndex = match.index || 0;
-      const contextStart = Math.max(0, errorIndex - 500);
-      const contextEnd = Math.min(cleanLogs.length, errorIndex + 1500);
+      let contextStart = Math.max(0, errorIndex - 500);
+      let contextEnd = Math.min(cleanLogs.length, errorIndex + 1500);
+      
+      // For Cypress server verification errors, get more context to include the URL and retry attempts
+      if (match[0].includes('Cypress could not verify') || match[0].includes('Cypress failed to verify')) {
+        // Look backward to find the baseUrl being verified
+        contextStart = Math.max(0, errorIndex - 1000);
+        // Look forward to capture all retry attempts and the final failure message
+        contextEnd = Math.min(cleanLogs.length, errorIndex + 2000);
+      }
+      
       const errorContext = cleanLogs.substring(contextStart, contextEnd);
       
       // Extract test name if available - look for more patterns
@@ -165,7 +186,14 @@ export function extractErrorFromLogs(logs: string): ErrorData | null {
       }
       
       // Get the actual error type from the match
-      const errorType = match[0].split(':')[0] || 'Error';
+      let errorType = 'Error';
+      if (match[0].includes('Cypress could not verify') || match[0].includes('Cypress failed to verify')) {
+        errorType = 'CypressServerVerificationError';
+      } else if (match[0].includes('Please start this server')) {
+        errorType = 'CypressServerNotRunning';
+      } else {
+        errorType = match[0].split(':')[0] || 'Error';
+      }
       
       // Log what we're extracting for debugging
       core.debug(`Extracted error type: ${errorType}`);
