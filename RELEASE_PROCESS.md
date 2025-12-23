@@ -1,93 +1,185 @@
 # Release Process
 
-This document describes the optimized release process for the adept-triage-agent.
+This document describes the release process for the adept-triage-agent, including critical bundling requirements.
 
-## Overview
+## ⚠️ CRITICAL: Bundling Requirements
 
-Our release process separates testing from publishing:
-- **Testing** happens automatically when code is pushed to main
-- **Releasing** only handles packaging and publishing artifacts
+**The #1 cause of release failures is improperly bundled dist files.** 
 
-This eliminates duplicate work and reduces release time from ~5 minutes to ~2 minutes.
+GitHub Actions uses code from the repository at the release tag, NOT from release assets. Therefore:
+- ✅ dist/index.js MUST be properly bundled with all dependencies (~2-3MB file)
+- ✅ dist/index.js MUST be committed to the repository BEFORE creating the release
+- ✅ The release tag MUST point to a commit with bundled dist files
+
+## Pre-Release Verification
+
+**Always run this before releasing:**
+
+```bash
+# Run the automated verification script
+./scripts/verify-release-readiness.sh
+```
+
+This script checks:
+- ✅ All tests pass
+- ✅ Linting passes
+- ✅ dist/index.js is properly bundled (>1MB)
+- ✅ No external require() calls in dist/index.js
+- ✅ dist/ files are committed
+- ✅ No uncommitted changes
 
 ## Release Workflow
 
 ### Option 1: GitHub UI (Recommended)
 
-1. Ensure all changes are merged to main and tests have passed
-2. Go to [Releases](https://github.com/adept-at/adept-triage-agent/releases) page
-3. Click "Draft a new release"
-4. Create a new tag (e.g., `v1.7.1`) on the main branch
-5. Fill in release notes
-6. Click "Publish release"
-7. The workflow will automatically:
-   - Build fresh artifacts
-   - Upload them to the release
-   - Update major version tags
+1. **Ensure dist is bundled and committed:**
+   ```bash
+   npm run all           # Build and bundle
+   git add dist/
+   git commit -m "chore: update dist files for release"
+   git push origin main
+   ```
+
+2. **Bump version:**
+   ```bash
+   npm version patch     # or minor/major
+   git push origin main
+   ```
+
+3. **Create release via GitHub UI:**
+   - Go to [Releases](https://github.com/adept-at/adept-triage-agent/releases)
+   - Click "Draft a new release"
+   - Create tag matching package.json version (e.g., `v1.7.1`)
+   - Target: main branch
+   - Write release notes
+   - Click "Publish release"
+
+4. **The automated workflow will:**
+   - Verify dist files are properly bundled
+   - Re-tag if needed to include bundled dist
+   - Upload bundled index.js as release asset
+   - Update major version tags (e.g., v1)
 
 ### Option 2: Command Line
 
 ```bash
-# 1. Update version in package.json
+# 1. Verify release readiness
+./scripts/verify-release-readiness.sh
+
+# 2. Bump version
 npm version patch  # or minor/major
 
-# 2. Push changes
+# 3. Ensure dist is bundled
+npm run all
+git add dist/
+git commit -m "chore: update dist files for v$(node -p "require('./package.json').version")"
 git push origin main
 
-# 3. Create and push tag
-git tag v1.7.1
-git push origin v1.7.1
-
-# 4. Create release via GitHub CLI
-gh release create v1.7.1 \
-  --title "Release v1.7.1" \
-  --notes "Release notes here"
+# 4. Create release
+VERSION=$(node -p "require('./package.json').version")
+gh release create v$VERSION \
+  --title "Release v$VERSION" \
+  --notes "Release notes here" \
+  --target main
 ```
 
-### Option 3: Manual Workflow Trigger
+## How the Release Process Works
 
-1. Go to Actions → Release workflow
-2. Click "Run workflow"
-3. Enter the tag name (e.g., `v1.7.1`)
-4. Click "Run workflow"
+### 1. Verification Phase
+- Builds fresh dist files
+- Verifies they're properly bundled (>1MB, no external requires)
+- Commits any changes to main if needed
+- Ensures the release tag will have bundled code
 
-## What Happens During Release
+### 2. Publishing Phase
+- Creates/updates the release tag to point to main with bundled dist
+- Uploads bundled index.js as a release asset
+- Updates major version tags
 
-1. **No duplicate testing** - Tests already ran when code was pushed to main
-2. **Fresh build** - Artifacts are built specifically for the release
-3. **Automatic tagging** - Major version tags (e.g., `v1`) are updated automatically
-4. **Asset upload** - The packaged action is attached to the release
+### 3. Safety Checks
+- File size verification (must be >1MB)
+- No external require() statements
+- Automatic commit of dist changes before tagging
 
-## Benefits of This Approach
+## Common Issues and Solutions
 
-- ✅ **No duplicate work** - Tests run once, builds run once
-- ✅ **Faster releases** - ~60% reduction in release time
-- ✅ **Clearer separation** - Testing vs releasing are distinct phases
-- ✅ **More flexible** - Can release from UI, CLI, or API
-- ✅ **Safer** - Can't accidentally release untested code
+### Issue: "Cannot find module '@actions/core'"
+**Cause:** dist/index.js was not bundled with ncc
+**Solution:** Run `npm run package` and commit the changes
 
-## Comparison with Old Process
+### Issue: Release has old code
+**Cause:** dist files weren't rebuilt before release
+**Solution:** Always run `npm run all` before releasing
 
-### Old Process (Duplicate Work)
+### Issue: dist/index.js is only ~20KB
+**Cause:** Only TypeScript compilation ran, not ncc bundling
+**Solution:** Run `npm run package` after `npm run build`
+
+## Local Development
+
+The pre-commit hook automatically handles bundling:
+```bash
+# .husky/pre-commit runs:
+npm run lint
+npm run build    # TypeScript compilation
+npm run package  # ncc bundling
+# Automatically adds dist/ to commit if changed
 ```
-Push to main → Test + Build
-Push tag → Test + Build + Release  ← Duplicate!
-Total: 2x tests, 2x builds
+
+## Rollback Procedure
+
+If a bad release is published:
+
+1. **Delete the bad release:**
+   ```bash
+   gh release delete v1.7.1 --yes
+   ```
+
+2. **Delete the tag:**
+   ```bash
+   git push origin :refs/tags/v1.7.1
+   ```
+
+3. **Fix the issue and re-release**
+
+## Testing a Release Locally
+
+Before releasing, test the action locally:
+
+```bash
+# Build and bundle
+npm run all
+
+# Test with act (GitHub Actions emulator)
+act -j test-action
+
+# Or test in a sample workflow
+mkdir -p /tmp/test-action
+cp -r dist /tmp/test-action/
+cp action.yml /tmp/test-action/
+# Create test workflow using /tmp/test-action
 ```
 
-### New Process (Optimized)
-```
-Push to main → Test + Build
-Create release → Build + Publish
-Total: 1x test, 2x builds (one for validation, one for release)
-```
+## Release Checklist
 
-## Migration Guide
+- [ ] All tests passing
+- [ ] Linter passing
+- [ ] Version bumped in package.json
+- [ ] dist/ rebuilt with `npm run all`
+- [ ] dist/ changes committed
+- [ ] Pushed to main
+- [ ] Ran `./scripts/verify-release-readiness.sh`
+- [ ] Release notes prepared
 
-To migrate to the new release workflow:
+## Why Bundling Matters
 
-1. Replace `.github/workflows/release.yml` with the new version
-2. Continue using your normal development workflow
-3. Create releases through GitHub UI instead of just pushing tags
+GitHub Actions works differently than npm packages:
+- **npm packages**: Install dependencies at runtime
+- **GitHub Actions**: Must include ALL code in the repository
 
-The old tag-based trigger can remain as a fallback if needed.
+When someone uses `uses: adept-at/adept-triage-agent@v1`, GitHub:
+1. Clones the repository at tag v1
+2. Runs the code directly from dist/index.js
+3. Does NOT install npm dependencies
+
+Therefore, dist/index.js must be self-contained with all dependencies bundled inline.

@@ -6,6 +6,25 @@ import AdmZip from 'adm-zip';
 import * as path from 'path';
 import { PRDiff, PRDiffFile } from './types';
 
+interface RepoDetails {
+  owner: string;
+  repo: string;
+}
+
+function toBuffer(data: unknown): Buffer {
+  if (Buffer.isBuffer(data)) {
+    return data;
+  }
+  if (data instanceof ArrayBuffer) {
+    return Buffer.from(data);
+  }
+  if (ArrayBuffer.isView(data)) {
+    const view = data as ArrayBufferView;
+    return Buffer.from(view.buffer, view.byteOffset, view.byteLength);
+  }
+  return Buffer.from(data as ArrayBuffer);
+}
+
 interface GitHubArtifact {
   id: number;
   name: string;
@@ -21,9 +40,9 @@ interface GitHubArtifact {
 export class ArtifactFetcher {
   constructor(private octokit: Octokit) {}
 
-  async fetchScreenshots(runId: string, jobName?: string): Promise<Screenshot[]> {
+  async fetchScreenshots(runId: string, jobName?: string, repoDetails?: RepoDetails): Promise<Screenshot[]> {
     try {
-      const { owner, repo } = github.context.repo;
+      const { owner, repo } = repoDetails ?? github.context.repo;
       const screenshots: Screenshot[] = [];
 
       // List artifacts for the workflow run
@@ -80,9 +99,8 @@ export class ArtifactFetcher {
             artifact_id: artifact.id,
             archive_format: 'zip'
           });
-
           // Process ZIP file
-          const buffer = Buffer.from(downloadResponse.data as ArrayBuffer);
+          const buffer = toBuffer(downloadResponse.data);
           const zip = new AdmZip(buffer);
           const entries = zip.getEntries();
 
@@ -134,9 +152,9 @@ export class ArtifactFetcher {
             lowerName.includes('cypress/screenshots/'));
   }
 
-  async fetchLogs(_runId: string, jobId: number): Promise<string[]> {
+  async fetchLogs(_runId: string, jobId: number, repoDetails?: RepoDetails): Promise<string[]> {
     try {
-      const { owner, repo } = github.context.repo;
+      const { owner, repo } = repoDetails ?? github.context.repo;
       const logs: string[] = [];
 
       // Download job logs
@@ -163,9 +181,9 @@ export class ArtifactFetcher {
     }
   }
 
-  async fetchCypressArtifactLogs(runId: string, jobName?: string): Promise<string> {
+  async fetchCypressArtifactLogs(runId: string, jobName?: string, repoDetails?: RepoDetails): Promise<string> {
     try {
-      const { owner, repo } = github.context.repo;
+      const { owner, repo } = repoDetails ?? github.context.repo;
       let cypressLogs = '';
 
       // List artifacts for the workflow run
@@ -201,13 +219,13 @@ export class ArtifactFetcher {
         );
         if (specificArtifact) {
           core.info(`Found specific artifact for job ${jobName}: ${specificArtifact.name}`);
-          return await this.processArtifactForLogs(specificArtifact);
+          return await this.processArtifactForLogs(specificArtifact, { owner, repo });
         }
       }
 
       // Process all matching artifacts
       for (const artifact of logArtifacts) {
-        const logs = await this.processArtifactForLogs(artifact);
+        const logs = await this.processArtifactForLogs(artifact, { owner, repo });
         if (logs) {
           cypressLogs += logs + '\n\n';
         }
@@ -220,8 +238,8 @@ export class ArtifactFetcher {
     }
   }
 
-  private async processArtifactForLogs(artifact: GitHubArtifact): Promise<string> {
-    const { owner, repo } = github.context.repo;
+  private async processArtifactForLogs(artifact: GitHubArtifact, repoDetails: RepoDetails): Promise<string> {
+    const { owner, repo } = repoDetails;
     let logs = '';
     
     try {
@@ -236,7 +254,7 @@ export class ArtifactFetcher {
       });
 
       // Process zip content
-      const buffer = Buffer.from(downloadResponse.data as ArrayBuffer);
+      const buffer = toBuffer(downloadResponse.data);
       const zip = new AdmZip(buffer);
       const zipEntries = zip.getEntries();
 

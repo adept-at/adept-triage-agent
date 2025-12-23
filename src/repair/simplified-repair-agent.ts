@@ -259,7 +259,7 @@ You MUST respond in strict JSON only with this schema:
           systemPrompt,
           userContent: userParts,
           responseAsJson: true,
-          // GPT-5 supports only the default temperature; do not pass a custom value
+          temperature: 0.3
         });
 
         try {

@@ -1,0 +1,83 @@
+name: Auto-update dist
+
+# Automatically update dist files when source changes
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'src/**'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'tsconfig.json'
+
+jobs:
+  update-dist:
+    runs-on: ubuntu-latest
+
+    # Only run if not already a bot commit (prevent loops)
+    if: github.actor != 'github-actions[bot]'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20.x'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build and package
+        run: |
+          echo "🔨 Building TypeScript..."
+          npm run build
+
+          echo "📦 Bundling with ncc..."
+          npm run package
+
+      - name: Check and commit dist changes
+        run: |
+          # Check if dist files changed
+          if [ -n "$(git diff --name-only dist/)" ]; then
+            echo "📝 dist/ files have changed, committing..."
+            
+            # Verify bundling was successful
+            FILE_SIZE=$(stat -f%z dist/index.js 2>/dev/null || stat -c%s dist/index.js)
+            echo "📊 dist/index.js size: $FILE_SIZE bytes"
+            
+            if [ "$FILE_SIZE" -lt 1000000 ]; then
+              echo "❌ ERROR: dist/index.js is not properly bundled (only $FILE_SIZE bytes)"
+              echo "This indicates a build failure. Aborting auto-commit."
+              exit 1
+            fi
+            
+            # Check for external requires
+            if grep -q 'require("@actions/core")' dist/index.js || grep -q "require('@actions/core')" dist/index.js; then
+              echo "❌ ERROR: Found external requires in dist/index.js"
+              echo "File is not properly bundled. Aborting auto-commit."
+              exit 1
+            fi
+            
+            # Configure git
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            
+            # Add and commit
+            git add dist/
+            git commit -m "chore: auto-update dist files [skip ci]
+
+            🤖 Automated update of dist/ files after source changes.
+            Bundled with @vercel/ncc to ensure all dependencies are included."
+            
+            # Push changes
+            git push origin main
+            
+            echo "✅ Successfully committed and pushed updated dist files"
+          else
+            echo "✅ dist/ files are already up to date"
+          fi

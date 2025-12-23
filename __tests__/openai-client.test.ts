@@ -74,15 +74,15 @@ describe('OpenAIClient', () => {
 
       expect(mockCreate).toHaveBeenCalledWith(
         expect.objectContaining({
-          model: 'gpt-5',
-          temperature: 1,
-          max_completion_tokens: 32768,
+          model: 'gpt-5.2',
+          temperature: 0.3,
+          max_completion_tokens: 16384,
           response_format: { type: 'json_object' },
         })
       );
     });
 
-    it('should use GPT-4 Vision when screenshots are provided', async () => {
+    it('should use GPT-5.2 with vision when screenshots are provided', async () => {
       const errorDataWithScreenshots: ErrorData = {
         ...mockErrorData,
         screenshots: [{
@@ -111,9 +111,9 @@ describe('OpenAIClient', () => {
       expect(result.verdict).toBe('PRODUCT_ISSUE');
       expect(mockCreate).toHaveBeenCalledWith(
         expect.objectContaining({
-          model: 'gpt-5',
-          temperature: 1,
-          max_completion_tokens: 32768,
+          model: 'gpt-5.2',
+          temperature: 0.3,
+          max_completion_tokens: 16384,
           response_format: { type: 'json_object' },
         })
       );

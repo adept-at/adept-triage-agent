@@ -1,13 +1,17 @@
 import { Octokit } from '@octokit/rest';
 import { Screenshot } from './types';
 import { PRDiff } from './types';
+interface RepoDetails {
+    owner: string;
+    repo: string;
+}
 export declare class ArtifactFetcher {
     private octokit;
     constructor(octokit: Octokit);
-    fetchScreenshots(runId: string, jobName?: string): Promise<Screenshot[]>;
+    fetchScreenshots(runId: string, jobName?: string, repoDetails?: RepoDetails): Promise<Screenshot[]>;
     private isScreenshotFile;
-    fetchLogs(_runId: string, jobId: number): Promise<string[]>;
-    fetchCypressArtifactLogs(runId: string, jobName?: string): Promise<string>;
+    fetchLogs(_runId: string, jobId: number, repoDetails?: RepoDetails): Promise<string[]>;
+    fetchCypressArtifactLogs(runId: string, jobName?: string, repoDetails?: RepoDetails): Promise<string>;
     private processArtifactForLogs;
     private extractErrorContext;
     fetchPRDiff(prNumber: string, repository?: string): Promise<PRDiff | null>;
@@ -16,4 +20,5 @@ export declare class ArtifactFetcher {
     private isSourceFile;
     private isConfigFile;
 }
+export {};
 //# sourceMappingURL=artifact-fetcher.d.ts.map

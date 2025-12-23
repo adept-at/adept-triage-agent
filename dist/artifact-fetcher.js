@@ -41,14 +41,27 @@ const core = __importStar(require("@actions/core"));
 const github = __importStar(require("@actions/github"));
 const adm_zip_1 = __importDefault(require("adm-zip"));
 const path = __importStar(require("path"));
+function toBuffer(data) {
+    if (Buffer.isBuffer(data)) {
+        return data;
+    }
+    if (data instanceof ArrayBuffer) {
+        return Buffer.from(data);
+    }
+    if (ArrayBuffer.isView(data)) {
+        const view = data;
+        return Buffer.from(view.buffer, view.byteOffset, view.byteLength);
+    }
+    return Buffer.from(data);
+}
 class ArtifactFetcher {
     octokit;
     constructor(octokit) {
         this.octokit = octokit;
     }
-    async fetchScreenshots(runId, jobName) {
+    async fetchScreenshots(runId, jobName, repoDetails) {
         try {
-            const { owner, repo } = github.context.repo;
+            const { owner, repo } = repoDetails ?? github.context.repo;
             const screenshots = [];
             const artifactsResponse = await this.octokit.actions.listWorkflowRunArtifacts({
                 owner,
@@ -88,7 +101,7 @@ class ArtifactFetcher {
                         artifact_id: artifact.id,
                         archive_format: 'zip'
                     });
-                    const buffer = Buffer.from(downloadResponse.data);
+                    const buffer = toBuffer(downloadResponse.data);
                     const zip = new adm_zip_1.default(buffer);
                     const entries = zip.getEntries();
                     for (const entry of entries) {
@@ -128,9 +141,9 @@ class ArtifactFetcher {
                 /\(failed\)/.test(lowerName) ||
                 lowerName.includes('cypress/screenshots/'));
     }
-    async fetchLogs(_runId, jobId) {
+    async fetchLogs(_runId, jobId, repoDetails) {
         try {
-            const { owner, repo } = github.context.repo;
+            const { owner, repo } = repoDetails ?? github.context.repo;
             const logs = [];
             const logsResponse = await this.octokit.actions.downloadJobLogsForWorkflowRun({
                 owner,
@@ -150,9 +163,9 @@ class ArtifactFetcher {
             return [];
         }
     }
-    async fetchCypressArtifactLogs(runId, jobName) {
+    async fetchCypressArtifactLogs(runId, jobName, repoDetails) {
         try {
-            const { owner, repo } = github.context.repo;
+            const { owner, repo } = repoDetails ?? github.context.repo;
             let cypressLogs = '';
             const artifactsResponse = await this.octokit.actions.listWorkflowRunArtifacts({
                 owner,
@@ -175,11 +188,11 @@ class ArtifactFetcher {
                 const specificArtifact = logArtifacts.find(artifact => artifact.name.toLowerCase().includes(searchName.toLowerCase()));
                 if (specificArtifact) {
                     core.info(`Found specific artifact for job ${jobName}: ${specificArtifact.name}`);
-                    return await this.processArtifactForLogs(specificArtifact);
+                    return await this.processArtifactForLogs(specificArtifact, { owner, repo });
                 }
             }
             for (const artifact of logArtifacts) {
-                const logs = await this.processArtifactForLogs(artifact);
+                const logs = await this.processArtifactForLogs(artifact, { owner, repo });
                 if (logs) {
                     cypressLogs += logs + '\n\n';
                 }
@@ -191,8 +204,8 @@ class ArtifactFetcher {
             return '';
         }
     }
-    async processArtifactForLogs(artifact) {
-        const { owner, repo } = github.context.repo;
+    async processArtifactForLogs(artifact, repoDetails) {
+        const { owner, repo } = repoDetails;
         let logs = '';
         try {
             core.info(`Processing artifact: ${artifact.name}`);
@@ -202,7 +215,7 @@ class ArtifactFetcher {
                 artifact_id: artifact.id,
                 archive_format: 'zip'
             });
-            const buffer = Buffer.from(downloadResponse.data);
+            const buffer = toBuffer(downloadResponse.data);
             const zip = new adm_zip_1.default(buffer);
             const zipEntries = zip.getEntries();
             core.info(`Artifact contains ${zipEntries.length} entries`);

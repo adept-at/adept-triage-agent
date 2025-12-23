@@ -438,25 +438,27 @@ These hooks prevent broken or unbuilt code from being committed or pushed to the
 
 ### Creating a Release
 
-Before creating a release, ensure the `dist/` directory is up-to-date:
+> 📚 **See [RELEASE_PROCESS.md](RELEASE_PROCESS.md) for detailed release instructions**
+
+**Quick Release Checklist:**
 
 ```bash
-# Run pre-release checks and build
-npm run pre-release
+# 1. Verify release readiness (REQUIRED)
+./scripts/verify-release-readiness.sh
 
-# If dist/ was updated, push the changes
+# 2. If verification passes, bump version
+npm version patch  # or minor/major
+
+# 3. Push to main
 git push origin main
 
-# Create and push a release tag
-git tag v1.6.4
-git push origin v1.6.4
+# 4. Create release via GitHub UI or CLI
+gh release create v$(node -p "require('./package.json').version") \
+  --title "Release v$(node -p "require('./package.json').version")" \
+  --notes "Release notes here"
 ```
 
-The `pre-release` script will:
-1. Check for uncommitted changes
-2. Build and package the action
-3. Automatically commit any dist/ updates
-4. Provide instructions for the release
+**⚠️ Critical:** The dist/index.js file MUST be properly bundled (~2-3MB) before release. The verification script ensures this.
 
 ### Verification
 

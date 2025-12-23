@@ -48,14 +48,27 @@ const core = __importStar(__nccwpck_require__(7484));
 const github = __importStar(__nccwpck_require__(3228));
 const adm_zip_1 = __importDefault(__nccwpck_require__(1316));
 const path = __importStar(__nccwpck_require__(6928));
+function toBuffer(data) {
+    if (Buffer.isBuffer(data)) {
+        return data;
+    }
+    if (data instanceof ArrayBuffer) {
+        return Buffer.from(data);
+    }
+    if (ArrayBuffer.isView(data)) {
+        const view = data;
+        return Buffer.from(view.buffer, view.byteOffset, view.byteLength);
+    }
+    return Buffer.from(data);
+}
 class ArtifactFetcher {
     octokit;
     constructor(octokit) {
         this.octokit = octokit;
     }
-    async fetchScreenshots(runId, jobName) {
+    async fetchScreenshots(runId, jobName, repoDetails) {
         try {
-            const { owner, repo } = github.context.repo;
+            const { owner, repo } = repoDetails ?? github.context.repo;
             const screenshots = [];
             const artifactsResponse = await this.octokit.actions.listWorkflowRunArtifacts({
                 owner,
@@ -95,7 +108,7 @@ class ArtifactFetcher {
                         artifact_id: artifact.id,
                         archive_format: 'zip'
                     });
-                    const buffer = Buffer.from(downloadResponse.data);
+                    const buffer = toBuffer(downloadResponse.data);
                     const zip = new adm_zip_1.default(buffer);
                     const entries = zip.getEntries();
                     for (const entry of entries) {
@@ -135,9 +148,9 @@ class ArtifactFetcher {
                 /\(failed\)/.test(lowerName) ||
                 lowerName.includes('cypress/screenshots/'));
     }
-    async fetchLogs(_runId, jobId) {
+    async fetchLogs(_runId, jobId, repoDetails) {
         try {
-            const { owner, repo } = github.context.repo;
+            const { owner, repo } = repoDetails ?? github.context.repo;
             const logs = [];
             const logsResponse = await this.octokit.actions.downloadJobLogsForWorkflowRun({
                 owner,
@@ -157,9 +170,9 @@ class ArtifactFetcher {
             return [];
         }
     }
-    async fetchCypressArtifactLogs(runId, jobName) {
+    async fetchCypressArtifactLogs(runId, jobName, repoDetails) {
         try {
-            const { owner, repo } = github.context.repo;
+            const { owner, repo } = repoDetails ?? github.context.repo;
             let cypressLogs = '';
             const artifactsResponse = await this.octokit.actions.listWorkflowRunArtifacts({
                 owner,
@@ -182,11 +195,11 @@ class ArtifactFetcher {
                 const specificArtifact = logArtifacts.find(artifact => artifact.name.toLowerCase().includes(searchName.toLowerCase()));
                 if (specificArtifact) {
                     core.info(`Found specific artifact for job ${jobName}: ${specificArtifact.name}`);
-                    return await this.processArtifactForLogs(specificArtifact);
+                    return await this.processArtifactForLogs(specificArtifact, { owner, repo });
                 }
             }
             for (const artifact of logArtifacts) {
-                const logs = await this.processArtifactForLogs(artifact);
+                const logs = await this.processArtifactForLogs(artifact, { owner, repo });
                 if (logs) {
                     cypressLogs += logs + '\n\n';
                 }
@@ -198,8 +211,8 @@ class ArtifactFetcher {
             return '';
         }
     }
-    async processArtifactForLogs(artifact) {
-        const { owner, repo } = github.context.repo;
+    async processArtifactForLogs(artifact, repoDetails) {
+        const { owner, repo } = repoDetails;
         let logs = '';
         try {
             core.info(`Processing artifact: ${artifact.name}`);
@@ -209,7 +222,7 @@ class ArtifactFetcher {
                 artifact_id: artifact.id,
                 archive_format: 'zip'
             });
-            const buffer = Buffer.from(downloadResponse.data);
+            const buffer = toBuffer(downloadResponse.data);
             const zip = new adm_zip_1.default(buffer);
             const zipEntries = zip.getEntries();
             core.info(`Artifact contains ${zipEntries.length} entries`);
@@ -469,9 +482,10 @@ async function run() {
     try {
         const inputs = getInputs();
         const octokit = new rest_1.Octokit({ auth: inputs.githubToken });
+        const repoDetails = resolveRepository(inputs);
         const openaiClient = new openai_client_1.OpenAIClient(inputs.openaiApiKey);
         const artifactFetcher = new artifact_fetcher_1.ArtifactFetcher(octokit);
-        const errorData = await getErrorData(octokit, artifactFetcher, inputs);
+        const errorData = await getErrorData(octokit, artifactFetcher, inputs, repoDetails);
         if (!errorData) {
             const context = github.context;
             const { owner, repo } = context.repo;
@@ -522,7 +536,7 @@ async function run() {
                     jobName: inputs.jobName || 'unknown',
                     commitSha: inputs.commitSha || github.context.sha,
                     branch: github.context.ref.replace('refs/heads/', ''),
-                    repository: inputs.repository || `${github.context.repo.owner}/${github.context.repo.repo}`,
+                    repository: inputs.repository || `${repoDetails.owner}/${repoDetails.repo}`,
                     prNumber: inputs.prNumber,
                     targetAppPrNumber: inputs.prNumber
                 });
@@ -620,6 +634,7 @@ async function run() {
     }
 }
 function getInputs() {
+    const repositoryInput = core.getInput('REPOSITORY');
     return {
         githubToken: core.getInput('GITHUB_TOKEN') || process.env.GITHUB_TOKEN || '',
         openaiApiKey: core.getInput('OPENAI_API_KEY', { required: true }),
@@ -629,13 +644,24 @@ function getInputs() {
         confidenceThreshold: parseInt(core.getInput('CONFIDENCE_THRESHOLD') || '70', 10),
         prNumber: core.getInput('PR_NUMBER'),
         commitSha: core.getInput('COMMIT_SHA'),
-        repository: core.getInput('REPOSITORY'),
+        repository: repositoryInput ? repositoryInput.trim() : undefined,
         testFrameworks: core.getInput('TEST_FRAMEWORKS')
     };
 }
-async function getErrorData(octokit, artifactFetcher, inputs) {
+function resolveRepository(inputs) {
+    if (inputs.repository) {
+        const cleaned = inputs.repository.replace(/\.git$/i, '').trim();
+        const parts = cleaned.split('/');
+        if (parts.length === 2 && parts[0] && parts[1]) {
+            return { owner: parts[0], repo: parts[1] };
+        }
+        core.warning(`Invalid repository input '${inputs.repository}'. Falling back to current repository context.`);
+    }
+    return github.context.repo;
+}
+async function getErrorData(octokit, artifactFetcher, inputs, repoDetails) {
     const context = github.context;
-    const { owner, repo } = context.repo;
+    const { owner, repo } = repoDetails;
     if (inputs.errorMessage) {
         const errorData = {
             message: inputs.errorMessage,
@@ -717,14 +743,14 @@ async function getErrorData(octokit, artifactFetcher, inputs) {
     let artifactLogs = '';
     let screenshots = [];
     try {
-        screenshots = await artifactFetcher.fetchScreenshots(runId, failedJob.name);
+        screenshots = await artifactFetcher.fetchScreenshots(runId, failedJob.name, repoDetails);
         core.info(`Found ${screenshots.length} screenshots`);
     }
     catch (error) {
         core.warning(`Failed to fetch screenshots: ${error}`);
     }
     try {
-        artifactLogs = await artifactFetcher.fetchCypressArtifactLogs(runId, failedJob.name);
+        artifactLogs = await artifactFetcher.fetchCypressArtifactLogs(runId, failedJob.name, repoDetails);
         if (artifactLogs) {
             core.info(`Found Cypress artifact logs (${artifactLogs.length} characters)`);
         }
@@ -929,8 +955,8 @@ class OpenAIClient {
         this.openai = new openai_1.default({ apiKey });
     }
     async analyze(errorData, examples) {
-        const model = 'gpt-5';
-        core.info('🧠 Using GPT-5 model for analysis');
+        const model = 'gpt-5.2';
+        core.info('🧠 Using GPT-5.2 model for analysis');
         const messages = this.buildMessages(errorData, examples);
         if (messages[1] && messages[1].role === 'user') {
             const userMessage = messages[1].content;
@@ -971,8 +997,8 @@ class OpenAIClient {
                 const requestParams = {
                     model,
                     messages,
-                    temperature: 1,
-                    max_completion_tokens: 32768,
+                    temperature: 0.3,
+                    max_completion_tokens: 16384,
                     response_format: { type: 'json_object' }
                 };
                 const response = await this.openai.chat.completions.create(requestParams);
@@ -1348,7 +1374,7 @@ FOR PRODUCT_ISSUES: You MUST analyze the diff patches above to:
         return new Promise(resolve => setTimeout(resolve, ms));
     }
     async generateWithCustomPrompt(params) {
-        const model = 'gpt-5';
+        const model = 'gpt-5.2';
         const messages = [
             { role: 'system', content: params.systemPrompt },
             { role: 'user', content: params.userContent }
@@ -1356,8 +1382,8 @@ FOR PRODUCT_ISSUES: You MUST analyze the diff patches above to:
         const response = await this.openai.chat.completions.create({
             model,
             messages,
-            temperature: 1,
-            max_completion_tokens: 32768,
+            temperature: params.temperature ?? 0.3,
+            max_completion_tokens: 16384,
             response_format: params.responseAsJson ? { type: 'json_object' } : undefined
         });
         const content = response.choices[0]?.message?.content;
@@ -1780,6 +1806,7 @@ You MUST respond in strict JSON only with this schema:
                     systemPrompt,
                     userContent: userParts,
                     responseAsJson: true,
+                    temperature: 0.3
                 });
                 try {
                     const recommendation = JSON.parse(content);

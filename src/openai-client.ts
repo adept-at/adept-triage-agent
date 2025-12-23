@@ -12,9 +12,9 @@ export class OpenAIClient {
   }
 
   async analyze(errorData: ErrorData, examples: FewShotExample[]): Promise<OpenAIResponse> {
-    // Use GPT-5 model
-    const model = 'gpt-5';
-    core.info('🧠 Using GPT-5 model for analysis');
+    // Use GPT-5.2 (latest model with vision support)
+    const model = 'gpt-5.2';
+    core.info('🧠 Using GPT-5.2 model for analysis');
     
     const messages = this.buildMessages(errorData, examples);
     
@@ -63,10 +63,8 @@ export class OpenAIClient {
         const requestParams = {
           model,
           messages,
-          // GPT-5 supports the default temperature only; set explicitly to 1
-          temperature: 1,
-          // GPT-5 uses max_completion_tokens instead of max_tokens
-          max_completion_tokens: 32768,
+          temperature: 0.3,
+          max_completion_tokens: 16384,
           response_format: { type: 'json_object' as const }
         } as const;
         
@@ -524,7 +522,7 @@ FOR PRODUCT_ISSUES: You MUST analyze the diff patches above to:
     responseAsJson?: boolean;
     temperature?: number;
   }): Promise<string> {
-    const model = 'gpt-5';
+    const model = 'gpt-5.2';
     const messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [
       { role: 'system', content: params.systemPrompt },
       { role: 'user', content: params.userContent }
@@ -533,10 +531,8 @@ FOR PRODUCT_ISSUES: You MUST analyze the diff patches above to:
     const response = await this.openai.chat.completions.create({
       model,
       messages,
-      // GPT-5 supports only the default temperature; force 1 regardless of caller input
-      temperature: 1,
-      // Keep existing generous limit consistent with triage path
-      max_completion_tokens: 32768,
+      temperature: params.temperature ?? 0.3,
+      max_completion_tokens: 16384,
       response_format: params.responseAsJson ? { type: 'json_object' as const } : undefined
     });
 

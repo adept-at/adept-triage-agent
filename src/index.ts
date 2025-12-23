@@ -15,11 +15,12 @@ async function run(): Promise<void> {
     
     // Initialize clients
     const octokit = new Octokit({ auth: inputs.githubToken });
+    const repoDetails = resolveRepository(inputs);
     const openaiClient = new OpenAIClient(inputs.openaiApiKey);
     const artifactFetcher = new ArtifactFetcher(octokit);
     
     // Get error data
-    const errorData = await getErrorData(octokit, artifactFetcher, inputs);
+    const errorData = await getErrorData(octokit, artifactFetcher, inputs, repoDetails);
     
     if (!errorData) {
       // Check if this is due to workflow still running
@@ -81,7 +82,7 @@ async function run(): Promise<void> {
           jobName: inputs.jobName || 'unknown',
           commitSha: inputs.commitSha || github.context.sha,
           branch: github.context.ref.replace('refs/heads/', ''),
-          repository: inputs.repository || `${github.context.repo.owner}/${github.context.repo.repo}`,
+          repository: inputs.repository || `${repoDetails.owner}/${repoDetails.repo}`,
           prNumber: inputs.prNumber,
           targetAppPrNumber: inputs.prNumber // Assuming same for now
         });
@@ -194,6 +195,7 @@ async function run(): Promise<void> {
 }
 
 function getInputs(): ActionInputs {
+  const repositoryInput = core.getInput('REPOSITORY');
   return {
     githubToken: core.getInput('GITHUB_TOKEN') || process.env.GITHUB_TOKEN || '',
     openaiApiKey: core.getInput('OPENAI_API_KEY', { required: true }),
@@ -203,18 +205,31 @@ function getInputs(): ActionInputs {
     confidenceThreshold: parseInt(core.getInput('CONFIDENCE_THRESHOLD') || '70', 10),
     prNumber: core.getInput('PR_NUMBER'),
     commitSha: core.getInput('COMMIT_SHA'),
-    repository: core.getInput('REPOSITORY'),
+    repository: repositoryInput ? repositoryInput.trim() : undefined,
     testFrameworks: core.getInput('TEST_FRAMEWORKS')
   };
+}
+
+function resolveRepository(inputs: ActionInputs): { owner: string; repo: string } {
+  if (inputs.repository) {
+    const cleaned = inputs.repository.replace(/\.git$/i, '').trim();
+    const parts = cleaned.split('/');
+    if (parts.length === 2 && parts[0] && parts[1]) {
+      return { owner: parts[0], repo: parts[1] };
+    }
+    core.warning(`Invalid repository input '${inputs.repository}'. Falling back to current repository context.`);
+  }
+  return github.context.repo;
 }
 
 async function getErrorData(
   octokit: Octokit,
   artifactFetcher: ArtifactFetcher,
-  inputs: ActionInputs
+  inputs: ActionInputs,
+  repoDetails: { owner: string; repo: string }
 ): Promise<ErrorData | null> {
   const context = github.context;
-  const { owner, repo } = context.repo;
+  const { owner, repo } = repoDetails;
   
   // If direct error message is provided, use it
   if (inputs.errorMessage) {
@@ -326,7 +341,7 @@ async function getErrorData(
   
   // Fetch screenshots independently
   try {
-    screenshots = await artifactFetcher.fetchScreenshots(runId, failedJob.name);
+    screenshots = await artifactFetcher.fetchScreenshots(runId, failedJob.name, repoDetails);
     core.info(`Found ${screenshots.length} screenshots`);
   } catch (error) {
     core.warning(`Failed to fetch screenshots: ${error}`);
@@ -335,7 +350,7 @@ async function getErrorData(
   
   // Fetch Cypress artifact logs independently
   try {
-    artifactLogs = await artifactFetcher.fetchCypressArtifactLogs(runId, failedJob.name);
+    artifactLogs = await artifactFetcher.fetchCypressArtifactLogs(runId, failedJob.name, repoDetails);
     if (artifactLogs) {
       core.info(`Found Cypress artifact logs (${artifactLogs.length} characters)`);
     }
