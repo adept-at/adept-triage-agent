@@ -58,7 +58,7 @@ describe('fix-applier', () => {
       data: { object: { sha: 'base-sha-123' } },
     });
     mockOctokit.git.createRef.mockResolvedValue({
-      data: { ref: 'refs/heads/fix/triage-agent/test-20240315' },
+      data: { ref: 'refs/heads/fix/triage-agent/test-20240315-000' },
     });
     mockOctokit.git.deleteRef.mockResolvedValue({});
   });
@@ -247,7 +247,8 @@ describe('fix-applier', () => {
       expect(result.success).toBe(true);
       expect(result.modifiedFiles).toContain('cypress/e2e/test.cy.ts');
       expect(result.commitSha).toBe('new-commit-sha-456');
-      expect(result.branchName).toMatch(/^fix\/triage-agent\/cypress-e2e-test-cy-ts-\d{8}$/);
+      // Branch name now includes milliseconds suffix
+      expect(result.branchName).toMatch(/^fix\/triage-agent\/cypress-e2e-test-cy-ts-\d{8}-\d{3}$/);
       expect(result.error).toBeUndefined();
 
       // Verify API calls
@@ -282,6 +283,34 @@ describe('fix-applier', () => {
       });
     });
 
+    it('should log target repository and base branch', async () => {
+      const recommendation: FixRecommendation = {
+        confidence: 85,
+        summary: 'Fix',
+        proposedChanges: [
+          { file: 'test.ts', line: 1, oldCode: 'old', newCode: 'new', justification: 'r' },
+        ],
+        evidence: [],
+        reasoning: 'reasoning',
+      };
+
+      mockOctokit.repos.getContent.mockResolvedValue({
+        data: {
+          type: 'file',
+          content: Buffer.from('const x = old;').toString('base64'),
+          sha: 'sha1',
+        },
+      });
+      mockOctokit.repos.createOrUpdateFileContents.mockResolvedValue({
+        data: { commit: { sha: 'sha' } },
+      });
+
+      await applier.applyFix(recommendation);
+
+      expect(mockCore.info).toHaveBeenCalledWith('Target repository: test-owner/test-repo');
+      expect(mockCore.info).toHaveBeenCalledWith('Base branch: main');
+    });
+
     it('should handle file not found errors gracefully', async () => {
       const recommendation: FixRecommendation = {
         confidence: 85,
@@ -308,7 +337,7 @@ describe('fix-applier', () => {
       expect(result.modifiedFiles).toHaveLength(0);
       expect(result.error).toBe('No files were successfully modified');
       expect(mockCore.warning).toHaveBeenCalledWith(
-        expect.stringContaining('Failed to modify cypress/e2e/missing.cy.ts')
+        expect.stringContaining('modifying cypress/e2e/missing.cy.ts')
       );
 
       // Verify cleanup was attempted
@@ -376,7 +405,7 @@ describe('fix-applier', () => {
         },
       });
 
-      // Simulate commit failure - this is handled per-file, so it just logs a warning
+      // Simulate commit failure
       mockOctokit.repos.createOrUpdateFileContents.mockRejectedValue(
         new Error('Permission denied')
       );
@@ -387,7 +416,7 @@ describe('fix-applier', () => {
       // Per-file failures result in "No files were successfully modified"
       expect(result.error).toBe('No files were successfully modified');
       expect(mockCore.warning).toHaveBeenCalledWith(
-        expect.stringContaining('Failed to modify cypress/e2e/test.cy.ts')
+        expect.stringContaining('modifying cypress/e2e/test.cy.ts')
       );
 
       // Verify cleanup was attempted (branch deleted since no files were modified)
@@ -450,7 +479,7 @@ describe('fix-applier', () => {
         success: true,
         modifiedFiles: ['file1.ts', 'file2.ts'],
         commitSha: 'final-commit-sha',
-        branchName: expect.stringMatching(/^fix\/triage-agent\/file1-ts-\d{8}$/),
+        branchName: expect.stringMatching(/^fix\/triage-agent\/file1-ts-\d{8}-\d{3}$/),
       });
     });
 
@@ -535,7 +564,7 @@ describe('fix-applier', () => {
       expect(result.success).toBe(true);
       expect(result.modifiedFiles).toEqual(['success.ts']);
       expect(mockCore.warning).toHaveBeenCalledWith(
-        expect.stringContaining('Failed to modify missing.ts')
+        expect.stringContaining('modifying missing.ts')
       );
     });
 
@@ -612,7 +641,7 @@ describe('fix-applier', () => {
       });
     });
 
-    it('should handle API failure when getting base branch', async () => {
+    it('should handle API failure when getting base branch with helpful error', async () => {
       const recommendation: FixRecommendation = {
         confidence: 85,
         summary: 'Fix',
@@ -630,12 +659,13 @@ describe('fix-applier', () => {
       };
 
       // Simulate base branch not found
-      mockOctokit.git.getRef.mockRejectedValue(new Error('Reference not found'));
+      mockOctokit.git.getRef.mockRejectedValue(Object.assign(new Error('Not Found'), { status: 404 }));
 
       const result = await applier.applyFix(recommendation);
 
       expect(result.success).toBe(false);
-      expect(result.error).toBe('Reference not found');
+      expect(result.error).toContain("Base branch 'main'");
+      expect(result.error).toContain('test-owner/test-repo');
     });
 
     it('should skip directories when getting file content', async () => {
@@ -667,7 +697,7 @@ describe('fix-applier', () => {
       expect(mockCore.warning).toHaveBeenCalledWith('some/directory is not a file, skipping');
     });
 
-    it('should handle branch creation failure', async () => {
+    it('should retry with unique branch name when branch already exists', async () => {
       const recommendation: FixRecommendation = {
         confidence: 85,
         summary: 'Fix',
@@ -684,52 +714,150 @@ describe('fix-applier', () => {
         reasoning: 'reasoning',
       };
 
-      mockOctokit.git.createRef.mockRejectedValue(new Error('Branch already exists'));
+      // First createRef fails with "Reference already exists", second succeeds
+      mockOctokit.git.createRef
+        .mockRejectedValueOnce(new Error('Reference already exists'))
+        .mockResolvedValueOnce({ data: { ref: 'refs/heads/fix/triage-agent/test-unique' } });
+
+      mockOctokit.repos.getContent.mockResolvedValue({
+        data: {
+          type: 'file',
+          content: Buffer.from('const x = old;').toString('base64'),
+          sha: 'sha1',
+        },
+      });
+
+      mockOctokit.repos.createOrUpdateFileContents.mockResolvedValue({
+        data: { commit: { sha: 'sha' } },
+      });
 
       const result = await applier.applyFix(recommendation);
 
-      expect(result.success).toBe(false);
-      expect(result.error).toBe('Branch already exists');
+      expect(result.success).toBe(true);
+      expect(mockOctokit.git.createRef).toHaveBeenCalledTimes(2);
+      expect(mockCore.info).toHaveBeenCalledWith(
+        expect.stringContaining('Branch exists, trying with unique name')
+      );
     });
+
+    it('should handle missing commit SHA in response', async () => {
+      const recommendation: FixRecommendation = {
+        confidence: 85,
+        summary: 'Fix',
+        proposedChanges: [
+          {
+            file: 'test.ts',
+            line: 1,
+            oldCode: 'old',
+            newCode: 'new',
+            justification: 'reason',
+          },
+        ],
+        evidence: [],
+        reasoning: 'reasoning',
+      };
+
+      mockOctokit.repos.getContent.mockResolvedValue({
+        data: {
+          type: 'file',
+          content: Buffer.from('const x = old;').toString('base64'),
+          sha: 'sha1',
+        },
+      });
+
+      // Response without commit SHA
+      mockOctokit.repos.createOrUpdateFileContents.mockResolvedValue({
+        data: { content: { sha: 'content-sha' } },
+      });
+
+      const result = await applier.applyFix(recommendation);
+
+      expect(result.success).toBe(true);
+      expect(result.commitSha).toBeUndefined();
+      expect(mockCore.warning).toHaveBeenCalledWith(
+        expect.stringContaining('No commit SHA returned')
+      );
+    });
+
+    it('should handle rate limiting with retry', async () => {
+      const recommendation: FixRecommendation = {
+        confidence: 85,
+        summary: 'Fix',
+        proposedChanges: [
+          {
+            file: 'test.ts',
+            line: 1,
+            oldCode: 'old',
+            newCode: 'new',
+            justification: 'reason',
+          },
+        ],
+        evidence: [],
+        reasoning: 'reasoning',
+      };
+
+      // First getContent fails with rate limit, second succeeds
+      mockOctokit.repos.getContent
+        .mockRejectedValueOnce(Object.assign(new Error('Rate limited'), { status: 429 }))
+        .mockResolvedValueOnce({
+          data: {
+            type: 'file',
+            content: Buffer.from('const x = old;').toString('base64'),
+            sha: 'sha1',
+          },
+        });
+
+      mockOctokit.repos.createOrUpdateFileContents.mockResolvedValue({
+        data: { commit: { sha: 'sha' } },
+      });
+
+      const result = await applier.applyFix(recommendation);
+
+      expect(result.success).toBe(true);
+      expect(mockOctokit.repos.getContent).toHaveBeenCalledTimes(2);
+      expect(mockCore.warning).toHaveBeenCalledWith(
+        expect.stringContaining('Rate limited')
+      );
+    }, 15000); // Increase timeout for retry delay
   });
 
   describe('generateFixBranchName()', () => {
-    it('should generate correct branch name format with AUTO_FIX.BRANCH_PREFIX', () => {
-      const fixedDate = new Date('2024-03-15T10:00:00Z');
+    it('should generate correct branch name format with milliseconds suffix', () => {
+      const fixedDate = new Date('2024-03-15T10:00:00.123Z');
       const branchName = generateFixBranchName('cypress/e2e/test.cy.ts', fixedDate);
 
-      expect(branchName).toBe(`${AUTO_FIX.BRANCH_PREFIX}cypress-e2e-test-cy-ts-20240315`);
+      expect(branchName).toBe(`${AUTO_FIX.BRANCH_PREFIX}cypress-e2e-test-cy-ts-20240315-123`);
     });
 
     it('should sanitize special characters in test file names', () => {
-      const fixedDate = new Date('2024-03-15T10:00:00Z');
+      const fixedDate = new Date('2024-03-15T10:00:00.000Z');
 
       // Test with various special characters
       expect(generateFixBranchName('test@file#name!.ts', fixedDate)).toBe(
-        `${AUTO_FIX.BRANCH_PREFIX}test-file-name-ts-20240315`
+        `${AUTO_FIX.BRANCH_PREFIX}test-file-name-ts-20240315-000`
       );
 
       // Test with spaces
       expect(generateFixBranchName('test file name.ts', fixedDate)).toBe(
-        `${AUTO_FIX.BRANCH_PREFIX}test-file-name-ts-20240315`
+        `${AUTO_FIX.BRANCH_PREFIX}test-file-name-ts-20240315-000`
       );
 
       // Test with multiple consecutive special chars
       expect(generateFixBranchName('test///file---name.ts', fixedDate)).toBe(
-        `${AUTO_FIX.BRANCH_PREFIX}test-file-name-ts-20240315`
+        `${AUTO_FIX.BRANCH_PREFIX}test-file-name-ts-20240315-000`
       );
 
       // Test with leading/trailing special chars
       expect(generateFixBranchName('---test.ts---', fixedDate)).toBe(
-        `${AUTO_FIX.BRANCH_PREFIX}test-ts-20240315`
+        `${AUTO_FIX.BRANCH_PREFIX}test-ts-20240315-000`
       );
     });
 
     it('should include date in branch name in YYYYMMDD format', () => {
       const dates = [
-        { date: new Date('2024-01-01T00:00:00Z'), expected: '20240101' },
-        { date: new Date('2024-12-31T23:59:59Z'), expected: '20241231' },
-        { date: new Date('2025-06-15T12:30:00Z'), expected: '20250615' },
+        { date: new Date('2024-01-01T00:00:00.000Z'), expected: '20240101' },
+        { date: new Date('2024-12-31T23:59:59.000Z'), expected: '20241231' },
+        { date: new Date('2025-06-15T12:30:00.000Z'), expected: '20250615' },
       ];
 
       dates.forEach(({ date, expected }) => {
@@ -738,18 +866,18 @@ describe('fix-applier', () => {
       });
     });
 
-    it('should truncate long file names to 50 characters', () => {
-      const fixedDate = new Date('2024-03-15T10:00:00Z');
+    it('should truncate long file names to 40 characters', () => {
+      const fixedDate = new Date('2024-03-15T10:00:00.000Z');
       const longFileName =
         'this-is-a-very-long-file-name-that-exceeds-the-maximum-allowed-length-for-branch-names.ts';
 
       const branchName = generateFixBranchName(longFileName, fixedDate);
 
-      // Prefix + truncated name (50 chars) + date (9 chars including dash)
+      // Prefix + truncated name (40 chars) + date (9 chars) + ms (4 chars)
       const expectedPrefix = AUTO_FIX.BRANCH_PREFIX;
-      const truncatedPart = branchName.slice(expectedPrefix.length, -9); // Remove prefix and -YYYYMMDD
+      const truncatedPart = branchName.slice(expectedPrefix.length, -13); // Remove prefix and -YYYYMMDD-MMM
 
-      expect(truncatedPart.length).toBeLessThanOrEqual(50);
+      expect(truncatedPart.length).toBeLessThanOrEqual(40);
     });
 
     it('should use current date if no timestamp provided', () => {
@@ -760,11 +888,24 @@ describe('fix-applier', () => {
     });
 
     it('should handle file paths with multiple extensions', () => {
-      const fixedDate = new Date('2024-03-15T10:00:00Z');
+      const fixedDate = new Date('2024-03-15T10:00:00.000Z');
 
       expect(generateFixBranchName('test.spec.cy.ts', fixedDate)).toBe(
-        `${AUTO_FIX.BRANCH_PREFIX}test-spec-cy-ts-20240315`
+        `${AUTO_FIX.BRANCH_PREFIX}test-spec-cy-ts-20240315-000`
       );
+    });
+
+    it('should generate more unique name when forceUnique is true', () => {
+      const fixedDate = new Date('2024-03-15T10:00:00.123Z');
+
+      const normalName = generateFixBranchName('test.ts', fixedDate, false);
+      const uniqueName = generateFixBranchName('test.ts', fixedDate, true);
+
+      // Normal name has 3-digit milliseconds
+      expect(normalName).toMatch(/-\d{3}$/);
+      // Unique name has base36 timestamp (longer, more unique)
+      expect(uniqueName).not.toMatch(/-\d{3}$/);
+      expect(uniqueName.length).toBeGreaterThan(normalName.length);
     });
   });
 

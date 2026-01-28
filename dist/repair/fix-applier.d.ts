@@ -23,8 +23,9 @@ export declare class GitHubFixApplier implements FixApplier {
     constructor(config: FixApplierConfig);
     canApply(recommendation: FixRecommendation): boolean;
     applyFix(recommendation: FixRecommendation): Promise<ApplyResult>;
+    private cleanupBranch;
 }
 export declare function createFixApplier(config: FixApplierConfig): FixApplier;
-export declare function generateFixBranchName(testFile: string, timestamp?: Date): string;
+export declare function generateFixBranchName(testFile: string, timestamp?: Date, forceUnique?: boolean): string;
 export declare function generateFixCommitMessage(recommendation: FixRecommendation): string;
 //# sourceMappingURL=fix-applier.d.ts.map

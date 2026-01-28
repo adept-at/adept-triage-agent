@@ -58,6 +58,104 @@ export interface FixApplier {
 }
 
 /**
+ * Retry configuration for API calls
+ */
+const RETRY_CONFIG = {
+  maxRetries: 3,
+  baseDelayMs: 1000,
+  maxDelayMs: 10000,
+};
+
+/**
+ * Sleep for a specified number of milliseconds
+ */
+function sleep(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+/**
+ * Check if an error is a rate limit error (429)
+ */
+function isRateLimitError(error: unknown): boolean {
+  if (error && typeof error === 'object' && 'status' in error) {
+    return (error as { status: number }).status === 429;
+  }
+  return false;
+}
+
+/**
+ * Check if an error is a not found error (404)
+ */
+function isNotFoundError(error: unknown): boolean {
+  if (error && typeof error === 'object' && 'status' in error) {
+    return (error as { status: number }).status === 404;
+  }
+  return false;
+}
+
+/**
+ * Check if an error is a permission error (401/403)
+ */
+function isPermissionError(error: unknown): boolean {
+  if (error && typeof error === 'object' && 'status' in error) {
+    const status = (error as { status: number }).status;
+    return status === 401 || status === 403;
+  }
+  return false;
+}
+
+/**
+ * Execute an async function with retry logic for rate limiting
+ */
+async function withRetry<T>(
+  fn: () => Promise<T>,
+  context: string
+): Promise<T> {
+  let lastError: unknown;
+
+  for (let attempt = 0; attempt < RETRY_CONFIG.maxRetries; attempt++) {
+    try {
+      return await fn();
+    } catch (error) {
+      lastError = error;
+
+      if (isRateLimitError(error) && attempt < RETRY_CONFIG.maxRetries - 1) {
+        const delay = Math.min(
+          RETRY_CONFIG.baseDelayMs * Math.pow(2, attempt),
+          RETRY_CONFIG.maxDelayMs
+        );
+        core.warning(`Rate limited during ${context}, retrying in ${delay}ms (attempt ${attempt + 1}/${RETRY_CONFIG.maxRetries})`);
+        await sleep(delay);
+        continue;
+      }
+
+      throw error;
+    }
+  }
+
+  throw lastError;
+}
+
+/**
+ * Get a human-readable error message based on error type
+ */
+function getErrorMessage(error: unknown, context: string): string {
+  const baseMessage = error instanceof Error ? error.message : String(error);
+
+  if (isNotFoundError(error)) {
+    return `Not found: ${context}. Check that the resource exists and the token has access.`;
+  }
+  if (isPermissionError(error)) {
+    return `Permission denied: ${context}. Ensure the token has 'contents: write' permission.`;
+  }
+  if (isRateLimitError(error)) {
+    return `Rate limit exceeded during ${context}. Try again later.`;
+  }
+
+  return `${context}: ${baseMessage}`;
+}
+
+/**
  * GitHub-based fix applier using GitHub REST API
  * Does not require a local git repository
  */
@@ -95,32 +193,83 @@ export class GitHubFixApplier implements FixApplier {
     let branchName = '';
     let lastCommitSha = '';
 
+    const { octokit, owner, repo, baseBranch } = this.config;
+
+    // Log target repository for debugging
+    core.info(`Target repository: ${owner}/${repo}`);
+    core.info(`Base branch: ${baseBranch}`);
+
     try {
-      const { octokit, owner, repo, baseBranch } = this.config;
+      // Validate proposed changes exist
+      if (!recommendation.proposedChanges || recommendation.proposedChanges.length === 0) {
+        return {
+          success: false,
+          modifiedFiles: [],
+          error: 'No proposed changes to apply',
+        };
+      }
 
       // Get the test file from the first proposed change
-      const testFile = recommendation.proposedChanges[0]?.file || 'unknown';
+      const testFile = recommendation.proposedChanges[0].file;
       branchName = generateFixBranchName(testFile);
 
       core.info(`Creating fix branch: ${branchName}`);
 
-      // Get the base branch SHA
-      const baseBranchRef = await octokit.git.getRef({
-        owner,
-        repo,
-        ref: `heads/${baseBranch}`,
-      });
-      const baseSha = baseBranchRef.data.object.sha;
-      core.debug(`Base branch ${baseBranch} SHA: ${baseSha}`);
+      // Validate base branch exists before proceeding
+      let baseSha: string;
+      try {
+        const baseBranchRef = await withRetry(
+          () => octokit.git.getRef({
+            owner,
+            repo,
+            ref: `heads/${baseBranch}`,
+          }),
+          `getting base branch '${baseBranch}'`
+        );
+        baseSha = baseBranchRef.data.object.sha;
+        core.debug(`Base branch ${baseBranch} SHA: ${baseSha}`);
+      } catch (error) {
+        const errorMsg = getErrorMessage(error, `Base branch '${baseBranch}' in ${owner}/${repo}`);
+        core.error(errorMsg);
+        return {
+          success: false,
+          modifiedFiles: [],
+          error: errorMsg,
+        };
+      }
 
       // Create the new branch
-      await octokit.git.createRef({
-        owner,
-        repo,
-        ref: `refs/heads/${branchName}`,
-        sha: baseSha,
-      });
-      core.info(`Created branch: ${branchName}`);
+      try {
+        await withRetry(
+          () => octokit.git.createRef({
+            owner,
+            repo,
+            ref: `refs/heads/${branchName}`,
+            sha: baseSha,
+          }),
+          'creating fix branch'
+        );
+        core.info(`Created branch: ${branchName}`);
+      } catch (error) {
+        // Check if branch already exists (unlikely with unique suffix, but possible)
+        if (error instanceof Error && error.message.includes('Reference already exists')) {
+          // Try with a more unique suffix
+          branchName = generateFixBranchName(testFile, new Date(), true);
+          core.info(`Branch exists, trying with unique name: ${branchName}`);
+          await withRetry(
+            () => octokit.git.createRef({
+              owner,
+              repo,
+              ref: `refs/heads/${branchName}`,
+              sha: baseSha,
+            }),
+            'creating fix branch (retry with unique name)'
+          );
+          core.info(`Created branch: ${branchName}`);
+        } else {
+          throw error;
+        }
+      }
 
       // Apply each proposed change
       for (const change of recommendation.proposedChanges) {
@@ -128,12 +277,15 @@ export class GitHubFixApplier implements FixApplier {
 
         try {
           // Get the current file content from the new branch
-          const fileResponse = await octokit.repos.getContent({
-            owner,
-            repo,
-            path: filePath,
-            ref: branchName,
-          });
+          const fileResponse = await withRetry(
+            () => octokit.repos.getContent({
+              owner,
+              repo,
+              path: filePath,
+              ref: branchName,
+            }),
+            `getting file content for ${filePath}`
+          );
 
           // Ensure we got a file (not a directory)
           if (Array.isArray(fileResponse.data) || fileResponse.data.type !== 'file') {
@@ -144,7 +296,7 @@ export class GitHubFixApplier implements FixApplier {
           const currentContent = Buffer.from(fileResponse.data.content, 'base64').toString('utf-8');
           const fileSha = fileResponse.data.sha;
 
-          // Apply the change (simple string replacement)
+          // Apply the change (simple string replacement - replaces first occurrence only)
           if (change.oldCode && change.newCode) {
             const newContent = currentContent.replace(change.oldCode, change.newCode);
 
@@ -161,38 +313,39 @@ Automated fix generated by adept-triage-agent.
 File: ${filePath}
 Confidence: ${recommendation.confidence}%`;
 
-            const updateResponse = await octokit.repos.createOrUpdateFileContents({
-              owner,
-              repo,
-              path: filePath,
-              message: commitMessage,
-              content: Buffer.from(newContent).toString('base64'),
-              sha: fileSha,
-              branch: branchName,
-            });
+            const updateResponse = await withRetry(
+              () => octokit.repos.createOrUpdateFileContents({
+                owner,
+                repo,
+                path: filePath,
+                message: commitMessage,
+                content: Buffer.from(newContent).toString('base64'),
+                sha: fileSha,
+                branch: branchName,
+              }),
+              `committing changes to ${filePath}`
+            );
 
-            lastCommitSha = updateResponse.data.commit.sha || '';
+            // Safely extract commit SHA
+            const commitSha = updateResponse.data?.commit?.sha;
+            if (commitSha) {
+              lastCommitSha = commitSha;
+            } else {
+              core.warning(`No commit SHA returned for ${filePath}, using previous value`);
+            }
+
             modifiedFiles.push(filePath);
             core.info(`Modified: ${filePath}`);
           }
         } catch (fileError) {
-          const errorMsg = fileError instanceof Error ? fileError.message : String(fileError);
-          core.warning(`Failed to modify ${filePath}: ${errorMsg}`);
+          const errorMsg = getErrorMessage(fileError, `modifying ${filePath}`);
+          core.warning(errorMsg);
         }
       }
 
       if (modifiedFiles.length === 0) {
         // Clean up - delete the branch we created
-        try {
-          await octokit.git.deleteRef({
-            owner,
-            repo,
-            ref: `heads/${branchName}`,
-          });
-          core.debug(`Cleaned up branch ${branchName}`);
-        } catch {
-          // Ignore cleanup errors
-        }
+        await this.cleanupBranch(branchName, 'no files modified');
 
         return {
           success: false,
@@ -202,29 +355,23 @@ Confidence: ${recommendation.confidence}%`;
       }
 
       core.info(`Successfully created fix branch: ${branchName}`);
-      core.info(`Commit SHA: ${lastCommitSha}`);
+      if (lastCommitSha) {
+        core.info(`Commit SHA: ${lastCommitSha}`);
+      }
 
       return {
         success: true,
         modifiedFiles,
-        commitSha: lastCommitSha,
+        commitSha: lastCommitSha || undefined,
         branchName,
       };
     } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : String(error);
+      const errorMessage = getErrorMessage(error, 'applying fix');
       core.error(`Failed to apply fix: ${errorMessage}`);
 
       // Try to clean up the branch if we created it
       if (branchName) {
-        try {
-          await this.config.octokit.git.deleteRef({
-            owner: this.config.owner,
-            repo: this.config.repo,
-            ref: `heads/${branchName}`,
-          });
-        } catch {
-          // Ignore cleanup errors
-        }
+        await this.cleanupBranch(branchName, 'error during fix application');
       }
 
       return {
@@ -232,6 +379,24 @@ Confidence: ${recommendation.confidence}%`;
         modifiedFiles,
         error: errorMessage,
       };
+    }
+  }
+
+  /**
+   * Clean up a branch, logging any errors instead of silencing them
+   */
+  private async cleanupBranch(branchName: string, reason: string): Promise<void> {
+    try {
+      await this.config.octokit.git.deleteRef({
+        owner: this.config.owner,
+        repo: this.config.repo,
+        ref: `heads/${branchName}`,
+      });
+      core.debug(`Cleaned up branch ${branchName} (${reason})`);
+    } catch (cleanupError) {
+      // Log cleanup errors instead of silently ignoring
+      const errorMsg = cleanupError instanceof Error ? cleanupError.message : String(cleanupError);
+      core.debug(`Failed to clean up branch ${branchName}: ${errorMsg}`);
     }
   }
 }
@@ -245,19 +410,27 @@ export function createFixApplier(config: FixApplierConfig): FixApplier {
 
 /**
  * Generate a branch name for a fix
+ * Includes timestamp with milliseconds for uniqueness to prevent collisions
  */
 export function generateFixBranchName(
   testFile: string,
-  timestamp: Date = new Date()
+  timestamp: Date = new Date(),
+  forceUnique: boolean = false
 ): string {
   const sanitizedFile = testFile
     .replace(/[^a-zA-Z0-9]/g, '-')
     .replace(/-+/g, '-')
     .replace(/^-|-$/g, '')
-    .slice(0, 50);
+    .slice(0, 40); // Reduced to allow room for longer timestamp
 
   const dateStr = timestamp.toISOString().slice(0, 10).replace(/-/g, '');
-  return `${AUTO_FIX.BRANCH_PREFIX}${sanitizedFile}-${dateStr}`;
+
+  // Add milliseconds for uniqueness to prevent branch name collisions
+  const uniqueSuffix = forceUnique
+    ? `-${timestamp.getTime().toString(36)}` // Full timestamp in base36 for guaranteed uniqueness
+    : `-${timestamp.getMilliseconds().toString().padStart(3, '0')}`; // Just milliseconds normally
+
+  return `${AUTO_FIX.BRANCH_PREFIX}${sanitizedFile}-${dateStr}${uniqueSuffix}`;
 }
 
 /**
