@@ -1,6 +1,289 @@
 require('./sourcemap-register.js');/******/ (() => { // webpackBootstrap
 /******/ 	var __webpack_modules__ = ({
 
+/***/ 3914:
+/***/ ((__unused_webpack_module, exports, __nccwpck_require__) => {
+
+"use strict";
+
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.classifyErrorType = classifyErrorType;
+exports.categorizeTestIssue = categorizeTestIssue;
+exports.extractSelector = extractSelector;
+exports.extractTestIssueEvidence = extractTestIssueEvidence;
+const constants_1 = __nccwpck_require__(8361);
+function classifyErrorType(error) {
+    const errorLower = error.toLowerCase();
+    if (errorLower.includes('expected to find element') ||
+        errorLower.includes('element not found') ||
+        errorLower.includes('could not find element') ||
+        errorLower.includes('never found it')) {
+        return constants_1.ERROR_TYPES.ELEMENT_NOT_FOUND;
+    }
+    if (errorLower.includes('element is not visible') ||
+        errorLower.includes('is not visible') ||
+        errorLower.includes('visibility: hidden') ||
+        errorLower.includes('element exists but is not visible')) {
+        return constants_1.ERROR_TYPES.ELEMENT_NOT_VISIBLE;
+    }
+    if (errorLower.includes('covered by another element') ||
+        errorLower.includes('element is covered')) {
+        return constants_1.ERROR_TYPES.ELEMENT_COVERED;
+    }
+    if (errorLower.includes('detached from the dom') ||
+        errorLower.includes('element is detached')) {
+        return constants_1.ERROR_TYPES.ELEMENT_DETACHED;
+    }
+    if (errorLower.includes('can only be called on') ||
+        errorLower.includes('invalid element type')) {
+        return constants_1.ERROR_TYPES.INVALID_ELEMENT_TYPE;
+    }
+    if (errorLower.includes('timed out') ||
+        errorLower.includes('timeouterror') ||
+        errorLower.includes('timeout of') ||
+        errorLower.includes('operation timed out')) {
+        return constants_1.ERROR_TYPES.TIMEOUT;
+    }
+    if (errorLower.includes('assertionerror') ||
+        errorLower.includes('expected') ||
+        errorLower.includes('assert.equal') ||
+        errorLower.includes('to be truthy')) {
+        return constants_1.ERROR_TYPES.ASSERTION_FAILED;
+    }
+    if (errorLower.includes('network') ||
+        errorLower.includes('fetch') ||
+        errorLower.includes('err_network')) {
+        return constants_1.ERROR_TYPES.NETWORK_ERROR;
+    }
+    return constants_1.ERROR_TYPES.UNKNOWN;
+}
+function categorizeTestIssue(errorMessage) {
+    const message = errorMessage.toLowerCase();
+    if (/element.*not found|could not find|never found/.test(message)) {
+        return constants_1.TEST_ISSUE_CATEGORIES.ELEMENT_NOT_FOUND;
+    }
+    if (/timeout|timed out/.test(message)) {
+        return constants_1.TEST_ISSUE_CATEGORIES.TIMEOUT;
+    }
+    if (/not visible|visibility|covered|hidden/.test(message)) {
+        return constants_1.TEST_ISSUE_CATEGORIES.VISIBILITY;
+    }
+    if (/assertion|expected.*to/.test(message)) {
+        return constants_1.TEST_ISSUE_CATEGORIES.ASSERTION;
+    }
+    if (/network|fetch|api|request/.test(message)) {
+        return constants_1.TEST_ISSUE_CATEGORIES.NETWORK;
+    }
+    return constants_1.TEST_ISSUE_CATEGORIES.UNKNOWN;
+}
+function extractSelector(error) {
+    const priorityPatterns = [
+        /\b([a-zA-Z]+\[data-testid=["'][^"']+["']\])/g,
+        /\b([a-zA-Z]+\[data-test=["'][^"']+["']\])/g,
+        /\[data-testid=["']([^"']+)["']\]/g,
+        /\[data-testid="([^"]+)"\]/g,
+        /\[data-testid='([^']+)'\]/g,
+        /\[data-test=["']([^"']+)["']\]/g,
+        /\[data-test="([^"]+)"\]/g,
+        /\[data-test='([^']+)'\]/g,
+        /\[aria-label=["']([^"']+)["']\]/g,
+        /\[aria-label="([^"]+)"\]/g,
+        /\[aria-label='([^']+)'\]/g,
+        /\[alt=["']([^"']+)["']\]/g,
+        /\[alt="([^"]+)"\]/g,
+        /\[alt='([^']+)'\]/g,
+        /input\[type=["']([^"']+)["']\]/g,
+        /\[type=["']([^"']+)["']\]/g,
+        /\[([a-zA-Z-]+)=["']([^"']+)["']\]/g
+    ];
+    for (const pattern of priorityPatterns) {
+        const matches = Array.from(error.matchAll(pattern));
+        if (matches.length > 0) {
+            const match = matches[0];
+            return match[0];
+        }
+    }
+    const htmlPatterns = [
+        /<([a-zA-Z]+)[^>]*data-testid=["']([^"']+)["'][^>]*>/g,
+        /<([a-zA-Z]+)[^>]*data-test=["']([^"']+)["'][^>]*>/g,
+        /<([a-zA-Z]+)[^>]*id=["']([^"']+)["'][^>]*>/g,
+        /<([a-zA-Z]+)[^>]*class=["']([^"']+)["'][^>]*>/g,
+        /<input[^>]*#([a-zA-Z0-9_-]+)[^>]*>/g
+    ];
+    for (const pattern of htmlPatterns) {
+        const matches = Array.from(error.matchAll(pattern));
+        if (matches.length > 0) {
+            const match = matches[0];
+            if (pattern.source.includes('data-testid')) {
+                return `[data-testid="${match[2]}"]`;
+            }
+            else if (pattern.source.includes('data-test')) {
+                return `[data-test="${match[2]}"]`;
+            }
+            else if (pattern.source.includes('id=')) {
+                return '#' + match[2];
+            }
+            else if (pattern.source.includes('<input[^>]*#')) {
+                return '#' + match[1];
+            }
+            else if (pattern.source.includes('class=')) {
+                const classes = match[2].split(' ');
+                return '.' + classes[0];
+            }
+        }
+    }
+    const specialHtmlPatterns = [
+        /<input#([a-zA-Z0-9_-]+)>/g,
+        /<div\s+class=["']([^"']+)["']>/g
+    ];
+    for (const pattern of specialHtmlPatterns) {
+        const matches = Array.from(error.matchAll(pattern));
+        if (matches.length > 0) {
+            const match = matches[0];
+            if (pattern.source.includes('<input#')) {
+                return '#' + match[1];
+            }
+            else if (pattern.source.includes('class=')) {
+                return '.' + match[1].split(' ')[0];
+            }
+        }
+    }
+    const cssPatterns = [
+        /div\.([a-zA-Z0-9_-]+)\s*>\s*button\.([a-zA-Z0-9_-]+)/g,
+        /form#([a-zA-Z0-9_-]+)\s+input/g,
+        /\.([a-zA-Z][a-zA-Z0-9_-]*)/g,
+        /#([a-zA-Z][a-zA-Z0-9_-]*)/g
+    ];
+    for (const pattern of cssPatterns) {
+        const matches = Array.from(error.matchAll(pattern));
+        if (matches.length > 0) {
+            const match = matches[0];
+            if (pattern.source.includes('>') || pattern.source.includes('\\s+')) {
+                return match[0];
+            }
+            if (pattern.source.includes('\\.')) {
+                return '.' + match[1];
+            }
+            else if (pattern.source.includes('#')) {
+                return '#' + match[1];
+            }
+            else {
+                return match[0];
+            }
+        }
+    }
+    return undefined;
+}
+function extractTestIssueEvidence(errorMessage) {
+    const evidence = [];
+    const selectorMatch = errorMessage.match(/\[([^\]]+)\]|#[\w-]+|\.[\w-]+/);
+    if (selectorMatch) {
+        evidence.push(`Selector involved: ${selectorMatch[0]}`);
+    }
+    const timeoutMatch = errorMessage.match(/(\d+)ms/);
+    if (timeoutMatch) {
+        evidence.push(`Timeout: ${timeoutMatch[0]}`);
+    }
+    if (/not visible|covered|hidden|display:\s*none/.test(errorMessage)) {
+        evidence.push('Element visibility issue detected');
+    }
+    if (/async|await|promise|then/.test(errorMessage)) {
+        evidence.push('Possible async/timing issue');
+    }
+    return evidence;
+}
+//# sourceMappingURL=error-classifier.js.map
+
+/***/ }),
+
+/***/ 8220:
+/***/ ((__unused_webpack_module, exports, __nccwpck_require__) => {
+
+"use strict";
+
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.generateAnalysisSummary = generateAnalysisSummary;
+exports.generateFixSummary = generateFixSummary;
+exports.createBriefSummary = createBriefSummary;
+exports.formatVerdict = formatVerdict;
+const constants_1 = __nccwpck_require__(8361);
+const slack_formatter_1 = __nccwpck_require__(4112);
+function generateAnalysisSummary(response, errorData) {
+    const verdict = response.verdict === 'TEST_ISSUE' ? '🧪 Test Issue' : '🐛 Product Issue';
+    const reasoning = response.reasoning.split(/[.!?]/)[0].trim();
+    let summary = `${verdict}: ${reasoning}`;
+    const contexts = [];
+    if (errorData.testName) {
+        contexts.push(`Test: "${errorData.testName}"`);
+    }
+    if (errorData.fileName) {
+        contexts.push(`File: ${errorData.fileName}`);
+    }
+    if (errorData.screenshots?.length) {
+        contexts.push(`${errorData.screenshots.length} screenshot(s) analyzed`);
+    }
+    if (contexts.length > 0) {
+        summary += `\n\nContext: ${contexts.join(' | ')}`;
+    }
+    return (0, slack_formatter_1.truncateForSlack)(summary, constants_1.FORMATTING.MAIN_SUMMARY_MAX_LENGTH);
+}
+function generateFixSummary(recommendation, context, includeCodeBlocks = false) {
+    let summary = `## 🔧 Fix Recommendation for ${context.testName}\n\n`;
+    summary += `### Problem Identified\n`;
+    summary += `- **Error Type:** ${context.errorType}\n`;
+    summary += `- **Root Cause:** ${recommendation.rootCause || 'Test needs update'}\n`;
+    if (context.errorSelector) {
+        summary += `- **Failed Selector:** \`${context.errorSelector}\`\n`;
+    }
+    summary += `\n`;
+    summary += `### Confidence: ${recommendation.confidence}%\n\n`;
+    summary += `### Analysis\n`;
+    summary += `${recommendation.reasoning}\n\n`;
+    if (recommendation.changes && recommendation.changes.length > 0) {
+        summary += `### Recommended Changes\n`;
+        recommendation.changes.forEach((change, index) => {
+            summary += `\n#### Change ${index + 1}: ${change.file}\n`;
+            if (change.line) {
+                summary += `Line ${change.line}\n`;
+            }
+            summary += `**Justification:** ${change.justification}\n\n`;
+            if (includeCodeBlocks) {
+                if (change.oldCode) {
+                    summary += `**Current Code:**\n`;
+                    summary += `\`\`\`typescript\n${change.oldCode}\n\`\`\`\n\n`;
+                }
+                summary += `**Suggested Fix:**\n`;
+                summary += `\`\`\`typescript\n${change.newCode}\n\`\`\`\n\n`;
+            }
+            else {
+                if (change.oldCode) {
+                    summary += `**Current Code:** ${change.oldCode}\n`;
+                }
+                summary += `**Suggested Fix:** ${change.newCode}\n\n`;
+            }
+        });
+    }
+    if (recommendation.evidence && recommendation.evidence.length > 0) {
+        summary += `### Supporting Evidence\n`;
+        recommendation.evidence.forEach((item) => {
+            summary += `- ${item}\n`;
+        });
+        summary += `\n`;
+    }
+    summary += `---\n`;
+    summary += `*This is an automated fix recommendation. Please review before applying.*\n`;
+    return (0, slack_formatter_1.formatSummaryForSlack)(summary, includeCodeBlocks);
+}
+function createBriefSummary(verdict, confidence, fullSummary, testName) {
+    return (0, slack_formatter_1.createBriefSummary)(verdict, confidence, fullSummary, testName);
+}
+function formatVerdict(verdict) {
+    return verdict === 'TEST_ISSUE' ? '🧪 Test Issue' : '🐛 Product Issue';
+}
+//# sourceMappingURL=summary-generator.js.map
+
+/***/ }),
+
 /***/ 5853:
 /***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
 
@@ -430,6 +713,76 @@ exports.ArtifactFetcher = ArtifactFetcher;
 
 /***/ }),
 
+/***/ 8361:
+/***/ ((__unused_webpack_module, exports) => {
+
+"use strict";
+
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.TEST_ISSUE_CATEGORIES = exports.ERROR_TYPES = exports.FORMATTING = exports.ARTIFACTS = exports.OPENAI = exports.CONFIDENCE = exports.LOG_LIMITS = void 0;
+exports.LOG_LIMITS = {
+    GITHUB_MAX_SIZE: 50_000,
+    ARTIFACT_SOFT_CAP: 20_000,
+    ERROR_CONTEXT_BEFORE: 500,
+    ERROR_CONTEXT_AFTER: 1500,
+    SERVER_ERROR_CONTEXT_BEFORE: 1000,
+    SERVER_ERROR_CONTEXT_AFTER: 2000,
+};
+exports.CONFIDENCE = {
+    BASE: 70,
+    INDICATOR_BONUS: 5,
+    MAX_INDICATOR_BONUS: 15,
+    SCREENSHOT_BONUS: 10,
+    MULTIPLE_SCREENSHOT_BONUS: 5,
+    LOGS_BONUS: 5,
+    PR_DIFF_BONUS: 5,
+    FRAMEWORK_BONUS: 5,
+    MAX_CONFIDENCE: 95,
+    MIN_FIX_CONFIDENCE: 50,
+};
+exports.OPENAI = {
+    MODEL: 'gpt-5.2',
+    TEMPERATURE: 0.3,
+    MAX_COMPLETION_TOKENS: 16384,
+    MAX_RETRIES: 3,
+    RETRY_DELAY_MS: 1000,
+};
+exports.ARTIFACTS = {
+    MAX_PR_DIFF_FILES: 30,
+    MAX_PATCH_LINES: 20,
+    MAX_RELEVANT_FILES: 10,
+    LOG_PREVIEW_LENGTH: 1000,
+    PATCH_PREVIEW_LENGTH: 500,
+};
+exports.FORMATTING = {
+    SLACK_MAX_LENGTH: 2900,
+    BRIEF_SUMMARY_MAX_LENGTH: 500,
+    MAIN_SUMMARY_MAX_LENGTH: 1000,
+    TRUNCATION_BUFFER: 100,
+};
+exports.ERROR_TYPES = {
+    ELEMENT_NOT_FOUND: 'ELEMENT_NOT_FOUND',
+    TIMEOUT: 'TIMEOUT',
+    ASSERTION_FAILED: 'ASSERTION_FAILED',
+    NETWORK_ERROR: 'NETWORK_ERROR',
+    ELEMENT_NOT_VISIBLE: 'ELEMENT_NOT_VISIBLE',
+    ELEMENT_COVERED: 'ELEMENT_COVERED',
+    ELEMENT_DETACHED: 'ELEMENT_DETACHED',
+    INVALID_ELEMENT_TYPE: 'INVALID_ELEMENT_TYPE',
+    UNKNOWN: 'UNKNOWN',
+};
+exports.TEST_ISSUE_CATEGORIES = {
+    ELEMENT_NOT_FOUND: 'ELEMENT_NOT_FOUND',
+    TIMEOUT: 'TIMEOUT',
+    VISIBILITY: 'VISIBILITY',
+    ASSERTION: 'ASSERTION',
+    NETWORK: 'NETWORK',
+    UNKNOWN: 'UNKNOWN',
+};
+//# sourceMappingURL=constants.js.map
+
+/***/ }),
+
 /***/ 137:
 /***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
 
@@ -478,6 +831,7 @@ const openai_client_1 = __nccwpck_require__(191);
 const artifact_fetcher_1 = __nccwpck_require__(5853);
 const repair_context_1 = __nccwpck_require__(4026);
 const simplified_repair_agent_1 = __nccwpck_require__(9247);
+const log_processor_1 = __nccwpck_require__(5833);
 async function run() {
     try {
         const inputs = getInputs();
@@ -485,7 +839,7 @@ async function run() {
         const repoDetails = resolveRepository(inputs);
         const openaiClient = new openai_client_1.OpenAIClient(inputs.openaiApiKey);
         const artifactFetcher = new artifact_fetcher_1.ArtifactFetcher(octokit);
-        const errorData = await getErrorData(octokit, artifactFetcher, inputs, repoDetails);
+        const errorData = await (0, log_processor_1.processWorkflowLogs)(octokit, artifactFetcher, inputs, repoDetails);
         if (!errorData) {
             const context = github.context;
             const { owner, repo } = context.repo;
@@ -526,103 +880,17 @@ async function run() {
         const result = await (0, simplified_analyzer_1.analyzeFailure)(openaiClient, errorData);
         let fixRecommendation = null;
         if (result.verdict === 'TEST_ISSUE') {
-            try {
-                core.info('\n🔧 Attempting to generate fix recommendation...');
-                const repairContext = (0, repair_context_1.buildRepairContext)({
-                    testFile: errorData.fileName || 'unknown',
-                    testName: errorData.testName || 'unknown',
-                    errorMessage: errorData.message,
-                    workflowRunId: inputs.workflowRunId || github.context.runId.toString(),
-                    jobName: inputs.jobName || 'unknown',
-                    commitSha: inputs.commitSha || github.context.sha,
-                    branch: github.context.ref.replace('refs/heads/', ''),
-                    repository: inputs.repository || `${repoDetails.owner}/${repoDetails.repo}`,
-                    prNumber: inputs.prNumber,
-                    targetAppPrNumber: inputs.prNumber
-                });
-                const repairAgent = new simplified_repair_agent_1.SimplifiedRepairAgent(inputs.openaiApiKey);
-                fixRecommendation = await repairAgent.generateFixRecommendation(repairContext, errorData);
-                if (fixRecommendation) {
-                    core.info(`✅ Fix recommendation generated with ${fixRecommendation.confidence}% confidence`);
-                    result.fixRecommendation = fixRecommendation;
-                }
-                else {
-                    core.info('❌ Could not generate fix recommendation');
-                }
-            }
-            catch (error) {
-                core.warning(`Failed to generate fix recommendation: ${error}`);
+            fixRecommendation = await generateFixRecommendation(inputs, repoDetails, errorData, openaiClient);
+            if (fixRecommendation) {
+                result.fixRecommendation = fixRecommendation;
             }
         }
         if (result.confidence < inputs.confidenceThreshold) {
             core.warning(`Confidence ${result.confidence}% is below threshold ${inputs.confidenceThreshold}%`);
-            const inconclusiveTriageJson = {
-                verdict: 'INCONCLUSIVE',
-                confidence: result.confidence,
-                reasoning: `Low confidence: ${result.reasoning}`,
-                summary: 'Analysis inconclusive due to low confidence',
-                indicators: result.indicators || [],
-                metadata: {
-                    analyzedAt: new Date().toISOString(),
-                    confidenceThreshold: inputs.confidenceThreshold,
-                    hasScreenshots: (errorData.screenshots && errorData.screenshots.length > 0) || false,
-                    logSize: errorData.logs?.join('').length || 0
-                }
-            };
-            core.setOutput('verdict', 'INCONCLUSIVE');
-            core.setOutput('confidence', result.confidence.toString());
-            core.setOutput('reasoning', `Low confidence: ${result.reasoning}`);
-            core.setOutput('summary', 'Analysis inconclusive due to low confidence');
-            core.setOutput('triage_json', JSON.stringify(inconclusiveTriageJson));
+            setInconclusiveOutput(result, inputs, errorData);
             return;
         }
-        const triageJson = {
-            verdict: result.verdict,
-            confidence: result.confidence,
-            reasoning: result.reasoning,
-            summary: result.summary,
-            indicators: result.indicators || [],
-            ...(result.verdict === 'PRODUCT_ISSUE' && result.suggestedSourceLocations ? { suggestedSourceLocations: result.suggestedSourceLocations } : {}),
-            ...(result.verdict === 'TEST_ISSUE' && result.fixRecommendation ? { fixRecommendation: result.fixRecommendation } : {}),
-            metadata: {
-                analyzedAt: new Date().toISOString(),
-                hasScreenshots: (errorData.screenshots && errorData.screenshots.length > 0) || false,
-                logSize: errorData.logs?.join('').length || 0,
-                hasFixRecommendation: !!result.fixRecommendation
-            }
-        };
-        core.setOutput('verdict', result.verdict);
-        core.setOutput('confidence', result.confidence.toString());
-        core.setOutput('reasoning', result.reasoning);
-        core.setOutput('summary', result.summary);
-        core.setOutput('triage_json', JSON.stringify(triageJson));
-        if (result.fixRecommendation) {
-            core.setOutput('has_fix_recommendation', 'true');
-            core.setOutput('fix_recommendation', JSON.stringify(result.fixRecommendation));
-            core.setOutput('fix_summary', result.fixRecommendation.summary);
-            core.setOutput('fix_confidence', result.fixRecommendation.confidence.toString());
-        }
-        else {
-            core.setOutput('has_fix_recommendation', 'false');
-        }
-        core.info(`Verdict: ${result.verdict}`);
-        core.info(`Confidence: ${result.confidence}%`);
-        core.info(`Summary: ${result.summary}`);
-        if (result.verdict === 'PRODUCT_ISSUE' && result.suggestedSourceLocations && result.suggestedSourceLocations.length > 0) {
-            core.info('\n🎯 Suggested Source Locations to Investigate:');
-            result.suggestedSourceLocations.forEach((location, index) => {
-                core.info(`  ${index + 1}. ${location.file} (lines ${location.lines})`);
-                core.info(`     Reason: ${location.reason}`);
-            });
-        }
-        if (result.verdict === 'TEST_ISSUE' && result.fixRecommendation) {
-            core.info('\n🔧 Fix Recommendation Generated:');
-            core.info(`  Confidence: ${result.fixRecommendation.confidence}%`);
-            core.info(`  Changes: ${result.fixRecommendation.proposedChanges.length} file(s)`);
-            core.info(`  Evidence: ${result.fixRecommendation.evidence.length} item(s)`);
-            core.info('\n📝 Fix Summary:');
-            core.info(result.fixRecommendation.summary);
-        }
+        setSuccessOutput(result, errorData);
     }
     catch (error) {
         if (error instanceof Error) {
@@ -659,244 +927,107 @@ function resolveRepository(inputs) {
     }
     return github.context.repo;
 }
-async function getErrorData(octokit, artifactFetcher, inputs, repoDetails) {
-    const context = github.context;
-    const { owner, repo } = repoDetails;
-    if (inputs.errorMessage) {
-        const errorData = {
-            message: inputs.errorMessage,
-            framework: 'unknown',
-            context: 'Error message provided directly via input'
-        };
-        return errorData;
-    }
-    let runId = inputs.workflowRunId;
-    if (!runId && context.payload.workflow_run) {
-        runId = context.payload.workflow_run.id.toString();
-    }
-    if (!runId) {
-        runId = context.runId.toString();
-    }
-    const isCurrentJob = inputs.jobName && (inputs.jobName === context.job || inputs.jobName.includes(context.job));
-    if (!isCurrentJob && (inputs.workflowRunId || context.payload.workflow_run)) {
-        const workflowRun = await octokit.actions.getWorkflowRun({
-            owner,
-            repo,
-            run_id: parseInt(runId, 10)
+async function generateFixRecommendation(inputs, repoDetails, errorData, openaiClient) {
+    try {
+        core.info('\n🔧 Attempting to generate fix recommendation...');
+        const repairContext = (0, repair_context_1.buildRepairContext)({
+            testFile: errorData.fileName || 'unknown',
+            testName: errorData.testName || 'unknown',
+            errorMessage: errorData.message,
+            workflowRunId: inputs.workflowRunId || github.context.runId.toString(),
+            jobName: inputs.jobName || 'unknown',
+            commitSha: inputs.commitSha || github.context.sha,
+            branch: github.context.ref.replace('refs/heads/', ''),
+            repository: inputs.repository || `${repoDetails.owner}/${repoDetails.repo}`,
+            prNumber: inputs.prNumber,
+            targetAppPrNumber: inputs.prNumber
         });
-        if (workflowRun.data.status !== 'completed') {
-            core.warning('Workflow run is not completed yet');
-            return null;
+        const repairAgent = new simplified_repair_agent_1.SimplifiedRepairAgent(openaiClient);
+        const recommendation = await repairAgent.generateFixRecommendation(repairContext, errorData);
+        if (recommendation) {
+            core.info(`✅ Fix recommendation generated with ${recommendation.confidence}% confidence`);
         }
-    }
-    else if (isCurrentJob) {
-        core.info(`Analyzing current job: ${inputs.jobName} (workflow still in progress)`);
-    }
-    const jobs = await octokit.actions.listJobsForWorkflowRun({
-        owner,
-        repo,
-        run_id: parseInt(runId, 10),
-        filter: 'latest'
-    });
-    let targetJob;
-    if (inputs.jobName) {
-        targetJob = jobs.data.jobs.find(job => job.name === inputs.jobName);
-        if (!targetJob) {
-            core.warning(`Job '${inputs.jobName}' not found`);
-            return null;
+        else {
+            core.info('❌ Could not generate fix recommendation');
         }
-        if (isCurrentJob && targetJob.status === 'in_progress') {
-            core.info('Current job is still in progress, analyzing available logs...');
-        }
-        else if (targetJob.conclusion !== 'failure' && targetJob.status === 'completed') {
-            core.warning(`Job '${inputs.jobName}' did not fail (conclusion: ${targetJob.conclusion})`);
-            return null;
-        }
-    }
-    else {
-        targetJob = jobs.data.jobs.find(job => job.conclusion === 'failure');
-        if (!targetJob) {
-            core.warning('No failed jobs found');
-            return null;
-        }
-    }
-    const failedJob = targetJob;
-    core.info(`Analyzing job: ${failedJob.name} (status: ${failedJob.status}, conclusion: ${failedJob.conclusion || 'none'})`);
-    let fullLogs = '';
-    let extractedError = null;
-    try {
-        const logsResponse = await octokit.actions.downloadJobLogsForWorkflowRun({
-            owner,
-            repo,
-            job_id: failedJob.id
-        });
-        fullLogs = logsResponse.data;
-        core.info(`Downloaded ${fullLogs.length} characters of logs for error extraction`);
-        extractedError = (0, simplified_analyzer_1.extractErrorFromLogs)(fullLogs);
-        if (inputs.prNumber && extractedError) {
-            core.info('PR diff available - using extracted error context only');
-        }
+        return recommendation;
     }
     catch (error) {
-        core.warning(`Failed to download job logs: ${error}`);
+        core.warning(`Failed to generate fix recommendation: ${error}`);
+        return null;
     }
-    let artifactLogs = '';
-    let screenshots = [];
-    try {
-        screenshots = await artifactFetcher.fetchScreenshots(runId, failedJob.name, repoDetails);
-        core.info(`Found ${screenshots.length} screenshots`);
-    }
-    catch (error) {
-        core.warning(`Failed to fetch screenshots: ${error}`);
-    }
-    try {
-        artifactLogs = await artifactFetcher.fetchCypressArtifactLogs(runId, failedJob.name, repoDetails);
-        if (artifactLogs) {
-            core.info(`Found Cypress artifact logs (${artifactLogs.length} characters)`);
+}
+function setInconclusiveOutput(result, inputs, errorData) {
+    const inconclusiveTriageJson = {
+        verdict: 'INCONCLUSIVE',
+        confidence: result.confidence,
+        reasoning: `Low confidence: ${result.reasoning}`,
+        summary: 'Analysis inconclusive due to low confidence',
+        indicators: result.indicators || [],
+        metadata: {
+            analyzedAt: new Date().toISOString(),
+            confidenceThreshold: inputs.confidenceThreshold,
+            hasScreenshots: (errorData.screenshots && errorData.screenshots.length > 0) || false,
+            logSize: errorData.logs?.join('').length || 0
         }
-    }
-    catch (error) {
-        core.warning(`Failed to fetch Cypress artifact logs: ${error}`);
-    }
-    let prDiff = null;
-    if (inputs.prNumber) {
-        try {
-            prDiff = await artifactFetcher.fetchPRDiff(inputs.prNumber, inputs.repository);
-            if (prDiff) {
-                core.info(`Successfully fetched PR diff with ${prDiff.totalChanges} changed files`);
-            }
-        }
-        catch (error) {
-            core.warning(`Failed to fetch PR diff: ${error}`);
-        }
-    }
-    const contextParts = [
-        `=== JOB INFORMATION ===`,
-        `Job Name: ${failedJob.name}`,
-        `Job URL: ${failedJob.html_url}`,
-        `Failed Step: ${failedJob.steps?.find(s => s.conclusion === 'failure')?.name || 'Unknown'}`,
-        ``
-    ];
-    if (extractedError && extractedError.message) {
-        contextParts.push(`=== EXTRACTED ERROR CONTEXT ===`, extractedError.message, ``);
-    }
-    if (artifactLogs) {
-        contextParts.push(`=== CYPRESS ARTIFACT LOGS ===`, artifactLogs, ``);
-    }
-    if (!inputs.prNumber || !extractedError) {
-        const maxLogSize = 50000;
-        const truncatedLogs = fullLogs.length > maxLogSize
-            ? `${fullLogs.substring(fullLogs.length - maxLogSize)}\n\n[Logs truncated to last ${maxLogSize} characters]`
-            : fullLogs;
-        contextParts.push(`=== GITHUB ACTIONS LOGS (TRUNCATED) ===`, truncatedLogs, ``);
-    }
-    contextParts.push(`=== END OF LOGS ===`);
-    const combinedContext = contextParts.join('\n');
-    const hasLogs = !!(fullLogs && fullLogs.length > 0);
-    const hasScreenshots = !!(screenshots && screenshots.length > 0);
-    const hasArtifactLogs = !!(artifactLogs && artifactLogs.length > 0);
-    const hasPRDiff = !!(prDiff && prDiff.files && prDiff.files.length > 0);
-    if (!hasLogs && !hasScreenshots && !hasArtifactLogs && !hasPRDiff) {
-        core.warning('No meaningful data collected for analysis (no logs, screenshots, artifacts, or PR diff)');
-        core.info('Attempting analysis with minimal context...');
-    }
-    else {
-        core.info(`Data collected for analysis: logs=${hasLogs}, screenshots=${hasScreenshots}, artifactLogs=${hasArtifactLogs}, prDiff=${hasPRDiff}`);
-    }
-    if (extractedError) {
-        const errorData = {
-            ...extractedError,
-            context: `Job: ${failedJob.name}. ${extractedError.context || 'Complete failure context including all logs and artifacts'}`,
-            testName: extractedError.testName || failedJob.name,
-            fileName: extractedError.fileName || failedJob.steps?.find(s => s.conclusion === 'failure')?.name || 'Unknown',
-            screenshots: screenshots,
-            logs: [combinedContext],
-            cypressArtifactLogs: capArtifactLogs(artifactLogs),
-            prDiff: prDiff || undefined
-        };
-        errorData.structuredSummary = buildStructuredSummary(errorData);
-        return errorData;
-    }
-    const fallbackError = {
-        message: 'Test failure - see full context for details',
-        framework: 'cypress',
-        failureType: 'test-failure',
-        context: `Job: ${failedJob.name}. Complete failure context including all logs and artifacts`,
-        testName: failedJob.name,
-        fileName: failedJob.steps?.find(s => s.conclusion === 'failure')?.name || 'Unknown',
-        screenshots: screenshots,
-        logs: [combinedContext],
-        cypressArtifactLogs: capArtifactLogs(artifactLogs),
-        prDiff: prDiff || undefined
     };
-    fallbackError.structuredSummary = buildStructuredSummary(fallbackError);
-    return fallbackError;
+    core.setOutput('verdict', 'INCONCLUSIVE');
+    core.setOutput('confidence', result.confidence.toString());
+    core.setOutput('reasoning', `Low confidence: ${result.reasoning}`);
+    core.setOutput('summary', 'Analysis inconclusive due to low confidence');
+    core.setOutput('triage_json', JSON.stringify(inconclusiveTriageJson));
+}
+function setSuccessOutput(result, errorData) {
+    const triageJson = {
+        verdict: result.verdict,
+        confidence: result.confidence,
+        reasoning: result.reasoning,
+        summary: result.summary,
+        indicators: result.indicators || [],
+        ...(result.verdict === 'PRODUCT_ISSUE' && result.suggestedSourceLocations ? { suggestedSourceLocations: result.suggestedSourceLocations } : {}),
+        ...(result.verdict === 'TEST_ISSUE' && result.fixRecommendation ? { fixRecommendation: result.fixRecommendation } : {}),
+        metadata: {
+            analyzedAt: new Date().toISOString(),
+            hasScreenshots: (errorData.screenshots && errorData.screenshots.length > 0) || false,
+            logSize: errorData.logs?.join('').length || 0,
+            hasFixRecommendation: !!result.fixRecommendation
+        }
+    };
+    core.setOutput('verdict', result.verdict);
+    core.setOutput('confidence', result.confidence.toString());
+    core.setOutput('reasoning', result.reasoning);
+    core.setOutput('summary', result.summary);
+    core.setOutput('triage_json', JSON.stringify(triageJson));
+    if (result.fixRecommendation) {
+        core.setOutput('has_fix_recommendation', 'true');
+        core.setOutput('fix_recommendation', JSON.stringify(result.fixRecommendation));
+        core.setOutput('fix_summary', result.fixRecommendation.summary);
+        core.setOutput('fix_confidence', result.fixRecommendation.confidence.toString());
+    }
+    else {
+        core.setOutput('has_fix_recommendation', 'false');
+    }
+    core.info(`Verdict: ${result.verdict}`);
+    core.info(`Confidence: ${result.confidence}%`);
+    core.info(`Summary: ${result.summary}`);
+    if (result.verdict === 'PRODUCT_ISSUE' && result.suggestedSourceLocations && result.suggestedSourceLocations.length > 0) {
+        core.info('\n🎯 Suggested Source Locations to Investigate:');
+        result.suggestedSourceLocations.forEach((location, index) => {
+            core.info(`  ${index + 1}. ${location.file} (lines ${location.lines})`);
+            core.info(`     Reason: ${location.reason}`);
+        });
+    }
+    if (result.verdict === 'TEST_ISSUE' && result.fixRecommendation) {
+        core.info('\n🔧 Fix Recommendation Generated:');
+        core.info(`  Confidence: ${result.fixRecommendation.confidence}%`);
+        core.info(`  Changes: ${result.fixRecommendation.proposedChanges.length} file(s)`);
+        core.info(`  Evidence: ${result.fixRecommendation.evidence.length} item(s)`);
+        core.info('\n📝 Fix Summary:');
+        core.info(result.fixRecommendation.summary);
+    }
 }
 if (require.main === require.cache[eval('__filename')]) {
     run();
-}
-function capArtifactLogs(raw) {
-    if (!raw)
-        return '';
-    const MAX = 20000;
-    const esc = String.fromCharCode(27);
-    const ansiPattern = new RegExp(`${esc}\\[[0-9;]*m`, 'g');
-    const clean = raw.replace(ansiPattern, '');
-    if (clean.length <= MAX)
-        return clean;
-    const lines = clean.split('\n');
-    const errorRegex = /(error|failed|failure|exception|assertion|expected|timeout|cypress error)/i;
-    const focused = [];
-    for (let i = 0; i < lines.length; i++) {
-        if (errorRegex.test(lines[i])) {
-            const start = Math.max(0, i - 10);
-            const end = Math.min(lines.length, i + 10);
-            focused.push(...lines.slice(start, end));
-        }
-    }
-    const uniqueFocused = Array.from(new Set(focused));
-    const focusedJoined = uniqueFocused.join('\n');
-    if (focusedJoined.length > 1000) {
-        return `${focusedJoined.substring(0, 10000)}\n\n[Artifact logs truncated]`;
-    }
-    const head = clean.substring(0, Math.floor(MAX / 2));
-    const tail = clean.substring(clean.length - Math.floor(MAX / 2));
-    return `${head}\n\n[...truncated...]\n\n${tail}`;
-}
-function buildStructuredSummary(err) {
-    const hasTimeout = /\btimeout|timed out\b/i.test(err.message || '');
-    const hasAssertion = /assertion|expected\s+.*to/i.test(err.message || '');
-    const hasDom = /element|selector|not found|visible|covered|detached/i.test(err.message || '');
-    const hasNetwork = /network|fetch|graphql|api|500|404|502|503/i.test(err.message || '');
-    const hasNullPtr = /cannot read (properties|property) of null|undefined/i.test(err.message || '');
-    return {
-        primaryError: {
-            type: err.failureType || 'Error',
-            message: (err.message || '').slice(0, 500)
-        },
-        testContext: {
-            testName: err.testName || 'unknown',
-            testFile: err.fileName || 'unknown',
-            framework: err.framework || 'unknown'
-        },
-        failureIndicators: {
-            hasNetworkErrors: hasNetwork,
-            hasNullPointerErrors: hasNullPtr,
-            hasTimeoutErrors: hasTimeout,
-            hasDOMErrors: hasDom,
-            hasAssertionErrors: hasAssertion,
-            isMobileTest: false,
-            hasLongTimeout: hasTimeout,
-            hasAltTextSelector: /\[alt=/.test(err.message || ''),
-            hasElementExistenceCheck: /expected to find|never found/i.test(err.message || ''),
-            hasVisibilityIssue: /not visible|covered|hidden/i.test(err.message || ''),
-            hasViewportContext: false
-        },
-        keyMetrics: {
-            hasScreenshots: !!(err.screenshots && err.screenshots.length > 0),
-            logSize: err.logs?.join('').length || 0
-        }
-    };
 }
 //# sourceMappingURL=index.js.map
 
@@ -956,7 +1087,7 @@ class OpenAIClient {
     }
     async analyze(errorData, examples) {
         const model = 'gpt-5.2';
-        core.info('🧠 Using GPT-5.2 model for analysis');
+        core.info('🧠 Using GPT-5.2-codex model for analysis');
         const messages = this.buildMessages(errorData, examples);
         if (messages[1] && messages[1].role === 'user') {
             const userMessage = messages[1].content;
@@ -1399,161 +1530,20 @@ exports.OpenAIClient = OpenAIClient;
 /***/ }),
 
 /***/ 4026:
-/***/ ((__unused_webpack_module, exports) => {
+/***/ ((__unused_webpack_module, exports, __nccwpck_require__) => {
 
 "use strict";
 
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.classifyErrorType = classifyErrorType;
-exports.extractSelector = extractSelector;
+exports.extractSelector = exports.classifyErrorType = void 0;
 exports.buildRepairContext = buildRepairContext;
 exports.enhanceAnalysisWithRepairContext = enhanceAnalysisWithRepairContext;
-function classifyErrorType(error) {
-    const errorLower = error.toLowerCase();
-    if (errorLower.includes('expected to find element') ||
-        errorLower.includes('element not found') ||
-        errorLower.includes('could not find element') ||
-        errorLower.includes('never found it')) {
-        return 'ELEMENT_NOT_FOUND';
-    }
-    if (errorLower.includes('element is not visible') ||
-        errorLower.includes('is not visible') ||
-        errorLower.includes('visibility: hidden') ||
-        errorLower.includes('element exists but is not visible')) {
-        return 'ELEMENT_NOT_VISIBLE';
-    }
-    if (errorLower.includes('timed out') ||
-        errorLower.includes('timeouterror') ||
-        errorLower.includes('timeout of') ||
-        errorLower.includes('operation timed out')) {
-        return 'TIMEOUT';
-    }
-    if (errorLower.includes('assertionerror') ||
-        errorLower.includes('expected') ||
-        errorLower.includes('assert.equal') ||
-        errorLower.includes('to be truthy')) {
-        return 'ASSERTION_FAILED';
-    }
-    if (errorLower.includes('network') ||
-        errorLower.includes('fetch') ||
-        errorLower.includes('err_network')) {
-        return 'NETWORK_ERROR';
-    }
-    if (errorLower.includes('detached from the dom') ||
-        errorLower.includes('element is detached')) {
-        return 'ELEMENT_DETACHED';
-    }
-    if (errorLower.includes('covered by another element') ||
-        errorLower.includes('element is covered')) {
-        return 'ELEMENT_COVERED';
-    }
-    if (errorLower.includes('can only be called on') ||
-        errorLower.includes('invalid element type')) {
-        return 'INVALID_ELEMENT_TYPE';
-    }
-    return 'UNKNOWN';
-}
-function extractSelector(error) {
-    const priorityPatterns = [
-        /\b([a-zA-Z]+\[data-testid=["'][^"']+["']\])/g,
-        /\b([a-zA-Z]+\[data-test=["'][^"']+["']\])/g,
-        /\[data-testid=["']([^"']+)["']\]/g,
-        /\[data-testid="([^"]+)"\]/g,
-        /\[data-testid='([^']+)'\]/g,
-        /\[data-test=["']([^"']+)["']\]/g,
-        /\[data-test="([^"]+)"\]/g,
-        /\[data-test='([^']+)'\]/g,
-        /\[aria-label=["']([^"']+)["']\]/g,
-        /\[aria-label="([^"]+)"\]/g,
-        /\[aria-label='([^']+)'\]/g,
-        /\[alt=["']([^"']+)["']\]/g,
-        /\[alt="([^"]+)"\]/g,
-        /\[alt='([^']+)'\]/g,
-        /input\[type=["']([^"']+)["']\]/g,
-        /\[type=["']([^"']+)["']\]/g,
-        /\[([a-zA-Z-]+)=["']([^"']+)["']\]/g
-    ];
-    for (const pattern of priorityPatterns) {
-        const matches = Array.from(error.matchAll(pattern));
-        if (matches.length > 0) {
-            const match = matches[0];
-            return match[0];
-        }
-    }
-    const htmlPatterns = [
-        /<([a-zA-Z]+)[^>]*data-testid=["']([^"']+)["'][^>]*>/g,
-        /<([a-zA-Z]+)[^>]*data-test=["']([^"']+)["'][^>]*>/g,
-        /<([a-zA-Z]+)[^>]*id=["']([^"']+)["'][^>]*>/g,
-        /<([a-zA-Z]+)[^>]*class=["']([^"']+)["'][^>]*>/g,
-        /<input[^>]*#([a-zA-Z0-9_-]+)[^>]*>/g
-    ];
-    for (const pattern of htmlPatterns) {
-        const matches = Array.from(error.matchAll(pattern));
-        if (matches.length > 0) {
-            const match = matches[0];
-            if (pattern.source.includes('data-testid')) {
-                return `[data-testid="${match[2]}"]`;
-            }
-            else if (pattern.source.includes('data-test')) {
-                return `[data-test="${match[2]}"]`;
-            }
-            else if (pattern.source.includes('id=')) {
-                return '#' + match[2];
-            }
-            else if (pattern.source.includes('<input[^>]*#')) {
-                return '#' + match[1];
-            }
-            else if (pattern.source.includes('class=')) {
-                const classes = match[2].split(' ');
-                return '.' + classes[0];
-            }
-        }
-    }
-    const specialHtmlPatterns = [
-        /<input#([a-zA-Z0-9_-]+)>/g,
-        /<div\s+class=["']([^"']+)["']>/g
-    ];
-    for (const pattern of specialHtmlPatterns) {
-        const matches = Array.from(error.matchAll(pattern));
-        if (matches.length > 0) {
-            const match = matches[0];
-            if (pattern.source.includes('<input#')) {
-                return '#' + match[1];
-            }
-            else if (pattern.source.includes('class=')) {
-                return '.' + match[1].split(' ')[0];
-            }
-        }
-    }
-    const cssPatterns = [
-        /div\.([a-zA-Z0-9_-]+)\s*>\s*button\.([a-zA-Z0-9_-]+)/g,
-        /form#([a-zA-Z0-9_-]+)\s+input/g,
-        /\.([a-zA-Z][a-zA-Z0-9_-]*)/g,
-        /#([a-zA-Z][a-zA-Z0-9_-]*)/g
-    ];
-    for (const pattern of cssPatterns) {
-        const matches = Array.from(error.matchAll(pattern));
-        if (matches.length > 0) {
-            const match = matches[0];
-            if (pattern.source.includes('>') || pattern.source.includes('\\s+')) {
-                return match[0];
-            }
-            if (pattern.source.includes('\\.')) {
-                return '.' + match[1];
-            }
-            else if (pattern.source.includes('#')) {
-                return '#' + match[1];
-            }
-            else {
-                return match[0];
-            }
-        }
-    }
-    return undefined;
-}
+const error_classifier_1 = __nccwpck_require__(3914);
+Object.defineProperty(exports, "classifyErrorType", ({ enumerable: true, get: function () { return error_classifier_1.classifyErrorType; } }));
+Object.defineProperty(exports, "extractSelector", ({ enumerable: true, get: function () { return error_classifier_1.extractSelector; } }));
 function buildRepairContext(analysisData) {
-    const errorType = classifyErrorType(analysisData.errorMessage);
-    const errorSelector = extractSelector(analysisData.errorMessage);
+    const errorType = (0, error_classifier_1.classifyErrorType)(analysisData.errorMessage);
+    const errorSelector = (0, error_classifier_1.extractSelector)(analysisData.errorMessage);
     return {
         testFile: analysisData.testFile,
         errorLine: analysisData.errorLine,
@@ -1627,11 +1617,17 @@ exports.SimplifiedRepairAgent = void 0;
 const core = __importStar(__nccwpck_require__(7484));
 const fs = __importStar(__nccwpck_require__(9896));
 const openai_client_1 = __nccwpck_require__(191);
-const slack_formatter_1 = __nccwpck_require__(4112);
+const summary_generator_1 = __nccwpck_require__(8220);
+const constants_1 = __nccwpck_require__(8361);
 class SimplifiedRepairAgent {
     openaiClient;
-    constructor(openaiApiKey) {
-        this.openaiClient = new openai_client_1.OpenAIClient(openaiApiKey);
+    constructor(openaiClientOrApiKey) {
+        if (typeof openaiClientOrApiKey === 'string') {
+            this.openaiClient = new openai_client_1.OpenAIClient(openaiClientOrApiKey);
+        }
+        else {
+            this.openaiClient = openaiClientOrApiKey;
+        }
     }
     async generateFixRecommendation(repairContext, errorData) {
         try {
@@ -1643,7 +1639,7 @@ class SimplifiedRepairAgent {
                 core.info(`  📝 Full prompt saved to ${promptFile}`);
             }
             const recommendation = await this.getRecommendationFromAI(prompt, repairContext, errorData);
-            if (!recommendation || recommendation.confidence < 50) {
+            if (!recommendation || recommendation.confidence < constants_1.CONFIDENCE.MIN_FIX_CONFIDENCE) {
                 core.info('Cannot generate confident fix recommendation');
                 return null;
             }
@@ -1872,47 +1868,335 @@ You MUST respond in strict JSON only with this schema:
         return changes;
     }
     generateSummary(recommendation, context) {
-        let summary = `## 🔧 Fix Recommendation for ${context.testName}\n\n`;
-        summary += `### Problem Identified\n`;
-        summary += `- **Error Type:** ${context.errorType}\n`;
-        summary += `- **Root Cause:** ${recommendation.rootCause || 'Test needs update'}\n`;
-        if (context.errorSelector) {
-            summary += `- **Failed Selector:** \`${context.errorSelector}\`\n`;
-        }
-        summary += `\n`;
-        summary += `### Confidence: ${recommendation.confidence}%\n\n`;
-        summary += `### Analysis\n`;
-        summary += `${recommendation.reasoning}\n\n`;
-        if (recommendation.changes && recommendation.changes.length > 0) {
-            summary += `### Recommended Changes\n`;
-            recommendation.changes.forEach((change, index) => {
-                summary += `\n#### Change ${index + 1}: ${change.file}\n`;
-                if (change.line) {
-                    summary += `Line ${change.line}\n`;
-                }
-                summary += `**Justification:** ${change.justification}\n\n`;
-                if (change.oldCode) {
-                    summary += `**Current Code:**\n`;
-                    summary += `\`\`\`typescript\n${change.oldCode}\n\`\`\`\n\n`;
-                }
-                summary += `**Suggested Fix:**\n`;
-                summary += `\`\`\`typescript\n${change.newCode}\n\`\`\`\n\n`;
-            });
-        }
-        if (recommendation.evidence && recommendation.evidence.length > 0) {
-            summary += `### Supporting Evidence\n`;
-            recommendation.evidence.forEach((item) => {
-                summary += `- ${item}\n`;
-            });
-            summary += `\n`;
-        }
-        summary += `---\n`;
-        summary += `*This is an automated fix recommendation. Please review before applying.*\n`;
-        return (0, slack_formatter_1.formatSummaryForSlack)(summary, false);
+        return (0, summary_generator_1.generateFixSummary)(recommendation, context, false);
     }
 }
 exports.SimplifiedRepairAgent = SimplifiedRepairAgent;
 //# sourceMappingURL=simplified-repair-agent.js.map
+
+/***/ }),
+
+/***/ 5833:
+/***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
+
+"use strict";
+
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.processWorkflowLogs = processWorkflowLogs;
+exports.capArtifactLogs = capArtifactLogs;
+exports.buildStructuredSummary = buildStructuredSummary;
+const core = __importStar(__nccwpck_require__(7484));
+const github = __importStar(__nccwpck_require__(3228));
+const simplified_analyzer_1 = __nccwpck_require__(78);
+const constants_1 = __nccwpck_require__(8361);
+async function processWorkflowLogs(octokit, artifactFetcher, inputs, repoDetails) {
+    const context = github.context;
+    const { owner, repo } = repoDetails;
+    if (inputs.errorMessage) {
+        return {
+            message: inputs.errorMessage,
+            framework: 'unknown',
+            context: 'Error message provided directly via input'
+        };
+    }
+    let runId = inputs.workflowRunId;
+    if (!runId && context.payload.workflow_run) {
+        runId = context.payload.workflow_run.id.toString();
+    }
+    if (!runId) {
+        runId = context.runId.toString();
+    }
+    const isCurrentJob = !!(inputs.jobName && (inputs.jobName === context.job || inputs.jobName.includes(context.job)));
+    if (!isCurrentJob && (inputs.workflowRunId || context.payload.workflow_run)) {
+        const workflowRun = await octokit.actions.getWorkflowRun({
+            owner,
+            repo,
+            run_id: parseInt(runId, 10)
+        });
+        if (workflowRun.data.status !== 'completed') {
+            core.warning('Workflow run is not completed yet');
+            return null;
+        }
+    }
+    else if (isCurrentJob) {
+        core.info(`Analyzing current job: ${inputs.jobName} (workflow still in progress)`);
+    }
+    const jobs = await octokit.actions.listJobsForWorkflowRun({
+        owner,
+        repo,
+        run_id: parseInt(runId, 10),
+        filter: 'latest'
+    });
+    const targetJob = findTargetJob(jobs.data.jobs, inputs, isCurrentJob ?? false);
+    if (!targetJob) {
+        return null;
+    }
+    const failedJob = targetJob;
+    core.info(`Analyzing job: ${failedJob.name} (status: ${failedJob.status}, conclusion: ${failedJob.conclusion || 'none'})`);
+    let fullLogs = '';
+    let extractedError = null;
+    try {
+        const logsResponse = await octokit.actions.downloadJobLogsForWorkflowRun({
+            owner,
+            repo,
+            job_id: failedJob.id
+        });
+        fullLogs = logsResponse.data;
+        core.info(`Downloaded ${fullLogs.length} characters of logs for error extraction`);
+        extractedError = (0, simplified_analyzer_1.extractErrorFromLogs)(fullLogs);
+        if (inputs.prNumber && extractedError) {
+            core.info('PR diff available - using extracted error context only');
+        }
+    }
+    catch (error) {
+        core.warning(`Failed to download job logs: ${error}`);
+    }
+    const [screenshots, artifactLogs, prDiff] = await fetchArtifactsParallel(artifactFetcher, runId, failedJob.name, repoDetails, inputs);
+    const combinedContext = buildErrorContext(failedJob, extractedError, artifactLogs, fullLogs, inputs);
+    const hasLogs = !!(fullLogs && fullLogs.length > 0);
+    const hasScreenshots = !!(screenshots && screenshots.length > 0);
+    const hasArtifactLogs = !!(artifactLogs && artifactLogs.length > 0);
+    const hasPRDiff = !!(prDiff && prDiff.files && prDiff.files.length > 0);
+    if (!hasLogs && !hasScreenshots && !hasArtifactLogs && !hasPRDiff) {
+        core.warning('No meaningful data collected for analysis (no logs, screenshots, artifacts, or PR diff)');
+        core.info('Attempting analysis with minimal context...');
+    }
+    else {
+        core.info(`Data collected for analysis: logs=${hasLogs}, screenshots=${hasScreenshots}, artifactLogs=${hasArtifactLogs}, prDiff=${hasPRDiff}`);
+    }
+    if (extractedError) {
+        const errorData = {
+            ...extractedError,
+            context: `Job: ${failedJob.name}. ${extractedError.context || 'Complete failure context including all logs and artifacts'}`,
+            testName: extractedError.testName || failedJob.name,
+            fileName: extractedError.fileName || failedJob.steps?.find(s => s.conclusion === 'failure')?.name || 'Unknown',
+            screenshots: screenshots,
+            logs: [combinedContext],
+            cypressArtifactLogs: capArtifactLogs(artifactLogs),
+            prDiff: prDiff || undefined
+        };
+        errorData.structuredSummary = buildStructuredSummary(errorData);
+        return errorData;
+    }
+    const fallbackError = {
+        message: 'Test failure - see full context for details',
+        framework: 'cypress',
+        failureType: 'test-failure',
+        context: `Job: ${failedJob.name}. Complete failure context including all logs and artifacts`,
+        testName: failedJob.name,
+        fileName: failedJob.steps?.find(s => s.conclusion === 'failure')?.name || 'Unknown',
+        screenshots: screenshots,
+        logs: [combinedContext],
+        cypressArtifactLogs: capArtifactLogs(artifactLogs),
+        prDiff: prDiff || undefined
+    };
+    fallbackError.structuredSummary = buildStructuredSummary(fallbackError);
+    return fallbackError;
+}
+function findTargetJob(jobs, inputs, isCurrentJob) {
+    if (inputs.jobName) {
+        const targetJob = jobs.find(job => job.name === inputs.jobName);
+        if (!targetJob) {
+            core.warning(`Job '${inputs.jobName}' not found`);
+            return null;
+        }
+        if (isCurrentJob && targetJob.status === 'in_progress') {
+            core.info('Current job is still in progress, analyzing available logs...');
+        }
+        else if (targetJob.conclusion !== 'failure' && targetJob.status === 'completed') {
+            core.warning(`Job '${inputs.jobName}' did not fail (conclusion: ${targetJob.conclusion})`);
+            return null;
+        }
+        return targetJob;
+    }
+    const failedJob = jobs.find(job => job.conclusion === 'failure');
+    if (!failedJob) {
+        core.warning('No failed jobs found');
+        return null;
+    }
+    return failedJob;
+}
+async function fetchArtifactsParallel(artifactFetcher, runId, jobName, repoDetails, inputs) {
+    const screenshotsPromise = artifactFetcher
+        .fetchScreenshots(runId, jobName, repoDetails)
+        .then(screenshots => {
+        core.info(`Found ${screenshots.length} screenshots`);
+        return screenshots;
+    })
+        .catch(error => {
+        core.warning(`Failed to fetch screenshots: ${error}`);
+        return [];
+    });
+    const artifactLogsPromise = artifactFetcher
+        .fetchCypressArtifactLogs(runId, jobName, repoDetails)
+        .then(logs => {
+        if (logs) {
+            core.info(`Found Cypress artifact logs (${logs.length} characters)`);
+        }
+        return logs;
+    })
+        .catch(error => {
+        core.warning(`Failed to fetch Cypress artifact logs: ${error}`);
+        return '';
+    });
+    const prDiffPromise = inputs.prNumber
+        ? (async () => {
+            const prNum = inputs.prNumber;
+            core.info(`📋 Fetching PR diff for PR #${prNum} from ${inputs.repository || 'current repo'}...`);
+            try {
+                const diff = await artifactFetcher.fetchPRDiff(prNum, inputs.repository);
+                if (diff) {
+                    core.info(`✅ Successfully fetched PR diff:`);
+                    core.info(`   - Total files changed: ${diff.totalChanges}`);
+                    core.info(`   - Lines added: +${diff.additions}`);
+                    core.info(`   - Lines deleted: -${diff.deletions}`);
+                    if (diff.files.length > 0) {
+                        core.info(`   - Top files:`);
+                        diff.files.slice(0, 5).forEach(f => {
+                            core.info(`     • ${f.filename} (+${f.additions}/-${f.deletions})`);
+                        });
+                        if (diff.files.length > 5) {
+                            core.info(`     ... and ${diff.files.length - 5} more files`);
+                        }
+                    }
+                }
+                else {
+                    core.warning(`⚠️ PR diff fetch returned null for PR #${prNum}`);
+                }
+                return diff;
+            }
+            catch (error) {
+                core.warning(`❌ Failed to fetch PR diff for PR #${prNum}: ${error}`);
+                return null;
+            }
+        })()
+        : (() => {
+            core.info(`ℹ️ No PR_NUMBER provided, skipping PR diff fetch`);
+            return Promise.resolve(null);
+        })();
+    return Promise.all([screenshotsPromise, artifactLogsPromise, prDiffPromise]);
+}
+function buildErrorContext(failedJob, extractedError, artifactLogs, fullLogs, inputs) {
+    const contextParts = [
+        `=== JOB INFORMATION ===`,
+        `Job Name: ${failedJob.name}`,
+        `Job URL: ${failedJob.html_url}`,
+        `Failed Step: ${failedJob.steps?.find(s => s.conclusion === 'failure')?.name || 'Unknown'}`,
+        ``
+    ];
+    if (extractedError && extractedError.message) {
+        contextParts.push(`=== EXTRACTED ERROR CONTEXT ===`, extractedError.message, ``);
+    }
+    if (artifactLogs) {
+        contextParts.push(`=== CYPRESS ARTIFACT LOGS ===`, artifactLogs, ``);
+    }
+    if (!inputs.prNumber || !extractedError) {
+        const maxLogSize = constants_1.LOG_LIMITS.GITHUB_MAX_SIZE;
+        const truncatedLogs = fullLogs.length > maxLogSize
+            ? `${fullLogs.substring(fullLogs.length - maxLogSize)}\n\n[Logs truncated to last ${maxLogSize} characters]`
+            : fullLogs;
+        contextParts.push(`=== GITHUB ACTIONS LOGS (TRUNCATED) ===`, truncatedLogs, ``);
+    }
+    contextParts.push(`=== END OF LOGS ===`);
+    return contextParts.join('\n');
+}
+function capArtifactLogs(raw) {
+    if (!raw)
+        return '';
+    const MAX = constants_1.LOG_LIMITS.ARTIFACT_SOFT_CAP;
+    const esc = String.fromCharCode(27);
+    const ansiPattern = new RegExp(`${esc}\\[[0-9;]*m`, 'g');
+    const clean = raw.replace(ansiPattern, '');
+    if (clean.length <= MAX)
+        return clean;
+    const lines = clean.split('\n');
+    const errorRegex = /(error|failed|failure|exception|assertion|expected|timeout|cypress error)/i;
+    const focused = [];
+    for (let i = 0; i < lines.length; i++) {
+        if (errorRegex.test(lines[i])) {
+            const start = Math.max(0, i - 10);
+            const end = Math.min(lines.length, i + 10);
+            focused.push(...lines.slice(start, end));
+        }
+    }
+    const uniqueFocused = Array.from(new Set(focused));
+    const focusedJoined = uniqueFocused.join('\n');
+    if (focusedJoined.length > 1000) {
+        return `${focusedJoined.substring(0, 10000)}\n\n[Artifact logs truncated]`;
+    }
+    const head = clean.substring(0, Math.floor(MAX / 2));
+    const tail = clean.substring(clean.length - Math.floor(MAX / 2));
+    return `${head}\n\n[...truncated...]\n\n${tail}`;
+}
+function buildStructuredSummary(err) {
+    const hasTimeout = /\btimeout|timed out\b/i.test(err.message || '');
+    const hasAssertion = /assertion|expected\s+.*to/i.test(err.message || '');
+    const hasDom = /element|selector|not found|visible|covered|detached/i.test(err.message || '');
+    const hasNetwork = /network|fetch|graphql|api|500|404|502|503/i.test(err.message || '');
+    const hasNullPtr = /cannot read (properties|property) of null|undefined/i.test(err.message || '');
+    return {
+        primaryError: {
+            type: err.failureType || 'Error',
+            message: (err.message || '').slice(0, 500)
+        },
+        testContext: {
+            testName: err.testName || 'unknown',
+            testFile: err.fileName || 'unknown',
+            framework: err.framework || 'unknown'
+        },
+        failureIndicators: {
+            hasNetworkErrors: hasNetwork,
+            hasNullPointerErrors: hasNullPtr,
+            hasTimeoutErrors: hasTimeout,
+            hasDOMErrors: hasDom,
+            hasAssertionErrors: hasAssertion,
+            isMobileTest: false,
+            hasLongTimeout: hasTimeout,
+            hasAltTextSelector: /\[alt=/.test(err.message || ''),
+            hasElementExistenceCheck: /expected to find|never found/i.test(err.message || ''),
+            hasVisibilityIssue: /not visible|covered|hidden/i.test(err.message || ''),
+            hasViewportContext: false
+        },
+        keyMetrics: {
+            hasScreenshots: !!(err.screenshots && err.screenshots.length > 0),
+            logSize: err.logs?.join('').length || 0
+        }
+    };
+}
+//# sourceMappingURL=log-processor.js.map
 
 /***/ }),
 
@@ -1955,11 +2239,12 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.FEW_SHOT_EXAMPLES = void 0;
 exports.analyzeFailure = analyzeFailure;
 exports.extractErrorFromLogs = extractErrorFromLogs;
 const core = __importStar(__nccwpck_require__(7484));
-const slack_formatter_1 = __nccwpck_require__(4112);
+const summary_generator_1 = __nccwpck_require__(8220);
+const error_classifier_1 = __nccwpck_require__(3914);
+const constants_1 = __nccwpck_require__(8361);
 const FEW_SHOT_EXAMPLES = [
     {
         error: 'Intentional failure for triage agent testing',
@@ -1997,7 +2282,6 @@ const FEW_SHOT_EXAMPLES = [
         reasoning: 'HTTP 500 errors indicate server-side failures in the application.'
     }
 ];
-exports.FEW_SHOT_EXAMPLES = FEW_SHOT_EXAMPLES;
 async function analyzeFailure(client, errorData) {
     try {
         core.info(`Analyzing error: ${errorData.message.substring(0, 100)}...`);
@@ -2013,8 +2297,8 @@ async function analyzeFailure(client, errorData) {
             suggestedSourceLocations: response.suggestedSourceLocations
         };
         if (response.verdict === 'TEST_ISSUE') {
-            result.evidence = extractTestIssueEvidence(errorData);
-            result.category = categorizeTestIssue(errorData);
+            result.evidence = (0, error_classifier_1.extractTestIssueEvidence)(errorData.message);
+            result.category = (0, error_classifier_1.categorizeTestIssue)(errorData.message);
         }
         return result;
     }
@@ -2052,11 +2336,11 @@ function extractErrorFromLogs(logs) {
                     continue;
             }
             const errorIndex = match.index || 0;
-            let contextStart = Math.max(0, errorIndex - 500);
-            let contextEnd = Math.min(cleanLogs.length, errorIndex + 1500);
+            let contextStart = Math.max(0, errorIndex - constants_1.LOG_LIMITS.ERROR_CONTEXT_BEFORE);
+            let contextEnd = Math.min(cleanLogs.length, errorIndex + constants_1.LOG_LIMITS.ERROR_CONTEXT_AFTER);
             if (match[0].includes('Cypress could not verify') || match[0].includes('Cypress failed to verify')) {
-                contextStart = Math.max(0, errorIndex - 1000);
-                contextEnd = Math.min(cleanLogs.length, errorIndex + 2000);
+                contextStart = Math.max(0, errorIndex - constants_1.LOG_LIMITS.SERVER_ERROR_CONTEXT_BEFORE);
+                contextEnd = Math.min(cleanLogs.length, errorIndex + constants_1.LOG_LIMITS.SERVER_ERROR_CONTEXT_AFTER);
             }
             const errorContext = cleanLogs.substring(contextStart, contextEnd);
             const testNamePatterns = [
@@ -2119,81 +2403,28 @@ function extractErrorFromLogs(logs) {
     return null;
 }
 function calculateConfidence(response, errorData) {
-    let confidence = 70;
+    let confidence = constants_1.CONFIDENCE.BASE;
     const indicatorCount = response.indicators?.length || 0;
-    confidence += Math.min(indicatorCount * 5, 15);
+    confidence += Math.min(indicatorCount * constants_1.CONFIDENCE.INDICATOR_BONUS, constants_1.CONFIDENCE.MAX_INDICATOR_BONUS);
     if (errorData.screenshots?.length) {
-        confidence += 10;
+        confidence += constants_1.CONFIDENCE.SCREENSHOT_BONUS;
         if (errorData.screenshots.length > 1) {
-            confidence += 5;
+            confidence += constants_1.CONFIDENCE.MULTIPLE_SCREENSHOT_BONUS;
         }
     }
     if (errorData.logs?.length) {
-        confidence += 5;
+        confidence += constants_1.CONFIDENCE.LOGS_BONUS;
     }
     if (errorData.prDiff) {
-        confidence += 5;
+        confidence += constants_1.CONFIDENCE.PR_DIFF_BONUS;
     }
     if (errorData.framework && errorData.framework !== 'unknown') {
-        confidence += 5;
+        confidence += constants_1.CONFIDENCE.FRAMEWORK_BONUS;
     }
-    return Math.min(confidence, 95);
+    return Math.min(confidence, constants_1.CONFIDENCE.MAX_CONFIDENCE);
 }
 function generateSummary(response, errorData) {
-    const verdict = response.verdict === 'TEST_ISSUE' ? '🧪 Test Issue' : '🐛 Product Issue';
-    const reasoning = response.reasoning.split(/[.!?]/)[0].trim();
-    let summary = `${verdict}: ${reasoning}`;
-    const contexts = [];
-    if (errorData.testName) {
-        contexts.push(`Test: "${errorData.testName}"`);
-    }
-    if (errorData.fileName) {
-        contexts.push(`File: ${errorData.fileName}`);
-    }
-    if (errorData.screenshots?.length) {
-        contexts.push(`${errorData.screenshots.length} screenshot(s) analyzed`);
-    }
-    if (contexts.length > 0) {
-        summary += `\n\nContext: ${contexts.join(' | ')}`;
-    }
-    return (0, slack_formatter_1.truncateForSlack)(summary, 1000);
-}
-function extractTestIssueEvidence(errorData) {
-    const evidence = [];
-    const selectorMatch = errorData.message.match(/\[([^\]]+)\]|#[\w-]+|\.[\w-]+/);
-    if (selectorMatch) {
-        evidence.push(`Selector involved: ${selectorMatch[0]}`);
-    }
-    const timeoutMatch = errorData.message.match(/(\d+)ms/);
-    if (timeoutMatch) {
-        evidence.push(`Timeout: ${timeoutMatch[0]}`);
-    }
-    if (/not visible|covered|hidden|display:\s*none/.test(errorData.message)) {
-        evidence.push('Element visibility issue detected');
-    }
-    if (/async|await|promise|then/.test(errorData.message)) {
-        evidence.push('Possible async/timing issue');
-    }
-    return evidence;
-}
-function categorizeTestIssue(errorData) {
-    const message = errorData.message.toLowerCase();
-    if (/element.*not found|could not find|never found/.test(message)) {
-        return 'ELEMENT_NOT_FOUND';
-    }
-    if (/timeout|timed out/.test(message)) {
-        return 'TIMEOUT';
-    }
-    if (/not visible|visibility|covered|hidden/.test(message)) {
-        return 'VISIBILITY';
-    }
-    if (/assertion|expected.*to/.test(message)) {
-        return 'ASSERTION';
-    }
-    if (/network|fetch|api|request/.test(message)) {
-        return 'NETWORK';
-    }
-    return 'UNKNOWN';
+    return (0, summary_generator_1.generateAnalysisSummary)(response, errorData);
 }
 //# sourceMappingURL=simplified-analyzer.js.map
 

@@ -124,12 +124,6 @@ export interface PRDiffFile {
   patch?: string;
 }
 
-export interface LogExtractor {
-  framework: string;
-  patterns: RegExp[];
-  extract: (log: string) => ErrorData | null;
-}
-
 export interface StructuredErrorSummary {
   primaryError: {
     type: string;  // AssertionError, NetworkError, etc.

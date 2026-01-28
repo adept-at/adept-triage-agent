@@ -37,11 +37,17 @@ exports.SimplifiedRepairAgent = void 0;
 const core = __importStar(require("@actions/core"));
 const fs = __importStar(require("fs"));
 const openai_client_1 = require("../openai-client");
-const slack_formatter_1 = require("../utils/slack-formatter");
+const summary_generator_1 = require("../analysis/summary-generator");
+const constants_1 = require("../config/constants");
 class SimplifiedRepairAgent {
     openaiClient;
-    constructor(openaiApiKey) {
-        this.openaiClient = new openai_client_1.OpenAIClient(openaiApiKey);
+    constructor(openaiClientOrApiKey) {
+        if (typeof openaiClientOrApiKey === 'string') {
+            this.openaiClient = new openai_client_1.OpenAIClient(openaiClientOrApiKey);
+        }
+        else {
+            this.openaiClient = openaiClientOrApiKey;
+        }
     }
     async generateFixRecommendation(repairContext, errorData) {
         try {
@@ -53,7 +59,7 @@ class SimplifiedRepairAgent {
                 core.info(`  📝 Full prompt saved to ${promptFile}`);
             }
             const recommendation = await this.getRecommendationFromAI(prompt, repairContext, errorData);
-            if (!recommendation || recommendation.confidence < 50) {
+            if (!recommendation || recommendation.confidence < constants_1.CONFIDENCE.MIN_FIX_CONFIDENCE) {
                 core.info('Cannot generate confident fix recommendation');
                 return null;
             }
@@ -282,43 +288,7 @@ You MUST respond in strict JSON only with this schema:
         return changes;
     }
     generateSummary(recommendation, context) {
-        let summary = `## 🔧 Fix Recommendation for ${context.testName}\n\n`;
-        summary += `### Problem Identified\n`;
-        summary += `- **Error Type:** ${context.errorType}\n`;
-        summary += `- **Root Cause:** ${recommendation.rootCause || 'Test needs update'}\n`;
-        if (context.errorSelector) {
-            summary += `- **Failed Selector:** \`${context.errorSelector}\`\n`;
-        }
-        summary += `\n`;
-        summary += `### Confidence: ${recommendation.confidence}%\n\n`;
-        summary += `### Analysis\n`;
-        summary += `${recommendation.reasoning}\n\n`;
-        if (recommendation.changes && recommendation.changes.length > 0) {
-            summary += `### Recommended Changes\n`;
-            recommendation.changes.forEach((change, index) => {
-                summary += `\n#### Change ${index + 1}: ${change.file}\n`;
-                if (change.line) {
-                    summary += `Line ${change.line}\n`;
-                }
-                summary += `**Justification:** ${change.justification}\n\n`;
-                if (change.oldCode) {
-                    summary += `**Current Code:**\n`;
-                    summary += `\`\`\`typescript\n${change.oldCode}\n\`\`\`\n\n`;
-                }
-                summary += `**Suggested Fix:**\n`;
-                summary += `\`\`\`typescript\n${change.newCode}\n\`\`\`\n\n`;
-            });
-        }
-        if (recommendation.evidence && recommendation.evidence.length > 0) {
-            summary += `### Supporting Evidence\n`;
-            recommendation.evidence.forEach((item) => {
-                summary += `- ${item}\n`;
-            });
-            summary += `\n`;
-        }
-        summary += `---\n`;
-        summary += `*This is an automated fix recommendation. Please review before applying.*\n`;
-        return (0, slack_formatter_1.formatSummaryForSlack)(summary, false);
+        return (0, summary_generator_1.generateFixSummary)(recommendation, context, false);
     }
 }
 exports.SimplifiedRepairAgent = SimplifiedRepairAgent;

@@ -1,6 +1,6 @@
 {
   "name": "adept-triage-agent",
-  "version": "1.12.0",
+  "version": "1.13.0",
   "description": "AI-powered test failure triage GitHub Action",
   "main": "dist/index.js",
   "scripts": {
@@ -8,6 +8,8 @@
     "watch": "tsc -w",
     "test": "jest",
     "test:watch": "jest --watch",
+    "test:integration": "jest --testPathPattern=integration --testPathIgnorePatterns=[]",
+    "test:pr-diff": "npx ts-node __tests__/integration/pr-diff-fetcher.integration.test.ts",
     "lint": "eslint src/**/*.ts",
     "package": "ncc build dist/index.js -o dist --source-map --license licenses.txt",
     "all": "npm run build && npm run package",

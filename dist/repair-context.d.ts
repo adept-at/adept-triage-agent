@@ -1,6 +1,6 @@
 import { RepairContext, AnalysisResult } from './types';
-export declare function classifyErrorType(error: string): string;
-export declare function extractSelector(error: string): string | undefined;
+import { classifyErrorType, extractSelector } from './analysis/error-classifier';
+export { classifyErrorType, extractSelector };
 export declare function buildRepairContext(analysisData: {
     testFile: string;
     errorLine?: number;

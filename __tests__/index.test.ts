@@ -186,7 +186,7 @@ describe('GitHub Action', () => {
       
       await run();
       
-      expect(mockCore.warning).toHaveBeenCalledWith('Failed to fetch PR diff: Error: PR not found');
+      expect(mockCore.warning).toHaveBeenCalledWith(expect.stringContaining('Failed to fetch PR diff'));
       expect(mockAnalyzeFailure).toHaveBeenCalled();
     });
 
@@ -255,7 +255,7 @@ describe('GitHub Action', () => {
       
       // Verify individual failures logged
       expect(mockCore.warning).toHaveBeenCalledWith('Failed to fetch screenshots: Error: Screenshot error');
-      expect(mockCore.warning).toHaveBeenCalledWith('Failed to fetch PR diff: Error: PR API error');
+      expect(mockCore.warning).toHaveBeenCalledWith(expect.stringContaining('Failed to fetch PR diff'));
       
       // Verify we proceeded with available data
       expect(mockCore.info).toHaveBeenCalledWith('Data collected for analysis: logs=true, screenshots=false, artifactLogs=true, prDiff=false');

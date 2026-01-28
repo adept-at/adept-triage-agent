@@ -132,7 +132,8 @@ describe('Fix Recommendation Integration', () => {
       await run();
 
       // Verify fix recommendation was attempted
-      expect(SimplifiedRepairAgent).toHaveBeenCalledWith('openai-key');
+      // SimplifiedRepairAgent now accepts an OpenAI client instance instead of API key
+      expect(SimplifiedRepairAgent).toHaveBeenCalledWith(expect.any(Object));
       expect(mockGenerateFixRecommendation).toHaveBeenCalled();
       
       // Verify repair context was built

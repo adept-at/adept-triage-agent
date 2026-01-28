@@ -33,11 +33,12 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.FEW_SHOT_EXAMPLES = void 0;
 exports.analyzeFailure = analyzeFailure;
 exports.extractErrorFromLogs = extractErrorFromLogs;
 const core = __importStar(require("@actions/core"));
-const slack_formatter_1 = require("./utils/slack-formatter");
+const summary_generator_1 = require("./analysis/summary-generator");
+const error_classifier_1 = require("./analysis/error-classifier");
+const constants_1 = require("./config/constants");
 const FEW_SHOT_EXAMPLES = [
     {
         error: 'Intentional failure for triage agent testing',
@@ -75,7 +76,6 @@ const FEW_SHOT_EXAMPLES = [
         reasoning: 'HTTP 500 errors indicate server-side failures in the application.'
     }
 ];
-exports.FEW_SHOT_EXAMPLES = FEW_SHOT_EXAMPLES;
 async function analyzeFailure(client, errorData) {
     try {
         core.info(`Analyzing error: ${errorData.message.substring(0, 100)}...`);
@@ -91,8 +91,8 @@ async function analyzeFailure(client, errorData) {
             suggestedSourceLocations: response.suggestedSourceLocations
         };
         if (response.verdict === 'TEST_ISSUE') {
-            result.evidence = extractTestIssueEvidence(errorData);
-            result.category = categorizeTestIssue(errorData);
+            result.evidence = (0, error_classifier_1.extractTestIssueEvidence)(errorData.message);
+            result.category = (0, error_classifier_1.categorizeTestIssue)(errorData.message);
         }
         return result;
     }
@@ -130,11 +130,11 @@ function extractErrorFromLogs(logs) {
                     continue;
             }
             const errorIndex = match.index || 0;
-            let contextStart = Math.max(0, errorIndex - 500);
-            let contextEnd = Math.min(cleanLogs.length, errorIndex + 1500);
+            let contextStart = Math.max(0, errorIndex - constants_1.LOG_LIMITS.ERROR_CONTEXT_BEFORE);
+            let contextEnd = Math.min(cleanLogs.length, errorIndex + constants_1.LOG_LIMITS.ERROR_CONTEXT_AFTER);
             if (match[0].includes('Cypress could not verify') || match[0].includes('Cypress failed to verify')) {
-                contextStart = Math.max(0, errorIndex - 1000);
-                contextEnd = Math.min(cleanLogs.length, errorIndex + 2000);
+                contextStart = Math.max(0, errorIndex - constants_1.LOG_LIMITS.SERVER_ERROR_CONTEXT_BEFORE);
+                contextEnd = Math.min(cleanLogs.length, errorIndex + constants_1.LOG_LIMITS.SERVER_ERROR_CONTEXT_AFTER);
             }
             const errorContext = cleanLogs.substring(contextStart, contextEnd);
             const testNamePatterns = [
@@ -197,80 +197,27 @@ function extractErrorFromLogs(logs) {
     return null;
 }
 function calculateConfidence(response, errorData) {
-    let confidence = 70;
+    let confidence = constants_1.CONFIDENCE.BASE;
     const indicatorCount = response.indicators?.length || 0;
-    confidence += Math.min(indicatorCount * 5, 15);
+    confidence += Math.min(indicatorCount * constants_1.CONFIDENCE.INDICATOR_BONUS, constants_1.CONFIDENCE.MAX_INDICATOR_BONUS);
     if (errorData.screenshots?.length) {
-        confidence += 10;
+        confidence += constants_1.CONFIDENCE.SCREENSHOT_BONUS;
         if (errorData.screenshots.length > 1) {
-            confidence += 5;
+            confidence += constants_1.CONFIDENCE.MULTIPLE_SCREENSHOT_BONUS;
         }
     }
     if (errorData.logs?.length) {
-        confidence += 5;
+        confidence += constants_1.CONFIDENCE.LOGS_BONUS;
     }
     if (errorData.prDiff) {
-        confidence += 5;
+        confidence += constants_1.CONFIDENCE.PR_DIFF_BONUS;
     }
     if (errorData.framework && errorData.framework !== 'unknown') {
-        confidence += 5;
+        confidence += constants_1.CONFIDENCE.FRAMEWORK_BONUS;
     }
-    return Math.min(confidence, 95);
+    return Math.min(confidence, constants_1.CONFIDENCE.MAX_CONFIDENCE);
 }
 function generateSummary(response, errorData) {
-    const verdict = response.verdict === 'TEST_ISSUE' ? '🧪 Test Issue' : '🐛 Product Issue';
-    const reasoning = response.reasoning.split(/[.!?]/)[0].trim();
-    let summary = `${verdict}: ${reasoning}`;
-    const contexts = [];
-    if (errorData.testName) {
-        contexts.push(`Test: "${errorData.testName}"`);
-    }
-    if (errorData.fileName) {
-        contexts.push(`File: ${errorData.fileName}`);
-    }
-    if (errorData.screenshots?.length) {
-        contexts.push(`${errorData.screenshots.length} screenshot(s) analyzed`);
-    }
-    if (contexts.length > 0) {
-        summary += `\n\nContext: ${contexts.join(' | ')}`;
-    }
-    return (0, slack_formatter_1.truncateForSlack)(summary, 1000);
-}
-function extractTestIssueEvidence(errorData) {
-    const evidence = [];
-    const selectorMatch = errorData.message.match(/\[([^\]]+)\]|#[\w-]+|\.[\w-]+/);
-    if (selectorMatch) {
-        evidence.push(`Selector involved: ${selectorMatch[0]}`);
-    }
-    const timeoutMatch = errorData.message.match(/(\d+)ms/);
-    if (timeoutMatch) {
-        evidence.push(`Timeout: ${timeoutMatch[0]}`);
-    }
-    if (/not visible|covered|hidden|display:\s*none/.test(errorData.message)) {
-        evidence.push('Element visibility issue detected');
-    }
-    if (/async|await|promise|then/.test(errorData.message)) {
-        evidence.push('Possible async/timing issue');
-    }
-    return evidence;
-}
-function categorizeTestIssue(errorData) {
-    const message = errorData.message.toLowerCase();
-    if (/element.*not found|could not find|never found/.test(message)) {
-        return 'ELEMENT_NOT_FOUND';
-    }
-    if (/timeout|timed out/.test(message)) {
-        return 'TIMEOUT';
-    }
-    if (/not visible|visibility|covered|hidden/.test(message)) {
-        return 'VISIBILITY';
-    }
-    if (/assertion|expected.*to/.test(message)) {
-        return 'ASSERTION';
-    }
-    if (/network|fetch|api|request/.test(message)) {
-        return 'NETWORK';
-    }
-    return 'UNKNOWN';
+    return (0, summary_generator_1.generateAnalysisSummary)(response, errorData);
 }
 //# sourceMappingURL=simplified-analyzer.js.map

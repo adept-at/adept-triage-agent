@@ -1,7 +1,9 @@
 import { OpenAIClient } from './openai-client';
 import { AnalysisResult, ErrorData, FewShotExample, OpenAIResponse } from './types';
 import * as core from '@actions/core';
-import { truncateForSlack } from './utils/slack-formatter';
+import { generateAnalysisSummary } from './analysis/summary-generator';
+import { categorizeTestIssue, extractTestIssueEvidence } from './analysis/error-classifier';
+import { CONFIDENCE, LOG_LIMITS } from './config/constants';
 
 /**
  * Simplified analyzer that focuses on core functionality
@@ -77,8 +79,8 @@ export async function analyzeFailure(client: OpenAIClient, errorData: ErrorData)
 
     // Add enhanced metadata for TEST_ISSUE (helps with fix recommendations)
     if (response.verdict === 'TEST_ISSUE') {
-      result.evidence = extractTestIssueEvidence(errorData);
-      result.category = categorizeTestIssue(errorData);
+      result.evidence = extractTestIssueEvidence(errorData.message);
+      result.category = categorizeTestIssue(errorData.message);
     }
     
     return result;
@@ -136,17 +138,15 @@ export function extractErrorFromLogs(logs: string): ErrorData | null {
         if ((priority || 0) < 5) continue;
       }
       
-      // Extract MORE context around the error (was 200/800, now 500/1500)
+      // Extract context around the error
       const errorIndex = match.index || 0;
-      let contextStart = Math.max(0, errorIndex - 500);
-      let contextEnd = Math.min(cleanLogs.length, errorIndex + 1500);
-      
+      let contextStart = Math.max(0, errorIndex - LOG_LIMITS.ERROR_CONTEXT_BEFORE);
+      let contextEnd = Math.min(cleanLogs.length, errorIndex + LOG_LIMITS.ERROR_CONTEXT_AFTER);
+
       // For Cypress server verification errors, get more context to include the URL and retry attempts
       if (match[0].includes('Cypress could not verify') || match[0].includes('Cypress failed to verify')) {
-        // Look backward to find the baseUrl being verified
-        contextStart = Math.max(0, errorIndex - 1000);
-        // Look forward to capture all retry attempts and the final failure message
-        contextEnd = Math.min(cleanLogs.length, errorIndex + 2000);
+        contextStart = Math.max(0, errorIndex - LOG_LIMITS.SERVER_ERROR_CONTEXT_BEFORE);
+        contextEnd = Math.min(cleanLogs.length, errorIndex + LOG_LIMITS.SERVER_ERROR_CONTEXT_AFTER);
       }
       
       const errorContext = cleanLogs.substring(contextStart, contextEnd);
@@ -230,129 +230,41 @@ export function extractErrorFromLogs(logs: string): ErrorData | null {
  * Simplified confidence calculation
  */
 function calculateConfidence(response: OpenAIResponse, errorData: ErrorData): number {
-  let confidence = 70; // Base confidence
-  
+  let confidence = CONFIDENCE.BASE;
+
   // Clear indicators boost confidence
   const indicatorCount = response.indicators?.length || 0;
-  confidence += Math.min(indicatorCount * 5, 15);
-  
+  confidence += Math.min(indicatorCount * CONFIDENCE.INDICATOR_BONUS, CONFIDENCE.MAX_INDICATOR_BONUS);
+
   // Evidence boosts confidence
   if (errorData.screenshots?.length) {
-    confidence += 10;
+    confidence += CONFIDENCE.SCREENSHOT_BONUS;
     if (errorData.screenshots.length > 1) {
-      confidence += 5;
+      confidence += CONFIDENCE.MULTIPLE_SCREENSHOT_BONUS;
     }
   }
-  
+
   if (errorData.logs?.length) {
-    confidence += 5;
+    confidence += CONFIDENCE.LOGS_BONUS;
   }
-  
+
   if (errorData.prDiff) {
-    confidence += 5;
+    confidence += CONFIDENCE.PR_DIFF_BONUS;
   }
-  
+
   if (errorData.framework && errorData.framework !== 'unknown') {
-    confidence += 5;
+    confidence += CONFIDENCE.FRAMEWORK_BONUS;
   }
-  
-  // Cap at 95 (never 100% certain)
-  return Math.min(confidence, 95);
+
+  // Cap at maximum confidence
+  return Math.min(confidence, CONFIDENCE.MAX_CONFIDENCE);
 }
 
 /**
  * Generate a clear, concise summary
  */
 function generateSummary(response: OpenAIResponse, errorData: ErrorData): string {
-  const verdict = response.verdict === 'TEST_ISSUE' ? '🧪 Test Issue' : '🐛 Product Issue';
-  
-  // Get the core reasoning
-  const reasoning = response.reasoning.split(/[.!?]/)[0].trim();
-  
-  let summary = `${verdict}: ${reasoning}`;
-  
-  // Add context if available
-  const contexts = [];
-  
-  if (errorData.testName) {
-    contexts.push(`Test: "${errorData.testName}"`);
-  }
-  
-  if (errorData.fileName) {
-    contexts.push(`File: ${errorData.fileName}`);
-  }
-  
-  if (errorData.screenshots?.length) {
-    contexts.push(`${errorData.screenshots.length} screenshot(s) analyzed`);
-  }
-  
-  if (contexts.length > 0) {
-    summary += `\n\nContext: ${contexts.join(' | ')}`;
-  }
-  
-  // Ensure summary fits within Slack's limits
-  return truncateForSlack(summary, 1000); // Keep main summaries concise
+  return generateAnalysisSummary(response, errorData);
 }
 
-/**
- * Extract evidence for TEST_ISSUE verdicts (helps with fix recommendations)
- */
-function extractTestIssueEvidence(errorData: ErrorData): string[] {
-  const evidence: string[] = [];
-  
-  // Look for selector issues
-  const selectorMatch = errorData.message.match(/\[([^\]]+)\]|#[\w-]+|\.[\w-]+/);
-  if (selectorMatch) {
-    evidence.push(`Selector involved: ${selectorMatch[0]}`);
-  }
-  
-  // Look for timeout values
-  const timeoutMatch = errorData.message.match(/(\d+)ms/);
-  if (timeoutMatch) {
-    evidence.push(`Timeout: ${timeoutMatch[0]}`);
-  }
-  
-  // Check for visibility issues
-  if (/not visible|covered|hidden|display:\s*none/.test(errorData.message)) {
-    evidence.push('Element visibility issue detected');
-  }
-  
-  // Check for async issues
-  if (/async|await|promise|then/.test(errorData.message)) {
-    evidence.push('Possible async/timing issue');
-  }
-  
-  return evidence;
-}
-
-/**
- * Categorize TEST_ISSUE for better fix recommendations
- */
-function categorizeTestIssue(errorData: ErrorData): string {
-  const message = errorData.message.toLowerCase();
-  
-  if (/element.*not found|could not find|never found/.test(message)) {
-    return 'ELEMENT_NOT_FOUND';
-  }
-  
-  if (/timeout|timed out/.test(message)) {
-    return 'TIMEOUT';
-  }
-  
-  if (/not visible|visibility|covered|hidden/.test(message)) {
-    return 'VISIBILITY';
-  }
-  
-  if (/assertion|expected.*to/.test(message)) {
-    return 'ASSERTION';
-  }
-  
-  if (/network|fetch|api|request/.test(message)) {
-    return 'NETWORK';
-  }
-  
-  return 'UNKNOWN';
-}
-
-// Export the few-shot examples for testing
-export { FEW_SHOT_EXAMPLES };
+// extractTestIssueEvidence and categorizeTestIssue are now imported from analysis/error-classifier.ts

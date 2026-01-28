@@ -3,7 +3,8 @@ import * as fs from 'fs';
 import { OpenAIClient } from '../openai-client';
 import { RepairContext, ErrorData } from '../types';
 import { FixRecommendation } from '../types';
-import { formatSummaryForSlack } from '../utils/slack-formatter';
+import { generateFixSummary } from '../analysis/summary-generator';
+import { CONFIDENCE } from '../config/constants';
 
 // Internal type for AI response structure
 interface AIRecommendation {
@@ -29,8 +30,16 @@ interface AIChange {
 export class SimplifiedRepairAgent {
   private openaiClient: OpenAIClient;
 
-  constructor(openaiApiKey: string) {
-    this.openaiClient = new OpenAIClient(openaiApiKey);
+  /**
+   * Creates a new SimplifiedRepairAgent
+   * @param openaiClientOrApiKey - Either an OpenAIClient instance or an API key string
+   */
+  constructor(openaiClientOrApiKey: OpenAIClient | string) {
+    if (typeof openaiClientOrApiKey === 'string') {
+      this.openaiClient = new OpenAIClient(openaiClientOrApiKey);
+    } else {
+      this.openaiClient = openaiClientOrApiKey;
+    }
   }
 
   /**
@@ -54,7 +63,7 @@ export class SimplifiedRepairAgent {
       // Get recommendation from OpenAI using full error data if available
       const recommendation = await this.getRecommendationFromAI(prompt, repairContext, errorData);
       
-      if (!recommendation || recommendation.confidence < 50) {
+      if (!recommendation || recommendation.confidence < CONFIDENCE.MIN_FIX_CONFIDENCE) {
         core.info('Cannot generate confident fix recommendation');
         return null;
       }
@@ -338,53 +347,7 @@ You MUST respond in strict JSON only with this schema:
    * Generates a human-readable summary of the fix
    */
   private generateSummary(recommendation: AIRecommendation, context: RepairContext): string {
-    let summary = `## 🔧 Fix Recommendation for ${context.testName}\n\n`;
-    
-    summary += `### Problem Identified\n`;
-    summary += `- **Error Type:** ${context.errorType}\n`;
-    summary += `- **Root Cause:** ${recommendation.rootCause || 'Test needs update'}\n`;
-    if (context.errorSelector) {
-      summary += `- **Failed Selector:** \`${context.errorSelector}\`\n`;
-    }
-    summary += `\n`;
-    
-    summary += `### Confidence: ${recommendation.confidence}%\n\n`;
-    
-    summary += `### Analysis\n`;
-    summary += `${recommendation.reasoning}\n\n`;
-    
-    if (recommendation.changes && recommendation.changes.length > 0) {
-      summary += `### Recommended Changes\n`;
-      recommendation.changes.forEach((change: AIChange, index: number) => {
-        summary += `\n#### Change ${index + 1}: ${change.file}\n`;
-        if (change.line) {
-          summary += `Line ${change.line}\n`;
-        }
-        summary += `**Justification:** ${change.justification}\n\n`;
-        
-        if (change.oldCode) {
-          summary += `**Current Code:**\n`;
-          summary += `\`\`\`typescript\n${change.oldCode}\n\`\`\`\n\n`;
-        }
-        
-        summary += `**Suggested Fix:**\n`;
-        summary += `\`\`\`typescript\n${change.newCode}\n\`\`\`\n\n`;
-      });
-    }
-    
-    if (recommendation.evidence && recommendation.evidence.length > 0) {
-      summary += `### Supporting Evidence\n`;
-      recommendation.evidence.forEach((item: string) => {
-        summary += `- ${item}\n`;
-      });
-      summary += `\n`;
-    }
-    
-    summary += `---\n`;
-    summary += `*This is an automated fix recommendation. Please review before applying.*\n`;
-    
-    // Apply Slack formatting to ensure it fits within limits
-    // This will remove code blocks if necessary and truncate to fit
-    return formatSummaryForSlack(summary, false); // Don't include code blocks for Slack
+    // Use consolidated summary generator (no code blocks for Slack compatibility)
+    return generateFixSummary(recommendation, context, false);
   }
 }

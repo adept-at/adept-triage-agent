@@ -372,4 +372,148 @@ describe('OpenAIClient', () => {
       expect(result.suggestedSourceLocations).toEqual([]);
     });
   });
+
+  describe('generateWithCustomPrompt', () => {
+    it('should call OpenAI with custom system and user prompts', async () => {
+      const mockResponse = {
+        choices: [{
+          message: {
+            content: JSON.stringify({
+              confidence: 85,
+              reasoning: 'Test fix identified',
+              changes: [],
+            }),
+          },
+        }],
+      };
+
+      mockCreate.mockResolvedValueOnce(mockResponse);
+
+      const result = await client.generateWithCustomPrompt({
+        systemPrompt: 'You are an expert at fixing tests.',
+        userContent: 'Fix this test failure.',
+        responseAsJson: true,
+      });
+
+      expect(mockCreate).toHaveBeenCalledWith(
+        expect.objectContaining({
+          model: 'gpt-5.2',
+          temperature: 0.3,
+          max_completion_tokens: 16384,
+          response_format: { type: 'json_object' },
+          messages: expect.arrayContaining([
+            expect.objectContaining({ role: 'system', content: 'You are an expert at fixing tests.' }),
+            expect.objectContaining({ role: 'user', content: 'Fix this test failure.' }),
+          ]),
+        })
+      );
+
+      expect(result).toBe(JSON.stringify({
+        confidence: 85,
+        reasoning: 'Test fix identified',
+        changes: [],
+      }));
+    });
+
+    it('should support custom temperature', async () => {
+      const mockResponse = {
+        choices: [{
+          message: {
+            content: 'Creative response',
+          },
+        }],
+      };
+
+      mockCreate.mockResolvedValueOnce(mockResponse);
+
+      await client.generateWithCustomPrompt({
+        systemPrompt: 'Be creative',
+        userContent: 'Generate something',
+        temperature: 0.8,
+      });
+
+      expect(mockCreate).toHaveBeenCalledWith(
+        expect.objectContaining({
+          temperature: 0.8,
+        })
+      );
+    });
+
+    it('should handle multimodal content with images', async () => {
+      const mockResponse = {
+        choices: [{
+          message: {
+            content: 'Analysis of images',
+          },
+        }],
+      };
+
+      mockCreate.mockResolvedValueOnce(mockResponse);
+
+      const multimodalContent = [
+        { type: 'text' as const, text: 'Analyze these images' },
+        {
+          type: 'image_url' as const,
+          image_url: { url: 'data:image/png;base64,abc123' },
+        },
+      ];
+
+      const result = await client.generateWithCustomPrompt({
+        systemPrompt: 'You are an image analyzer',
+        userContent: multimodalContent,
+      });
+
+      expect(mockCreate).toHaveBeenCalledWith(
+        expect.objectContaining({
+          messages: expect.arrayContaining([
+            expect.objectContaining({
+              role: 'user',
+              content: multimodalContent,
+            }),
+          ]),
+        })
+      );
+
+      expect(result).toBe('Analysis of images');
+    });
+
+    it('should throw error when response is empty', async () => {
+      mockCreate.mockResolvedValueOnce({
+        choices: [{
+          message: {
+            content: null,
+          },
+        }],
+      });
+
+      await expect(client.generateWithCustomPrompt({
+        systemPrompt: 'Test',
+        userContent: 'Test',
+      })).rejects.toThrow('Empty response from OpenAI');
+    });
+
+    it('should not include response_format when responseAsJson is false', async () => {
+      const mockResponse = {
+        choices: [{
+          message: {
+            content: 'Plain text response',
+          },
+        }],
+      };
+
+      mockCreate.mockResolvedValueOnce(mockResponse);
+
+      await client.generateWithCustomPrompt({
+        systemPrompt: 'Test',
+        userContent: 'Test',
+        responseAsJson: false,
+      });
+
+      expect(mockCreate).toHaveBeenCalledWith(
+        expect.objectContaining({
+          response_format: undefined,
+        })
+      );
+    });
+  });
 }); 

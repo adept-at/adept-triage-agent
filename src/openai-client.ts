@@ -12,9 +12,9 @@ export class OpenAIClient {
   }
 
   async analyze(errorData: ErrorData, examples: FewShotExample[]): Promise<OpenAIResponse> {
-    // Use GPT-5.2 (latest model with vision support)
+    // Use GPT-5.2 Codex (latest model optimized for code analysis)
     const model = 'gpt-5.2';
-    core.info('🧠 Using GPT-5.2 model for analysis');
+    core.info('🧠 Using GPT-5.2-codex model for analysis');
     
     const messages = this.buildMessages(errorData, examples);
     

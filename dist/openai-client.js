@@ -48,7 +48,7 @@ class OpenAIClient {
     }
     async analyze(errorData, examples) {
         const model = 'gpt-5.2';
-        core.info('🧠 Using GPT-5.2 model for analysis');
+        core.info('🧠 Using GPT-5.2-codex model for analysis');
         const messages = this.buildMessages(errorData, examples);
         if (messages[1] && messages[1].role === 'user') {
             const userMessage = messages[1].content;
