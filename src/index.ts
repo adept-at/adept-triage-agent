@@ -74,7 +74,7 @@ async function run(): Promise<void> {
     let autoFixResult: ApplyResult | null = null;
 
     if (result.verdict === 'TEST_ISSUE') {
-      fixRecommendation = await generateFixRecommendation(inputs, repoDetails, errorData, openaiClient);
+      fixRecommendation = await generateFixRecommendation(inputs, repoDetails, errorData, openaiClient, octokit);
       if (fixRecommendation) {
         result.fixRecommendation = fixRecommendation;
 
@@ -158,7 +158,8 @@ async function generateFixRecommendation(
   inputs: ActionInputs,
   repoDetails: { owner: string; repo: string },
   errorData: { message: string; testName?: string; fileName?: string },
-  openaiClient: OpenAIClient
+  openaiClient: OpenAIClient,
+  octokit: Octokit
 ): Promise<FixRecommendation | null> {
   try {
     core.info('\n🔧 Attempting to generate fix recommendation...');
@@ -176,8 +177,16 @@ async function generateFixRecommendation(
       targetAppPrNumber: inputs.prNumber
     });
 
-    // Initialize repair agent with shared OpenAI client
-    const repairAgent = new SimplifiedRepairAgent(openaiClient);
+    // Resolve where the test code lives (for fetching source files)
+    const autoFixTargetRepo = resolveAutoFixTargetRepo(inputs);
+
+    // Initialize repair agent with shared OpenAI client and source fetch context
+    const repairAgent = new SimplifiedRepairAgent(openaiClient, {
+      octokit,
+      owner: autoFixTargetRepo.owner,
+      repo: autoFixTargetRepo.repo,
+      branch: inputs.autoFixBaseBranch || 'main',
+    });
     const recommendation = await repairAgent.generateFixRecommendation(repairContext, errorData as import('./types').ErrorData);
 
     if (recommendation) {

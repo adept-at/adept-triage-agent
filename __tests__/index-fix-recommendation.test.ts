@@ -132,8 +132,16 @@ describe('Fix Recommendation Integration', () => {
       await run();
 
       // Verify fix recommendation was attempted
-      // SimplifiedRepairAgent now accepts an OpenAI client instance instead of API key
-      expect(SimplifiedRepairAgent).toHaveBeenCalledWith(expect.any(Object));
+      // SimplifiedRepairAgent now accepts an OpenAI client instance and source fetch context
+      expect(SimplifiedRepairAgent).toHaveBeenCalledWith(
+        expect.any(Object),  // OpenAI client
+        expect.objectContaining({
+          octokit: expect.any(Object),
+          owner: expect.any(String),
+          repo: expect.any(String),
+          branch: expect.any(String),
+        })
+      );
       expect(mockGenerateFixRecommendation).toHaveBeenCalled();
       
       // Verify repair context was built

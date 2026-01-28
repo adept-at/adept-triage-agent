@@ -887,7 +887,7 @@ async function run() {
         let fixRecommendation = null;
         let autoFixResult = null;
         if (result.verdict === 'TEST_ISSUE') {
-            fixRecommendation = await generateFixRecommendation(inputs, repoDetails, errorData, openaiClient);
+            fixRecommendation = await generateFixRecommendation(inputs, repoDetails, errorData, openaiClient, octokit);
             if (fixRecommendation) {
                 result.fixRecommendation = fixRecommendation;
                 if (inputs.enableAutoFix) {
@@ -953,7 +953,7 @@ function resolveAutoFixTargetRepo(inputs) {
     }
     return github.context.repo;
 }
-async function generateFixRecommendation(inputs, repoDetails, errorData, openaiClient) {
+async function generateFixRecommendation(inputs, repoDetails, errorData, openaiClient, octokit) {
     try {
         core.info('\n🔧 Attempting to generate fix recommendation...');
         const repairContext = (0, repair_context_1.buildRepairContext)({
@@ -968,7 +968,13 @@ async function generateFixRecommendation(inputs, repoDetails, errorData, openaiC
             prNumber: inputs.prNumber,
             targetAppPrNumber: inputs.prNumber
         });
-        const repairAgent = new simplified_repair_agent_1.SimplifiedRepairAgent(openaiClient);
+        const autoFixTargetRepo = resolveAutoFixTargetRepo(inputs);
+        const repairAgent = new simplified_repair_agent_1.SimplifiedRepairAgent(openaiClient, {
+            octokit,
+            owner: autoFixTargetRepo.owner,
+            repo: autoFixTargetRepo.repo,
+            branch: inputs.autoFixBaseBranch || 'main',
+        });
         const recommendation = await repairAgent.generateFixRecommendation(repairContext, errorData);
         if (recommendation) {
             core.info(`✅ Fix recommendation generated with ${recommendation.confidence}% confidence`);
@@ -2016,18 +2022,28 @@ const summary_generator_1 = __nccwpck_require__(8220);
 const constants_1 = __nccwpck_require__(8361);
 class SimplifiedRepairAgent {
     openaiClient;
-    constructor(openaiClientOrApiKey) {
+    sourceFetchContext;
+    constructor(openaiClientOrApiKey, sourceFetchContext) {
         if (typeof openaiClientOrApiKey === 'string') {
             this.openaiClient = new openai_client_1.OpenAIClient(openaiClientOrApiKey);
         }
         else {
             this.openaiClient = openaiClientOrApiKey;
         }
+        this.sourceFetchContext = sourceFetchContext;
     }
     async generateFixRecommendation(repairContext, errorData) {
         try {
             core.info('🔧 Generating fix recommendation...');
-            const prompt = this.buildPrompt(repairContext, errorData);
+            let sourceFileContent = null;
+            const cleanFilePath = this.extractFilePath(repairContext.testFile);
+            if (this.sourceFetchContext && cleanFilePath) {
+                sourceFileContent = await this.fetchSourceFile(cleanFilePath);
+                if (sourceFileContent) {
+                    core.info(`  ✅ Fetched source file: ${cleanFilePath} (${sourceFileContent.length} chars)`);
+                }
+            }
+            const prompt = this.buildPrompt(repairContext, errorData, sourceFileContent, cleanFilePath);
             if (process.env.DEBUG_FIX_RECOMMENDATION) {
                 const promptFile = `fix-prompt-${Date.now()}.md`;
                 fs.writeFileSync(promptFile, prompt);
@@ -2059,7 +2075,52 @@ class SimplifiedRepairAgent {
             return null;
         }
     }
-    buildPrompt(context, errorData) {
+    extractFilePath(rawPath) {
+        if (!rawPath)
+            return null;
+        const webpackMatch = rawPath.match(/webpack:\/\/[^/]+\/\.\/(.+)/);
+        if (webpackMatch) {
+            return webpackMatch[1];
+        }
+        const fileMatch = rawPath.match(/file:\/\/(.+)/);
+        if (fileMatch) {
+            return fileMatch[1];
+        }
+        if (rawPath.startsWith('./')) {
+            return rawPath.slice(2);
+        }
+        if (rawPath.includes('/') && !rawPath.startsWith('http')) {
+            return rawPath;
+        }
+        return null;
+    }
+    async fetchSourceFile(filePath) {
+        if (!this.sourceFetchContext) {
+            return null;
+        }
+        const { octokit, owner, repo, branch = 'main' } = this.sourceFetchContext;
+        try {
+            core.debug(`Fetching source file: ${owner}/${repo}/${filePath} (branch: ${branch})`);
+            const response = await octokit.repos.getContent({
+                owner,
+                repo,
+                path: filePath,
+                ref: branch,
+            });
+            if (Array.isArray(response.data) || response.data.type !== 'file') {
+                core.debug(`${filePath} is not a file`);
+                return null;
+            }
+            const content = Buffer.from(response.data.content, 'base64').toString('utf-8');
+            return content;
+        }
+        catch (error) {
+            const errorMsg = error instanceof Error ? error.message : String(error);
+            core.debug(`Failed to fetch source file ${filePath}: ${errorMsg}`);
+            return null;
+        }
+    }
+    buildPrompt(context, errorData, sourceFileContent, cleanFilePath) {
         let contextInfo = `## Test Failure Context
 - **Test File:** ${context.testFile}
 - **Test Name:** ${context.testName}
@@ -2067,6 +2128,34 @@ class SimplifiedRepairAgent {
 - **Error Message:** ${context.errorMessage}
 ${context.errorSelector ? `- **Failed Selector:** ${context.errorSelector}` : ''}
 ${context.errorLine ? `- **Error Line:** ${context.errorLine}` : ''}`;
+        if (sourceFileContent && cleanFilePath) {
+            core.info('  ✅ Including actual source file content in prompt');
+            const lines = sourceFileContent.split('\n');
+            const errorLine = context.errorLine || 0;
+            if (errorLine > 0 && errorLine <= lines.length) {
+                const startLine = Math.max(0, errorLine - 20);
+                const endLine = Math.min(lines.length, errorLine + 20);
+                const relevantLines = lines.slice(startLine, endLine);
+                const numberedLines = relevantLines.map((line, i) => {
+                    const lineNum = startLine + i + 1;
+                    const marker = lineNum === errorLine ? '>>> ' : '    ';
+                    return `${marker}${lineNum}: ${line}`;
+                }).join('\n');
+                contextInfo += `\n\n## Source File: ${cleanFilePath} (lines ${startLine + 1}-${endLine})
+\`\`\`javascript
+${numberedLines}
+\`\`\``;
+            }
+            else {
+                const previewLines = lines.slice(0, 100);
+                const numberedLines = previewLines.map((line, i) => `${i + 1}: ${line}`).join('\n');
+                contextInfo += `\n\n## Source File: ${cleanFilePath} (first 100 lines)
+\`\`\`javascript
+${numberedLines}
+${lines.length > 100 ? `\n... (${lines.length - 100} more lines)` : ''}
+\`\`\``;
+            }
+        }
         if (errorData) {
             core.info('\n📋 Adding full context to fix recommendation prompt:');
             if (errorData.stackTrace) {
@@ -2126,6 +2215,12 @@ ${contextInfo}
 ## Your Task
 Based on the error type and message, provide a fix recommendation. Focus on the most likely cause and solution.
 
+**CRITICAL FOR AUTO-FIX:** You have been provided with the ACTUAL SOURCE FILE CONTENT above. When specifying "oldCode" in your changes:
+- Copy the EXACT code from the source file, including whitespace, quotes, and formatting
+- The oldCode must be a verbatim substring that exists in the file
+- Do NOT paraphrase or reformat the code
+- Include enough context (multiple lines if needed) to make the match unique
+
 **Important:** If PR changes are provided, analyze whether recent code changes may have caused the test failure. Look for:
 - Changed selectors or UI components that the test depends on
 - Modified API endpoints or data structures
@@ -2140,7 +2235,7 @@ Based on the error type and message, provide a fix recommendation. Focus on the 
     {
       "file": "path/to/file",
       "line": line_number_if_known,
-      "oldCode": "problematic code if identifiable",
+      "oldCode": "EXACT verbatim code from the file that needs to be replaced",
       "newCode": "suggested fix",
       "justification": "why this fixes the issue"
     }
@@ -2163,6 +2258,10 @@ Respond with JSON only. If you cannot provide a confident fix, set confidence be
             if (typeof clientAny.generateWithCustomPrompt === 'function') {
                 const systemPrompt = `You are a test repair expert. Produce a concrete, review-ready fix plan for a Cypress TEST_ISSUE.
 
+CRITICAL: When providing "oldCode" in your changes, you MUST copy the EXACT code from the source file provided.
+The oldCode must be a verbatim match - including whitespace, quotes, semicolons, and formatting.
+If you cannot find the exact code to replace, set confidence below 50.
+
 You MUST respond in strict JSON only with this schema:
 {
   "confidence": number (0-100),
@@ -2173,7 +2272,7 @@ You MUST respond in strict JSON only with this schema:
     {
       "file": string,
       "line"?: number,
-      "oldCode"?: string,
+      "oldCode"?: string (MUST be exact verbatim match from source),
       "newCode": string,
       "justification": string
     }
