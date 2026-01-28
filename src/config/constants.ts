@@ -108,3 +108,11 @@ export const TEST_ISSUE_CATEGORIES = {
 } as const;
 
 export type TestIssueCategory = typeof TEST_ISSUE_CATEGORIES[keyof typeof TEST_ISSUE_CATEGORIES];
+
+/** Auto-fix feature configuration */
+export const AUTO_FIX = {
+  /** Default minimum confidence to apply auto-fix */
+  DEFAULT_MIN_CONFIDENCE: 70,
+  /** Branch prefix for auto-fix branches */
+  BRANCH_PREFIX: 'fix/triage-agent/',
+} as const;

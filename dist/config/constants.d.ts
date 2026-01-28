@@ -59,4 +59,8 @@ export declare const TEST_ISSUE_CATEGORIES: {
     readonly UNKNOWN: "UNKNOWN";
 };
 export type TestIssueCategory = typeof TEST_ISSUE_CATEGORIES[keyof typeof TEST_ISSUE_CATEGORIES];
+export declare const AUTO_FIX: {
+    readonly DEFAULT_MIN_CONFIDENCE: 70;
+    readonly BRANCH_PREFIX: "fix/triage-agent/";
+};
 //# sourceMappingURL=constants.d.ts.map

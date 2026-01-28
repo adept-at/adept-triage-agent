@@ -90,6 +90,9 @@ export interface ActionInputs {
     commitSha?: string;
     repository?: string;
     testFrameworks?: string;
+    enableAutoFix?: boolean;
+    autoFixBaseBranch?: string;
+    autoFixMinConfidence?: number;
 }
 export interface PRDiff {
     files: PRDiffFile[];

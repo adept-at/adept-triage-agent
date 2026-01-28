@@ -19,7 +19,32 @@ AI-powered GitHub Action that automatically triages test failures to determine i
 - 🔄 **Flexible Integration**: Works with various CI/CD workflows
 - 📝 **PR Diff Analysis**: Analyzes code changes from pull requests to better determine if failures are related to the changes
 
-### PR Diff Analysis (New!)
+### Auto-Fix Feature
+
+When a test failure is classified as `TEST_ISSUE`, the agent can automatically create a branch with the proposed fix:
+
+- Creates a new branch with AI-generated code changes
+- Commits and pushes the fix for engineer review
+- Outputs branch name, commit SHA, and modified files
+- **Opt-in only** - disabled by default for safety
+
+```yaml
+- uses: adept-at/adept-triage-agent@v1
+  with:
+    GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+    WORKFLOW_RUN_ID: ${{ github.event.workflow_run.id }}
+    # Enable auto-fix
+    ENABLE_AUTO_FIX: 'true'
+    AUTO_FIX_BASE_BRANCH: 'main'
+    AUTO_FIX_MIN_CONFIDENCE: '75'
+```
+
+**Important:** Auto-fix creates a branch only - it does NOT create a PR automatically. Engineers must review and create the PR manually.
+
+See [Architecture Documentation](docs/ARCHITECTURE.md#auto-fix-feature) for detailed configuration and safety guardrails.
+
+### PR Diff Analysis
 
 When PR information is provided, the agent will:
 
@@ -280,6 +305,9 @@ Integrate AI triage results into your Slack notifications in the triage workflow
 | `PR_NUMBER`            | Pull request number to fetch diff from                                                                                                                                                                                         | No       | -                          |
 | `COMMIT_SHA`           | Commit SHA associated with the test failure                                                                                                                                                                                    | No       | -                          |
 | `REPOSITORY`           | Repository in owner/repo format                                                                                                                                                                                                | No       | `${{ github.repository }}` |
+| `ENABLE_AUTO_FIX`      | Enable automatic branch creation with fix (opt-in). See [Auto-Fix Feature](docs/ARCHITECTURE.md#auto-fix-feature)                                                                                                              | No       | `false`                    |
+| `AUTO_FIX_BASE_BRANCH` | Base branch to create fix branch from                                                                                                                                                                                          | No       | `main`                     |
+| `AUTO_FIX_MIN_CONFIDENCE` | Minimum fix confidence required to apply auto-fix (0-100)                                                                                                                                                                   | No       | `70`                       |
 
 ## Outputs
 
@@ -290,6 +318,14 @@ Integrate AI triage results into your Slack notifications in the triage workflow
 | `reasoning`   | Detailed explanation of the decision                                               |
 | `summary`     | Brief summary suitable for PR comments                                             |
 | `triage_json` | Complete analysis as JSON string (includes all details)                            |
+| `has_fix_recommendation` | `true` or `false` - whether a fix recommendation was generated (TEST_ISSUE only) |
+| `fix_recommendation` | Complete fix recommendation as JSON (when available)                          |
+| `fix_summary` | Human-readable fix recommendation summary (when available)                         |
+| `fix_confidence` | Confidence score for the fix recommendation (0-100)                             |
+| `auto_fix_applied` | `true` or `false` - whether auto-fix branch was created                        |
+| `auto_fix_branch` | Name of the created branch (if auto-fix applied)                                |
+| `auto_fix_commit` | SHA of the fix commit (if auto-fix applied)                                     |
+| `auto_fix_files` | JSON array of modified files (if auto-fix applied)                               |
 
 ### Special Verdicts
 

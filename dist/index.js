@@ -719,7 +719,7 @@ exports.ArtifactFetcher = ArtifactFetcher;
 "use strict";
 
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.TEST_ISSUE_CATEGORIES = exports.ERROR_TYPES = exports.FORMATTING = exports.ARTIFACTS = exports.OPENAI = exports.CONFIDENCE = exports.LOG_LIMITS = void 0;
+exports.AUTO_FIX = exports.TEST_ISSUE_CATEGORIES = exports.ERROR_TYPES = exports.FORMATTING = exports.ARTIFACTS = exports.OPENAI = exports.CONFIDENCE = exports.LOG_LIMITS = void 0;
 exports.LOG_LIMITS = {
     GITHUB_MAX_SIZE: 50_000,
     ARTIFACT_SOFT_CAP: 20_000,
@@ -779,6 +779,10 @@ exports.TEST_ISSUE_CATEGORIES = {
     NETWORK: 'NETWORK',
     UNKNOWN: 'UNKNOWN',
 };
+exports.AUTO_FIX = {
+    DEFAULT_MIN_CONFIDENCE: 70,
+    BRANCH_PREFIX: 'fix/triage-agent/',
+};
 //# sourceMappingURL=constants.js.map
 
 /***/ }),
@@ -832,6 +836,8 @@ const artifact_fetcher_1 = __nccwpck_require__(5853);
 const repair_context_1 = __nccwpck_require__(4026);
 const simplified_repair_agent_1 = __nccwpck_require__(9247);
 const log_processor_1 = __nccwpck_require__(5833);
+const fix_applier_1 = __nccwpck_require__(2134);
+const constants_1 = __nccwpck_require__(8361);
 async function run() {
     try {
         const inputs = getInputs();
@@ -879,10 +885,14 @@ async function run() {
         }
         const result = await (0, simplified_analyzer_1.analyzeFailure)(openaiClient, errorData);
         let fixRecommendation = null;
+        let autoFixResult = null;
         if (result.verdict === 'TEST_ISSUE') {
             fixRecommendation = await generateFixRecommendation(inputs, repoDetails, errorData, openaiClient);
             if (fixRecommendation) {
                 result.fixRecommendation = fixRecommendation;
+                if (inputs.enableAutoFix) {
+                    autoFixResult = await attemptAutoFix(inputs, fixRecommendation);
+                }
             }
         }
         if (result.confidence < inputs.confidenceThreshold) {
@@ -890,7 +900,7 @@ async function run() {
             setInconclusiveOutput(result, inputs, errorData);
             return;
         }
-        setSuccessOutput(result, errorData);
+        setSuccessOutput(result, errorData, autoFixResult);
     }
     catch (error) {
         if (error instanceof Error) {
@@ -913,7 +923,10 @@ function getInputs() {
         prNumber: core.getInput('PR_NUMBER'),
         commitSha: core.getInput('COMMIT_SHA'),
         repository: repositoryInput ? repositoryInput.trim() : undefined,
-        testFrameworks: core.getInput('TEST_FRAMEWORKS')
+        testFrameworks: core.getInput('TEST_FRAMEWORKS'),
+        enableAutoFix: core.getInput('ENABLE_AUTO_FIX') === 'true',
+        autoFixBaseBranch: core.getInput('AUTO_FIX_BASE_BRANCH') || 'main',
+        autoFixMinConfidence: parseInt(core.getInput('AUTO_FIX_MIN_CONFIDENCE') || String(constants_1.AUTO_FIX.DEFAULT_MIN_CONFIDENCE), 10),
     };
 }
 function resolveRepository(inputs) {
@@ -957,6 +970,34 @@ async function generateFixRecommendation(inputs, repoDetails, errorData, openaiC
         return null;
     }
 }
+async function attemptAutoFix(inputs, fixRecommendation) {
+    core.info('\n🤖 Auto-fix is enabled, attempting to apply fix...');
+    const fixApplier = (0, fix_applier_1.createFixApplier)({
+        baseBranch: inputs.autoFixBaseBranch || 'main',
+        minConfidence: inputs.autoFixMinConfidence || constants_1.AUTO_FIX.DEFAULT_MIN_CONFIDENCE,
+    });
+    if (!fixApplier.canApply(fixRecommendation)) {
+        core.info('⏭️ Auto-fix skipped: confidence below threshold or no changes proposed');
+        return null;
+    }
+    try {
+        const result = await fixApplier.applyFix(fixRecommendation);
+        if (result.success) {
+            core.info(`✅ Auto-fix applied successfully!`);
+            core.info(`   Branch: ${result.branchName}`);
+            core.info(`   Commit: ${result.commitSha}`);
+            core.info(`   Files: ${result.modifiedFiles.join(', ')}`);
+        }
+        else {
+            core.warning(`❌ Auto-fix failed: ${result.error}`);
+        }
+        return result;
+    }
+    catch (error) {
+        core.warning(`Auto-fix error: ${error}`);
+        return null;
+    }
+}
 function setInconclusiveOutput(result, inputs, errorData) {
     const inconclusiveTriageJson = {
         verdict: 'INCONCLUSIVE',
@@ -977,7 +1018,7 @@ function setInconclusiveOutput(result, inputs, errorData) {
     core.setOutput('summary', 'Analysis inconclusive due to low confidence');
     core.setOutput('triage_json', JSON.stringify(inconclusiveTriageJson));
 }
-function setSuccessOutput(result, errorData) {
+function setSuccessOutput(result, errorData, autoFixResult) {
     const triageJson = {
         verdict: result.verdict,
         confidence: result.confidence,
@@ -986,11 +1027,20 @@ function setSuccessOutput(result, errorData) {
         indicators: result.indicators || [],
         ...(result.verdict === 'PRODUCT_ISSUE' && result.suggestedSourceLocations ? { suggestedSourceLocations: result.suggestedSourceLocations } : {}),
         ...(result.verdict === 'TEST_ISSUE' && result.fixRecommendation ? { fixRecommendation: result.fixRecommendation } : {}),
+        ...(autoFixResult?.success ? {
+            autoFix: {
+                applied: true,
+                branch: autoFixResult.branchName,
+                commit: autoFixResult.commitSha,
+                files: autoFixResult.modifiedFiles,
+            }
+        } : {}),
         metadata: {
             analyzedAt: new Date().toISOString(),
             hasScreenshots: (errorData.screenshots && errorData.screenshots.length > 0) || false,
             logSize: errorData.logs?.join('').length || 0,
-            hasFixRecommendation: !!result.fixRecommendation
+            hasFixRecommendation: !!result.fixRecommendation,
+            autoFixApplied: autoFixResult?.success || false,
         }
     };
     core.setOutput('verdict', result.verdict);
@@ -1006,6 +1056,15 @@ function setSuccessOutput(result, errorData) {
     }
     else {
         core.setOutput('has_fix_recommendation', 'false');
+    }
+    if (autoFixResult?.success) {
+        core.setOutput('auto_fix_applied', 'true');
+        core.setOutput('auto_fix_branch', autoFixResult.branchName || '');
+        core.setOutput('auto_fix_commit', autoFixResult.commitSha || '');
+        core.setOutput('auto_fix_files', JSON.stringify(autoFixResult.modifiedFiles));
+    }
+    else {
+        core.setOutput('auto_fix_applied', 'false');
     }
     core.info(`Verdict: ${result.verdict}`);
     core.info(`Confidence: ${result.confidence}%`);
@@ -1024,6 +1083,13 @@ function setSuccessOutput(result, errorData) {
         core.info(`  Evidence: ${result.fixRecommendation.evidence.length} item(s)`);
         core.info('\n📝 Fix Summary:');
         core.info(result.fixRecommendation.summary);
+        if (autoFixResult?.success) {
+            core.info('\n✅ Auto-Fix Applied:');
+            core.info(`  Branch: ${autoFixResult.branchName}`);
+            core.info(`  Commit: ${autoFixResult.commitSha}`);
+            core.info(`  Files: ${autoFixResult.modifiedFiles.join(', ')}`);
+            core.info('\n👉 To create a PR, visit your repository and open a PR from the branch above.');
+        }
     }
 }
 if (require.main === require.cache[eval('__filename')]) {
@@ -1571,6 +1637,186 @@ function enhanceAnalysisWithRepairContext(analysisResult, testData) {
     };
 }
 //# sourceMappingURL=repair-context.js.map
+
+/***/ }),
+
+/***/ 2134:
+/***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
+
+"use strict";
+
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.GitHubFixApplier = void 0;
+exports.createFixApplier = createFixApplier;
+exports.generateFixBranchName = generateFixBranchName;
+exports.generateFixCommitMessage = generateFixCommitMessage;
+const core = __importStar(__nccwpck_require__(7484));
+const exec = __importStar(__nccwpck_require__(5236));
+const fs = __importStar(__nccwpck_require__(1943));
+const constants_1 = __nccwpck_require__(8361);
+class GitHubFixApplier {
+    config;
+    constructor(config) {
+        this.config = config;
+    }
+    canApply(recommendation) {
+        if (recommendation.confidence < this.config.minConfidence) {
+            core.info(`Fix confidence (${recommendation.confidence}%) is below threshold (${this.config.minConfidence}%)`);
+            return false;
+        }
+        if (!recommendation.proposedChanges || recommendation.proposedChanges.length === 0) {
+            core.info('No proposed changes in fix recommendation');
+            return false;
+        }
+        return true;
+    }
+    async applyFix(recommendation) {
+        const modifiedFiles = [];
+        let branchName = '';
+        let commitSha = '';
+        try {
+            const testFile = recommendation.proposedChanges[0]?.file || 'unknown';
+            branchName = generateFixBranchName(testFile);
+            core.info(`Creating fix branch: ${branchName}`);
+            await this.execGit(['fetch', 'origin', this.config.baseBranch]);
+            await this.execGit(['checkout', '-b', branchName, `origin/${this.config.baseBranch}`]);
+            for (const change of recommendation.proposedChanges) {
+                const filePath = change.file;
+                try {
+                    const currentContent = await fs.readFile(filePath, 'utf-8');
+                    if (change.oldCode && change.newCode) {
+                        const newContent = currentContent.replace(change.oldCode, change.newCode);
+                        if (newContent === currentContent) {
+                            core.warning(`Could not find old code to replace in ${filePath}`);
+                            continue;
+                        }
+                        await fs.writeFile(filePath, newContent, 'utf-8');
+                        modifiedFiles.push(filePath);
+                        core.info(`Modified: ${filePath}`);
+                    }
+                }
+                catch (fileError) {
+                    core.warning(`Failed to modify ${filePath}: ${fileError}`);
+                }
+            }
+            if (modifiedFiles.length === 0) {
+                await this.execGit(['checkout', '-']);
+                await this.execGit(['branch', '-D', branchName]);
+                return {
+                    success: false,
+                    modifiedFiles: [],
+                    error: 'No files were successfully modified',
+                };
+            }
+            await this.execGit(['add', ...modifiedFiles]);
+            const commitMessage = generateFixCommitMessage(recommendation);
+            await this.execGit(['commit', '-m', commitMessage]);
+            commitSha = await this.getCommitSha();
+            await this.execGit(['push', '-u', 'origin', branchName]);
+            core.info(`Successfully pushed fix branch: ${branchName}`);
+            core.info(`Commit SHA: ${commitSha}`);
+            return {
+                success: true,
+                modifiedFiles,
+                commitSha,
+                branchName,
+            };
+        }
+        catch (error) {
+            const errorMessage = error instanceof Error ? error.message : String(error);
+            core.error(`Failed to apply fix: ${errorMessage}`);
+            try {
+                await this.execGit(['checkout', '-']);
+                if (branchName) {
+                    await this.execGit(['branch', '-D', branchName]);
+                }
+            }
+            catch {
+            }
+            return {
+                success: false,
+                modifiedFiles,
+                error: errorMessage,
+            };
+        }
+    }
+    async execGit(args) {
+        const exitCode = await exec.exec('git', args);
+        if (exitCode !== 0) {
+            throw new Error(`Git command failed: git ${args.join(' ')}`);
+        }
+    }
+    async getCommitSha() {
+        let output = '';
+        await exec.exec('git', ['rev-parse', 'HEAD'], {
+            listeners: {
+                stdout: (data) => {
+                    output += data.toString();
+                },
+            },
+        });
+        return output.trim();
+    }
+}
+exports.GitHubFixApplier = GitHubFixApplier;
+function createFixApplier(config) {
+    return new GitHubFixApplier(config);
+}
+function generateFixBranchName(testFile, timestamp = new Date()) {
+    const sanitizedFile = testFile
+        .replace(/[^a-zA-Z0-9]/g, '-')
+        .replace(/-+/g, '-')
+        .replace(/^-|-$/g, '')
+        .slice(0, 50);
+    const dateStr = timestamp.toISOString().slice(0, 10).replace(/-/g, '');
+    return `${constants_1.AUTO_FIX.BRANCH_PREFIX}${sanitizedFile}-${dateStr}`;
+}
+function generateFixCommitMessage(recommendation) {
+    const files = recommendation.proposedChanges.map(c => c.file).join(', ');
+    const summary = recommendation.summary.slice(0, 50);
+    return `fix(test): ${summary}
+
+Automated fix generated by adept-triage-agent.
+
+Files modified: ${files}
+Confidence: ${recommendation.confidence}%
+
+${recommendation.reasoning}`;
+}
+//# sourceMappingURL=fix-applier.js.map
 
 /***/ }),
 
@@ -44262,6 +44508,14 @@ module.exports = require("events");
 
 "use strict";
 module.exports = require("fs");
+
+/***/ }),
+
+/***/ 1943:
+/***/ ((module) => {
+
+"use strict";
+module.exports = require("fs/promises");
 
 /***/ }),
 

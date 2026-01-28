@@ -4,27 +4,25 @@ export interface ApplyResult {
     modifiedFiles: string[];
     error?: string;
     commitSha?: string;
-}
-export interface PullRequestResult {
-    success: boolean;
-    prNumber?: number;
-    prUrl?: string;
-    error?: string;
+    branchName?: string;
 }
 export interface FixApplierConfig {
-    owner: string;
-    repo: string;
     baseBranch: string;
-    githubToken: string;
-    createPr: boolean;
-    prTitlePrefix?: string;
+    minConfidence: number;
 }
 export interface FixApplier {
-    canApply(recommendation: FixRecommendation): Promise<boolean>;
+    canApply(recommendation: FixRecommendation): boolean;
     applyFix(recommendation: FixRecommendation): Promise<ApplyResult>;
-    createPullRequest(fix: ApplyResult, recommendation: FixRecommendation): Promise<PullRequestResult>;
 }
-export declare function createFixApplier(_config: FixApplierConfig): FixApplier;
+export declare class GitHubFixApplier implements FixApplier {
+    private config;
+    constructor(config: FixApplierConfig);
+    canApply(recommendation: FixRecommendation): boolean;
+    applyFix(recommendation: FixRecommendation): Promise<ApplyResult>;
+    private execGit;
+    private getCommitSha;
+}
+export declare function createFixApplier(config: FixApplierConfig): FixApplier;
 export declare function generateFixBranchName(testFile: string, timestamp?: Date): string;
 export declare function generateFixCommitMessage(recommendation: FixRecommendation): string;
 //# sourceMappingURL=fix-applier.d.ts.map

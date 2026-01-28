@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.TEST_ISSUE_CATEGORIES = exports.ERROR_TYPES = exports.FORMATTING = exports.ARTIFACTS = exports.OPENAI = exports.CONFIDENCE = exports.LOG_LIMITS = void 0;
+exports.AUTO_FIX = exports.TEST_ISSUE_CATEGORIES = exports.ERROR_TYPES = exports.FORMATTING = exports.ARTIFACTS = exports.OPENAI = exports.CONFIDENCE = exports.LOG_LIMITS = void 0;
 exports.LOG_LIMITS = {
     GITHUB_MAX_SIZE: 50_000,
     ARTIFACT_SOFT_CAP: 20_000,
@@ -59,5 +59,9 @@ exports.TEST_ISSUE_CATEGORIES = {
     ASSERTION: 'ASSERTION',
     NETWORK: 'NETWORK',
     UNKNOWN: 'UNKNOWN',
+};
+exports.AUTO_FIX = {
+    DEFAULT_MIN_CONFIDENCE: 70,
+    BRANCH_PREFIX: 'fix/triage-agent/',
 };
 //# sourceMappingURL=constants.js.map

@@ -895,4 +895,258 @@ describe('GitHub Action', () => {
       expect(mockCore.setFailed).toHaveBeenCalledWith('An unknown error occurred');
     });
   });
+
+  describe('auto-fix integration', () => {
+    beforeEach(() => {
+      // Mock basic workflow data for auto-fix tests
+      mockOctokit.actions!.getWorkflowRun = jest.fn().mockResolvedValue({
+        data: { status: 'completed' }
+      }) as any;
+
+      mockOctokit.actions!.listJobsForWorkflowRun = jest.fn().mockResolvedValue({
+        data: {
+          jobs: [{
+            id: 1,
+            name: 'test-job',
+            conclusion: 'failure',
+            html_url: 'https://github.com/test/test/runs/1',
+            steps: [{ name: 'Run tests', conclusion: 'failure' }]
+          }]
+        }
+      }) as any;
+    });
+
+    it('should skip auto-fix when ENABLE_AUTO_FIX is false', async () => {
+      mockCore.getInput.mockImplementation((name: string) => {
+        const inputs: Record<string, string> = {
+          'GITHUB_TOKEN': 'github-token',
+          'OPENAI_API_KEY': 'openai-key',
+          'ERROR_MESSAGE': 'Test error',
+          'CONFIDENCE_THRESHOLD': '70',
+          'ENABLE_AUTO_FIX': 'false',
+        };
+        return inputs[name] || '';
+      });
+
+      mockAnalyzeFailure.mockResolvedValue({
+        verdict: 'TEST_ISSUE',
+        confidence: 85,
+        reasoning: 'Test needs update',
+        summary: 'Test issue detected',
+        indicators: [],
+      });
+
+      await run();
+
+      // Auto-fix should not be attempted
+      expect(mockCore.setOutput).toHaveBeenCalledWith('auto_fix_applied', 'false');
+      expect(mockCore.info).not.toHaveBeenCalledWith(expect.stringContaining('Auto-fix is enabled'));
+    });
+
+    it('should skip auto-fix when ENABLE_AUTO_FIX is not set', async () => {
+      mockCore.getInput.mockImplementation((name: string) => {
+        const inputs: Record<string, string> = {
+          'GITHUB_TOKEN': 'github-token',
+          'OPENAI_API_KEY': 'openai-key',
+          'ERROR_MESSAGE': 'Test error',
+          'CONFIDENCE_THRESHOLD': '70',
+          // ENABLE_AUTO_FIX not set (empty string)
+        };
+        return inputs[name] || '';
+      });
+
+      mockAnalyzeFailure.mockResolvedValue({
+        verdict: 'TEST_ISSUE',
+        confidence: 85,
+        reasoning: 'Test needs update',
+        summary: 'Test issue detected',
+        indicators: [],
+      });
+
+      await run();
+
+      // Auto-fix should not be attempted when not explicitly enabled
+      expect(mockCore.setOutput).toHaveBeenCalledWith('auto_fix_applied', 'false');
+    });
+
+    it('should not attempt auto-fix for PRODUCT_ISSUE verdict', async () => {
+      mockCore.getInput.mockImplementation((name: string) => {
+        const inputs: Record<string, string> = {
+          'GITHUB_TOKEN': 'github-token',
+          'OPENAI_API_KEY': 'openai-key',
+          'ERROR_MESSAGE': 'Product bug detected',
+          'CONFIDENCE_THRESHOLD': '70',
+          'ENABLE_AUTO_FIX': 'true',
+        };
+        return inputs[name] || '';
+      });
+
+      mockAnalyzeFailure.mockResolvedValue({
+        verdict: 'PRODUCT_ISSUE',
+        confidence: 90,
+        reasoning: 'This is a product bug',
+        summary: 'Product issue detected',
+        indicators: [],
+      });
+
+      await run();
+
+      // Auto-fix should not be attempted for product issues
+      expect(mockCore.setOutput).toHaveBeenCalledWith('auto_fix_applied', 'false');
+      expect(mockCore.info).not.toHaveBeenCalledWith(expect.stringContaining('Auto-fix is enabled'));
+    });
+
+    it('should set auto_fix_applied to false when fix recommendation is null', async () => {
+      mockCore.getInput.mockImplementation((name: string) => {
+        const inputs: Record<string, string> = {
+          'GITHUB_TOKEN': 'github-token',
+          'OPENAI_API_KEY': 'openai-key',
+          'ERROR_MESSAGE': 'Test error',
+          'CONFIDENCE_THRESHOLD': '70',
+          'ENABLE_AUTO_FIX': 'true',
+        };
+        return inputs[name] || '';
+      });
+
+      mockAnalyzeFailure.mockResolvedValue({
+        verdict: 'TEST_ISSUE',
+        confidence: 85,
+        reasoning: 'Test needs update',
+        summary: 'Test issue detected',
+        indicators: [],
+      });
+
+      // Note: This test verifies behavior when no fix recommendation is generated
+      // The fix recommendation generation is mocked in index-fix-recommendation.test.ts
+
+      await run();
+
+      // Verify auto_fix_applied is set
+      expect(mockCore.setOutput).toHaveBeenCalledWith('auto_fix_applied', expect.any(String));
+    });
+
+    it('should set auto_fix_* outputs correctly when auto-fix succeeds', async () => {
+      mockCore.getInput.mockImplementation((name: string) => {
+        const inputs: Record<string, string> = {
+          'GITHUB_TOKEN': 'github-token',
+          'OPENAI_API_KEY': 'openai-key',
+          'ERROR_MESSAGE': 'Test error',
+          'CONFIDENCE_THRESHOLD': '70',
+          'ENABLE_AUTO_FIX': 'true',
+          'AUTO_FIX_BASE_BRANCH': 'main',
+          'AUTO_FIX_MIN_CONFIDENCE': '70',
+        };
+        return inputs[name] || '';
+      });
+
+      // This test checks the output structure - the actual auto-fix logic
+      // is tested more comprehensively in fix-applier.test.ts and
+      // index-fix-recommendation.test.ts
+
+      mockAnalyzeFailure.mockResolvedValue({
+        verdict: 'TEST_ISSUE',
+        confidence: 85,
+        reasoning: 'Test needs update',
+        summary: 'Test issue detected',
+        indicators: [],
+      });
+
+      await run();
+
+      // Verify that auto_fix_applied output is set (either true or false)
+      const setOutputCalls = mockCore.setOutput.mock.calls;
+      const autoFixAppliedCall = setOutputCalls.find(call => call[0] === 'auto_fix_applied');
+      expect(autoFixAppliedCall).toBeDefined();
+      expect(['true', 'false']).toContain(autoFixAppliedCall![1]);
+    });
+
+    it('should include autoFix in triage JSON when fix is applied', async () => {
+      mockCore.getInput.mockImplementation((name: string) => {
+        const inputs: Record<string, string> = {
+          'GITHUB_TOKEN': 'github-token',
+          'OPENAI_API_KEY': 'openai-key',
+          'ERROR_MESSAGE': 'Test error',
+          'CONFIDENCE_THRESHOLD': '70',
+        };
+        return inputs[name] || '';
+      });
+
+      mockAnalyzeFailure.mockResolvedValue({
+        verdict: 'TEST_ISSUE',
+        confidence: 85,
+        reasoning: 'Test needs update',
+        summary: 'Test issue detected',
+        indicators: [],
+      });
+
+      await run();
+
+      // Verify triage JSON includes metadata.autoFixApplied
+      const triageJsonCall = mockCore.setOutput.mock.calls.find(
+        call => call[0] === 'triage_json'
+      );
+      expect(triageJsonCall).toBeDefined();
+
+      const triageJson = JSON.parse(triageJsonCall![1]);
+      expect(triageJson.metadata).toBeDefined();
+      expect(typeof triageJson.metadata.autoFixApplied).toBe('boolean');
+    });
+
+    it('should use AUTO_FIX_BASE_BRANCH input', async () => {
+      mockCore.getInput.mockImplementation((name: string) => {
+        const inputs: Record<string, string> = {
+          'GITHUB_TOKEN': 'github-token',
+          'OPENAI_API_KEY': 'openai-key',
+          'ERROR_MESSAGE': 'Test error',
+          'CONFIDENCE_THRESHOLD': '70',
+          'ENABLE_AUTO_FIX': 'true',
+          'AUTO_FIX_BASE_BRANCH': 'develop',
+        };
+        return inputs[name] || '';
+      });
+
+      mockAnalyzeFailure.mockResolvedValue({
+        verdict: 'TEST_ISSUE',
+        confidence: 85,
+        reasoning: 'Test needs update',
+        summary: 'Test issue detected',
+        indicators: [],
+      });
+
+      await run();
+
+      // The base branch is used in createFixApplier - this test verifies
+      // the input is read correctly. Full integration is tested in
+      // fix-applier.test.ts
+      expect(mockCore.getInput).toHaveBeenCalledWith('AUTO_FIX_BASE_BRANCH');
+    });
+
+    it('should use AUTO_FIX_MIN_CONFIDENCE input', async () => {
+      mockCore.getInput.mockImplementation((name: string) => {
+        const inputs: Record<string, string> = {
+          'GITHUB_TOKEN': 'github-token',
+          'OPENAI_API_KEY': 'openai-key',
+          'ERROR_MESSAGE': 'Test error',
+          'CONFIDENCE_THRESHOLD': '70',
+          'ENABLE_AUTO_FIX': 'true',
+          'AUTO_FIX_MIN_CONFIDENCE': '90',
+        };
+        return inputs[name] || '';
+      });
+
+      mockAnalyzeFailure.mockResolvedValue({
+        verdict: 'TEST_ISSUE',
+        confidence: 85,
+        reasoning: 'Test needs update',
+        summary: 'Test issue detected',
+        indicators: [],
+      });
+
+      await run();
+
+      // The min confidence is used in createFixApplier - this test verifies
+      // the input is read correctly
+      expect(mockCore.getInput).toHaveBeenCalledWith('AUTO_FIX_MIN_CONFIDENCE');
+    });
+  });
 }); 

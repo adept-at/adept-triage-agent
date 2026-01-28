@@ -44,6 +44,18 @@ inputs:
     description: 'Boolean indicating if repair context should be output (only for TEST_ISSUE verdicts)'
     required: false
     default: 'false'
+  ENABLE_AUTO_FIX:
+    description: 'Enable automatic branch creation with fix. Consumer opts in by setting this to true.'
+    required: false
+    default: 'false'
+  AUTO_FIX_BASE_BRANCH:
+    description: 'Base branch to create fix branch from'
+    required: false
+    default: 'main'
+  AUTO_FIX_MIN_CONFIDENCE:
+    description: 'Minimum fix confidence required to apply auto-fix (0-100)'
+    required: false
+    default: '70'
 
 outputs:
   verdict:
@@ -68,6 +80,14 @@ outputs:
     description: 'Human-readable fix recommendation summary (when available)'
   fix_confidence:
     description: 'Confidence score for the fix recommendation (0-100)'
+  auto_fix_applied:
+    description: 'Whether auto-fix branch was created (true/false)'
+  auto_fix_branch:
+    description: 'Name of the created branch (if auto-fix applied)'
+  auto_fix_commit:
+    description: 'SHA of the fix commit (if auto-fix applied)'
+  auto_fix_files:
+    description: 'JSON array of modified files (if auto-fix applied)'
 
 runs:
   using: 'node20'

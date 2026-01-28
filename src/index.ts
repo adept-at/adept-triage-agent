@@ -8,6 +8,8 @@ import { ActionInputs, FixRecommendation } from './types';
 import { buildRepairContext } from './repair-context';
 import { SimplifiedRepairAgent } from './repair/simplified-repair-agent';
 import { processWorkflowLogs } from './services/log-processor';
+import { createFixApplier, ApplyResult } from './repair/fix-applier';
+import { AUTO_FIX } from './config/constants';
 
 async function run(): Promise<void> {
   try {
@@ -69,10 +71,17 @@ async function run(): Promise<void> {
 
     // Generate fix recommendation for TEST_ISSUE verdicts
     let fixRecommendation: FixRecommendation | null = null;
+    let autoFixResult: ApplyResult | null = null;
+
     if (result.verdict === 'TEST_ISSUE') {
       fixRecommendation = await generateFixRecommendation(inputs, repoDetails, errorData, openaiClient);
       if (fixRecommendation) {
         result.fixRecommendation = fixRecommendation;
+
+        // Attempt auto-fix if enabled
+        if (inputs.enableAutoFix) {
+          autoFixResult = await attemptAutoFix(inputs, fixRecommendation);
+        }
       }
     }
 
@@ -84,7 +93,7 @@ async function run(): Promise<void> {
     }
 
     // Set successful outputs
-    setSuccessOutput(result, errorData);
+    setSuccessOutput(result, errorData, autoFixResult);
 
   } catch (error) {
     if (error instanceof Error) {
@@ -107,7 +116,13 @@ function getInputs(): ActionInputs {
     prNumber: core.getInput('PR_NUMBER'),
     commitSha: core.getInput('COMMIT_SHA'),
     repository: repositoryInput ? repositoryInput.trim() : undefined,
-    testFrameworks: core.getInput('TEST_FRAMEWORKS')
+    testFrameworks: core.getInput('TEST_FRAMEWORKS'),
+    enableAutoFix: core.getInput('ENABLE_AUTO_FIX') === 'true',
+    autoFixBaseBranch: core.getInput('AUTO_FIX_BASE_BRANCH') || 'main',
+    autoFixMinConfidence: parseInt(
+      core.getInput('AUTO_FIX_MIN_CONFIDENCE') || String(AUTO_FIX.DEFAULT_MIN_CONFIDENCE),
+      10
+    ),
   };
 }
 
@@ -161,6 +176,42 @@ async function generateFixRecommendation(
   }
 }
 
+async function attemptAutoFix(
+  inputs: ActionInputs,
+  fixRecommendation: FixRecommendation
+): Promise<ApplyResult | null> {
+  core.info('\n🤖 Auto-fix is enabled, attempting to apply fix...');
+
+  const fixApplier = createFixApplier({
+    baseBranch: inputs.autoFixBaseBranch || 'main',
+    minConfidence: inputs.autoFixMinConfidence || AUTO_FIX.DEFAULT_MIN_CONFIDENCE,
+  });
+
+  // Check if the fix can be applied (confidence check)
+  if (!fixApplier.canApply(fixRecommendation)) {
+    core.info('⏭️ Auto-fix skipped: confidence below threshold or no changes proposed');
+    return null;
+  }
+
+  try {
+    const result = await fixApplier.applyFix(fixRecommendation);
+
+    if (result.success) {
+      core.info(`✅ Auto-fix applied successfully!`);
+      core.info(`   Branch: ${result.branchName}`);
+      core.info(`   Commit: ${result.commitSha}`);
+      core.info(`   Files: ${result.modifiedFiles.join(', ')}`);
+    } else {
+      core.warning(`❌ Auto-fix failed: ${result.error}`);
+    }
+
+    return result;
+  } catch (error) {
+    core.warning(`Auto-fix error: ${error}`);
+    return null;
+  }
+}
+
 function setInconclusiveOutput(
   result: { confidence: number; reasoning: string; indicators?: string[] },
   inputs: ActionInputs,
@@ -196,7 +247,8 @@ function setSuccessOutput(
     suggestedSourceLocations?: { file: string; lines: string; reason: string }[];
     fixRecommendation?: FixRecommendation;
   },
-  errorData: { screenshots?: Array<{ name: string }>; logs?: string[] }
+  errorData: { screenshots?: Array<{ name: string }>; logs?: string[] },
+  autoFixResult?: ApplyResult | null
 ): void {
   const triageJson = {
     verdict: result.verdict,
@@ -206,11 +258,20 @@ function setSuccessOutput(
     indicators: result.indicators || [],
     ...(result.verdict === 'PRODUCT_ISSUE' && result.suggestedSourceLocations ? { suggestedSourceLocations: result.suggestedSourceLocations } : {}),
     ...(result.verdict === 'TEST_ISSUE' && result.fixRecommendation ? { fixRecommendation: result.fixRecommendation } : {}),
+    ...(autoFixResult?.success ? {
+      autoFix: {
+        applied: true,
+        branch: autoFixResult.branchName,
+        commit: autoFixResult.commitSha,
+        files: autoFixResult.modifiedFiles,
+      }
+    } : {}),
     metadata: {
       analyzedAt: new Date().toISOString(),
       hasScreenshots: (errorData.screenshots && errorData.screenshots.length > 0) || false,
       logSize: errorData.logs?.join('').length || 0,
-      hasFixRecommendation: !!result.fixRecommendation
+      hasFixRecommendation: !!result.fixRecommendation,
+      autoFixApplied: autoFixResult?.success || false,
     }
   };
 
@@ -228,6 +289,16 @@ function setSuccessOutput(
     core.setOutput('fix_confidence', result.fixRecommendation.confidence.toString());
   } else {
     core.setOutput('has_fix_recommendation', 'false');
+  }
+
+  // Add auto-fix outputs
+  if (autoFixResult?.success) {
+    core.setOutput('auto_fix_applied', 'true');
+    core.setOutput('auto_fix_branch', autoFixResult.branchName || '');
+    core.setOutput('auto_fix_commit', autoFixResult.commitSha || '');
+    core.setOutput('auto_fix_files', JSON.stringify(autoFixResult.modifiedFiles));
+  } else {
+    core.setOutput('auto_fix_applied', 'false');
   }
 
   // Log results
@@ -252,6 +323,15 @@ function setSuccessOutput(
     core.info(`  Evidence: ${result.fixRecommendation.evidence.length} item(s)`);
     core.info('\n📝 Fix Summary:');
     core.info(result.fixRecommendation.summary);
+
+    // Log auto-fix result
+    if (autoFixResult?.success) {
+      core.info('\n✅ Auto-Fix Applied:');
+      core.info(`  Branch: ${autoFixResult.branchName}`);
+      core.info(`  Commit: ${autoFixResult.commitSha}`);
+      core.info(`  Files: ${autoFixResult.modifiedFiles.join(', ')}`);
+      core.info('\n👉 To create a PR, visit your repository and open a PR from the branch above.');
+    }
   }
 }
 
