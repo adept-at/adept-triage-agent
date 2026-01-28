@@ -56,6 +56,10 @@ inputs:
     description: 'Minimum fix confidence required to apply auto-fix (0-100)'
     required: false
     default: '70'
+  AUTO_FIX_TARGET_REPO:
+    description: 'Repository where fix branch should be created (owner/repo format). Use this when test code lives in a different repo than REPOSITORY.'
+    required: false
+    default: ${{ github.repository }}
 
 outputs:
   verdict:

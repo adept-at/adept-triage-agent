@@ -80,7 +80,9 @@ async function run(): Promise<void> {
 
         // Attempt auto-fix if enabled
         if (inputs.enableAutoFix) {
-          autoFixResult = await attemptAutoFix(inputs, fixRecommendation, octokit, repoDetails);
+          // Use separate target repo for auto-fix (test code may live in different repo than logs)
+          const autoFixTargetRepo = resolveAutoFixTargetRepo(inputs);
+          autoFixResult = await attemptAutoFix(inputs, fixRecommendation, octokit, autoFixTargetRepo);
         }
       }
     }
@@ -123,6 +125,7 @@ function getInputs(): ActionInputs {
       core.getInput('AUTO_FIX_MIN_CONFIDENCE') || String(AUTO_FIX.DEFAULT_MIN_CONFIDENCE),
       10
     ),
+    autoFixTargetRepo: core.getInput('AUTO_FIX_TARGET_REPO') || undefined,
   };
 }
 
@@ -135,6 +138,19 @@ function resolveRepository(inputs: ActionInputs): { owner: string; repo: string 
     }
     core.warning(`Invalid repository input '${inputs.repository}'. Falling back to current repository context.`);
   }
+  return github.context.repo;
+}
+
+function resolveAutoFixTargetRepo(inputs: ActionInputs): { owner: string; repo: string } {
+  if (inputs.autoFixTargetRepo) {
+    const cleaned = inputs.autoFixTargetRepo.replace(/\.git$/i, '').trim();
+    const parts = cleaned.split('/');
+    if (parts.length === 2 && parts[0] && parts[1]) {
+      return { owner: parts[0], repo: parts[1] };
+    }
+    core.warning(`Invalid AUTO_FIX_TARGET_REPO '${inputs.autoFixTargetRepo}'. Falling back to current repository.`);
+  }
+  // Default to the repo where the workflow is running (where test code lives)
   return github.context.repo;
 }
 

@@ -891,7 +891,8 @@ async function run() {
             if (fixRecommendation) {
                 result.fixRecommendation = fixRecommendation;
                 if (inputs.enableAutoFix) {
-                    autoFixResult = await attemptAutoFix(inputs, fixRecommendation, octokit, repoDetails);
+                    const autoFixTargetRepo = resolveAutoFixTargetRepo(inputs);
+                    autoFixResult = await attemptAutoFix(inputs, fixRecommendation, octokit, autoFixTargetRepo);
                 }
             }
         }
@@ -927,6 +928,7 @@ function getInputs() {
         enableAutoFix: core.getInput('ENABLE_AUTO_FIX') === 'true',
         autoFixBaseBranch: core.getInput('AUTO_FIX_BASE_BRANCH') || 'main',
         autoFixMinConfidence: parseInt(core.getInput('AUTO_FIX_MIN_CONFIDENCE') || String(constants_1.AUTO_FIX.DEFAULT_MIN_CONFIDENCE), 10),
+        autoFixTargetRepo: core.getInput('AUTO_FIX_TARGET_REPO') || undefined,
     };
 }
 function resolveRepository(inputs) {
@@ -937,6 +939,17 @@ function resolveRepository(inputs) {
             return { owner: parts[0], repo: parts[1] };
         }
         core.warning(`Invalid repository input '${inputs.repository}'. Falling back to current repository context.`);
+    }
+    return github.context.repo;
+}
+function resolveAutoFixTargetRepo(inputs) {
+    if (inputs.autoFixTargetRepo) {
+        const cleaned = inputs.autoFixTargetRepo.replace(/\.git$/i, '').trim();
+        const parts = cleaned.split('/');
+        if (parts.length === 2 && parts[0] && parts[1]) {
+            return { owner: parts[0], repo: parts[1] };
+        }
+        core.warning(`Invalid AUTO_FIX_TARGET_REPO '${inputs.autoFixTargetRepo}'. Falling back to current repository.`);
     }
     return github.context.repo;
 }
