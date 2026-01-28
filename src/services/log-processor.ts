@@ -240,7 +240,7 @@ function logDiffResult(diff: PRDiff | null, source: string): void {
  * 2. If branch is provided and not main/master, fetch branch diff vs main
  * 3. If commit SHA is provided (production deploy), fetch commit diff
  */
-async function fetchDiffWithFallback(
+export async function fetchDiffWithFallback(
   artifactFetcher: ArtifactFetcher,
   inputs: ActionInputs
 ): Promise<PRDiff | null> {

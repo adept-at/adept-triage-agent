@@ -1,5 +1,7 @@
-import { capArtifactLogs, buildStructuredSummary } from '../../src/services/log-processor';
-import { ErrorData } from '../../src/types';
+import { capArtifactLogs, buildStructuredSummary, fetchDiffWithFallback } from '../../src/services/log-processor';
+import { ErrorData, ActionInputs, PRDiff } from '../../src/types';
+import { ArtifactFetcher } from '../../src/artifact-fetcher';
+import * as core from '@actions/core';
 
 // Mock @actions/core
 jest.mock('@actions/core', () => ({
@@ -14,8 +16,14 @@ jest.mock('@actions/github', () => ({
     runId: 12345,
     job: 'test-job',
     payload: {},
+    repo: {
+      owner: 'test-owner',
+      repo: 'test-repo',
+    },
   },
 }));
+
+const mockCore = core as jest.Mocked<typeof core>;
 
 describe('log-processor', () => {
   describe('capArtifactLogs', () => {
@@ -233,6 +241,345 @@ describe('log-processor', () => {
       const summary = buildStructuredSummary(errorData);
 
       expect(summary.primaryError.message.length).toBeLessThanOrEqual(500);
+    });
+  });
+
+  describe('fetchDiffWithFallback', () => {
+    let mockArtifactFetcher: jest.Mocked<ArtifactFetcher>;
+    const mockPRDiff: PRDiff = {
+      files: [{ filename: 'test.js', status: 'modified', additions: 5, deletions: 2, changes: 7 }],
+      totalChanges: 1,
+      additions: 5,
+      deletions: 2,
+    };
+    const mockBranchDiff: PRDiff = {
+      files: [{ filename: 'feature.js', status: 'added', additions: 10, deletions: 0, changes: 10 }],
+      totalChanges: 1,
+      additions: 10,
+      deletions: 0,
+    };
+    const mockCommitDiff: PRDiff = {
+      files: [{ filename: 'deploy.js', status: 'modified', additions: 3, deletions: 1, changes: 4 }],
+      totalChanges: 1,
+      additions: 3,
+      deletions: 1,
+    };
+
+    beforeEach(() => {
+      jest.clearAllMocks();
+      mockArtifactFetcher = {
+        fetchPRDiff: jest.fn(),
+        fetchBranchDiff: jest.fn(),
+        fetchCommitDiff: jest.fn(),
+      } as unknown as jest.Mocked<ArtifactFetcher>;
+    });
+
+    const baseInputs: ActionInputs = {
+      githubToken: 'token',
+      openaiApiKey: 'api-key',
+      confidenceThreshold: 70,
+    };
+
+    describe('PR diff strategy (highest priority)', () => {
+      it('should use PR diff when prNumber is provided', async () => {
+        mockArtifactFetcher.fetchPRDiff.mockResolvedValue(mockPRDiff);
+
+        const result = await fetchDiffWithFallback(mockArtifactFetcher, {
+          ...baseInputs,
+          prNumber: '123',
+        });
+
+        expect(result).toEqual(mockPRDiff);
+        expect(mockArtifactFetcher.fetchPRDiff).toHaveBeenCalledWith('123', undefined);
+        expect(mockArtifactFetcher.fetchBranchDiff).not.toHaveBeenCalled();
+        expect(mockArtifactFetcher.fetchCommitDiff).not.toHaveBeenCalled();
+      });
+
+      it('should pass repository to fetchPRDiff', async () => {
+        mockArtifactFetcher.fetchPRDiff.mockResolvedValue(mockPRDiff);
+
+        await fetchDiffWithFallback(mockArtifactFetcher, {
+          ...baseInputs,
+          prNumber: '456',
+          repository: 'owner/repo',
+        });
+
+        expect(mockArtifactFetcher.fetchPRDiff).toHaveBeenCalledWith('456', 'owner/repo');
+      });
+
+      it('should fall back to branch diff when PR diff returns null', async () => {
+        mockArtifactFetcher.fetchPRDiff.mockResolvedValue(null);
+        mockArtifactFetcher.fetchBranchDiff.mockResolvedValue(mockBranchDiff);
+
+        const result = await fetchDiffWithFallback(mockArtifactFetcher, {
+          ...baseInputs,
+          prNumber: '123',
+          branch: 'feature-branch',
+        });
+
+        expect(result).toEqual(mockBranchDiff);
+        expect(mockArtifactFetcher.fetchPRDiff).toHaveBeenCalled();
+        expect(mockArtifactFetcher.fetchBranchDiff).toHaveBeenCalled();
+      });
+
+      it('should fall back when PR diff throws error', async () => {
+        mockArtifactFetcher.fetchPRDiff.mockRejectedValue(new Error('PR not found'));
+        mockArtifactFetcher.fetchBranchDiff.mockResolvedValue(mockBranchDiff);
+
+        const result = await fetchDiffWithFallback(mockArtifactFetcher, {
+          ...baseInputs,
+          prNumber: '999',
+          branch: 'feature-branch',
+        });
+
+        expect(result).toEqual(mockBranchDiff);
+        expect(mockCore.warning).toHaveBeenCalledWith(expect.stringContaining('Failed to fetch PR diff'));
+      });
+    });
+
+    describe('Branch diff strategy (preview URL mode)', () => {
+      it('should use branch diff when branch is not main/master', async () => {
+        mockArtifactFetcher.fetchBranchDiff.mockResolvedValue(mockBranchDiff);
+
+        const result = await fetchDiffWithFallback(mockArtifactFetcher, {
+          ...baseInputs,
+          branch: 'feature-branch',
+        });
+
+        expect(result).toEqual(mockBranchDiff);
+        expect(mockArtifactFetcher.fetchBranchDiff).toHaveBeenCalledWith('feature-branch', 'main', undefined);
+        expect(mockArtifactFetcher.fetchCommitDiff).not.toHaveBeenCalled();
+      });
+
+      it('should skip branch diff when branch is main', async () => {
+        mockArtifactFetcher.fetchCommitDiff.mockResolvedValue(mockCommitDiff);
+
+        const result = await fetchDiffWithFallback(mockArtifactFetcher, {
+          ...baseInputs,
+          branch: 'main',
+          commitSha: 'abc123',
+        });
+
+        expect(mockArtifactFetcher.fetchBranchDiff).not.toHaveBeenCalled();
+        expect(mockArtifactFetcher.fetchCommitDiff).toHaveBeenCalled();
+        expect(result).toEqual(mockCommitDiff);
+      });
+
+      it('should skip branch diff when branch is master', async () => {
+        mockArtifactFetcher.fetchCommitDiff.mockResolvedValue(mockCommitDiff);
+
+        const result = await fetchDiffWithFallback(mockArtifactFetcher, {
+          ...baseInputs,
+          branch: 'master',
+          commitSha: 'def456',
+        });
+
+        expect(mockArtifactFetcher.fetchBranchDiff).not.toHaveBeenCalled();
+        expect(mockArtifactFetcher.fetchCommitDiff).toHaveBeenCalled();
+      });
+
+      it('should be case-insensitive for main/master check', async () => {
+        mockArtifactFetcher.fetchCommitDiff.mockResolvedValue(mockCommitDiff);
+
+        await fetchDiffWithFallback(mockArtifactFetcher, {
+          ...baseInputs,
+          branch: 'MAIN',
+          commitSha: 'abc123',
+        });
+
+        expect(mockArtifactFetcher.fetchBranchDiff).not.toHaveBeenCalled();
+
+        await fetchDiffWithFallback(mockArtifactFetcher, {
+          ...baseInputs,
+          branch: 'Master',
+          commitSha: 'abc123',
+        });
+
+        expect(mockArtifactFetcher.fetchBranchDiff).not.toHaveBeenCalled();
+      });
+
+      it('should fall back to commit diff when branch diff fails', async () => {
+        mockArtifactFetcher.fetchBranchDiff.mockRejectedValue(new Error('Branch not found'));
+        mockArtifactFetcher.fetchCommitDiff.mockResolvedValue(mockCommitDiff);
+
+        // Note: commit diff only runs if branch IS main/master, so we need a different scenario
+        // In this case, branch diff fails but there's no commit diff fallback for feature branches
+        const result = await fetchDiffWithFallback(mockArtifactFetcher, {
+          ...baseInputs,
+          branch: 'feature-branch',
+        });
+
+        expect(result).toBeNull();
+        expect(mockCore.warning).toHaveBeenCalledWith(expect.stringContaining('Failed to fetch branch diff'));
+      });
+    });
+
+    describe('Commit diff strategy (production deploy mode)', () => {
+      it('should use commit diff when commitSha provided and on main branch', async () => {
+        mockArtifactFetcher.fetchCommitDiff.mockResolvedValue(mockCommitDiff);
+
+        const result = await fetchDiffWithFallback(mockArtifactFetcher, {
+          ...baseInputs,
+          commitSha: 'abc123def456',
+          branch: 'main',
+        });
+
+        expect(result).toEqual(mockCommitDiff);
+        expect(mockArtifactFetcher.fetchCommitDiff).toHaveBeenCalledWith('abc123def456', undefined);
+      });
+
+      it('should use commit diff when commitSha provided and no branch specified', async () => {
+        mockArtifactFetcher.fetchCommitDiff.mockResolvedValue(mockCommitDiff);
+
+        const result = await fetchDiffWithFallback(mockArtifactFetcher, {
+          ...baseInputs,
+          commitSha: 'abc123',
+        });
+
+        expect(result).toEqual(mockCommitDiff);
+        expect(mockArtifactFetcher.fetchCommitDiff).toHaveBeenCalled();
+      });
+
+      it('should NOT use commit diff when on feature branch (branch diff handles that)', async () => {
+        mockArtifactFetcher.fetchBranchDiff.mockResolvedValue(mockBranchDiff);
+
+        const result = await fetchDiffWithFallback(mockArtifactFetcher, {
+          ...baseInputs,
+          commitSha: 'abc123',
+          branch: 'feature-branch',
+        });
+
+        // Branch diff takes priority over commit diff for feature branches
+        expect(result).toEqual(mockBranchDiff);
+        expect(mockArtifactFetcher.fetchCommitDiff).not.toHaveBeenCalled();
+      });
+
+      it('should pass repository to fetchCommitDiff', async () => {
+        mockArtifactFetcher.fetchCommitDiff.mockResolvedValue(mockCommitDiff);
+
+        await fetchDiffWithFallback(mockArtifactFetcher, {
+          ...baseInputs,
+          commitSha: 'abc123',
+          branch: 'main',
+          repository: 'owner/repo',
+        });
+
+        expect(mockArtifactFetcher.fetchCommitDiff).toHaveBeenCalledWith('abc123', 'owner/repo');
+      });
+    });
+
+    describe('No diff available', () => {
+      it('should return null when no inputs provided', async () => {
+        const result = await fetchDiffWithFallback(mockArtifactFetcher, baseInputs);
+
+        expect(result).toBeNull();
+        expect(mockArtifactFetcher.fetchPRDiff).not.toHaveBeenCalled();
+        expect(mockArtifactFetcher.fetchBranchDiff).not.toHaveBeenCalled();
+        expect(mockArtifactFetcher.fetchCommitDiff).not.toHaveBeenCalled();
+        expect(mockCore.info).toHaveBeenCalledWith(
+          'ℹ️ No PR_NUMBER, BRANCH, or COMMIT_SHA provided, skipping diff fetch'
+        );
+      });
+
+      it('should return null when all strategies fail', async () => {
+        mockArtifactFetcher.fetchPRDiff.mockResolvedValue(null);
+        mockArtifactFetcher.fetchBranchDiff.mockResolvedValue(null);
+
+        const result = await fetchDiffWithFallback(mockArtifactFetcher, {
+          ...baseInputs,
+          prNumber: '123',
+          branch: 'feature-branch',
+        });
+
+        expect(result).toBeNull();
+        expect(mockCore.info).toHaveBeenCalledWith(
+          'ℹ️ All diff fetch strategies exhausted, proceeding without diff'
+        );
+      });
+    });
+
+    describe('Priority order', () => {
+      it('should prefer PR diff over branch diff when both available', async () => {
+        mockArtifactFetcher.fetchPRDiff.mockResolvedValue(mockPRDiff);
+        mockArtifactFetcher.fetchBranchDiff.mockResolvedValue(mockBranchDiff);
+
+        const result = await fetchDiffWithFallback(mockArtifactFetcher, {
+          ...baseInputs,
+          prNumber: '123',
+          branch: 'feature-branch',
+        });
+
+        expect(result).toEqual(mockPRDiff);
+        expect(mockArtifactFetcher.fetchBranchDiff).not.toHaveBeenCalled();
+      });
+
+      it('should prefer branch diff over commit diff for feature branches', async () => {
+        mockArtifactFetcher.fetchBranchDiff.mockResolvedValue(mockBranchDiff);
+        mockArtifactFetcher.fetchCommitDiff.mockResolvedValue(mockCommitDiff);
+
+        const result = await fetchDiffWithFallback(mockArtifactFetcher, {
+          ...baseInputs,
+          branch: 'feature-branch',
+          commitSha: 'abc123',
+        });
+
+        expect(result).toEqual(mockBranchDiff);
+        expect(mockArtifactFetcher.fetchCommitDiff).not.toHaveBeenCalled();
+      });
+    });
+
+    describe('Logging', () => {
+      it('should log when fetching PR diff', async () => {
+        mockArtifactFetcher.fetchPRDiff.mockResolvedValue(mockPRDiff);
+
+        await fetchDiffWithFallback(mockArtifactFetcher, {
+          ...baseInputs,
+          prNumber: '123',
+        });
+
+        expect(mockCore.info).toHaveBeenCalledWith(
+          expect.stringContaining('Fetching PR diff for PR #123')
+        );
+      });
+
+      it('should log when fetching branch diff', async () => {
+        mockArtifactFetcher.fetchBranchDiff.mockResolvedValue(mockBranchDiff);
+
+        await fetchDiffWithFallback(mockArtifactFetcher, {
+          ...baseInputs,
+          branch: 'my-feature',
+        });
+
+        expect(mockCore.info).toHaveBeenCalledWith(
+          expect.stringContaining('Fetching branch diff: main...my-feature')
+        );
+      });
+
+      it('should log when fetching commit diff', async () => {
+        mockArtifactFetcher.fetchCommitDiff.mockResolvedValue(mockCommitDiff);
+
+        await fetchDiffWithFallback(mockArtifactFetcher, {
+          ...baseInputs,
+          commitSha: 'abc123def456789',
+          branch: 'main',
+        });
+
+        expect(mockCore.info).toHaveBeenCalledWith(
+          expect.stringContaining('Fetching commit diff for abc123d')
+        );
+      });
+
+      it('should log success with diff details', async () => {
+        mockArtifactFetcher.fetchPRDiff.mockResolvedValue(mockPRDiff);
+
+        await fetchDiffWithFallback(mockArtifactFetcher, {
+          ...baseInputs,
+          prNumber: '123',
+        });
+
+        expect(mockCore.info).toHaveBeenCalledWith(expect.stringContaining('Successfully fetched PR diff'));
+        expect(mockCore.info).toHaveBeenCalledWith(expect.stringContaining('Total files changed: 1'));
+      });
     });
   });
 });

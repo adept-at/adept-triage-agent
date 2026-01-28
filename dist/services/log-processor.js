@@ -34,6 +34,7 @@ var __importStar = (this && this.__importStar) || (function () {
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.processWorkflowLogs = processWorkflowLogs;
+exports.fetchDiffWithFallback = fetchDiffWithFallback;
 exports.capArtifactLogs = capArtifactLogs;
 exports.buildStructuredSummary = buildStructuredSummary;
 const core = __importStar(require("@actions/core"));
