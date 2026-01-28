@@ -707,6 +707,94 @@ class ArtifactFetcher {
         ];
         return configPatterns.some(pattern => pattern.test(filename));
     }
+    async fetchCommitDiff(commitSha, repository) {
+        try {
+            const { owner, repo } = repository
+                ? { owner: repository.split('/')[0], repo: repository.split('/')[1] }
+                : github.context.repo;
+            core.info(`Fetching commit diff for ${commitSha.substring(0, 7)} in ${owner}/${repo}`);
+            const commitResponse = await this.octokit.repos.getCommit({
+                owner,
+                repo,
+                ref: commitSha
+            });
+            const commit = commitResponse.data;
+            const files = (commit.files || []).map(file => ({
+                filename: file.filename,
+                status: file.status || 'modified',
+                additions: file.additions,
+                deletions: file.deletions,
+                changes: file.changes,
+                patch: file.patch
+            }));
+            const sortedFiles = this.sortFilesByRelevance(files);
+            const diff = {
+                files: sortedFiles,
+                totalChanges: files.length,
+                additions: commit.stats?.additions || 0,
+                deletions: commit.stats?.deletions || 0
+            };
+            core.info(`Commit ${commitSha.substring(0, 7)} has ${diff.totalChanges} changed files with +${diff.additions}/-${diff.deletions} lines`);
+            if (sortedFiles.length > 0) {
+                const filesSummary = sortedFiles.slice(0, 10).map(f => `  - ${f.filename} (+${f.additions}/-${f.deletions})`).join('\n');
+                core.info(`Changed files (sorted by relevance):\n${filesSummary}${files.length > 10 ? `\n  ... and ${files.length - 10} more files` : ''}`);
+            }
+            return diff;
+        }
+        catch (error) {
+            core.warning(`Failed to fetch commit diff for ${commitSha}: ${error}`);
+            return null;
+        }
+    }
+    async fetchBranchDiff(branch, baseBranch = 'main', repository) {
+        try {
+            const { owner, repo } = repository
+                ? { owner: repository.split('/')[0], repo: repository.split('/')[1] }
+                : github.context.repo;
+            core.info(`Fetching branch diff: ${baseBranch}...${branch} in ${owner}/${repo}`);
+            const compareResponse = await this.octokit.repos.compareCommits({
+                owner,
+                repo,
+                base: baseBranch,
+                head: branch
+            });
+            const comparison = compareResponse.data;
+            const files = (comparison.files || []).map(file => ({
+                filename: file.filename,
+                status: file.status || 'modified',
+                additions: file.additions,
+                deletions: file.deletions,
+                changes: file.changes,
+                patch: file.patch
+            }));
+            const sortedFiles = this.sortFilesByRelevance(files);
+            const totalAdditions = files.reduce((sum, f) => sum + f.additions, 0);
+            const totalDeletions = files.reduce((sum, f) => sum + f.deletions, 0);
+            const diff = {
+                files: sortedFiles,
+                totalChanges: files.length,
+                additions: totalAdditions,
+                deletions: totalDeletions
+            };
+            core.info(`Branch ${branch} has ${diff.totalChanges} files changed vs ${baseBranch} with +${diff.additions}/-${diff.deletions} lines`);
+            core.info(`Commits ahead: ${comparison.ahead_by}, behind: ${comparison.behind_by}`);
+            if (sortedFiles.length > 0) {
+                const filesSummary = sortedFiles.slice(0, 10).map(f => `  - ${f.filename} (+${f.additions}/-${f.deletions})`).join('\n');
+                core.info(`Changed files (sorted by relevance):\n${filesSummary}${files.length > 10 ? `\n  ... and ${files.length - 10} more files` : ''}`);
+            }
+            return diff;
+        }
+        catch (error) {
+            const errorWithStatus = error;
+            if (errorWithStatus.status === 404) {
+                core.warning(`Branch comparison failed: branch '${branch}' or '${baseBranch}' not found in ${repository || 'current repo'}`);
+            }
+            else {
+                core.warning(`Failed to fetch branch diff for ${branch}: ${error}`);
+            }
+            return null;
+        }
+    }
 }
 exports.ArtifactFetcher = ArtifactFetcher;
 //# sourceMappingURL=artifact-fetcher.js.map
@@ -929,6 +1017,7 @@ function getInputs() {
         autoFixBaseBranch: core.getInput('AUTO_FIX_BASE_BRANCH') || 'main',
         autoFixMinConfidence: parseInt(core.getInput('AUTO_FIX_MIN_CONFIDENCE') || String(constants_1.AUTO_FIX.DEFAULT_MIN_CONFIDENCE), 10),
         autoFixTargetRepo: core.getInput('AUTO_FIX_TARGET_REPO') || undefined,
+        branch: core.getInput('BRANCH') || undefined,
     };
 }
 function resolveRepository(inputs) {
@@ -2543,6 +2632,76 @@ function findTargetJob(jobs, inputs, isCurrentJob) {
     }
     return failedJob;
 }
+function logDiffResult(diff, source) {
+    if (diff) {
+        core.info(`✅ Successfully fetched ${source}:`);
+        core.info(`   - Total files changed: ${diff.totalChanges}`);
+        core.info(`   - Lines added: +${diff.additions}`);
+        core.info(`   - Lines deleted: -${diff.deletions}`);
+        if (diff.files.length > 0) {
+            core.info(`   - Top files:`);
+            diff.files.slice(0, 5).forEach(f => {
+                core.info(`     • ${f.filename} (+${f.additions}/-${f.deletions})`);
+            });
+            if (diff.files.length > 5) {
+                core.info(`     ... and ${diff.files.length - 5} more files`);
+            }
+        }
+    }
+}
+async function fetchDiffWithFallback(artifactFetcher, inputs) {
+    const mainBranches = ['main', 'master'];
+    if (inputs.prNumber) {
+        const prNum = inputs.prNumber;
+        core.info(`📋 Fetching PR diff for PR #${prNum} from ${inputs.repository || 'current repo'}...`);
+        try {
+            const diff = await artifactFetcher.fetchPRDiff(prNum, inputs.repository);
+            logDiffResult(diff, 'PR diff');
+            if (diff)
+                return diff;
+            core.warning(`⚠️ PR diff fetch returned null for PR #${prNum}`);
+        }
+        catch (error) {
+            core.warning(`❌ Failed to fetch PR diff for PR #${prNum}: ${error}`);
+        }
+    }
+    if (inputs.branch && !mainBranches.includes(inputs.branch.toLowerCase())) {
+        core.info(`📋 Fetching branch diff: main...${inputs.branch} (preview URL mode)...`);
+        try {
+            const diff = await artifactFetcher.fetchBranchDiff(inputs.branch, 'main', inputs.repository);
+            logDiffResult(diff, 'branch diff');
+            if (diff)
+                return diff;
+            core.warning(`⚠️ Branch diff fetch returned null for ${inputs.branch}`);
+        }
+        catch (error) {
+            core.warning(`❌ Failed to fetch branch diff for ${inputs.branch}: ${error}`);
+        }
+    }
+    if (inputs.commitSha) {
+        const isMainBranch = !inputs.branch || mainBranches.includes(inputs.branch.toLowerCase());
+        if (isMainBranch) {
+            core.info(`📋 Fetching commit diff for ${inputs.commitSha.substring(0, 7)} (production deploy mode)...`);
+            try {
+                const diff = await artifactFetcher.fetchCommitDiff(inputs.commitSha, inputs.repository);
+                logDiffResult(diff, 'commit diff');
+                if (diff)
+                    return diff;
+                core.warning(`⚠️ Commit diff fetch returned null for ${inputs.commitSha.substring(0, 7)}`);
+            }
+            catch (error) {
+                core.warning(`❌ Failed to fetch commit diff: ${error}`);
+            }
+        }
+    }
+    if (!inputs.prNumber && !inputs.branch && !inputs.commitSha) {
+        core.info(`ℹ️ No PR_NUMBER, BRANCH, or COMMIT_SHA provided, skipping diff fetch`);
+    }
+    else {
+        core.info(`ℹ️ All diff fetch strategies exhausted, proceeding without diff`);
+    }
+    return null;
+}
 async function fetchArtifactsParallel(artifactFetcher, runId, jobName, repoDetails, inputs) {
     const screenshotsPromise = artifactFetcher
         .fetchScreenshots(runId, jobName, repoDetails)
@@ -2566,41 +2725,7 @@ async function fetchArtifactsParallel(artifactFetcher, runId, jobName, repoDetai
         core.warning(`Failed to fetch Cypress artifact logs: ${error}`);
         return '';
     });
-    const prDiffPromise = inputs.prNumber
-        ? (async () => {
-            const prNum = inputs.prNumber;
-            core.info(`📋 Fetching PR diff for PR #${prNum} from ${inputs.repository || 'current repo'}...`);
-            try {
-                const diff = await artifactFetcher.fetchPRDiff(prNum, inputs.repository);
-                if (diff) {
-                    core.info(`✅ Successfully fetched PR diff:`);
-                    core.info(`   - Total files changed: ${diff.totalChanges}`);
-                    core.info(`   - Lines added: +${diff.additions}`);
-                    core.info(`   - Lines deleted: -${diff.deletions}`);
-                    if (diff.files.length > 0) {
-                        core.info(`   - Top files:`);
-                        diff.files.slice(0, 5).forEach(f => {
-                            core.info(`     • ${f.filename} (+${f.additions}/-${f.deletions})`);
-                        });
-                        if (diff.files.length > 5) {
-                            core.info(`     ... and ${diff.files.length - 5} more files`);
-                        }
-                    }
-                }
-                else {
-                    core.warning(`⚠️ PR diff fetch returned null for PR #${prNum}`);
-                }
-                return diff;
-            }
-            catch (error) {
-                core.warning(`❌ Failed to fetch PR diff for PR #${prNum}: ${error}`);
-                return null;
-            }
-        })()
-        : (() => {
-            core.info(`ℹ️ No PR_NUMBER provided, skipping PR diff fetch`);
-            return Promise.resolve(null);
-        })();
+    const prDiffPromise = fetchDiffWithFallback(artifactFetcher, inputs);
     return Promise.all([screenshotsPromise, artifactLogsPromise, prDiffPromise]);
 }
 function buildErrorContext(failedJob, extractedError, artifactLogs, fullLogs, inputs) {

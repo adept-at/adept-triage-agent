@@ -496,4 +496,121 @@ export class ArtifactFetcher {
     ];
     return configPatterns.some(pattern => pattern.test(filename));
   }
+
+  /**
+   * Fetch diff for a specific commit (useful for production deploys)
+   * This gets the changes introduced by a single commit
+   */
+  async fetchCommitDiff(commitSha: string, repository?: string): Promise<PRDiff | null> {
+    try {
+      const { owner, repo } = repository
+        ? { owner: repository.split('/')[0], repo: repository.split('/')[1] }
+        : github.context.repo;
+
+      core.info(`Fetching commit diff for ${commitSha.substring(0, 7)} in ${owner}/${repo}`);
+
+      // Get the commit details
+      const commitResponse = await this.octokit.repos.getCommit({
+        owner,
+        repo,
+        ref: commitSha
+      });
+
+      const commit = commitResponse.data;
+      const files: PRDiffFile[] = (commit.files || []).map(file => ({
+        filename: file.filename,
+        status: file.status || 'modified',
+        additions: file.additions,
+        deletions: file.deletions,
+        changes: file.changes,
+        patch: file.patch
+      }));
+
+      // Sort files by relevance
+      const sortedFiles = this.sortFilesByRelevance(files);
+
+      const diff: PRDiff = {
+        files: sortedFiles,
+        totalChanges: files.length,
+        additions: commit.stats?.additions || 0,
+        deletions: commit.stats?.deletions || 0
+      };
+
+      core.info(`Commit ${commitSha.substring(0, 7)} has ${diff.totalChanges} changed files with +${diff.additions}/-${diff.deletions} lines`);
+
+      if (sortedFiles.length > 0) {
+        const filesSummary = sortedFiles.slice(0, 10).map(f => `  - ${f.filename} (+${f.additions}/-${f.deletions})`).join('\n');
+        core.info(`Changed files (sorted by relevance):\n${filesSummary}${files.length > 10 ? `\n  ... and ${files.length - 10} more files` : ''}`);
+      }
+
+      return diff;
+    } catch (error) {
+      core.warning(`Failed to fetch commit diff for ${commitSha}: ${error}`);
+      return null;
+    }
+  }
+
+  /**
+   * Fetch diff between a branch and base branch (useful for preview URL runs)
+   * This compares the head of the branch against the base branch
+   */
+  async fetchBranchDiff(branch: string, baseBranch: string = 'main', repository?: string): Promise<PRDiff | null> {
+    try {
+      const { owner, repo } = repository
+        ? { owner: repository.split('/')[0], repo: repository.split('/')[1] }
+        : github.context.repo;
+
+      core.info(`Fetching branch diff: ${baseBranch}...${branch} in ${owner}/${repo}`);
+
+      // Use compare API to get the diff between branches
+      const compareResponse = await this.octokit.repos.compareCommits({
+        owner,
+        repo,
+        base: baseBranch,
+        head: branch
+      });
+
+      const comparison = compareResponse.data;
+      const files: PRDiffFile[] = (comparison.files || []).map(file => ({
+        filename: file.filename,
+        status: file.status || 'modified',
+        additions: file.additions,
+        deletions: file.deletions,
+        changes: file.changes,
+        patch: file.patch
+      }));
+
+      // Sort files by relevance
+      const sortedFiles = this.sortFilesByRelevance(files);
+
+      // Calculate totals from files since comparison doesn't have aggregate stats
+      const totalAdditions = files.reduce((sum, f) => sum + f.additions, 0);
+      const totalDeletions = files.reduce((sum, f) => sum + f.deletions, 0);
+
+      const diff: PRDiff = {
+        files: sortedFiles,
+        totalChanges: files.length,
+        additions: totalAdditions,
+        deletions: totalDeletions
+      };
+
+      core.info(`Branch ${branch} has ${diff.totalChanges} files changed vs ${baseBranch} with +${diff.additions}/-${diff.deletions} lines`);
+      core.info(`Commits ahead: ${comparison.ahead_by}, behind: ${comparison.behind_by}`);
+
+      if (sortedFiles.length > 0) {
+        const filesSummary = sortedFiles.slice(0, 10).map(f => `  - ${f.filename} (+${f.additions}/-${f.deletions})`).join('\n');
+        core.info(`Changed files (sorted by relevance):\n${filesSummary}${files.length > 10 ? `\n  ... and ${files.length - 10} more files` : ''}`);
+      }
+
+      return diff;
+    } catch (error) {
+      const errorWithStatus = error as { status?: number };
+      if (errorWithStatus.status === 404) {
+        core.warning(`Branch comparison failed: branch '${branch}' or '${baseBranch}' not found in ${repository || 'current repo'}`);
+      } else {
+        core.warning(`Failed to fetch branch diff for ${branch}: ${error}`);
+      }
+      return null;
+    }
+  }
 } 

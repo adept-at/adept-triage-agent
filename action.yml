@@ -32,6 +32,9 @@ inputs:
   COMMIT_SHA:
     description: 'Commit SHA associated with the test failure'
     required: false
+  BRANCH:
+    description: 'Branch being tested (used to fetch branch diff when no PR number available)'
+    required: false
   REPOSITORY:
     description: 'Repository in owner/repo format'
     required: false

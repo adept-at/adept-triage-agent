@@ -19,6 +19,8 @@ export declare class ArtifactFetcher {
     private isTestFile;
     private isSourceFile;
     private isConfigFile;
+    fetchCommitDiff(commitSha: string, repository?: string): Promise<PRDiff | null>;
+    fetchBranchDiff(branch: string, baseBranch?: string, repository?: string): Promise<PRDiff | null>;
 }
 export {};
 //# sourceMappingURL=artifact-fetcher.d.ts.map

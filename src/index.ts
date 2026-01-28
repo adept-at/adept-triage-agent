@@ -126,6 +126,7 @@ function getInputs(): ActionInputs {
       10
     ),
     autoFixTargetRepo: core.getInput('AUTO_FIX_TARGET_REPO') || undefined,
+    branch: core.getInput('BRANCH') || undefined,
   };
 }
 

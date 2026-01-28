@@ -450,9 +450,150 @@ describe('ArtifactFetcher', () => {
       );
       
       const result = await artifactFetcher.fetchCypressArtifactLogs('123');
-      
+
       expect(result).toBe('');
       expect(core.warning).toHaveBeenCalledWith('Failed to process artifact cy-logs: Error: Download failed');
+    });
+  });
+
+  describe('fetchCommitDiff', () => {
+    it('should fetch commit diff successfully', async () => {
+      const mockCommit = {
+        sha: 'abc123',
+        stats: { additions: 10, deletions: 5 },
+        files: [
+          { filename: 'src/app.js', status: 'modified', additions: 5, deletions: 2, changes: 7, patch: '@@ -1,1 +1,1 @@' },
+          { filename: 'test/app.test.js', status: 'added', additions: 5, deletions: 3, changes: 8, patch: '@@ -0,0 +1,5 @@' }
+        ]
+      };
+
+      mockOctokit.repos = {
+        getCommit: jest.fn().mockResolvedValue({ data: mockCommit })
+      } as any;
+
+      const result = await artifactFetcher.fetchCommitDiff('abc123');
+
+      expect(result).toBeTruthy();
+      expect(result!.totalChanges).toBe(2);
+      expect(result!.additions).toBe(10);
+      expect(result!.deletions).toBe(5);
+      // Test files should be sorted first
+      expect(result!.files[0].filename).toBe('test/app.test.js');
+    });
+
+    it('should handle commit not found error', async () => {
+      mockOctokit.repos = {
+        getCommit: jest.fn().mockRejectedValue(new Error('Not Found'))
+      } as any;
+
+      const result = await artifactFetcher.fetchCommitDiff('invalid-sha');
+
+      expect(result).toBeNull();
+      expect(core.warning).toHaveBeenCalledWith(expect.stringContaining('Failed to fetch commit diff'));
+    });
+
+    it('should use custom repository', async () => {
+      const mockCommit = {
+        sha: 'def456',
+        stats: { additions: 1, deletions: 1 },
+        files: []
+      };
+
+      mockOctokit.repos = {
+        getCommit: jest.fn().mockResolvedValue({ data: mockCommit })
+      } as any;
+
+      await artifactFetcher.fetchCommitDiff('def456', 'other-owner/other-repo');
+
+      expect(mockOctokit.repos!.getCommit).toHaveBeenCalledWith({
+        owner: 'other-owner',
+        repo: 'other-repo',
+        ref: 'def456'
+      });
+    });
+  });
+
+  describe('fetchBranchDiff', () => {
+    it('should fetch branch diff successfully', async () => {
+      const mockComparison = {
+        ahead_by: 5,
+        behind_by: 0,
+        files: [
+          { filename: 'cypress/e2e/test.cy.js', status: 'modified', additions: 10, deletions: 2, changes: 12, patch: '@@ -1,1 +1,1 @@' },
+          { filename: 'src/feature.js', status: 'added', additions: 20, deletions: 0, changes: 20, patch: '@@ -0,0 +1,20 @@' }
+        ]
+      };
+
+      mockOctokit.repos = {
+        compareCommits: jest.fn().mockResolvedValue({ data: mockComparison })
+      } as any;
+
+      const result = await artifactFetcher.fetchBranchDiff('feature-branch', 'main');
+
+      expect(result).toBeTruthy();
+      expect(result!.totalChanges).toBe(2);
+      expect(result!.additions).toBe(30);
+      expect(result!.deletions).toBe(2);
+      // Test/cypress files should be sorted first
+      expect(result!.files[0].filename).toBe('cypress/e2e/test.cy.js');
+    });
+
+    it('should handle branch not found error', async () => {
+      const error = new Error('Not Found') as any;
+      error.status = 404;
+
+      mockOctokit.repos = {
+        compareCommits: jest.fn().mockRejectedValue(error)
+      } as any;
+
+      const result = await artifactFetcher.fetchBranchDiff('non-existent-branch', 'main');
+
+      expect(result).toBeNull();
+      expect(core.warning).toHaveBeenCalledWith(
+        expect.stringContaining("branch 'non-existent-branch' or 'main' not found")
+      );
+    });
+
+    it('should use custom repository', async () => {
+      const mockComparison = {
+        ahead_by: 1,
+        behind_by: 0,
+        files: []
+      };
+
+      mockOctokit.repos = {
+        compareCommits: jest.fn().mockResolvedValue({ data: mockComparison })
+      } as any;
+
+      await artifactFetcher.fetchBranchDiff('feature', 'develop', 'other-owner/other-repo');
+
+      expect(mockOctokit.repos!.compareCommits).toHaveBeenCalledWith({
+        owner: 'other-owner',
+        repo: 'other-repo',
+        base: 'develop',
+        head: 'feature'
+      });
+    });
+
+    it('should default base branch to main', async () => {
+      const mockComparison = {
+        ahead_by: 1,
+        behind_by: 0,
+        files: []
+      };
+
+      mockOctokit.repos = {
+        compareCommits: jest.fn().mockResolvedValue({ data: mockComparison })
+      } as any;
+
+      await artifactFetcher.fetchBranchDiff('feature-branch');
+
+      expect(mockOctokit.repos!.compareCommits).toHaveBeenCalledWith({
+        owner: 'test-owner',
+        repo: 'test-repo',
+        base: 'main',
+        head: 'feature-branch'
+      });
     });
   });
 }); 

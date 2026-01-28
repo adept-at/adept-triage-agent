@@ -94,6 +94,7 @@ export interface ActionInputs {
     autoFixBaseBranch?: string;
     autoFixMinConfidence?: number;
     autoFixTargetRepo?: string;
+    branch?: string;
 }
 export interface PRDiff {
     files: PRDiffFile[];

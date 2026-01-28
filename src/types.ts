@@ -110,6 +110,8 @@ export interface ActionInputs {
   autoFixBaseBranch?: string;
   autoFixMinConfidence?: number;
   autoFixTargetRepo?: string;
+  /** Branch being tested (for fetching branch diff when no PR number) */
+  branch?: string;
 }
 
 export interface PRDiff {
