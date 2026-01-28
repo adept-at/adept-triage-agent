@@ -80,7 +80,7 @@ async function run(): Promise<void> {
 
         // Attempt auto-fix if enabled
         if (inputs.enableAutoFix) {
-          autoFixResult = await attemptAutoFix(inputs, fixRecommendation);
+          autoFixResult = await attemptAutoFix(inputs, fixRecommendation, octokit, repoDetails);
         }
       }
     }
@@ -178,11 +178,16 @@ async function generateFixRecommendation(
 
 async function attemptAutoFix(
   inputs: ActionInputs,
-  fixRecommendation: FixRecommendation
+  fixRecommendation: FixRecommendation,
+  octokit: Octokit,
+  repoDetails: { owner: string; repo: string }
 ): Promise<ApplyResult | null> {
   core.info('\n🤖 Auto-fix is enabled, attempting to apply fix...');
 
   const fixApplier = createFixApplier({
+    octokit,
+    owner: repoDetails.owner,
+    repo: repoDetails.repo,
     baseBranch: inputs.autoFixBaseBranch || 'main',
     minConfidence: inputs.autoFixMinConfidence || AUTO_FIX.DEFAULT_MIN_CONFIDENCE,
   });

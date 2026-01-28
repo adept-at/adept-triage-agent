@@ -1,43 +1,71 @@
 import * as core from '@actions/core';
-import * as exec from '@actions/exec';
-import * as fs from 'fs/promises';
+import { Octokit } from '@octokit/rest';
 import {
   GitHubFixApplier,
   generateFixBranchName,
   generateFixCommitMessage,
   ApplyResult,
+  FixApplierConfig,
 } from '../../src/repair/fix-applier';
 import { FixRecommendation } from '../../src/types';
 import { AUTO_FIX } from '../../src/config/constants';
 
 // Mock dependencies
 jest.mock('@actions/core');
-jest.mock('@actions/exec');
-jest.mock('fs/promises');
 
 describe('fix-applier', () => {
   let mockCore: jest.Mocked<typeof core>;
-  let mockExec: jest.Mocked<typeof exec>;
-  let mockFs: jest.Mocked<typeof fs>;
+  let mockOctokit: {
+    git: {
+      getRef: jest.Mock;
+      createRef: jest.Mock;
+      deleteRef: jest.Mock;
+    };
+    repos: {
+      getContent: jest.Mock;
+      createOrUpdateFileContents: jest.Mock;
+    };
+  };
+
+  const createConfig = (): FixApplierConfig => ({
+    octokit: mockOctokit as unknown as Octokit,
+    owner: 'test-owner',
+    repo: 'test-repo',
+    baseBranch: 'main',
+    minConfidence: 70,
+  });
 
   beforeEach(() => {
     jest.clearAllMocks();
 
     mockCore = core as jest.Mocked<typeof core>;
-    mockExec = exec as jest.Mocked<typeof exec>;
-    mockFs = fs as jest.Mocked<typeof fs>;
 
-    // Default successful exec mock
-    mockExec.exec.mockResolvedValue(0);
+    // Create mock Octokit
+    mockOctokit = {
+      git: {
+        getRef: jest.fn(),
+        createRef: jest.fn(),
+        deleteRef: jest.fn(),
+      },
+      repos: {
+        getContent: jest.fn(),
+        createOrUpdateFileContents: jest.fn(),
+      },
+    };
+
+    // Default successful mocks
+    mockOctokit.git.getRef.mockResolvedValue({
+      data: { object: { sha: 'base-sha-123' } },
+    });
+    mockOctokit.git.createRef.mockResolvedValue({
+      data: { ref: 'refs/heads/fix/triage-agent/test-20240315' },
+    });
+    mockOctokit.git.deleteRef.mockResolvedValue({});
   });
 
   describe('GitHubFixApplier.canApply()', () => {
-    const applier = new GitHubFixApplier({
-      baseBranch: 'main',
-      minConfidence: 70,
-    });
-
     it('should return false when confidence is below threshold', () => {
+      const applier = new GitHubFixApplier(createConfig());
       const recommendation: FixRecommendation = {
         confidence: 60,
         summary: 'Fix selector',
@@ -63,6 +91,7 @@ describe('fix-applier', () => {
     });
 
     it('should return false when no proposed changes', () => {
+      const applier = new GitHubFixApplier(createConfig());
       const recommendation: FixRecommendation = {
         confidence: 85,
         summary: 'Fix selector',
@@ -80,6 +109,7 @@ describe('fix-applier', () => {
     });
 
     it('should return false when proposedChanges is undefined', () => {
+      const applier = new GitHubFixApplier(createConfig());
       const recommendation = {
         confidence: 85,
         summary: 'Fix selector',
@@ -97,6 +127,7 @@ describe('fix-applier', () => {
     });
 
     it('should return true when confidence meets threshold and has changes', () => {
+      const applier = new GitHubFixApplier(createConfig());
       const recommendation: FixRecommendation = {
         confidence: 70,
         summary: 'Fix selector',
@@ -119,6 +150,7 @@ describe('fix-applier', () => {
     });
 
     it('should return true when confidence exceeds threshold', () => {
+      const applier = new GitHubFixApplier(createConfig());
       const recommendation: FixRecommendation = {
         confidence: 95,
         summary: 'Fix selector',
@@ -141,10 +173,9 @@ describe('fix-applier', () => {
     });
 
     it('should use configured minimum confidence threshold', () => {
-      const highThresholdApplier = new GitHubFixApplier({
-        baseBranch: 'main',
-        minConfidence: 90,
-      });
+      const config = createConfig();
+      config.minConfidence = 90;
+      const highThresholdApplier = new GitHubFixApplier(config);
 
       const recommendation: FixRecommendation = {
         confidence: 85,
@@ -175,13 +206,10 @@ describe('fix-applier', () => {
     let applier: GitHubFixApplier;
 
     beforeEach(() => {
-      applier = new GitHubFixApplier({
-        baseBranch: 'main',
-        minConfidence: 70,
-      });
+      applier = new GitHubFixApplier(createConfig());
     });
 
-    it('should successfully create branch, apply changes, commit, and push', async () => {
+    it('should successfully create branch, apply changes, and commit via API', async () => {
       const recommendation: FixRecommendation = {
         confidence: 85,
         summary: 'Fix selector issue',
@@ -198,44 +226,63 @@ describe('fix-applier', () => {
         reasoning: 'The selector was updated in the application',
       };
 
-      // Mock file read with content containing old code
-      mockFs.readFile.mockResolvedValue('const test = cy.get(".old-selector").click();');
-      mockFs.writeFile.mockResolvedValue(undefined);
+      // Mock file content retrieval
+      mockOctokit.repos.getContent.mockResolvedValue({
+        data: {
+          type: 'file',
+          content: Buffer.from('const test = cy.get(".old-selector").click();').toString('base64'),
+          sha: 'file-sha-123',
+        },
+      });
 
-      // Mock getting commit SHA
-      mockExec.exec.mockImplementation(async (cmd, args, options) => {
-        if (args && args[0] === 'rev-parse' && args[1] === 'HEAD') {
-          if (options?.listeners?.stdout) {
-            options.listeners.stdout(Buffer.from('abc123def456\n'));
-          }
-        }
-        return 0;
+      // Mock file update
+      mockOctokit.repos.createOrUpdateFileContents.mockResolvedValue({
+        data: {
+          commit: { sha: 'new-commit-sha-456' },
+        },
       });
 
       const result = await applier.applyFix(recommendation);
 
       expect(result.success).toBe(true);
       expect(result.modifiedFiles).toContain('cypress/e2e/test.cy.ts');
-      expect(result.commitSha).toBe('abc123def456');
+      expect(result.commitSha).toBe('new-commit-sha-456');
       expect(result.branchName).toMatch(/^fix\/triage-agent\/cypress-e2e-test-cy-ts-\d{8}$/);
       expect(result.error).toBeUndefined();
 
-      // Verify git commands were called
-      expect(mockExec.exec).toHaveBeenCalledWith('git', ['fetch', 'origin', 'main']);
-      expect(mockExec.exec).toHaveBeenCalledWith('git', expect.arrayContaining(['checkout', '-b']));
-      expect(mockExec.exec).toHaveBeenCalledWith('git', ['add', 'cypress/e2e/test.cy.ts']);
-      expect(mockExec.exec).toHaveBeenCalledWith('git', ['commit', '-m', expect.any(String)]);
-      expect(mockExec.exec).toHaveBeenCalledWith('git', expect.arrayContaining(['push', '-u', 'origin']));
+      // Verify API calls
+      expect(mockOctokit.git.getRef).toHaveBeenCalledWith({
+        owner: 'test-owner',
+        repo: 'test-repo',
+        ref: 'heads/main',
+      });
 
-      // Verify file was written with new content
-      expect(mockFs.writeFile).toHaveBeenCalledWith(
-        'cypress/e2e/test.cy.ts',
-        'const test = cy.get(".new-selector").click();',
-        'utf-8'
-      );
+      expect(mockOctokit.git.createRef).toHaveBeenCalledWith({
+        owner: 'test-owner',
+        repo: 'test-repo',
+        ref: expect.stringMatching(/^refs\/heads\/fix\/triage-agent\//),
+        sha: 'base-sha-123',
+      });
+
+      expect(mockOctokit.repos.getContent).toHaveBeenCalledWith({
+        owner: 'test-owner',
+        repo: 'test-repo',
+        path: 'cypress/e2e/test.cy.ts',
+        ref: expect.stringMatching(/^fix\/triage-agent\//),
+      });
+
+      expect(mockOctokit.repos.createOrUpdateFileContents).toHaveBeenCalledWith({
+        owner: 'test-owner',
+        repo: 'test-repo',
+        path: 'cypress/e2e/test.cy.ts',
+        message: expect.stringContaining('fix(test):'),
+        content: expect.any(String),
+        sha: 'file-sha-123',
+        branch: expect.stringMatching(/^fix\/triage-agent\//),
+      });
     });
 
-    it('should handle file read errors gracefully', async () => {
+    it('should handle file not found errors gracefully', async () => {
       const recommendation: FixRecommendation = {
         confidence: 85,
         summary: 'Fix selector issue',
@@ -252,8 +299,8 @@ describe('fix-applier', () => {
         reasoning: 'reasoning',
       };
 
-      // Mock file read failure
-      mockFs.readFile.mockRejectedValue(new Error('ENOENT: no such file or directory'));
+      // Mock file not found
+      mockOctokit.repos.getContent.mockRejectedValue(new Error('Not Found'));
 
       const result = await applier.applyFix(recommendation);
 
@@ -265,8 +312,7 @@ describe('fix-applier', () => {
       );
 
       // Verify cleanup was attempted
-      expect(mockExec.exec).toHaveBeenCalledWith('git', ['checkout', '-']);
-      expect(mockExec.exec).toHaveBeenCalledWith('git', ['branch', '-D', expect.any(String)]);
+      expect(mockOctokit.git.deleteRef).toHaveBeenCalled();
     });
 
     it('should handle when old code not found in file', async () => {
@@ -287,7 +333,13 @@ describe('fix-applier', () => {
       };
 
       // Mock file content that doesn't contain the old code
-      mockFs.readFile.mockResolvedValue('const test = cy.get(".different-selector").click();');
+      mockOctokit.repos.getContent.mockResolvedValue({
+        data: {
+          type: 'file',
+          content: Buffer.from('const test = cy.get(".different-selector").click();').toString('base64'),
+          sha: 'file-sha-123',
+        },
+      });
 
       const result = await applier.applyFix(recommendation);
 
@@ -299,7 +351,7 @@ describe('fix-applier', () => {
       );
     });
 
-    it('should clean up branch on failure during git operations', async () => {
+    it('should clean up branch on failure during API operations', async () => {
       const recommendation: FixRecommendation = {
         confidence: 85,
         summary: 'Fix selector issue',
@@ -316,28 +368,30 @@ describe('fix-applier', () => {
         reasoning: 'reasoning',
       };
 
-      mockFs.readFile.mockResolvedValue('const test = old;');
-      mockFs.writeFile.mockResolvedValue(undefined);
-
-      // Simulate push failure
-      let callCount = 0;
-      mockExec.exec.mockImplementation(async (cmd, args) => {
-        callCount++;
-        if (args && args[0] === 'push') {
-          throw new Error('Permission denied');
-        }
-        return 0;
+      mockOctokit.repos.getContent.mockResolvedValue({
+        data: {
+          type: 'file',
+          content: Buffer.from('const test = old;').toString('base64'),
+          sha: 'file-sha-123',
+        },
       });
+
+      // Simulate commit failure - this is handled per-file, so it just logs a warning
+      mockOctokit.repos.createOrUpdateFileContents.mockRejectedValue(
+        new Error('Permission denied')
+      );
 
       const result = await applier.applyFix(recommendation);
 
       expect(result.success).toBe(false);
-      expect(result.error).toBe('Permission denied');
-      expect(mockCore.error).toHaveBeenCalledWith('Failed to apply fix: Permission denied');
+      // Per-file failures result in "No files were successfully modified"
+      expect(result.error).toBe('No files were successfully modified');
+      expect(mockCore.warning).toHaveBeenCalledWith(
+        expect.stringContaining('Failed to modify cypress/e2e/test.cy.ts')
+      );
 
-      // Verify cleanup was attempted
-      expect(mockExec.exec).toHaveBeenCalledWith('git', ['checkout', '-']);
-      expect(mockExec.exec).toHaveBeenCalledWith('git', ['branch', '-D', expect.any(String)]);
+      // Verify cleanup was attempted (branch deleted since no files were modified)
+      expect(mockOctokit.git.deleteRef).toHaveBeenCalled();
     });
 
     it('should return correct ApplyResult structure on success', async () => {
@@ -364,20 +418,30 @@ describe('fix-applier', () => {
         reasoning: 'Multiple fixes needed',
       };
 
-      mockFs.readFile.mockImplementation(async (path) => {
-        if (path === 'file1.ts') return 'const x = oldCode1;';
-        if (path === 'file2.ts') return 'const y = oldCode2;';
+      mockOctokit.repos.getContent.mockImplementation(async ({ path }) => {
+        if (path === 'file1.ts') {
+          return {
+            data: {
+              type: 'file',
+              content: Buffer.from('const x = oldCode1;').toString('base64'),
+              sha: 'sha1',
+            },
+          };
+        }
+        if (path === 'file2.ts') {
+          return {
+            data: {
+              type: 'file',
+              content: Buffer.from('const y = oldCode2;').toString('base64'),
+              sha: 'sha2',
+            },
+          };
+        }
         throw new Error('Unknown file');
       });
-      mockFs.writeFile.mockResolvedValue(undefined);
 
-      mockExec.exec.mockImplementation(async (cmd, args, options) => {
-        if (args && args[0] === 'rev-parse') {
-          if (options?.listeners?.stdout) {
-            options.listeners.stdout(Buffer.from('sha123456789\n'));
-          }
-        }
-        return 0;
+      mockOctokit.repos.createOrUpdateFileContents.mockResolvedValue({
+        data: { commit: { sha: 'final-commit-sha' } },
       });
 
       const result = await applier.applyFix(recommendation);
@@ -385,7 +449,7 @@ describe('fix-applier', () => {
       expect(result).toEqual<ApplyResult>({
         success: true,
         modifiedFiles: ['file1.ts', 'file2.ts'],
-        commitSha: 'sha123456789',
+        commitSha: 'final-commit-sha',
         branchName: expect.stringMatching(/^fix\/triage-agent\/file1-ts-\d{8}$/),
       });
     });
@@ -407,7 +471,13 @@ describe('fix-applier', () => {
         reasoning: 'reasoning',
       };
 
-      mockFs.readFile.mockResolvedValue('different content');
+      mockOctokit.repos.getContent.mockResolvedValue({
+        data: {
+          type: 'file',
+          content: Buffer.from('different content').toString('base64'),
+          sha: 'sha1',
+        },
+      });
 
       const result = await applier.applyFix(recommendation);
 
@@ -442,19 +512,21 @@ describe('fix-applier', () => {
         reasoning: 'reasoning',
       };
 
-      mockFs.readFile.mockImplementation(async (path) => {
-        if (path === 'success.ts') return 'const x = oldCode;';
+      mockOctokit.repos.getContent.mockImplementation(async ({ path }) => {
+        if (path === 'success.ts') {
+          return {
+            data: {
+              type: 'file',
+              content: Buffer.from('const x = oldCode;').toString('base64'),
+              sha: 'sha1',
+            },
+          };
+        }
         throw new Error('File not found');
       });
-      mockFs.writeFile.mockResolvedValue(undefined);
 
-      mockExec.exec.mockImplementation(async (cmd, args, options) => {
-        if (args && args[0] === 'rev-parse') {
-          if (options?.listeners?.stdout) {
-            options.listeners.stdout(Buffer.from('commitsha\n'));
-          }
-        }
-        return 0;
+      mockOctokit.repos.createOrUpdateFileContents.mockResolvedValue({
+        data: { commit: { sha: 'commitsha' } },
       });
 
       const result = await applier.applyFix(recommendation);
@@ -484,7 +556,13 @@ describe('fix-applier', () => {
         reasoning: 'reasoning',
       };
 
-      mockFs.readFile.mockResolvedValue('some content');
+      mockOctokit.repos.getContent.mockResolvedValue({
+        data: {
+          type: 'file',
+          content: Buffer.from('some content').toString('base64'),
+          sha: 'sha1',
+        },
+      });
 
       const result = await applier.applyFix(recommendation);
 
@@ -492,11 +570,10 @@ describe('fix-applier', () => {
       expect(result.error).toBe('No files were successfully modified');
     });
 
-    it('should use configured base branch for checkout', async () => {
-      const customApplier = new GitHubFixApplier({
-        baseBranch: 'develop',
-        minConfidence: 70,
-      });
+    it('should use configured base branch for API calls', async () => {
+      const config = createConfig();
+      config.baseBranch = 'develop';
+      const customApplier = new GitHubFixApplier(config);
 
       const recommendation: FixRecommendation = {
         confidence: 85,
@@ -514,30 +591,28 @@ describe('fix-applier', () => {
         reasoning: 'reasoning',
       };
 
-      mockFs.readFile.mockResolvedValue('const x = old;');
-      mockFs.writeFile.mockResolvedValue(undefined);
+      mockOctokit.repos.getContent.mockResolvedValue({
+        data: {
+          type: 'file',
+          content: Buffer.from('const x = old;').toString('base64'),
+          sha: 'sha1',
+        },
+      });
 
-      mockExec.exec.mockImplementation(async (cmd, args, options) => {
-        if (args && args[0] === 'rev-parse') {
-          if (options?.listeners?.stdout) {
-            options.listeners.stdout(Buffer.from('sha\n'));
-          }
-        }
-        return 0;
+      mockOctokit.repos.createOrUpdateFileContents.mockResolvedValue({
+        data: { commit: { sha: 'sha' } },
       });
 
       await customApplier.applyFix(recommendation);
 
-      expect(mockExec.exec).toHaveBeenCalledWith('git', ['fetch', 'origin', 'develop']);
-      expect(mockExec.exec).toHaveBeenCalledWith('git', [
-        'checkout',
-        '-b',
-        expect.any(String),
-        'origin/develop',
-      ]);
+      expect(mockOctokit.git.getRef).toHaveBeenCalledWith({
+        owner: 'test-owner',
+        repo: 'test-repo',
+        ref: 'heads/develop',
+      });
     });
 
-    it('should handle git command failure with non-zero exit code', async () => {
+    it('should handle API failure when getting base branch', async () => {
       const recommendation: FixRecommendation = {
         confidence: 85,
         summary: 'Fix',
@@ -554,13 +629,67 @@ describe('fix-applier', () => {
         reasoning: 'reasoning',
       };
 
-      // Simulate fetch failure
-      mockExec.exec.mockResolvedValueOnce(1);
+      // Simulate base branch not found
+      mockOctokit.git.getRef.mockRejectedValue(new Error('Reference not found'));
 
       const result = await applier.applyFix(recommendation);
 
       expect(result.success).toBe(false);
-      expect(result.error).toBe('Git command failed: git fetch origin main');
+      expect(result.error).toBe('Reference not found');
+    });
+
+    it('should skip directories when getting file content', async () => {
+      const recommendation: FixRecommendation = {
+        confidence: 85,
+        summary: 'Fix',
+        proposedChanges: [
+          {
+            file: 'some/directory',
+            line: 1,
+            oldCode: 'old',
+            newCode: 'new',
+            justification: 'reason',
+          },
+        ],
+        evidence: [],
+        reasoning: 'reasoning',
+      };
+
+      // Mock response indicating a directory
+      mockOctokit.repos.getContent.mockResolvedValue({
+        data: [{ type: 'dir', name: 'directory' }],
+      });
+
+      const result = await applier.applyFix(recommendation);
+
+      expect(result.success).toBe(false);
+      expect(result.error).toBe('No files were successfully modified');
+      expect(mockCore.warning).toHaveBeenCalledWith('some/directory is not a file, skipping');
+    });
+
+    it('should handle branch creation failure', async () => {
+      const recommendation: FixRecommendation = {
+        confidence: 85,
+        summary: 'Fix',
+        proposedChanges: [
+          {
+            file: 'test.ts',
+            line: 1,
+            oldCode: 'old',
+            newCode: 'new',
+            justification: 'reason',
+          },
+        ],
+        evidence: [],
+        reasoning: 'reasoning',
+      };
+
+      mockOctokit.git.createRef.mockRejectedValue(new Error('Branch already exists'));
+
+      const result = await applier.applyFix(recommendation);
+
+      expect(result.success).toBe(false);
+      expect(result.error).toBe('Branch already exists');
     });
   });
 

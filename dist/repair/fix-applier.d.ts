@@ -1,3 +1,4 @@
+import { Octokit } from '@octokit/rest';
 import { FixRecommendation } from '../types';
 export interface ApplyResult {
     success: boolean;
@@ -7,6 +8,9 @@ export interface ApplyResult {
     branchName?: string;
 }
 export interface FixApplierConfig {
+    octokit: Octokit;
+    owner: string;
+    repo: string;
     baseBranch: string;
     minConfidence: number;
 }
@@ -19,8 +23,6 @@ export declare class GitHubFixApplier implements FixApplier {
     constructor(config: FixApplierConfig);
     canApply(recommendation: FixRecommendation): boolean;
     applyFix(recommendation: FixRecommendation): Promise<ApplyResult>;
-    private execGit;
-    private getCommitSha;
 }
 export declare function createFixApplier(config: FixApplierConfig): FixApplier;
 export declare function generateFixBranchName(testFile: string, timestamp?: Date): string;
