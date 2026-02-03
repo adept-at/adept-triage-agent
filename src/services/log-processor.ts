@@ -6,7 +6,13 @@
 import * as core from '@actions/core';
 import * as github from '@actions/github';
 import { Octokit } from '@octokit/rest';
-import { ErrorData, Screenshot, StructuredErrorSummary, PRDiff, ActionInputs } from '../types';
+import {
+  ErrorData,
+  Screenshot,
+  StructuredErrorSummary,
+  PRDiff,
+  ActionInputs,
+} from '../types';
 import { ArtifactFetcher } from '../artifact-fetcher';
 import { extractErrorFromLogs } from '../simplified-analyzer';
 import { LOG_LIMITS } from '../config/constants';
@@ -32,17 +38,20 @@ export async function processWorkflowLogs(
   octokit: Octokit,
   artifactFetcher: ArtifactFetcher,
   inputs: ActionInputs,
-  repoDetails: RepoDetails
+  _repoDetails: RepoDetails // Only used for PR diffs, not for workflow/artifact operations
 ): Promise<ErrorData | null> {
   const context = github.context;
-  const { owner, repo } = repoDetails;
+  // IMPORTANT: Workflow runs and artifacts live in the repo where the action runs (context.repo),
+  // NOT in the REPOSITORY input (which is the app repo where PR/source code lives).
+  // The repoDetails param is only used for PR diff operations.
+  const { owner, repo } = context.repo;
 
   // If direct error message is provided, use it
   if (inputs.errorMessage) {
     return {
       message: inputs.errorMessage,
       framework: 'unknown',
-      context: 'Error message provided directly via input'
+      context: 'Error message provided directly via input',
     };
   }
 
@@ -60,14 +69,17 @@ export async function processWorkflowLogs(
   }
 
   // Special handling for current job analysis
-  const isCurrentJob = !!(inputs.jobName && (inputs.jobName === context.job || inputs.jobName.includes(context.job)));
+  const isCurrentJob = !!(
+    inputs.jobName &&
+    (inputs.jobName === context.job || inputs.jobName.includes(context.job))
+  );
 
   // Check if workflow is completed when analyzing a different workflow
   if (!isCurrentJob && (inputs.workflowRunId || context.payload.workflow_run)) {
     const workflowRun = await octokit.actions.getWorkflowRun({
       owner,
       repo,
-      run_id: parseInt(runId, 10)
+      run_id: parseInt(runId, 10),
     });
 
     if (workflowRun.data.status !== 'completed') {
@@ -75,7 +87,9 @@ export async function processWorkflowLogs(
       return null;
     }
   } else if (isCurrentJob) {
-    core.info(`Analyzing current job: ${inputs.jobName} (workflow still in progress)`);
+    core.info(
+      `Analyzing current job: ${inputs.jobName} (workflow still in progress)`
+    );
   }
 
   // Get the failed job
@@ -83,16 +97,24 @@ export async function processWorkflowLogs(
     owner,
     repo,
     run_id: parseInt(runId, 10),
-    filter: 'latest'
+    filter: 'latest',
   });
 
-  const targetJob = findTargetJob(jobs.data.jobs as JobInfo[], inputs, isCurrentJob ?? false);
+  const targetJob = findTargetJob(
+    jobs.data.jobs as JobInfo[],
+    inputs,
+    isCurrentJob ?? false
+  );
   if (!targetJob) {
     return null;
   }
 
   const failedJob = targetJob;
-  core.info(`Analyzing job: ${failedJob.name} (status: ${failedJob.status}, conclusion: ${failedJob.conclusion || 'none'})`);
+  core.info(
+    `Analyzing job: ${failedJob.name} (status: ${
+      failedJob.status
+    }, conclusion: ${failedJob.conclusion || 'none'})`
+  );
 
   // Get job logs for error extraction
   let fullLogs = '';
@@ -101,10 +123,12 @@ export async function processWorkflowLogs(
     const logsResponse = await octokit.actions.downloadJobLogsForWorkflowRun({
       owner,
       repo,
-      job_id: failedJob.id
+      job_id: failedJob.id,
     });
     fullLogs = logsResponse.data as unknown as string;
-    core.info(`Downloaded ${fullLogs.length} characters of logs for error extraction`);
+    core.info(
+      `Downloaded ${fullLogs.length} characters of logs for error extraction`
+    );
 
     // Extract structured error from logs immediately
     extractedError = extractErrorFromLogs(fullLogs);
@@ -117,11 +141,13 @@ export async function processWorkflowLogs(
   }
 
   // Fetch artifacts in parallel
+  // Note: Screenshots and artifact logs live in the test repo (context.repo),
+  // while PR diffs come from the app repo (inputs.repository)
   const [screenshots, artifactLogs, prDiff] = await fetchArtifactsParallel(
     artifactFetcher,
     runId,
     failedJob.name,
-    repoDetails,
+    context.repo, // Use context.repo for artifacts, not repoDetails
     inputs
   );
 
@@ -141,23 +167,33 @@ export async function processWorkflowLogs(
   const hasPRDiff = !!(prDiff && prDiff.files && prDiff.files.length > 0);
 
   if (!hasLogs && !hasScreenshots && !hasArtifactLogs && !hasPRDiff) {
-    core.warning('No meaningful data collected for analysis (no logs, screenshots, artifacts, or PR diff)');
+    core.warning(
+      'No meaningful data collected for analysis (no logs, screenshots, artifacts, or PR diff)'
+    );
     core.info('Attempting analysis with minimal context...');
   } else {
-    core.info(`Data collected for analysis: logs=${hasLogs}, screenshots=${hasScreenshots}, artifactLogs=${hasArtifactLogs}, prDiff=${hasPRDiff}`);
+    core.info(
+      `Data collected for analysis: logs=${hasLogs}, screenshots=${hasScreenshots}, artifactLogs=${hasArtifactLogs}, prDiff=${hasPRDiff}`
+    );
   }
 
   // Create error data object
   if (extractedError) {
     const errorData: ErrorData = {
       ...extractedError,
-      context: `Job: ${failedJob.name}. ${extractedError.context || 'Complete failure context including all logs and artifacts'}`,
+      context: `Job: ${failedJob.name}. ${
+        extractedError.context ||
+        'Complete failure context including all logs and artifacts'
+      }`,
       testName: extractedError.testName || failedJob.name,
-      fileName: extractedError.fileName || failedJob.steps?.find(s => s.conclusion === 'failure')?.name || 'Unknown',
+      fileName:
+        extractedError.fileName ||
+        failedJob.steps?.find((s) => s.conclusion === 'failure')?.name ||
+        'Unknown',
       screenshots: screenshots,
       logs: [combinedContext],
       cypressArtifactLogs: capArtifactLogs(artifactLogs),
-      prDiff: prDiff || undefined
+      prDiff: prDiff || undefined,
     };
     errorData.structuredSummary = buildStructuredSummary(errorData);
     return errorData;
@@ -170,11 +206,13 @@ export async function processWorkflowLogs(
     failureType: 'test-failure',
     context: `Job: ${failedJob.name}. Complete failure context including all logs and artifacts`,
     testName: failedJob.name,
-    fileName: failedJob.steps?.find(s => s.conclusion === 'failure')?.name || 'Unknown',
+    fileName:
+      failedJob.steps?.find((s) => s.conclusion === 'failure')?.name ||
+      'Unknown',
     screenshots: screenshots,
     logs: [combinedContext],
     cypressArtifactLogs: capArtifactLogs(artifactLogs),
-    prDiff: prDiff || undefined
+    prDiff: prDiff || undefined,
   };
   fallbackError.structuredSummary = buildStructuredSummary(fallbackError);
   return fallbackError;
@@ -189,23 +227,30 @@ function findTargetJob(
   isCurrentJob: boolean | undefined
 ): JobInfo | null {
   if (inputs.jobName) {
-    const targetJob = jobs.find(job => job.name === inputs.jobName);
+    const targetJob = jobs.find((job) => job.name === inputs.jobName);
     if (!targetJob) {
       core.warning(`Job '${inputs.jobName}' not found`);
       return null;
     }
 
     if (isCurrentJob && targetJob.status === 'in_progress') {
-      core.info('Current job is still in progress, analyzing available logs...');
-    } else if (targetJob.conclusion !== 'failure' && targetJob.status === 'completed') {
-      core.warning(`Job '${inputs.jobName}' did not fail (conclusion: ${targetJob.conclusion})`);
+      core.info(
+        'Current job is still in progress, analyzing available logs...'
+      );
+    } else if (
+      targetJob.conclusion !== 'failure' &&
+      targetJob.status === 'completed'
+    ) {
+      core.warning(
+        `Job '${inputs.jobName}' did not fail (conclusion: ${targetJob.conclusion})`
+      );
       return null;
     }
     return targetJob;
   }
 
   // Look for any failed job
-  const failedJob = jobs.find(job => job.conclusion === 'failure');
+  const failedJob = jobs.find((job) => job.conclusion === 'failure');
   if (!failedJob) {
     core.warning('No failed jobs found');
     return null;
@@ -224,7 +269,7 @@ function logDiffResult(diff: PRDiff | null, source: string): void {
     core.info(`   - Lines deleted: -${diff.deletions}`);
     if (diff.files.length > 0) {
       core.info(`   - Top files:`);
-      diff.files.slice(0, 5).forEach(f => {
+      diff.files.slice(0, 5).forEach((f) => {
         core.info(`     • ${f.filename} (+${f.additions}/-${f.deletions})`);
       });
       if (diff.files.length > 5) {
@@ -249,7 +294,11 @@ export async function fetchDiffWithFallback(
   // Strategy 1: PR diff (highest priority - most specific)
   if (inputs.prNumber) {
     const prNum = inputs.prNumber;
-    core.info(`📋 Fetching PR diff for PR #${prNum} from ${inputs.repository || 'current repo'}...`);
+    core.info(
+      `📋 Fetching PR diff for PR #${prNum} from ${
+        inputs.repository || 'current repo'
+      }...`
+    );
     try {
       const diff = await artifactFetcher.fetchPRDiff(prNum, inputs.repository);
       logDiffResult(diff, 'PR diff');
@@ -262,27 +311,49 @@ export async function fetchDiffWithFallback(
 
   // Strategy 2: Branch diff (for preview URL runs on feature branches)
   if (inputs.branch && !mainBranches.includes(inputs.branch.toLowerCase())) {
-    core.info(`📋 Fetching branch diff: main...${inputs.branch} (preview URL mode)...`);
+    core.info(
+      `📋 Fetching branch diff: main...${inputs.branch} (preview URL mode)...`
+    );
     try {
-      const diff = await artifactFetcher.fetchBranchDiff(inputs.branch, 'main', inputs.repository);
+      const diff = await artifactFetcher.fetchBranchDiff(
+        inputs.branch,
+        'main',
+        inputs.repository
+      );
       logDiffResult(diff, 'branch diff');
       if (diff) return diff;
       core.warning(`⚠️ Branch diff fetch returned null for ${inputs.branch}`);
     } catch (error) {
-      core.warning(`❌ Failed to fetch branch diff for ${inputs.branch}: ${error}`);
+      core.warning(
+        `❌ Failed to fetch branch diff for ${inputs.branch}: ${error}`
+      );
     }
   }
 
   // Strategy 3: Commit diff (for production deploys on main)
   if (inputs.commitSha) {
-    const isMainBranch = !inputs.branch || mainBranches.includes(inputs.branch.toLowerCase());
+    const isMainBranch =
+      !inputs.branch || mainBranches.includes(inputs.branch.toLowerCase());
     if (isMainBranch) {
-      core.info(`📋 Fetching commit diff for ${inputs.commitSha.substring(0, 7)} (production deploy mode)...`);
+      core.info(
+        `📋 Fetching commit diff for ${inputs.commitSha.substring(
+          0,
+          7
+        )} (production deploy mode)...`
+      );
       try {
-        const diff = await artifactFetcher.fetchCommitDiff(inputs.commitSha, inputs.repository);
+        const diff = await artifactFetcher.fetchCommitDiff(
+          inputs.commitSha,
+          inputs.repository
+        );
         logDiffResult(diff, 'commit diff');
         if (diff) return diff;
-        core.warning(`⚠️ Commit diff fetch returned null for ${inputs.commitSha.substring(0, 7)}`);
+        core.warning(
+          `⚠️ Commit diff fetch returned null for ${inputs.commitSha.substring(
+            0,
+            7
+          )}`
+        );
       } catch (error) {
         core.warning(`❌ Failed to fetch commit diff: ${error}`);
       }
@@ -291,9 +362,13 @@ export async function fetchDiffWithFallback(
 
   // No diff available
   if (!inputs.prNumber && !inputs.branch && !inputs.commitSha) {
-    core.info(`ℹ️ No PR_NUMBER, BRANCH, or COMMIT_SHA provided, skipping diff fetch`);
+    core.info(
+      `ℹ️ No PR_NUMBER, BRANCH, or COMMIT_SHA provided, skipping diff fetch`
+    );
   } else {
-    core.info(`ℹ️ All diff fetch strategies exhausted, proceeding without diff`);
+    core.info(
+      `ℹ️ All diff fetch strategies exhausted, proceeding without diff`
+    );
   }
   return null;
 }
@@ -310,24 +385,24 @@ async function fetchArtifactsParallel(
 ): Promise<[Screenshot[], string, PRDiff | null]> {
   const screenshotsPromise = artifactFetcher
     .fetchScreenshots(runId, jobName, repoDetails)
-    .then(screenshots => {
+    .then((screenshots) => {
       core.info(`Found ${screenshots.length} screenshots`);
       return screenshots;
     })
-    .catch(error => {
+    .catch((error) => {
       core.warning(`Failed to fetch screenshots: ${error}`);
       return [] as Screenshot[];
     });
 
   const artifactLogsPromise = artifactFetcher
     .fetchCypressArtifactLogs(runId, jobName, repoDetails)
-    .then(logs => {
+    .then((logs) => {
       if (logs) {
         core.info(`Found Cypress artifact logs (${logs.length} characters)`);
       }
       return logs;
     })
-    .catch(error => {
+    .catch((error) => {
       core.warning(`Failed to fetch Cypress artifact logs: ${error}`);
       return '';
     });
@@ -351,8 +426,11 @@ function buildErrorContext(
     `=== JOB INFORMATION ===`,
     `Job Name: ${failedJob.name}`,
     `Job URL: ${failedJob.html_url}`,
-    `Failed Step: ${failedJob.steps?.find(s => s.conclusion === 'failure')?.name || 'Unknown'}`,
-    ``
+    `Failed Step: ${
+      failedJob.steps?.find((s) => s.conclusion === 'failure')?.name ||
+      'Unknown'
+    }`,
+    ``,
   ];
 
   // If we have extracted error, include it prominently
@@ -366,19 +444,18 @@ function buildErrorContext(
 
   // Always include Cypress artifact logs if available
   if (artifactLogs) {
-    contextParts.push(
-      `=== CYPRESS ARTIFACT LOGS ===`,
-      artifactLogs,
-      ``
-    );
+    contextParts.push(`=== CYPRESS ARTIFACT LOGS ===`, artifactLogs, ``);
   }
 
   // Include GitHub Actions logs based on available data
   if (!inputs.prNumber || !extractedError) {
     const maxLogSize = LOG_LIMITS.GITHUB_MAX_SIZE;
-    const truncatedLogs = fullLogs.length > maxLogSize
-      ? `${fullLogs.substring(fullLogs.length - maxLogSize)}\n\n[Logs truncated to last ${maxLogSize} characters]`
-      : fullLogs;
+    const truncatedLogs =
+      fullLogs.length > maxLogSize
+        ? `${fullLogs.substring(
+            fullLogs.length - maxLogSize
+          )}\n\n[Logs truncated to last ${maxLogSize} characters]`
+        : fullLogs;
 
     contextParts.push(
       `=== GITHUB ACTIONS LOGS (TRUNCATED) ===`,
@@ -405,7 +482,8 @@ export function capArtifactLogs(raw: string): string {
 
   // Try to focus around error-like lines
   const lines = clean.split('\n');
-  const errorRegex = /(error|failed|failure|exception|assertion|expected|timeout|cypress error)/i;
+  const errorRegex =
+    /(error|failed|failure|exception|assertion|expected|timeout|cypress error)/i;
   const focused: string[] = [];
   for (let i = 0; i < lines.length; i++) {
     if (errorRegex.test(lines[i])) {
@@ -432,19 +510,26 @@ export function capArtifactLogs(raw: string): string {
 export function buildStructuredSummary(err: ErrorData): StructuredErrorSummary {
   const hasTimeout = /\btimeout|timed out\b/i.test(err.message || '');
   const hasAssertion = /assertion|expected\s+.*to/i.test(err.message || '');
-  const hasDom = /element|selector|not found|visible|covered|detached/i.test(err.message || '');
-  const hasNetwork = /network|fetch|graphql|api|500|404|502|503/i.test(err.message || '');
-  const hasNullPtr = /cannot read (properties|property) of null|undefined/i.test(err.message || '');
+  const hasDom = /element|selector|not found|visible|covered|detached/i.test(
+    err.message || ''
+  );
+  const hasNetwork = /network|fetch|graphql|api|500|404|502|503/i.test(
+    err.message || ''
+  );
+  const hasNullPtr =
+    /cannot read (properties|property) of null|undefined/i.test(
+      err.message || ''
+    );
 
   return {
     primaryError: {
       type: err.failureType || 'Error',
-      message: (err.message || '').slice(0, 500)
+      message: (err.message || '').slice(0, 500),
     },
     testContext: {
       testName: err.testName || 'unknown',
       testFile: err.fileName || 'unknown',
-      framework: err.framework || 'unknown'
+      framework: err.framework || 'unknown',
     },
     failureIndicators: {
       hasNetworkErrors: hasNetwork,
@@ -455,13 +540,15 @@ export function buildStructuredSummary(err: ErrorData): StructuredErrorSummary {
       isMobileTest: false,
       hasLongTimeout: hasTimeout,
       hasAltTextSelector: /\[alt=/.test(err.message || ''),
-      hasElementExistenceCheck: /expected to find|never found/i.test(err.message || ''),
+      hasElementExistenceCheck: /expected to find|never found/i.test(
+        err.message || ''
+      ),
       hasVisibilityIssue: /not visible|covered|hidden/i.test(err.message || ''),
-      hasViewportContext: false
+      hasViewportContext: false,
     },
     keyMetrics: {
       hasScreenshots: !!(err.screenshots && err.screenshots.length > 0),
-      logSize: err.logs?.join('').length || 0
-    }
+      logSize: err.logs?.join('').length || 0,
+    },
   } as StructuredErrorSummary;
 }

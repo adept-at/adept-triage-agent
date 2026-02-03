@@ -5,7 +5,7 @@ interface RepoDetails {
     owner: string;
     repo: string;
 }
-export declare function processWorkflowLogs(octokit: Octokit, artifactFetcher: ArtifactFetcher, inputs: ActionInputs, repoDetails: RepoDetails): Promise<ErrorData | null>;
+export declare function processWorkflowLogs(octokit: Octokit, artifactFetcher: ArtifactFetcher, inputs: ActionInputs, _repoDetails: RepoDetails): Promise<ErrorData | null>;
 export declare function fetchDiffWithFallback(artifactFetcher: ArtifactFetcher, inputs: ActionInputs): Promise<PRDiff | null>;
 export declare function capArtifactLogs(raw: string): string;
 export declare function buildStructuredSummary(err: ErrorData): StructuredErrorSummary;

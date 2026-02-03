@@ -41,14 +41,14 @@ const core = __importStar(require("@actions/core"));
 const github = __importStar(require("@actions/github"));
 const simplified_analyzer_1 = require("../simplified-analyzer");
 const constants_1 = require("../config/constants");
-async function processWorkflowLogs(octokit, artifactFetcher, inputs, repoDetails) {
+async function processWorkflowLogs(octokit, artifactFetcher, inputs, _repoDetails) {
     const context = github.context;
-    const { owner, repo } = repoDetails;
+    const { owner, repo } = context.repo;
     if (inputs.errorMessage) {
         return {
             message: inputs.errorMessage,
             framework: 'unknown',
-            context: 'Error message provided directly via input'
+            context: 'Error message provided directly via input',
         };
     }
     let runId = inputs.workflowRunId;
@@ -58,12 +58,13 @@ async function processWorkflowLogs(octokit, artifactFetcher, inputs, repoDetails
     if (!runId) {
         runId = context.runId.toString();
     }
-    const isCurrentJob = !!(inputs.jobName && (inputs.jobName === context.job || inputs.jobName.includes(context.job)));
+    const isCurrentJob = !!(inputs.jobName &&
+        (inputs.jobName === context.job || inputs.jobName.includes(context.job)));
     if (!isCurrentJob && (inputs.workflowRunId || context.payload.workflow_run)) {
         const workflowRun = await octokit.actions.getWorkflowRun({
             owner,
             repo,
-            run_id: parseInt(runId, 10)
+            run_id: parseInt(runId, 10),
         });
         if (workflowRun.data.status !== 'completed') {
             core.warning('Workflow run is not completed yet');
@@ -77,7 +78,7 @@ async function processWorkflowLogs(octokit, artifactFetcher, inputs, repoDetails
         owner,
         repo,
         run_id: parseInt(runId, 10),
-        filter: 'latest'
+        filter: 'latest',
     });
     const targetJob = findTargetJob(jobs.data.jobs, inputs, isCurrentJob ?? false);
     if (!targetJob) {
@@ -91,7 +92,7 @@ async function processWorkflowLogs(octokit, artifactFetcher, inputs, repoDetails
         const logsResponse = await octokit.actions.downloadJobLogsForWorkflowRun({
             owner,
             repo,
-            job_id: failedJob.id
+            job_id: failedJob.id,
         });
         fullLogs = logsResponse.data;
         core.info(`Downloaded ${fullLogs.length} characters of logs for error extraction`);
@@ -103,7 +104,7 @@ async function processWorkflowLogs(octokit, artifactFetcher, inputs, repoDetails
     catch (error) {
         core.warning(`Failed to download job logs: ${error}`);
     }
-    const [screenshots, artifactLogs, prDiff] = await fetchArtifactsParallel(artifactFetcher, runId, failedJob.name, repoDetails, inputs);
+    const [screenshots, artifactLogs, prDiff] = await fetchArtifactsParallel(artifactFetcher, runId, failedJob.name, context.repo, inputs);
     const combinedContext = buildErrorContext(failedJob, extractedError, artifactLogs, fullLogs, inputs);
     const hasLogs = !!(fullLogs && fullLogs.length > 0);
     const hasScreenshots = !!(screenshots && screenshots.length > 0);
@@ -119,13 +120,16 @@ async function processWorkflowLogs(octokit, artifactFetcher, inputs, repoDetails
     if (extractedError) {
         const errorData = {
             ...extractedError,
-            context: `Job: ${failedJob.name}. ${extractedError.context || 'Complete failure context including all logs and artifacts'}`,
+            context: `Job: ${failedJob.name}. ${extractedError.context ||
+                'Complete failure context including all logs and artifacts'}`,
             testName: extractedError.testName || failedJob.name,
-            fileName: extractedError.fileName || failedJob.steps?.find(s => s.conclusion === 'failure')?.name || 'Unknown',
+            fileName: extractedError.fileName ||
+                failedJob.steps?.find((s) => s.conclusion === 'failure')?.name ||
+                'Unknown',
             screenshots: screenshots,
             logs: [combinedContext],
             cypressArtifactLogs: capArtifactLogs(artifactLogs),
-            prDiff: prDiff || undefined
+            prDiff: prDiff || undefined,
         };
         errorData.structuredSummary = buildStructuredSummary(errorData);
         return errorData;
@@ -136,18 +140,19 @@ async function processWorkflowLogs(octokit, artifactFetcher, inputs, repoDetails
         failureType: 'test-failure',
         context: `Job: ${failedJob.name}. Complete failure context including all logs and artifacts`,
         testName: failedJob.name,
-        fileName: failedJob.steps?.find(s => s.conclusion === 'failure')?.name || 'Unknown',
+        fileName: failedJob.steps?.find((s) => s.conclusion === 'failure')?.name ||
+            'Unknown',
         screenshots: screenshots,
         logs: [combinedContext],
         cypressArtifactLogs: capArtifactLogs(artifactLogs),
-        prDiff: prDiff || undefined
+        prDiff: prDiff || undefined,
     };
     fallbackError.structuredSummary = buildStructuredSummary(fallbackError);
     return fallbackError;
 }
 function findTargetJob(jobs, inputs, isCurrentJob) {
     if (inputs.jobName) {
-        const targetJob = jobs.find(job => job.name === inputs.jobName);
+        const targetJob = jobs.find((job) => job.name === inputs.jobName);
         if (!targetJob) {
             core.warning(`Job '${inputs.jobName}' not found`);
             return null;
@@ -155,13 +160,14 @@ function findTargetJob(jobs, inputs, isCurrentJob) {
         if (isCurrentJob && targetJob.status === 'in_progress') {
             core.info('Current job is still in progress, analyzing available logs...');
         }
-        else if (targetJob.conclusion !== 'failure' && targetJob.status === 'completed') {
+        else if (targetJob.conclusion !== 'failure' &&
+            targetJob.status === 'completed') {
             core.warning(`Job '${inputs.jobName}' did not fail (conclusion: ${targetJob.conclusion})`);
             return null;
         }
         return targetJob;
     }
-    const failedJob = jobs.find(job => job.conclusion === 'failure');
+    const failedJob = jobs.find((job) => job.conclusion === 'failure');
     if (!failedJob) {
         core.warning('No failed jobs found');
         return null;
@@ -176,7 +182,7 @@ function logDiffResult(diff, source) {
         core.info(`   - Lines deleted: -${diff.deletions}`);
         if (diff.files.length > 0) {
             core.info(`   - Top files:`);
-            diff.files.slice(0, 5).forEach(f => {
+            diff.files.slice(0, 5).forEach((f) => {
                 core.info(`     • ${f.filename} (+${f.additions}/-${f.deletions})`);
             });
             if (diff.files.length > 5) {
@@ -241,23 +247,23 @@ async function fetchDiffWithFallback(artifactFetcher, inputs) {
 async function fetchArtifactsParallel(artifactFetcher, runId, jobName, repoDetails, inputs) {
     const screenshotsPromise = artifactFetcher
         .fetchScreenshots(runId, jobName, repoDetails)
-        .then(screenshots => {
+        .then((screenshots) => {
         core.info(`Found ${screenshots.length} screenshots`);
         return screenshots;
     })
-        .catch(error => {
+        .catch((error) => {
         core.warning(`Failed to fetch screenshots: ${error}`);
         return [];
     });
     const artifactLogsPromise = artifactFetcher
         .fetchCypressArtifactLogs(runId, jobName, repoDetails)
-        .then(logs => {
+        .then((logs) => {
         if (logs) {
             core.info(`Found Cypress artifact logs (${logs.length} characters)`);
         }
         return logs;
     })
-        .catch(error => {
+        .catch((error) => {
         core.warning(`Failed to fetch Cypress artifact logs: ${error}`);
         return '';
     });
@@ -269,8 +275,9 @@ function buildErrorContext(failedJob, extractedError, artifactLogs, fullLogs, in
         `=== JOB INFORMATION ===`,
         `Job Name: ${failedJob.name}`,
         `Job URL: ${failedJob.html_url}`,
-        `Failed Step: ${failedJob.steps?.find(s => s.conclusion === 'failure')?.name || 'Unknown'}`,
-        ``
+        `Failed Step: ${failedJob.steps?.find((s) => s.conclusion === 'failure')?.name ||
+            'Unknown'}`,
+        ``,
     ];
     if (extractedError && extractedError.message) {
         contextParts.push(`=== EXTRACTED ERROR CONTEXT ===`, extractedError.message, ``);
@@ -325,12 +332,12 @@ function buildStructuredSummary(err) {
     return {
         primaryError: {
             type: err.failureType || 'Error',
-            message: (err.message || '').slice(0, 500)
+            message: (err.message || '').slice(0, 500),
         },
         testContext: {
             testName: err.testName || 'unknown',
             testFile: err.fileName || 'unknown',
-            framework: err.framework || 'unknown'
+            framework: err.framework || 'unknown',
         },
         failureIndicators: {
             hasNetworkErrors: hasNetwork,
@@ -343,12 +350,12 @@ function buildStructuredSummary(err) {
             hasAltTextSelector: /\[alt=/.test(err.message || ''),
             hasElementExistenceCheck: /expected to find|never found/i.test(err.message || ''),
             hasVisibilityIssue: /not visible|covered|hidden/i.test(err.message || ''),
-            hasViewportContext: false
+            hasViewportContext: false,
         },
         keyMetrics: {
             hasScreenshots: !!(err.screenshots && err.screenshots.length > 0),
-            logSize: err.logs?.join('').length || 0
-        }
+            logSize: err.logs?.join('').length || 0,
+        },
     };
 }
 //# sourceMappingURL=log-processor.js.map
