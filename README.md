@@ -28,6 +28,8 @@ When a test failure is classified as `TEST_ISSUE`, the agent can automatically c
 - Outputs branch name, commit SHA, and modified files
 - **Opt-in only** - disabled by default for safety
 
+#### Basic Auto-Fix (Single-Shot)
+
 ```yaml
 - uses: adept-at/adept-triage-agent@v1
   with:
@@ -40,7 +42,65 @@ When a test failure is classified as `TEST_ISSUE`, the agent can automatically c
     AUTO_FIX_MIN_CONFIDENCE: '75'
 ```
 
-**Important:** Auto-fix creates a branch only - it does NOT create a PR automatically. Engineers must review and create the PR manually.
+#### Advanced: Multi-Agent Repair Pipeline
+
+For higher quality fixes, enable the agentic repair pipeline. This uses 5 specialized AI agents that work together:
+
+1. **Analysis Agent** - Deep error analysis to identify root cause
+2. **Code Reading Agent** - Fetches relevant source files and helpers
+3. **Investigation Agent** - Cross-references analysis with code context
+4. **Fix Generation Agent** - Generates precise code changes
+5. **Review Agent** - Validates fixes before applying them
+
+The agents iterate up to 3 times, with the review agent providing feedback for improvements.
+
+```yaml
+- uses: adept-at/adept-triage-agent@v1
+  with:
+    GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+    WORKFLOW_RUN_ID: ${{ github.event.workflow_run.id }}
+    # Enable auto-fix with agentic pipeline
+    ENABLE_AUTO_FIX: 'true'
+    ENABLE_AGENTIC_REPAIR: 'true'      # Enable multi-agent pipeline
+    AUTO_FIX_BASE_BRANCH: 'main'
+    AUTO_FIX_MIN_CONFIDENCE: '70'       # Minimum confidence to apply fix
+```
+
+**Trade-offs:**
+| Approach | API Calls | Quality | Speed |
+|----------|-----------|---------|-------|
+| Single-Shot | 1 | Good | ~5s |
+| Agentic | 4-15 | Better | ~30-60s |
+
+The agentic pipeline falls back to single-shot if it fails to produce a valid fix.
+
+#### Fix Validation (Optional)
+
+You can validate fixes by running the actual test before creating a PR:
+
+```yaml
+- uses: adept-at/adept-triage-agent@v1
+  with:
+    GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+    WORKFLOW_RUN_ID: ${{ github.event.workflow_run.id }}
+    # Enable auto-fix with validation
+    ENABLE_AUTO_FIX: 'true'
+    ENABLE_AGENTIC_REPAIR: 'true'
+    ENABLE_VALIDATION: 'true'           # Trigger validation workflow
+    VALIDATION_WORKFLOW: 'validate-fix.yml'
+    VALIDATION_PREVIEW_URL: '${{ github.event.client_payload.preview_url }}'
+    VALIDATION_SPEC: '${{ github.event.client_payload.spec }}'
+```
+
+When validation is enabled:
+1. Fix is applied to a branch
+2. Validation workflow runs the specific test against the fix
+3. If test passes → PR is created automatically
+4. If test fails → Branch is deleted, Slack notification sent
+
+**Important:** Auto-fix creates a branch only - it does NOT create a PR automatically (unless validation passes). Engineers must review and create the PR manually.
 
 See [Architecture Documentation](docs/ARCHITECTURE.md#auto-fix-feature) for detailed configuration and safety guardrails.
 
@@ -305,9 +365,17 @@ Integrate AI triage results into your Slack notifications in the triage workflow
 | `PR_NUMBER`            | Pull request number to fetch diff from                                                                                                                                                                                         | No       | -                          |
 | `COMMIT_SHA`           | Commit SHA associated with the test failure                                                                                                                                                                                    | No       | -                          |
 | `REPOSITORY`           | Repository in owner/repo format                                                                                                                                                                                                | No       | `${{ github.repository }}` |
-| `ENABLE_AUTO_FIX`      | Enable automatic branch creation with fix (opt-in). See [Auto-Fix Feature](docs/ARCHITECTURE.md#auto-fix-feature)                                                                                                              | No       | `false`                    |
+| **Auto-Fix Inputs** | | | |
+| `ENABLE_AUTO_FIX`      | Enable automatic branch creation with fix (opt-in)                                                                                                                                                                             | No       | `false`                    |
 | `AUTO_FIX_BASE_BRANCH` | Base branch to create fix branch from                                                                                                                                                                                          | No       | `main`                     |
 | `AUTO_FIX_MIN_CONFIDENCE` | Minimum fix confidence required to apply auto-fix (0-100)                                                                                                                                                                   | No       | `70`                       |
+| `AUTO_FIX_TARGET_REPO` | Repository where fix branch should be created (owner/repo format)                                                                                                                                                              | No       | `${{ github.repository }}` |
+| `ENABLE_AGENTIC_REPAIR` | Enable multi-agent repair pipeline for higher quality fixes (uses more API calls)                                                                                                                                             | No       | `false`                    |
+| **Validation Inputs** | | | |
+| `ENABLE_VALIDATION`    | Enable validation workflow trigger after fix is applied                                                                                                                                                                        | No       | `false`                    |
+| `VALIDATION_WORKFLOW`  | Name of the validation workflow file                                                                                                                                                                                           | No       | `validate-fix.yml`         |
+| `VALIDATION_PREVIEW_URL` | Preview URL for validation tests                                                                                                                                                                                             | No       | -                          |
+| `VALIDATION_SPEC`      | Spec file for validation tests                                                                                                                                                                                                 | No       | -                          |
 
 ## Outputs
 
@@ -318,14 +386,20 @@ Integrate AI triage results into your Slack notifications in the triage workflow
 | `reasoning`   | Detailed explanation of the decision                                               |
 | `summary`     | Brief summary suitable for PR comments                                             |
 | `triage_json` | Complete analysis as JSON string (includes all details)                            |
+| **Fix Recommendation Outputs** | |
 | `has_fix_recommendation` | `true` or `false` - whether a fix recommendation was generated (TEST_ISSUE only) |
 | `fix_recommendation` | Complete fix recommendation as JSON (when available)                          |
 | `fix_summary` | Human-readable fix recommendation summary (when available)                         |
 | `fix_confidence` | Confidence score for the fix recommendation (0-100)                             |
+| **Auto-Fix Outputs** | |
 | `auto_fix_applied` | `true` or `false` - whether auto-fix branch was created                        |
 | `auto_fix_branch` | Name of the created branch (if auto-fix applied)                                |
 | `auto_fix_commit` | SHA of the fix commit (if auto-fix applied)                                     |
 | `auto_fix_files` | JSON array of modified files (if auto-fix applied)                               |
+| **Validation Outputs** | |
+| `validation_run_id` | Workflow run ID of the validation workflow (if triggered)                      |
+| `validation_status` | Validation status: `pending`, `passed`, `failed`, or `skipped`                 |
+| `validation_url` | URL to the validation workflow run (if triggered)                                 |
 
 ### Special Verdicts
 

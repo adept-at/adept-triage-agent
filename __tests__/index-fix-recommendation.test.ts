@@ -132,7 +132,7 @@ describe('Fix Recommendation Integration', () => {
       await run();
 
       // Verify fix recommendation was attempted
-      // SimplifiedRepairAgent now accepts an OpenAI client instance and source fetch context
+      // SimplifiedRepairAgent now accepts an OpenAI client instance, source fetch context, and config
       expect(SimplifiedRepairAgent).toHaveBeenCalledWith(
         expect.any(Object),  // OpenAI client
         expect.objectContaining({
@@ -140,6 +140,9 @@ describe('Fix Recommendation Integration', () => {
           owner: expect.any(String),
           repo: expect.any(String),
           branch: expect.any(String),
+        }),
+        expect.objectContaining({
+          enableAgenticRepair: expect.any(Boolean),
         })
       );
       expect(mockGenerateFixRecommendation).toHaveBeenCalled();

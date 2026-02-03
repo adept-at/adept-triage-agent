@@ -120,6 +120,8 @@ export interface ActionInputs {
   validationPreviewUrl?: string;
   /** Spec file for validation tests (if different from detected) */
   validationSpec?: string;
+  /** Enable multi-agent repair pipeline for higher quality fixes */
+  enableAgenticRepair?: boolean;
 }
 
 export interface PRDiff {

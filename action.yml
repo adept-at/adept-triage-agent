@@ -77,6 +77,10 @@ inputs:
   VALIDATION_SPEC:
     description: 'Spec file for validation tests (if different from detected)'
     required: false
+  ENABLE_AGENTIC_REPAIR:
+    description: 'Enable multi-agent repair pipeline for higher quality fixes (uses more API calls but produces better results)'
+    required: false
+    default: 'false'
 
 outputs:
   verdict:

@@ -2556,6 +2556,7 @@ function getInputs() {
         validationWorkflow: core.getInput('VALIDATION_WORKFLOW') || 'validate-fix.yml',
         validationPreviewUrl: core.getInput('VALIDATION_PREVIEW_URL') || undefined,
         validationSpec: core.getInput('VALIDATION_SPEC') || undefined,
+        enableAgenticRepair: core.getInput('ENABLE_AGENTIC_REPAIR') === 'true',
     };
 }
 function resolveRepository(inputs) {
@@ -2601,6 +2602,8 @@ async function generateFixRecommendation(inputs, repoDetails, errorData, openaiC
             owner: autoFixTargetRepo.owner,
             repo: autoFixTargetRepo.repo,
             branch: inputs.autoFixBaseBranch || 'main',
+        }, {
+            enableAgenticRepair: inputs.enableAgenticRepair,
         });
         const recommendation = await repairAgent.generateFixRecommendation(repairContext, errorData);
         if (recommendation) {

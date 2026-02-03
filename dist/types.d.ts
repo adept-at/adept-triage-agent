@@ -99,6 +99,7 @@ export interface ActionInputs {
     validationWorkflow?: string;
     validationPreviewUrl?: string;
     validationSpec?: string;
+    enableAgenticRepair?: boolean;
 }
 export interface PRDiff {
     files: PRDiffFile[];

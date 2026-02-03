@@ -165,6 +165,8 @@ function getInputs(): ActionInputs {
       core.getInput('VALIDATION_WORKFLOW') || 'validate-fix.yml',
     validationPreviewUrl: core.getInput('VALIDATION_PREVIEW_URL') || undefined,
     validationSpec: core.getInput('VALIDATION_SPEC') || undefined,
+    // Agentic repair input
+    enableAgenticRepair: core.getInput('ENABLE_AGENTIC_REPAIR') === 'true',
   };
 }
 
@@ -231,12 +233,18 @@ async function generateFixRecommendation(
     const autoFixTargetRepo = resolveAutoFixTargetRepo(inputs);
 
     // Initialize repair agent with shared OpenAI client and source fetch context
-    const repairAgent = new SimplifiedRepairAgent(openaiClient, {
-      octokit,
-      owner: autoFixTargetRepo.owner,
-      repo: autoFixTargetRepo.repo,
-      branch: inputs.autoFixBaseBranch || 'main',
-    });
+    const repairAgent = new SimplifiedRepairAgent(
+      openaiClient,
+      {
+        octokit,
+        owner: autoFixTargetRepo.owner,
+        repo: autoFixTargetRepo.repo,
+        branch: inputs.autoFixBaseBranch || 'main',
+      },
+      {
+        enableAgenticRepair: inputs.enableAgenticRepair,
+      }
+    );
     const recommendation = await repairAgent.generateFixRecommendation(
       repairContext,
       errorData as import('./types').ErrorData
