@@ -5,7 +5,13 @@ import { OpenAIClient } from '../openai-client';
 import { RepairContext, ErrorData } from '../types';
 import { FixRecommendation } from '../types';
 import { generateFixSummary } from '../analysis/summary-generator';
-import { CONFIDENCE } from '../config/constants';
+import { CONFIDENCE, AGENT_CONFIG } from '../config/constants';
+import {
+  AgentOrchestrator,
+  createOrchestrator,
+  createAgentContext,
+  OrchestratorConfig,
+} from '../agents';
 
 // Internal type for AI response structure
 interface AIRecommendation {
@@ -36,86 +42,236 @@ export interface SourceFetchContext {
 }
 
 /**
+ * Configuration for the repair agent
+ */
+export interface RepairAgentConfig {
+  /** Enable agentic repair with multiple specialized agents */
+  enableAgenticRepair?: boolean;
+  /** Orchestrator configuration (for agentic mode) */
+  orchestratorConfig?: Partial<OrchestratorConfig>;
+}
+
+/**
  * Simplified repair agent that generates fix recommendations
- * without complex context fetching or PR creation
+ * Supports both single-shot and agentic (multi-agent) repair modes
  */
 export class SimplifiedRepairAgent {
   private openaiClient: OpenAIClient;
   private sourceFetchContext?: SourceFetchContext;
+  private config: RepairAgentConfig;
+  private orchestrator?: AgentOrchestrator;
 
   /**
    * Creates a new SimplifiedRepairAgent
    * @param openaiClientOrApiKey - Either an OpenAIClient instance or an API key string
    * @param sourceFetchContext - Optional context for fetching source files from GitHub
+   * @param config - Optional configuration for repair behavior
    */
-  constructor(openaiClientOrApiKey: OpenAIClient | string, sourceFetchContext?: SourceFetchContext) {
+  constructor(
+    openaiClientOrApiKey: OpenAIClient | string,
+    sourceFetchContext?: SourceFetchContext,
+    config?: RepairAgentConfig
+  ) {
     if (typeof openaiClientOrApiKey === 'string') {
       this.openaiClient = new OpenAIClient(openaiClientOrApiKey);
     } else {
       this.openaiClient = openaiClientOrApiKey;
     }
     this.sourceFetchContext = sourceFetchContext;
+    this.config = {
+      enableAgenticRepair: AGENT_CONFIG.ENABLE_AGENTIC_REPAIR,
+      ...config,
+    };
+
+    // Initialize orchestrator if agentic mode is enabled
+    if (this.config.enableAgenticRepair && this.sourceFetchContext) {
+      this.orchestrator = createOrchestrator(
+        this.openaiClient,
+        {
+          maxIterations: AGENT_CONFIG.MAX_AGENT_ITERATIONS,
+          totalTimeoutMs: AGENT_CONFIG.AGENT_TIMEOUT_MS,
+          minConfidence: AGENT_CONFIG.REVIEW_REQUIRED_CONFIDENCE,
+          ...this.config.orchestratorConfig,
+        },
+        {
+          octokit: this.sourceFetchContext.octokit,
+          owner: this.sourceFetchContext.owner,
+          repo: this.sourceFetchContext.repo,
+          branch: this.sourceFetchContext.branch || 'main',
+        }
+      );
+    }
   }
 
   /**
    * Generates a fix recommendation for a test failure
    * Returns null if no fix can be recommended
+   *
+   * If agentic repair is enabled, will attempt multi-agent approach first,
+   * then fall back to single-shot if needed.
    */
-  async generateFixRecommendation(repairContext: RepairContext, errorData?: ErrorData): Promise<FixRecommendation | null> {
+  async generateFixRecommendation(
+    repairContext: RepairContext,
+    errorData?: ErrorData
+  ): Promise<FixRecommendation | null> {
     try {
       core.info('🔧 Generating fix recommendation...');
 
-      // Try to fetch the actual source file content
-      let sourceFileContent: string | null = null;
-      const cleanFilePath = this.extractFilePath(repairContext.testFile);
+      // Try agentic repair first if enabled
+      if (this.config.enableAgenticRepair && this.orchestrator) {
+        core.info('🤖 Attempting agentic repair...');
+        const agenticResult = await this.tryAgenticRepair(
+          repairContext,
+          errorData
+        );
 
-      if (this.sourceFetchContext && cleanFilePath) {
-        sourceFileContent = await this.fetchSourceFile(cleanFilePath);
-        if (sourceFileContent) {
-          core.info(`  ✅ Fetched source file: ${cleanFilePath} (${sourceFileContent.length} chars)`);
+        if (agenticResult) {
+          core.info(
+            `✅ Agentic repair succeeded with ${agenticResult.confidence}% confidence`
+          );
+          return agenticResult;
         }
+
+        core.info(
+          '🔄 Agentic repair did not produce a fix, falling back to single-shot...'
+        );
       }
 
-      // Build prompt for OpenAI
-      const prompt = this.buildPrompt(repairContext, errorData, sourceFileContent, cleanFilePath);
-
-      // Save prompt for debugging (optional)
-      if (process.env.DEBUG_FIX_RECOMMENDATION) {
-        const promptFile = `fix-prompt-${Date.now()}.md`;
-        fs.writeFileSync(promptFile, prompt);
-        core.info(`  📝 Full prompt saved to ${promptFile}`);
-      }
-
-      // Get recommendation from OpenAI using full error data if available
-      const recommendation = await this.getRecommendationFromAI(prompt, repairContext, errorData);
-
-      if (!recommendation || recommendation.confidence < CONFIDENCE.MIN_FIX_CONFIDENCE) {
-        core.info('Cannot generate confident fix recommendation');
-        return null;
-      }
-
-      // Format the recommendation
-      const fixRecommendation: FixRecommendation = {
-        confidence: recommendation.confidence,
-        summary: this.generateSummary(recommendation, repairContext),
-        proposedChanges: (recommendation.changes || []).map(change => ({
-          file: change.file,
-          line: change.line || 0, // Default to 0 if line is not specified
-          oldCode: change.oldCode || '',
-          newCode: change.newCode || '',
-          justification: change.justification
-        })),
-        evidence: recommendation.evidence || [],
-        reasoning: recommendation.reasoning || 'Fix based on error pattern analysis'
-      };
-
-      core.info(`✅ Fix recommendation generated with ${fixRecommendation.confidence}% confidence`);
-      return fixRecommendation;
-
+      // Single-shot repair (original logic)
+      return await this.singleShotRepair(repairContext, errorData);
     } catch (error) {
       core.warning(`Failed to generate fix recommendation: ${error}`);
       return null;
     }
+  }
+
+  /**
+   * Attempts agentic repair using the orchestrator
+   */
+  private async tryAgenticRepair(
+    repairContext: RepairContext,
+    errorData?: ErrorData
+  ): Promise<FixRecommendation | null> {
+    if (!this.orchestrator) {
+      return null;
+    }
+
+    try {
+      // Build agent context from repair context
+      const agentContext = createAgentContext({
+        errorMessage: repairContext.errorMessage,
+        testFile: repairContext.testFile,
+        testName: repairContext.testName,
+        errorType: repairContext.errorType,
+        errorSelector: repairContext.errorSelector,
+        stackTrace: errorData?.stackTrace,
+        screenshots: errorData?.screenshots,
+        logs: errorData?.logs,
+        prDiff: errorData?.prDiff
+          ? {
+              files: errorData.prDiff.files.map((f) => ({
+                filename: f.filename,
+                patch: f.patch,
+                status: f.status,
+              })),
+            }
+          : undefined,
+      });
+
+      // Run the orchestration
+      const result = await this.orchestrator.orchestrate(
+        agentContext,
+        errorData
+      );
+
+      if (result.success && result.fix) {
+        core.info(
+          `🤖 Agentic approach: ${result.approach}, iterations: ${result.iterations}, time: ${result.totalTimeMs}ms`
+        );
+        return result.fix;
+      }
+
+      core.info(
+        `🤖 Agentic approach failed: ${result.error || 'No fix generated'}`
+      );
+      return null;
+    } catch (error) {
+      const errorMsg = error instanceof Error ? error.message : String(error);
+      core.warning(`Agentic repair error: ${errorMsg}`);
+      return null;
+    }
+  }
+
+  /**
+   * Single-shot repair (original implementation)
+   */
+  private async singleShotRepair(
+    repairContext: RepairContext,
+    errorData?: ErrorData
+  ): Promise<FixRecommendation | null> {
+    // Try to fetch the actual source file content
+    let sourceFileContent: string | null = null;
+    const cleanFilePath = this.extractFilePath(repairContext.testFile);
+
+    if (this.sourceFetchContext && cleanFilePath) {
+      sourceFileContent = await this.fetchSourceFile(cleanFilePath);
+      if (sourceFileContent) {
+        core.info(
+          `  ✅ Fetched source file: ${cleanFilePath} (${sourceFileContent.length} chars)`
+        );
+      }
+    }
+
+    // Build prompt for OpenAI
+    const prompt = this.buildPrompt(
+      repairContext,
+      errorData,
+      sourceFileContent,
+      cleanFilePath
+    );
+
+    // Save prompt for debugging (optional)
+    if (process.env.DEBUG_FIX_RECOMMENDATION) {
+      const promptFile = `fix-prompt-${Date.now()}.md`;
+      fs.writeFileSync(promptFile, prompt);
+      core.info(`  📝 Full prompt saved to ${promptFile}`);
+    }
+
+    // Get recommendation from OpenAI using full error data if available
+    const recommendation = await this.getRecommendationFromAI(
+      prompt,
+      repairContext,
+      errorData
+    );
+
+    if (
+      !recommendation ||
+      recommendation.confidence < CONFIDENCE.MIN_FIX_CONFIDENCE
+    ) {
+      core.info('Cannot generate confident fix recommendation');
+      return null;
+    }
+
+    // Format the recommendation
+    const fixRecommendation: FixRecommendation = {
+      confidence: recommendation.confidence,
+      summary: this.generateSummary(recommendation, repairContext),
+      proposedChanges: (recommendation.changes || []).map((change) => ({
+        file: change.file,
+        line: change.line || 0, // Default to 0 if line is not specified
+        oldCode: change.oldCode || '',
+        newCode: change.newCode || '',
+        justification: change.justification,
+      })),
+      evidence: recommendation.evidence || [],
+      reasoning:
+        recommendation.reasoning || 'Fix based on error pattern analysis',
+    };
+
+    core.info(
+      `✅ Fix recommendation generated with ${fixRecommendation.confidence}% confidence`
+    );
+    return fixRecommendation;
   }
 
   /**
@@ -161,7 +317,9 @@ export class SimplifiedRepairAgent {
     const { octokit, owner, repo, branch = 'main' } = this.sourceFetchContext;
 
     try {
-      core.debug(`Fetching source file: ${owner}/${repo}/${filePath} (branch: ${branch})`);
+      core.debug(
+        `Fetching source file: ${owner}/${repo}/${filePath} (branch: ${branch})`
+      );
 
       const response = await octokit.repos.getContent({
         owner,
@@ -176,7 +334,9 @@ export class SimplifiedRepairAgent {
         return null;
       }
 
-      const content = Buffer.from(response.data.content, 'base64').toString('utf-8');
+      const content = Buffer.from(response.data.content, 'base64').toString(
+        'utf-8'
+      );
       return content;
     } catch (error) {
       const errorMsg = error instanceof Error ? error.message : String(error);
@@ -188,13 +348,20 @@ export class SimplifiedRepairAgent {
   /**
    * Builds the prompt for OpenAI to generate fix recommendation
    */
-  private buildPrompt(context: RepairContext, errorData?: ErrorData, sourceFileContent?: string | null, cleanFilePath?: string | null): string {
+  private buildPrompt(
+    context: RepairContext,
+    errorData?: ErrorData,
+    sourceFileContent?: string | null,
+    cleanFilePath?: string | null
+  ): string {
     let contextInfo = `## Test Failure Context
 - **Test File:** ${context.testFile}
 - **Test Name:** ${context.testName}
 - **Error Type:** ${context.errorType}
 - **Error Message:** ${context.errorMessage}
-${context.errorSelector ? `- **Failed Selector:** ${context.errorSelector}` : ''}
+${
+  context.errorSelector ? `- **Failed Selector:** ${context.errorSelector}` : ''
+}
 ${context.errorLine ? `- **Error Line:** ${context.errorLine}` : ''}`;
 
     // Add the actual source file content if we fetched it
@@ -210,20 +377,26 @@ ${context.errorLine ? `- **Error Line:** ${context.errorLine}` : ''}`;
         const startLine = Math.max(0, errorLine - 20);
         const endLine = Math.min(lines.length, errorLine + 20);
         const relevantLines = lines.slice(startLine, endLine);
-        const numberedLines = relevantLines.map((line, i) => {
-          const lineNum = startLine + i + 1;
-          const marker = lineNum === errorLine ? '>>> ' : '    ';
-          return `${marker}${lineNum}: ${line}`;
-        }).join('\n');
+        const numberedLines = relevantLines
+          .map((line, i) => {
+            const lineNum = startLine + i + 1;
+            const marker = lineNum === errorLine ? '>>> ' : '    ';
+            return `${marker}${lineNum}: ${line}`;
+          })
+          .join('\n');
 
-        contextInfo += `\n\n## Source File: ${cleanFilePath} (lines ${startLine + 1}-${endLine})
+        contextInfo += `\n\n## Source File: ${cleanFilePath} (lines ${
+          startLine + 1
+        }-${endLine})
 \`\`\`javascript
 ${numberedLines}
 \`\`\``;
       } else {
         // Show first 100 lines if no specific error line
         const previewLines = lines.slice(0, 100);
-        const numberedLines = previewLines.map((line, i) => `${i + 1}: ${line}`).join('\n');
+        const numberedLines = previewLines
+          .map((line, i) => `${i + 1}: ${line}`)
+          .join('\n');
 
         contextInfo += `\n\n## Source File: ${cleanFilePath} (first 100 lines)
 \`\`\`javascript
@@ -243,13 +416,17 @@ ${lines.length > 100 ? `\n... (${lines.length - 100} more lines)` : ''}
       }
 
       if (errorData.logs && errorData.logs.length > 0) {
-        core.info(`  ✅ Including ${errorData.logs.length} log entries (first 1000 chars)`);
+        core.info(
+          `  ✅ Including ${errorData.logs.length} log entries (first 1000 chars)`
+        );
         const logPreview = errorData.logs.join('\n').substring(0, 1000);
         contextInfo += `\n\n## Test Logs\n\`\`\`\n${logPreview}\n\`\`\``;
       }
 
       if (errorData.screenshots && errorData.screenshots.length > 0) {
-        core.info(`  ✅ Including ${errorData.screenshots.length} screenshot(s) metadata`);
+        core.info(
+          `  ✅ Including ${errorData.screenshots.length} screenshot(s) metadata`
+        );
         contextInfo += `\n\n## Screenshots\n${errorData.screenshots.length} screenshot(s) available showing the UI state at failure`;
         // Add screenshot names if available
         errorData.screenshots.forEach((screenshot, index) => {
@@ -268,7 +445,9 @@ ${lines.length > 100 ? `\n... (${lines.length - 100} more lines)` : ''}
 
       // Include PR diff if available - crucial for understanding what changed
       if (errorData.prDiff) {
-        core.info(`  ✅ Including PR diff (${errorData.prDiff.totalChanges} files changed)`);
+        core.info(
+          `  ✅ Including PR diff (${errorData.prDiff.totalChanges} files changed)`
+        );
         contextInfo += `\n\n## Pull Request Changes\n`;
         contextInfo += `- **Total Files Changed:** ${errorData.prDiff.totalChanges}\n`;
         contextInfo += `- **Lines Added:** ${errorData.prDiff.additions}\n`;
@@ -279,19 +458,25 @@ ${lines.length > 100 ? `\n... (${lines.length - 100} more lines)` : ''}
 
           // Show up to 10 most relevant files with their changes
           const relevantFiles = errorData.prDiff.files.slice(0, 10);
-          relevantFiles.forEach(file => {
+          relevantFiles.forEach((file) => {
             contextInfo += `\n#### ${file.filename} (${file.status})\n`;
-            contextInfo += `- Changes: +${file.additions || 0}/-${file.deletions || 0} lines\n`;
+            contextInfo += `- Changes: +${file.additions || 0}/-${
+              file.deletions || 0
+            } lines\n`;
 
             // Include patch preview if available (first 500 chars)
             if (file.patch) {
               const patchPreview = file.patch.substring(0, 500);
-              contextInfo += `\n\`\`\`diff\n${patchPreview}${file.patch.length > 500 ? '\n... (truncated)' : ''}\n\`\`\`\n`;
+              contextInfo += `\n\`\`\`diff\n${patchPreview}${
+                file.patch.length > 500 ? '\n... (truncated)' : ''
+              }\n\`\`\`\n`;
             }
           });
 
           if (errorData.prDiff.files.length > 10) {
-            contextInfo += `\n... and ${errorData.prDiff.files.length - 10} more files changed\n`;
+            contextInfo += `\n... and ${
+              errorData.prDiff.files.length - 10
+            } more files changed\n`;
           }
         }
       }
@@ -347,16 +532,34 @@ Respond with JSON only. If you cannot provide a confident fix, set confidence be
   /**
    * Gets fix recommendation from OpenAI
    */
-  private async getRecommendationFromAI(prompt: string, context: RepairContext, fullErrorData?: ErrorData): Promise<AIRecommendation | null> {
+  private async getRecommendationFromAI(
+    prompt: string,
+    context: RepairContext,
+    fullErrorData?: ErrorData
+  ): Promise<AIRecommendation | null> {
     try {
       const clientAny = this.openaiClient as unknown as {
         generateWithCustomPrompt?: (args: {
           systemPrompt: string;
-          userContent: Array<{ type: 'text'; text: string } | { type: 'image_url'; image_url: { url: string; detail?: 'low' | 'auto' | 'high' } }> | string;
+          userContent:
+            | Array<
+                | { type: 'text'; text: string }
+                | {
+                    type: 'image_url';
+                    image_url: {
+                      url: string;
+                      detail?: 'low' | 'auto' | 'high';
+                    };
+                  }
+              >
+            | string;
           responseAsJson?: boolean;
           temperature?: number;
         }) => Promise<string>;
-        analyze: (errorData: ErrorData, examples: []) => Promise<{ reasoning: string; indicators?: string[] }>;
+        analyze: (
+          errorData: ErrorData,
+          examples: []
+        ) => Promise<{ reasoning: string; indicators?: string[] }>;
       };
 
       if (typeof clientAny.generateWithCustomPrompt === 'function') {
@@ -387,18 +590,30 @@ You MUST respond in strict JSON only with this schema:
         // Compose multimodal user content: the textual prompt and any screenshots
         const userParts: Array<
           | { type: 'text'; text: string }
-          | { type: 'image_url'; image_url: { url: string; detail?: 'low' | 'auto' | 'high' } }
-        > = [
-          { type: 'text', text: prompt }
-        ];
-        if (fullErrorData?.screenshots && fullErrorData.screenshots.length > 0) {
+          | {
+              type: 'image_url';
+              image_url: { url: string; detail?: 'low' | 'auto' | 'high' };
+            }
+        > = [{ type: 'text', text: prompt }];
+        if (
+          fullErrorData?.screenshots &&
+          fullErrorData.screenshots.length > 0
+        ) {
           for (const s of fullErrorData.screenshots) {
             if (s.base64Data) {
               userParts.push({
                 type: 'image_url',
-                image_url: { url: `data:image/png;base64,${s.base64Data}`, detail: 'high' }
+                image_url: {
+                  url: `data:image/png;base64,${s.base64Data}`,
+                  detail: 'high',
+                },
               });
-              userParts.push({ type: 'text', text: `Screenshot: ${s.name}${s.timestamp ? ` (at ${s.timestamp})` : ''}` });
+              userParts.push({
+                type: 'text',
+                text: `Screenshot: ${s.name}${
+                  s.timestamp ? ` (at ${s.timestamp})` : ''
+                }`,
+              });
             }
           }
         }
@@ -407,20 +622,22 @@ You MUST respond in strict JSON only with this schema:
           systemPrompt,
           userContent: userParts,
           responseAsJson: true,
-          temperature: 0.3
+          temperature: 0.3,
         });
 
         try {
           const recommendation = JSON.parse(content) as AIRecommendation;
           return recommendation;
         } catch (parseErr) {
-          core.warning(`Repair JSON parse failed, falling back to heuristic extraction: ${parseErr}`);
+          core.warning(
+            `Repair JSON parse failed, falling back to heuristic extraction: ${parseErr}`
+          );
           return {
             confidence: 60,
             reasoning: content,
             changes: this.extractChangesFromText(content, context),
             evidence: [],
-            rootCause: 'Derived from repair response text'
+            rootCause: 'Derived from repair response text',
           };
         }
       }
@@ -430,11 +647,13 @@ You MUST respond in strict JSON only with this schema:
         message: prompt,
         framework: 'cypress',
         testName: context.testName,
-        fileName: context.testFile
+        fileName: context.testFile,
       };
       const triageLike = await clientAny.analyze(errorData, []);
       try {
-        const recommendation = JSON.parse(triageLike.reasoning) as AIRecommendation;
+        const recommendation = JSON.parse(
+          triageLike.reasoning
+        ) as AIRecommendation;
         return recommendation;
       } catch {
         return {
@@ -442,7 +661,7 @@ You MUST respond in strict JSON only with this schema:
           reasoning: triageLike.reasoning,
           changes: this.extractChangesFromText(triageLike.reasoning, context),
           evidence: triageLike.indicators || [],
-          rootCause: 'Error pattern suggests test needs update'
+          rootCause: 'Error pattern suggests test needs update',
         };
       }
     } catch (error) {
@@ -454,7 +673,10 @@ You MUST respond in strict JSON only with this schema:
   /**
    * Extracts possible changes from text response
    */
-  private extractChangesFromText(_text: string, context: RepairContext): AIChange[] {
+  private extractChangesFromText(
+    _text: string,
+    context: RepairContext
+  ): AIChange[] {
     const changes = [];
 
     // If we have a selector error, suggest updating the selector
@@ -464,7 +686,8 @@ You MUST respond in strict JSON only with this schema:
         line: context.errorLine || 0,
         oldCode: context.errorSelector,
         newCode: '// TODO: Update selector to match current application',
-        justification: 'Selector not found - needs to be updated to match current DOM'
+        justification:
+          'Selector not found - needs to be updated to match current DOM',
       });
     }
 
@@ -474,8 +697,9 @@ You MUST respond in strict JSON only with this schema:
         file: context.testFile,
         line: context.errorLine || 0,
         oldCode: '// Timeout occurred here',
-        newCode: 'cy.wait(1000); // Consider adding explicit wait or retry logic',
-        justification: 'Adding wait time to handle slow-loading elements'
+        newCode:
+          'cy.wait(1000); // Consider adding explicit wait or retry logic',
+        justification: 'Adding wait time to handle slow-loading elements',
       });
     }
 
@@ -485,7 +709,10 @@ You MUST respond in strict JSON only with this schema:
   /**
    * Generates a human-readable summary of the fix
    */
-  private generateSummary(recommendation: AIRecommendation, context: RepairContext): string {
+  private generateSummary(
+    recommendation: AIRecommendation,
+    context: RepairContext
+  ): string {
     // Use consolidated summary generator (no code blocks for Slack compatibility)
     return generateFixSummary(recommendation, context, false);
   }

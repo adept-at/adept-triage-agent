@@ -23,6 +23,10 @@ export interface ApplyResult {
   commitSha?: string;
   /** Branch name that was created */
   branchName?: string;
+  /** Validation workflow run ID (if validation was triggered) */
+  validationRunId?: number;
+  /** Validation status */
+  validationStatus?: 'pending' | 'passed' | 'failed' | 'skipped';
 }
 
 /**
@@ -39,6 +43,24 @@ export interface FixApplierConfig {
   baseBranch: string;
   /** Minimum confidence threshold to apply fix */
   minConfidence: number;
+  /** Enable validation workflow trigger after fix is applied */
+  enableValidation?: boolean;
+  /** Validation workflow file name (e.g., 'validate-fix.yml') */
+  validationWorkflow?: string;
+}
+
+/**
+ * Parameters for triggering validation
+ */
+export interface ValidationParams {
+  /** Branch containing the fix */
+  branch: string;
+  /** Spec file to test */
+  spec: string;
+  /** Preview URL to test against */
+  previewUrl: string;
+  /** Original triage run ID for context */
+  triageRunId?: string;
 }
 
 /**
@@ -55,6 +77,14 @@ export interface FixApplier {
    * Creates a new branch, applies changes, commits, and pushes
    */
   applyFix(recommendation: FixRecommendation): Promise<ApplyResult>;
+
+  /**
+   * Trigger validation workflow to test the fix
+   * Returns the workflow run ID
+   */
+  triggerValidation(
+    params: ValidationParams
+  ): Promise<{ runId: number } | null>;
 }
 
 /**
@@ -70,7 +100,7 @@ const RETRY_CONFIG = {
  * Sleep for a specified number of milliseconds
  */
 function sleep(ms: number): Promise<void> {
-  return new Promise(resolve => setTimeout(resolve, ms));
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 /**
@@ -107,10 +137,7 @@ function isPermissionError(error: unknown): boolean {
 /**
  * Execute an async function with retry logic for rate limiting
  */
-async function withRetry<T>(
-  fn: () => Promise<T>,
-  context: string
-): Promise<T> {
+async function withRetry<T>(fn: () => Promise<T>, context: string): Promise<T> {
   let lastError: unknown;
 
   for (let attempt = 0; attempt < RETRY_CONFIG.maxRetries; attempt++) {
@@ -124,7 +151,11 @@ async function withRetry<T>(
           RETRY_CONFIG.baseDelayMs * Math.pow(2, attempt),
           RETRY_CONFIG.maxDelayMs
         );
-        core.warning(`Rate limited during ${context}, retrying in ${delay}ms (attempt ${attempt + 1}/${RETRY_CONFIG.maxRetries})`);
+        core.warning(
+          `Rate limited during ${context}, retrying in ${delay}ms (attempt ${
+            attempt + 1
+          }/${RETRY_CONFIG.maxRetries})`
+        );
         await sleep(delay);
         continue;
       }
@@ -177,7 +208,10 @@ export class GitHubFixApplier implements FixApplier {
       return false;
     }
 
-    if (!recommendation.proposedChanges || recommendation.proposedChanges.length === 0) {
+    if (
+      !recommendation.proposedChanges ||
+      recommendation.proposedChanges.length === 0
+    ) {
       core.info('No proposed changes in fix recommendation');
       return false;
     }
@@ -201,7 +235,10 @@ export class GitHubFixApplier implements FixApplier {
 
     try {
       // Validate proposed changes exist
-      if (!recommendation.proposedChanges || recommendation.proposedChanges.length === 0) {
+      if (
+        !recommendation.proposedChanges ||
+        recommendation.proposedChanges.length === 0
+      ) {
         return {
           success: false,
           modifiedFiles: [],
@@ -219,17 +256,21 @@ export class GitHubFixApplier implements FixApplier {
       let baseSha: string;
       try {
         const baseBranchRef = await withRetry(
-          () => octokit.git.getRef({
-            owner,
-            repo,
-            ref: `heads/${baseBranch}`,
-          }),
+          () =>
+            octokit.git.getRef({
+              owner,
+              repo,
+              ref: `heads/${baseBranch}`,
+            }),
           `getting base branch '${baseBranch}'`
         );
         baseSha = baseBranchRef.data.object.sha;
         core.debug(`Base branch ${baseBranch} SHA: ${baseSha}`);
       } catch (error) {
-        const errorMsg = getErrorMessage(error, `Base branch '${baseBranch}' in ${owner}/${repo}`);
+        const errorMsg = getErrorMessage(
+          error,
+          `Base branch '${baseBranch}' in ${owner}/${repo}`
+        );
         core.error(errorMsg);
         return {
           success: false,
@@ -241,28 +282,33 @@ export class GitHubFixApplier implements FixApplier {
       // Create the new branch
       try {
         await withRetry(
-          () => octokit.git.createRef({
-            owner,
-            repo,
-            ref: `refs/heads/${branchName}`,
-            sha: baseSha,
-          }),
-          'creating fix branch'
-        );
-        core.info(`Created branch: ${branchName}`);
-      } catch (error) {
-        // Check if branch already exists (unlikely with unique suffix, but possible)
-        if (error instanceof Error && error.message.includes('Reference already exists')) {
-          // Try with a more unique suffix
-          branchName = generateFixBranchName(testFile, new Date(), true);
-          core.info(`Branch exists, trying with unique name: ${branchName}`);
-          await withRetry(
-            () => octokit.git.createRef({
+          () =>
+            octokit.git.createRef({
               owner,
               repo,
               ref: `refs/heads/${branchName}`,
               sha: baseSha,
             }),
+          'creating fix branch'
+        );
+        core.info(`Created branch: ${branchName}`);
+      } catch (error) {
+        // Check if branch already exists (unlikely with unique suffix, but possible)
+        if (
+          error instanceof Error &&
+          error.message.includes('Reference already exists')
+        ) {
+          // Try with a more unique suffix
+          branchName = generateFixBranchName(testFile, new Date(), true);
+          core.info(`Branch exists, trying with unique name: ${branchName}`);
+          await withRetry(
+            () =>
+              octokit.git.createRef({
+                owner,
+                repo,
+                ref: `refs/heads/${branchName}`,
+                sha: baseSha,
+              }),
             'creating fix branch (retry with unique name)'
           );
           core.info(`Created branch: ${branchName}`);
@@ -278,27 +324,37 @@ export class GitHubFixApplier implements FixApplier {
         try {
           // Get the current file content from the new branch
           const fileResponse = await withRetry(
-            () => octokit.repos.getContent({
-              owner,
-              repo,
-              path: filePath,
-              ref: branchName,
-            }),
+            () =>
+              octokit.repos.getContent({
+                owner,
+                repo,
+                path: filePath,
+                ref: branchName,
+              }),
             `getting file content for ${filePath}`
           );
 
           // Ensure we got a file (not a directory)
-          if (Array.isArray(fileResponse.data) || fileResponse.data.type !== 'file') {
+          if (
+            Array.isArray(fileResponse.data) ||
+            fileResponse.data.type !== 'file'
+          ) {
             core.warning(`${filePath} is not a file, skipping`);
             continue;
           }
 
-          const currentContent = Buffer.from(fileResponse.data.content, 'base64').toString('utf-8');
+          const currentContent = Buffer.from(
+            fileResponse.data.content,
+            'base64'
+          ).toString('utf-8');
           const fileSha = fileResponse.data.sha;
 
           // Apply the change (simple string replacement - replaces first occurrence only)
           if (change.oldCode && change.newCode) {
-            const newContent = currentContent.replace(change.oldCode, change.newCode);
+            const newContent = currentContent.replace(
+              change.oldCode,
+              change.newCode
+            );
 
             if (newContent === currentContent) {
               core.warning(`Could not find old code to replace in ${filePath}`);
@@ -306,7 +362,10 @@ export class GitHubFixApplier implements FixApplier {
             }
 
             // Commit the change
-            const commitMessage = `fix(test): ${change.justification.slice(0, 50)}
+            const commitMessage = `fix(test): ${change.justification.slice(
+              0,
+              50
+            )}
 
 Automated fix generated by adept-triage-agent.
 
@@ -314,15 +373,16 @@ File: ${filePath}
 Confidence: ${recommendation.confidence}%`;
 
             const updateResponse = await withRetry(
-              () => octokit.repos.createOrUpdateFileContents({
-                owner,
-                repo,
-                path: filePath,
-                message: commitMessage,
-                content: Buffer.from(newContent).toString('base64'),
-                sha: fileSha,
-                branch: branchName,
-              }),
+              () =>
+                octokit.repos.createOrUpdateFileContents({
+                  owner,
+                  repo,
+                  path: filePath,
+                  message: commitMessage,
+                  content: Buffer.from(newContent).toString('base64'),
+                  sha: fileSha,
+                  branch: branchName,
+                }),
               `committing changes to ${filePath}`
             );
 
@@ -331,7 +391,9 @@ Confidence: ${recommendation.confidence}%`;
             if (commitSha) {
               lastCommitSha = commitSha;
             } else {
-              core.warning(`No commit SHA returned for ${filePath}, using previous value`);
+              core.warning(
+                `No commit SHA returned for ${filePath}, using previous value`
+              );
             }
 
             modifiedFiles.push(filePath);
@@ -385,7 +447,10 @@ Confidence: ${recommendation.confidence}%`;
   /**
    * Clean up a branch, logging any errors instead of silencing them
    */
-  private async cleanupBranch(branchName: string, reason: string): Promise<void> {
+  private async cleanupBranch(
+    branchName: string,
+    reason: string
+  ): Promise<void> {
     try {
       await this.config.octokit.git.deleteRef({
         owner: this.config.owner,
@@ -395,8 +460,111 @@ Confidence: ${recommendation.confidence}%`;
       core.debug(`Cleaned up branch ${branchName} (${reason})`);
     } catch (cleanupError) {
       // Log cleanup errors instead of silently ignoring
-      const errorMsg = cleanupError instanceof Error ? cleanupError.message : String(cleanupError);
+      const errorMsg =
+        cleanupError instanceof Error
+          ? cleanupError.message
+          : String(cleanupError);
       core.debug(`Failed to clean up branch ${branchName}: ${errorMsg}`);
+    }
+  }
+
+  /**
+   * Trigger validation workflow to test the fix
+   * Uses GitHub Actions workflow_dispatch to run the validate-fix workflow
+   */
+  async triggerValidation(
+    params: ValidationParams
+  ): Promise<{ runId: number } | null> {
+    const { octokit, owner, repo, validationWorkflow, enableValidation } =
+      this.config;
+
+    // Check if validation is enabled
+    if (!enableValidation) {
+      core.info('Validation is not enabled, skipping validation trigger');
+      return null;
+    }
+
+    const workflowFile = validationWorkflow || 'validate-fix.yml';
+
+    core.info(`Triggering validation workflow: ${workflowFile}`);
+    core.info(`  Branch: ${params.branch}`);
+    core.info(`  Spec: ${params.spec}`);
+    core.info(`  Preview URL: ${params.previewUrl}`);
+
+    try {
+      // Trigger the workflow
+      await withRetry(
+        () =>
+          octokit.actions.createWorkflowDispatch({
+            owner,
+            repo,
+            workflow_id: workflowFile,
+            ref: 'main', // Trigger from main branch, but test the fix branch
+            inputs: {
+              branch: params.branch,
+              spec: params.spec,
+              preview_url: params.previewUrl,
+              triage_run_id: params.triageRunId || '',
+              fix_branch_name: params.branch,
+            },
+          }),
+        'triggering validation workflow'
+      );
+
+      core.info('Validation workflow triggered successfully');
+
+      // Wait a moment for the workflow run to be created
+      await sleep(2000);
+
+      // Try to find the workflow run ID
+      const runs = await withRetry(
+        () =>
+          octokit.actions.listWorkflowRuns({
+            owner,
+            repo,
+            workflow_id: workflowFile,
+            branch: 'main',
+            per_page: 5,
+            status: 'queued',
+          }),
+        'listing workflow runs'
+      );
+
+      // Find the most recent run (should be the one we just triggered)
+      if (runs.data.workflow_runs.length > 0) {
+        const latestRun = runs.data.workflow_runs[0];
+        core.info(`Validation workflow run ID: ${latestRun.id}`);
+        core.info(`Validation workflow URL: ${latestRun.html_url}`);
+        return { runId: latestRun.id };
+      }
+
+      // If no queued runs, check in_progress
+      const inProgressRuns = await withRetry(
+        () =>
+          octokit.actions.listWorkflowRuns({
+            owner,
+            repo,
+            workflow_id: workflowFile,
+            branch: 'main',
+            per_page: 5,
+            status: 'in_progress',
+          }),
+        'listing in_progress workflow runs'
+      );
+
+      if (inProgressRuns.data.workflow_runs.length > 0) {
+        const latestRun = inProgressRuns.data.workflow_runs[0];
+        core.info(`Validation workflow run ID: ${latestRun.id}`);
+        core.info(`Validation workflow URL: ${latestRun.html_url}`);
+        return { runId: latestRun.id };
+      }
+
+      core.warning('Could not find validation workflow run ID');
+      return null;
+    } catch (error) {
+      const errorMsg = getErrorMessage(error, 'triggering validation workflow');
+      core.error(errorMsg);
+      return null;
     }
   }
 }
@@ -436,8 +604,10 @@ export function generateFixBranchName(
 /**
  * Generate a commit message for a fix
  */
-export function generateFixCommitMessage(recommendation: FixRecommendation): string {
-  const files = recommendation.proposedChanges.map(c => c.file).join(', ');
+export function generateFixCommitMessage(
+  recommendation: FixRecommendation
+): string {
+  const files = recommendation.proposedChanges.map((c) => c.file).join(', ');
   const summary = recommendation.summary.slice(0, 50);
 
   return `fix(test): ${summary}

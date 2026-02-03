@@ -49,7 +49,7 @@ export declare const ERROR_TYPES: {
     readonly INVALID_ELEMENT_TYPE: "INVALID_ELEMENT_TYPE";
     readonly UNKNOWN: "UNKNOWN";
 };
-export type ErrorType = typeof ERROR_TYPES[keyof typeof ERROR_TYPES];
+export type ErrorType = (typeof ERROR_TYPES)[keyof typeof ERROR_TYPES];
 export declare const TEST_ISSUE_CATEGORIES: {
     readonly ELEMENT_NOT_FOUND: "ELEMENT_NOT_FOUND";
     readonly TIMEOUT: "TIMEOUT";
@@ -58,9 +58,19 @@ export declare const TEST_ISSUE_CATEGORIES: {
     readonly NETWORK: "NETWORK";
     readonly UNKNOWN: "UNKNOWN";
 };
-export type TestIssueCategory = typeof TEST_ISSUE_CATEGORIES[keyof typeof TEST_ISSUE_CATEGORIES];
+export type TestIssueCategory = (typeof TEST_ISSUE_CATEGORIES)[keyof typeof TEST_ISSUE_CATEGORIES];
 export declare const AUTO_FIX: {
     readonly DEFAULT_MIN_CONFIDENCE: 70;
     readonly BRANCH_PREFIX: "fix/triage-agent/";
+};
+export declare const AGENT_CONFIG: {
+    readonly ENABLE_AGENTIC_REPAIR: boolean;
+    readonly MAX_AGENT_ITERATIONS: 3;
+    readonly AGENT_TIMEOUT_MS: 120000;
+    readonly INDIVIDUAL_AGENT_TIMEOUT_MS: 60000;
+    readonly REVIEW_REQUIRED_CONFIDENCE: 70;
+    readonly AGENT_TEMPERATURE: 0.3;
+    readonly AGENT_MAX_TOKENS: 4000;
+    readonly FALLBACK_TO_SINGLE_SHOT: true;
 };
 //# sourceMappingURL=constants.d.ts.map

@@ -95,7 +95,7 @@ export const ERROR_TYPES = {
   UNKNOWN: 'UNKNOWN',
 } as const;
 
-export type ErrorType = typeof ERROR_TYPES[keyof typeof ERROR_TYPES];
+export type ErrorType = (typeof ERROR_TYPES)[keyof typeof ERROR_TYPES];
 
 /** Test issue categories for classification */
 export const TEST_ISSUE_CATEGORIES = {
@@ -107,7 +107,8 @@ export const TEST_ISSUE_CATEGORIES = {
   UNKNOWN: 'UNKNOWN',
 } as const;
 
-export type TestIssueCategory = typeof TEST_ISSUE_CATEGORIES[keyof typeof TEST_ISSUE_CATEGORIES];
+export type TestIssueCategory =
+  (typeof TEST_ISSUE_CATEGORIES)[keyof typeof TEST_ISSUE_CATEGORIES];
 
 /** Auto-fix feature configuration */
 export const AUTO_FIX = {
@@ -115,4 +116,24 @@ export const AUTO_FIX = {
   DEFAULT_MIN_CONFIDENCE: 70,
   /** Branch prefix for auto-fix branches */
   BRANCH_PREFIX: 'fix/triage-agent/',
+} as const;
+
+/** Agentic repair system configuration */
+export const AGENT_CONFIG = {
+  /** Enable multi-agent repair approach */
+  ENABLE_AGENTIC_REPAIR: process.env.ENABLE_AGENTIC_REPAIR === 'true' || false,
+  /** Maximum iterations for the fix generation/review loop */
+  MAX_AGENT_ITERATIONS: 3,
+  /** Total timeout for the entire agent orchestration (2 minutes) */
+  AGENT_TIMEOUT_MS: 120_000,
+  /** Individual agent timeout */
+  INDIVIDUAL_AGENT_TIMEOUT_MS: 60_000,
+  /** Minimum confidence required to accept a fix from review agent */
+  REVIEW_REQUIRED_CONFIDENCE: 70,
+  /** Temperature for agent AI calls */
+  AGENT_TEMPERATURE: 0.3,
+  /** Maximum tokens for agent responses */
+  AGENT_MAX_TOKENS: 4000,
+  /** Whether to fall back to single-shot if agentic fails */
+  FALLBACK_TO_SINGLE_SHOT: true,
 } as const;

@@ -95,6 +95,10 @@ export interface ActionInputs {
     autoFixMinConfidence?: number;
     autoFixTargetRepo?: string;
     branch?: string;
+    enableValidation?: boolean;
+    validationWorkflow?: string;
+    validationPreviewUrl?: string;
+    validationSpec?: string;
 }
 export interface PRDiff {
     files: PRDiffFile[];

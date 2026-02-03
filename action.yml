@@ -63,6 +63,20 @@ inputs:
     description: 'Repository where fix branch should be created (owner/repo format). Use this when test code lives in a different repo than REPOSITORY.'
     required: false
     default: ${{ github.repository }}
+  ENABLE_VALIDATION:
+    description: 'Enable validation workflow trigger after fix is applied'
+    required: false
+    default: 'false'
+  VALIDATION_WORKFLOW:
+    description: 'Name of the validation workflow file (e.g., validate-fix.yml)'
+    required: false
+    default: 'validate-fix.yml'
+  VALIDATION_PREVIEW_URL:
+    description: 'Preview URL for validation tests (if different from original)'
+    required: false
+  VALIDATION_SPEC:
+    description: 'Spec file for validation tests (if different from detected)'
+    required: false
 
 outputs:
   verdict:
@@ -95,6 +109,12 @@ outputs:
     description: 'SHA of the fix commit (if auto-fix applied)'
   auto_fix_files:
     description: 'JSON array of modified files (if auto-fix applied)'
+  validation_run_id:
+    description: 'Workflow run ID of the validation workflow (if triggered)'
+  validation_status:
+    description: 'Validation status: pending, passed, failed, or skipped'
+  validation_url:
+    description: 'URL to the validation workflow run (if triggered)'
 
 runs:
   using: 'node20'

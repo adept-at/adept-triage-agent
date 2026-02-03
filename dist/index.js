@@ -1,6 +1,1529 @@
 require('./sourcemap-register.js');/******/ (() => { // webpackBootstrap
 /******/ 	var __webpack_modules__ = ({
 
+/***/ 4674:
+/***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
+
+"use strict";
+
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.AgentOrchestrator = exports.DEFAULT_ORCHESTRATOR_CONFIG = void 0;
+exports.createOrchestrator = createOrchestrator;
+const core = __importStar(__nccwpck_require__(7484));
+const analysis_agent_1 = __nccwpck_require__(7216);
+const code_reading_agent_1 = __nccwpck_require__(8410);
+const investigation_agent_1 = __nccwpck_require__(7581);
+const fix_generation_agent_1 = __nccwpck_require__(9302);
+const review_agent_1 = __nccwpck_require__(1218);
+exports.DEFAULT_ORCHESTRATOR_CONFIG = {
+    maxIterations: 3,
+    totalTimeoutMs: 120000,
+    minConfidence: 70,
+    requireReview: true,
+    fallbackToSingleShot: true,
+};
+class AgentOrchestrator {
+    config;
+    analysisAgent;
+    codeReadingAgent;
+    investigationAgent;
+    fixGenerationAgent;
+    reviewAgent;
+    constructor(openaiClient, config = {}, sourceFetchContext) {
+        this.config = { ...exports.DEFAULT_ORCHESTRATOR_CONFIG, ...config };
+        this.analysisAgent = new analysis_agent_1.AnalysisAgent(openaiClient);
+        this.codeReadingAgent = new code_reading_agent_1.CodeReadingAgent(openaiClient, sourceFetchContext);
+        this.investigationAgent = new investigation_agent_1.InvestigationAgent(openaiClient);
+        this.fixGenerationAgent = new fix_generation_agent_1.FixGenerationAgent(openaiClient);
+        this.reviewAgent = new review_agent_1.ReviewAgent(openaiClient);
+    }
+    async orchestrate(context, errorData) {
+        const startTime = Date.now();
+        const agentResults = {};
+        let iterations = 0;
+        core.info('🤖 Starting agentic repair pipeline...');
+        try {
+            const timeoutPromise = new Promise((_, reject) => {
+                setTimeout(() => {
+                    reject(new Error(`Orchestration timed out after ${this.config.totalTimeoutMs}ms`));
+                }, this.config.totalTimeoutMs);
+            });
+            const pipelinePromise = this.runPipeline(context, errorData, agentResults);
+            const result = await Promise.race([pipelinePromise, timeoutPromise]);
+            iterations = result.iterations;
+            const totalTimeMs = Date.now() - startTime;
+            if (result.fix) {
+                core.info(`✅ Agentic repair completed in ${totalTimeMs}ms with ${iterations} iteration(s)`);
+                return {
+                    success: true,
+                    fix: result.fix,
+                    totalTimeMs,
+                    iterations,
+                    approach: 'agentic',
+                    agentResults,
+                };
+            }
+            if (this.config.fallbackToSingleShot) {
+                core.warning('Agentic approach failed, falling back to single-shot...');
+                return {
+                    success: false,
+                    error: result.error || 'Agentic approach did not produce a valid fix',
+                    totalTimeMs,
+                    iterations,
+                    approach: 'single-shot',
+                    agentResults,
+                };
+            }
+            return {
+                success: false,
+                error: result.error || 'Agentic approach did not produce a valid fix',
+                totalTimeMs,
+                iterations,
+                approach: 'failed',
+                agentResults,
+            };
+        }
+        catch (error) {
+            const totalTimeMs = Date.now() - startTime;
+            const errorMessage = error instanceof Error ? error.message : String(error);
+            core.error(`Orchestration failed: ${errorMessage}`);
+            return {
+                success: false,
+                error: errorMessage,
+                totalTimeMs,
+                iterations,
+                approach: 'failed',
+                agentResults,
+            };
+        }
+    }
+    async runPipeline(context, _errorData, agentResults) {
+        let iterations = 0;
+        core.info('📊 Step 1: Running Analysis Agent...');
+        const analysisResult = await this.analysisAgent.execute({}, context);
+        agentResults.analysis = analysisResult;
+        if (!analysisResult.success || !analysisResult.data) {
+            return {
+                error: `Analysis agent failed: ${analysisResult.error}`,
+                iterations,
+            };
+        }
+        const analysis = analysisResult.data;
+        core.info(`   Root cause: ${analysis.rootCauseCategory}`);
+        core.info(`   Confidence: ${analysis.confidence}%`);
+        core.info('📖 Step 2: Running Code Reading Agent...');
+        const codeReadingResult = await this.codeReadingAgent.execute({
+            testFile: context.testFile,
+            errorSelectors: analysis.selectors,
+        }, context);
+        agentResults.codeReading = codeReadingResult;
+        if (codeReadingResult.success && codeReadingResult.data) {
+            context.sourceFileContent = codeReadingResult.data.testFileContent;
+            context.relatedFiles = new Map(codeReadingResult.data.relatedFiles.map((f) => [f.path, f.content]));
+            core.info(`   Fetched ${codeReadingResult.data.relatedFiles.length + 1} files`);
+        }
+        core.info('🔍 Step 3: Running Investigation Agent...');
+        const investigationResult = await this.investigationAgent.execute({
+            analysis,
+            codeContext: codeReadingResult.data,
+        }, context);
+        agentResults.investigation = investigationResult;
+        if (!investigationResult.success || !investigationResult.data) {
+            return {
+                error: `Investigation agent failed: ${investigationResult.error}`,
+                iterations,
+            };
+        }
+        const investigation = investigationResult.data;
+        core.info(`   Findings: ${investigation.findings.length}`);
+        core.info(`   Recommended approach: ${investigation.recommendedApproach}`);
+        let lastFix = null;
+        let reviewFeedback = null;
+        while (iterations < this.config.maxIterations) {
+            iterations++;
+            core.info(`🔧 Step 4: Running Fix Generation Agent (iteration ${iterations})...`);
+            const fixGenResult = await this.fixGenerationAgent.execute({
+                analysis,
+                investigation,
+                previousFeedback: reviewFeedback,
+            }, context);
+            agentResults.fixGeneration = fixGenResult;
+            if (!fixGenResult.success || !fixGenResult.data) {
+                core.warning(`Fix generation failed on iteration ${iterations}`);
+                continue;
+            }
+            lastFix = fixGenResult.data;
+            core.info(`   Confidence: ${lastFix.confidence}%`);
+            core.info(`   Changes: ${lastFix.changes.length}`);
+            if (lastFix.confidence < this.config.minConfidence) {
+                core.warning(`Fix confidence (${lastFix.confidence}%) below threshold (${this.config.minConfidence}%)`);
+                reviewFeedback = `Confidence too low (${lastFix.confidence}%). Please improve the fix.`;
+                continue;
+            }
+            if (this.config.requireReview) {
+                core.info('✅ Step 5: Running Review Agent...');
+                const reviewResult = await this.reviewAgent.execute({
+                    proposedFix: lastFix,
+                    analysis,
+                    codeContext: codeReadingResult.data,
+                }, context);
+                agentResults.review = reviewResult;
+                if (reviewResult.success && reviewResult.data) {
+                    const review = reviewResult.data;
+                    core.info(`   Approved: ${review.approved}`);
+                    core.info(`   Issues: ${review.issues.length}`);
+                    if (review.approved) {
+                        return {
+                            fix: this.convertToFixRecommendation(lastFix),
+                            iterations,
+                        };
+                    }
+                    else {
+                        reviewFeedback = review.issues
+                            .map((i) => `[${i.severity}] ${i.description}`)
+                            .join('\n');
+                        core.warning(`Fix not approved. Issues: ${review.issues.length}`);
+                    }
+                }
+            }
+            else {
+                return {
+                    fix: this.convertToFixRecommendation(lastFix),
+                    iterations,
+                };
+            }
+        }
+        if (lastFix && lastFix.confidence >= this.config.minConfidence) {
+            core.warning('Max iterations reached, returning best fix');
+            return {
+                fix: this.convertToFixRecommendation(lastFix),
+                iterations,
+            };
+        }
+        return {
+            error: `Max iterations (${this.config.maxIterations}) reached without valid fix`,
+            iterations,
+        };
+    }
+    convertToFixRecommendation(fix) {
+        return {
+            confidence: fix.confidence,
+            summary: fix.summary,
+            proposedChanges: fix.changes.map((change) => ({
+                file: change.file,
+                line: change.line,
+                oldCode: change.oldCode,
+                newCode: change.newCode,
+                justification: change.justification,
+            })),
+            evidence: fix.evidence,
+            reasoning: fix.reasoning,
+        };
+    }
+}
+exports.AgentOrchestrator = AgentOrchestrator;
+function createOrchestrator(openaiClient, config, sourceFetchContext) {
+    return new AgentOrchestrator(openaiClient, config, sourceFetchContext);
+}
+//# sourceMappingURL=agent-orchestrator.js.map
+
+/***/ }),
+
+/***/ 7216:
+/***/ ((__unused_webpack_module, exports, __nccwpck_require__) => {
+
+"use strict";
+
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.AnalysisAgent = void 0;
+const base_agent_1 = __nccwpck_require__(6575);
+class AnalysisAgent extends base_agent_1.BaseAgent {
+    constructor(openaiClient, config) {
+        super(openaiClient, 'AnalysisAgent', config);
+    }
+    async execute(input, context) {
+        return this.executeWithTimeout(input, context);
+    }
+    getSystemPrompt() {
+        return `You are an expert test failure analyst specializing in Cypress and end-to-end tests.
+
+Your job is to analyze test failures and identify the root cause with high precision.
+
+## Root Cause Categories
+
+- SELECTOR_MISMATCH: The selector used in the test doesn't match any element or matches the wrong element. This includes:
+  - Changed class names, IDs, or data attributes
+  - Missing elements
+  - Elements moved to different locations in the DOM
+  - Responsive design changes affecting element presence
+
+- TIMING_ISSUE: The test has timing problems. This includes:
+  - Race conditions between test and application
+  - Insufficient waits for async operations
+  - Animation timing
+  - Network request timing
+
+- STATE_DEPENDENCY: The test depends on application state that isn't properly set up. This includes:
+  - Missing login state
+  - Incorrect initial data
+  - Previous test side effects
+
+- NETWORK_ISSUE: Problems with network requests. This includes:
+  - Failed API calls
+  - Timeout on network requests
+  - Unexpected response data
+
+- ELEMENT_VISIBILITY: Element exists but isn't visible or interactable. This includes:
+  - Element hidden behind another element
+  - Element outside viewport
+  - Element with visibility: hidden or display: none
+  - Element covered by modal/overlay
+
+- ASSERTION_MISMATCH: The assertion logic is incorrect. This includes:
+  - Wrong expected values
+  - Incorrect assertion method
+  - Partial match needed instead of exact match
+
+- DATA_DEPENDENCY: Test depends on specific data that has changed or doesn't exist.
+
+- ENVIRONMENT_ISSUE: Problems with test environment, not the test or app itself.
+
+- UNKNOWN: Cannot determine root cause from available information.
+
+## Output Format
+
+You MUST respond with a JSON object matching this schema:
+{
+  "rootCauseCategory": "<one of the categories above>",
+  "contributingFactors": ["<additional categories that may contribute>"],
+  "confidence": <number 0-100>,
+  "explanation": "<detailed explanation>",
+  "selectors": ["<list of all selectors found in the error>"],
+  "elements": ["<list of element descriptions mentioned>"],
+  "issueLocation": "<TEST_CODE|APP_CODE|BOTH|UNKNOWN>",
+  "patterns": {
+    "hasTimeout": <boolean>,
+    "hasVisibilityIssue": <boolean>,
+    "hasNetworkCall": <boolean>,
+    "hasStateAssertion": <boolean>,
+    "hasDynamicContent": <boolean>,
+    "hasResponsiveIssue": <boolean>
+  },
+  "suggestedApproach": "<one sentence describing the likely fix>"
+}`;
+    }
+    buildUserPrompt(input, context) {
+        const parts = [
+            '## Error Analysis Request',
+            '',
+            '### Test Information',
+            `- **Test File:** ${context.testFile}`,
+            `- **Test Name:** ${context.testName}`,
+            context.errorType ? `- **Error Type:** ${context.errorType}` : '',
+            context.errorSelector
+                ? `- **Failed Selector:** ${context.errorSelector}`
+                : '',
+            '',
+            '### Error Message',
+            '```',
+            context.errorMessage,
+            '```',
+        ];
+        if (context.stackTrace) {
+            parts.push('', '### Stack Trace', '```', context.stackTrace.slice(0, 2000), '```');
+        }
+        if (context.logs && context.logs.length > 0) {
+            const logsText = context.logs.join('\n').slice(0, 3000);
+            parts.push('', '### Relevant Logs', '```', logsText, '```');
+        }
+        if (context.prDiff && context.prDiff.files.length > 0) {
+            const changedFiles = context.prDiff.files
+                .map((f) => `- ${f.filename} (${f.status})`)
+                .join('\n');
+            parts.push('', '### Recent Changes (PR Diff)', changedFiles);
+        }
+        if (input.additionalContext) {
+            parts.push('', '### Additional Context', input.additionalContext);
+        }
+        if (context.screenshots && context.screenshots.length > 0) {
+            parts.push('', '### Screenshots', `${context.screenshots.length} screenshot(s) attached. Analyze them for visual cues about the failure.`);
+        }
+        parts.push('', '## Instructions', 'Analyze the above information and provide your root cause analysis in the required JSON format.', 'Consider all available evidence including error messages, stack traces, logs, and screenshots.', 'Be specific about which selectors are problematic and why.');
+        return parts.filter(Boolean).join('\n');
+    }
+    parseResponse(response) {
+        try {
+            const jsonMatch = response.match(/\{[\s\S]*\}/);
+            if (!jsonMatch) {
+                this.log('No JSON found in response', 'warning');
+                return null;
+            }
+            const parsed = JSON.parse(jsonMatch[0]);
+            if (!parsed.rootCauseCategory || typeof parsed.confidence !== 'number') {
+                this.log('Missing required fields in response', 'warning');
+                return null;
+            }
+            const selectors = Array.isArray(parsed.selectors) ? parsed.selectors : [];
+            const elements = Array.isArray(parsed.elements) ? parsed.elements : [];
+            const contributingFactors = Array.isArray(parsed.contributingFactors)
+                ? parsed.contributingFactors
+                : [];
+            return {
+                rootCauseCategory: parsed.rootCauseCategory,
+                contributingFactors: contributingFactors,
+                confidence: parsed.confidence,
+                explanation: parsed.explanation || '',
+                selectors,
+                elements,
+                issueLocation: parsed.issueLocation || 'UNKNOWN',
+                patterns: {
+                    hasTimeout: !!parsed.patterns?.hasTimeout,
+                    hasVisibilityIssue: !!parsed.patterns?.hasVisibilityIssue,
+                    hasNetworkCall: !!parsed.patterns?.hasNetworkCall,
+                    hasStateAssertion: !!parsed.patterns?.hasStateAssertion,
+                    hasDynamicContent: !!parsed.patterns?.hasDynamicContent,
+                    hasResponsiveIssue: !!parsed.patterns?.hasResponsiveIssue,
+                },
+                suggestedApproach: parsed.suggestedApproach || '',
+            };
+        }
+        catch (error) {
+            this.log(`Failed to parse response: ${error}`, 'warning');
+            return null;
+        }
+    }
+}
+exports.AnalysisAgent = AnalysisAgent;
+//# sourceMappingURL=analysis-agent.js.map
+
+/***/ }),
+
+/***/ 6575:
+/***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
+
+"use strict";
+
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.BaseAgent = exports.DEFAULT_AGENT_CONFIG = void 0;
+exports.createAgentContext = createAgentContext;
+const core = __importStar(__nccwpck_require__(7484));
+exports.DEFAULT_AGENT_CONFIG = {
+    timeoutMs: 60000,
+    temperature: 0.3,
+    maxTokens: 4000,
+    verbose: false,
+};
+class BaseAgent {
+    openaiClient;
+    config;
+    agentName;
+    constructor(openaiClient, agentName, config = {}) {
+        this.openaiClient = openaiClient;
+        this.agentName = agentName;
+        this.config = { ...exports.DEFAULT_AGENT_CONFIG, ...config };
+    }
+    async executeWithTimeout(input, context) {
+        const startTime = Date.now();
+        let apiCalls = 0;
+        try {
+            core.info(`[${this.agentName}] Starting execution...`);
+            const timeoutPromise = new Promise((_, reject) => {
+                setTimeout(() => {
+                    reject(new Error(`Agent timed out after ${this.config.timeoutMs}ms`));
+                }, this.config.timeoutMs);
+            });
+            const taskPromise = this.runAgentTask(input, context);
+            apiCalls++;
+            const result = await Promise.race([taskPromise, timeoutPromise]);
+            const executionTimeMs = Date.now() - startTime;
+            core.info(`[${this.agentName}] Completed in ${executionTimeMs}ms`);
+            return {
+                success: true,
+                data: result,
+                executionTimeMs,
+                apiCalls,
+            };
+        }
+        catch (error) {
+            const executionTimeMs = Date.now() - startTime;
+            const errorMessage = error instanceof Error ? error.message : String(error);
+            core.warning(`[${this.agentName}] Failed: ${errorMessage}`);
+            return {
+                success: false,
+                error: errorMessage,
+                executionTimeMs,
+                apiCalls,
+            };
+        }
+    }
+    async runAgentTask(input, context) {
+        const systemPrompt = this.getSystemPrompt();
+        const userPrompt = this.buildUserPrompt(input, context);
+        if (this.config.verbose) {
+            core.debug(`[${this.agentName}] System prompt: ${systemPrompt.slice(0, 200)}...`);
+            core.debug(`[${this.agentName}] User prompt: ${userPrompt.slice(0, 200)}...`);
+        }
+        const content = [{ type: 'text', text: userPrompt }];
+        if (context.screenshots && context.screenshots.length > 0) {
+            for (const screenshot of context.screenshots) {
+                if (screenshot.base64Data) {
+                    content.push({
+                        type: 'image_url',
+                        image_url: {
+                            url: `data:image/png;base64,${screenshot.base64Data}`,
+                        },
+                    });
+                }
+            }
+        }
+        const response = await this.openaiClient.generateWithCustomPrompt({
+            systemPrompt,
+            userContent: content,
+            temperature: this.config.temperature,
+            responseAsJson: true,
+        });
+        const parsed = this.parseResponse(response);
+        if (!parsed) {
+            throw new Error('Failed to parse agent response');
+        }
+        return parsed;
+    }
+    log(message, level = 'info') {
+        const formattedMessage = `[${this.agentName}] ${message}`;
+        switch (level) {
+            case 'debug':
+                if (this.config.verbose) {
+                    core.debug(formattedMessage);
+                }
+                break;
+            case 'warning':
+                core.warning(formattedMessage);
+                break;
+            default:
+                core.info(formattedMessage);
+        }
+    }
+}
+exports.BaseAgent = BaseAgent;
+function createAgentContext(params) {
+    return {
+        errorMessage: params.errorMessage,
+        testFile: params.testFile,
+        testName: params.testName,
+        errorType: params.errorType,
+        errorSelector: params.errorSelector,
+        stackTrace: params.stackTrace,
+        screenshots: params.screenshots,
+        logs: params.logs,
+        prDiff: params.prDiff,
+    };
+}
+//# sourceMappingURL=base-agent.js.map
+
+/***/ }),
+
+/***/ 8410:
+/***/ ((__unused_webpack_module, exports, __nccwpck_require__) => {
+
+"use strict";
+
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.CodeReadingAgent = void 0;
+const base_agent_1 = __nccwpck_require__(6575);
+class CodeReadingAgent extends base_agent_1.BaseAgent {
+    sourceFetchContext;
+    constructor(openaiClient, sourceFetchContext, config) {
+        super(openaiClient, 'CodeReadingAgent', config);
+        this.sourceFetchContext = sourceFetchContext;
+    }
+    async execute(input, context) {
+        const startTime = Date.now();
+        let apiCalls = 0;
+        try {
+            this.log('Starting code reading...');
+            let testFileContent = context.sourceFileContent || '';
+            if (!testFileContent && this.sourceFetchContext) {
+                testFileContent = await this.fetchFile(input.testFile);
+                apiCalls++;
+            }
+            if (!testFileContent) {
+                return {
+                    success: false,
+                    error: 'Could not fetch test file content',
+                    executionTimeMs: Date.now() - startTime,
+                    apiCalls,
+                };
+            }
+            const relatedFiles = [];
+            const customCommands = [];
+            const pageObjects = [];
+            const imports = this.extractImports(testFileContent);
+            const helperCalls = this.extractHelperCalls(testFileContent);
+            const pageObjectRefs = this.extractPageObjectReferences(testFileContent);
+            const supportFiles = await this.findAndFetchSupportFiles(input.testFile, imports, helperCalls);
+            for (const [path, content] of supportFiles) {
+                relatedFiles.push({
+                    path,
+                    content,
+                    relevance: 'Helper/support file',
+                });
+                apiCalls++;
+                const commands = this.extractCustomCommands(content, path);
+                customCommands.push(...commands);
+            }
+            for (const pageObjRef of pageObjectRefs) {
+                const pageObjFile = await this.findPageObjectFile(pageObjRef, input.testFile);
+                if (pageObjFile) {
+                    const content = await this.fetchFile(pageObjFile);
+                    apiCalls++;
+                    if (content) {
+                        relatedFiles.push({
+                            path: pageObjFile,
+                            content,
+                            relevance: 'Page object file',
+                        });
+                        pageObjects.push({
+                            name: pageObjRef,
+                            file: pageObjFile,
+                            selectors: this.extractSelectorsFromCode(content),
+                        });
+                    }
+                }
+            }
+            if (input.errorSelectors && context.prDiff) {
+                for (const file of context.prDiff.files) {
+                    if (this.isRelevantFile(file.filename, input.errorSelectors)) {
+                        const content = await this.fetchFile(file.filename);
+                        apiCalls++;
+                        if (content) {
+                            relatedFiles.push({
+                                path: file.filename,
+                                content: content.slice(0, 5000),
+                                relevance: 'File from PR diff that may contain relevant selectors',
+                            });
+                        }
+                    }
+                }
+            }
+            const summary = this.buildSummary(testFileContent, relatedFiles, customCommands, pageObjects);
+            return {
+                success: true,
+                data: {
+                    testFileContent,
+                    relatedFiles,
+                    customCommands,
+                    pageObjects,
+                    summary,
+                },
+                executionTimeMs: Date.now() - startTime,
+                apiCalls,
+            };
+        }
+        catch (error) {
+            const errorMessage = error instanceof Error ? error.message : String(error);
+            this.log(`Failed: ${errorMessage}`, 'warning');
+            return {
+                success: false,
+                error: errorMessage,
+                executionTimeMs: Date.now() - startTime,
+                apiCalls,
+            };
+        }
+    }
+    getSystemPrompt() {
+        return '';
+    }
+    buildUserPrompt(_input, _context) {
+        return '';
+    }
+    parseResponse(_response) {
+        return null;
+    }
+    async fetchFile(path) {
+        if (!this.sourceFetchContext) {
+            return '';
+        }
+        const { octokit, owner, repo, branch } = this.sourceFetchContext;
+        try {
+            const response = await octokit.repos.getContent({
+                owner,
+                repo,
+                path,
+                ref: branch,
+            });
+            if ('content' in response.data) {
+                return Buffer.from(response.data.content, 'base64').toString('utf-8');
+            }
+        }
+        catch (error) {
+            this.log(`Could not fetch ${path}: ${error}`, 'debug');
+        }
+        return '';
+    }
+    extractImports(code) {
+        const imports = [];
+        const es6Regex = /import\s+(?:(?:\{[^}]+\}|\*\s+as\s+\w+|\w+)\s+from\s+)?['"]([^'"]+)['"]/g;
+        let match;
+        while ((match = es6Regex.exec(code)) !== null) {
+            imports.push(match[1]);
+        }
+        const requireRegex = /require\s*\(\s*['"]([^'"]+)['"]\s*\)/g;
+        while ((match = requireRegex.exec(code)) !== null) {
+            imports.push(match[1]);
+        }
+        return imports;
+    }
+    extractHelperCalls(code) {
+        const helpers = [];
+        const customCmdRegex = /cy\.(\w+)\s*\(/g;
+        const standardCommands = new Set([
+            'get',
+            'find',
+            'contains',
+            'click',
+            'type',
+            'should',
+            'wait',
+            'visit',
+            'request',
+            'intercept',
+            'wrap',
+            'then',
+            'its',
+            'invoke',
+            'log',
+            'pause',
+            'debug',
+            'scrollTo',
+            'scrollIntoView',
+            'focus',
+            'blur',
+            'clear',
+            'submit',
+            'select',
+            'check',
+            'uncheck',
+            'trigger',
+            'readFile',
+            'writeFile',
+            'fixture',
+            'task',
+            'exec',
+            'screenshot',
+            'viewport',
+            'clearCookies',
+            'clearLocalStorage',
+            'getCookies',
+            'setCookie',
+            'getCookie',
+            'hash',
+            'location',
+            'url',
+            'title',
+            'document',
+            'window',
+            'root',
+            'within',
+            'as',
+            'clock',
+            'tick',
+            'stub',
+            'spy',
+            'reload',
+            'go',
+            'session',
+            'origin',
+        ]);
+        let match;
+        while ((match = customCmdRegex.exec(code)) !== null) {
+            if (!standardCommands.has(match[1])) {
+                helpers.push(match[1]);
+            }
+        }
+        return [...new Set(helpers)];
+    }
+    extractPageObjectReferences(code) {
+        const pageObjects = [];
+        const patterns = [/(\w+Page)\./g, /(\w+PageObject)\./g, /(\w+PO)\./g];
+        for (const pattern of patterns) {
+            let match;
+            while ((match = pattern.exec(code)) !== null) {
+                pageObjects.push(match[1]);
+            }
+        }
+        return [...new Set(pageObjects)];
+    }
+    async findAndFetchSupportFiles(testFile, imports, _helperCalls) {
+        const files = new Map();
+        const testDir = testFile.split('/').slice(0, -1).join('/');
+        const supportPaths = [
+            'cypress/support/commands.js',
+            'cypress/support/commands.ts',
+            'cypress/support/e2e.js',
+            'cypress/support/e2e.ts',
+            'cypress/support/index.js',
+            'cypress/support/index.ts',
+        ];
+        for (const path of supportPaths) {
+            const content = await this.fetchFile(path);
+            if (content) {
+                files.set(path, content);
+            }
+        }
+        for (const imp of imports) {
+            if (imp.startsWith('.')) {
+                const resolvedPath = this.resolveRelativePath(testDir, imp);
+                const extensions = [
+                    '',
+                    '.js',
+                    '.ts',
+                    '.jsx',
+                    '.tsx',
+                    '/index.js',
+                    '/index.ts',
+                ];
+                for (const ext of extensions) {
+                    const fullPath = resolvedPath + ext;
+                    const content = await this.fetchFile(fullPath);
+                    if (content) {
+                        files.set(fullPath, content);
+                        break;
+                    }
+                }
+            }
+        }
+        return files;
+    }
+    async findPageObjectFile(pageObjectName, testFile) {
+        const testDir = testFile.split('/').slice(0, -1).join('/');
+        const kebabCase = pageObjectName
+            .replace(/([a-z])([A-Z])/g, '$1-$2')
+            .toLowerCase();
+        const possiblePaths = [
+            `${testDir}/page-objects/${kebabCase}.ts`,
+            `${testDir}/page-objects/${kebabCase}.js`,
+            `${testDir}/pages/${kebabCase}.ts`,
+            `${testDir}/pages/${kebabCase}.js`,
+            `cypress/page-objects/${kebabCase}.ts`,
+            `cypress/page-objects/${kebabCase}.js`,
+            `cypress/pages/${kebabCase}.ts`,
+            `cypress/pages/${kebabCase}.js`,
+        ];
+        for (const path of possiblePaths) {
+            const content = await this.fetchFile(path);
+            if (content) {
+                return path;
+            }
+        }
+        return null;
+    }
+    extractCustomCommands(code, file) {
+        const commands = [];
+        const addCmdRegex = /Cypress\.Commands\.add\s*\(\s*['"](\w+)['"]/g;
+        let match;
+        while ((match = addCmdRegex.exec(code)) !== null) {
+            commands.push({
+                name: match[1],
+                file,
+                definition: this.extractFunctionDefinition(code, match.index),
+            });
+        }
+        return commands;
+    }
+    extractSelectorsFromCode(code) {
+        const selectors = [];
+        const getRegex = /cy\.get\s*\(\s*['"`]([^'"`]+)['"`]/g;
+        let match;
+        while ((match = getRegex.exec(code)) !== null) {
+            selectors.push(match[1]);
+        }
+        const testidRegex = /\[data-testid=["']([^"']+)["']\]/g;
+        while ((match = testidRegex.exec(code)) !== null) {
+            selectors.push(`[data-testid="${match[1]}"]`);
+        }
+        return [...new Set(selectors)];
+    }
+    isRelevantFile(filename, _selectors) {
+        if (/\.(tsx?|jsx?|vue|svelte)$/.test(filename)) {
+            return true;
+        }
+        if (/\.(css|scss|less)$/.test(filename)) {
+            return true;
+        }
+        return false;
+    }
+    resolveRelativePath(basePath, relativePath) {
+        const parts = basePath.split('/');
+        const relParts = relativePath.split('/');
+        for (const part of relParts) {
+            if (part === '..') {
+                parts.pop();
+            }
+            else if (part !== '.') {
+                parts.push(part);
+            }
+        }
+        return parts.join('/');
+    }
+    extractFunctionDefinition(code, startIndex) {
+        let braceCount = 0;
+        let started = false;
+        let start = startIndex;
+        let end = startIndex;
+        for (let i = startIndex; i < code.length && i < startIndex + 2000; i++) {
+            if (code[i] === '{') {
+                if (!started)
+                    start = startIndex;
+                started = true;
+                braceCount++;
+            }
+            else if (code[i] === '}') {
+                braceCount--;
+                if (started && braceCount === 0) {
+                    end = i + 1;
+                    break;
+                }
+            }
+        }
+        return code.slice(start, Math.min(end, start + 500));
+    }
+    buildSummary(testFileContent, relatedFiles, customCommands, pageObjects) {
+        const parts = [];
+        parts.push(`Test file: ${testFileContent.split('\n').length} lines`);
+        parts.push(`Related files found: ${relatedFiles.length}`);
+        if (customCommands.length > 0) {
+            parts.push(`Custom commands: ${customCommands.map((c) => c.name).join(', ')}`);
+        }
+        if (pageObjects.length > 0) {
+            parts.push(`Page objects: ${pageObjects.map((p) => p.name).join(', ')}`);
+        }
+        return parts.join('. ');
+    }
+}
+exports.CodeReadingAgent = CodeReadingAgent;
+//# sourceMappingURL=code-reading-agent.js.map
+
+/***/ }),
+
+/***/ 9302:
+/***/ ((__unused_webpack_module, exports, __nccwpck_require__) => {
+
+"use strict";
+
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.FixGenerationAgent = void 0;
+const base_agent_1 = __nccwpck_require__(6575);
+class FixGenerationAgent extends base_agent_1.BaseAgent {
+    constructor(openaiClient, config) {
+        super(openaiClient, 'FixGenerationAgent', {
+            ...config,
+            maxTokens: 6000,
+        });
+    }
+    async execute(input, context) {
+        return this.executeWithTimeout(input, context);
+    }
+    getSystemPrompt() {
+        return `You are an expert Cypress test engineer who specializes in fixing failing tests.
+
+## Your Task
+
+Generate precise, working code changes to fix the failing test based on the analysis and investigation provided.
+
+## Code Change Requirements
+
+1. **Exact Matching**: The "oldCode" MUST match the original code EXACTLY, character for character, including:
+   - All whitespace (spaces, tabs, newlines)
+   - All punctuation and quotes
+   - All indentation
+
+2. **Minimal Changes**: Only change what's necessary to fix the issue. Don't refactor unrelated code.
+
+3. **Working Code**: The "newCode" must be syntactically valid and work correctly.
+
+4. **Preserve Style**: Match the existing code style (quotes, semicolons, indentation).
+
+## Common Fix Patterns
+
+### Selector Updates
+\`\`\`javascript
+// OLD: Specific class that changed
+cy.get('.old-button-class')
+
+// NEW: Use data-testid or more stable selector
+cy.get('[data-testid="submit-button"]')
+// or
+cy.get('button').contains('Submit')
+\`\`\`
+
+### Visibility/Existence Checks
+\`\`\`javascript
+// OLD: Click without checking visibility
+cy.get('#element').click()
+
+// NEW: Wait for visibility first
+cy.get('#element').should('be.visible').click()
+\`\`\`
+
+### Timing/Wait Issues
+\`\`\`javascript
+// OLD: No wait for async operation
+cy.get('#result')
+
+// NEW: Wait for element or intercept
+cy.intercept('GET', '/api/data').as('getData')
+cy.wait('@getData')
+cy.get('#result')
+\`\`\`
+
+### Overflow/Responsive Menu
+\`\`\`javascript
+// OLD: Direct click on element that might be in overflow menu
+cy.get('[aria-label="Action"]').click()
+
+// NEW: Check if in overflow menu first
+cy.get('body').then($body => {
+  if ($body.find('[aria-label="Action"]:visible').length > 0) {
+    cy.get('[aria-label="Action"]').click()
+  } else {
+    cy.get('[aria-label="More"]').click()
+    cy.get('[aria-label="Action"]').click()
+  }
+})
+\`\`\`
+
+## Output Format
+
+You MUST respond with a JSON object matching this schema:
+{
+  "changes": [
+    {
+      "file": "<file path>",
+      "line": <approximate line number>,
+      "oldCode": "<EXACT code to replace, including all whitespace>",
+      "newCode": "<replacement code>",
+      "justification": "<why this change fixes the issue>",
+      "changeType": "<SELECTOR_UPDATE|WAIT_ADDITION|LOGIC_CHANGE|ASSERTION_UPDATE|OTHER>"
+    }
+  ],
+  "confidence": <0-100>,
+  "summary": "<one sentence summary of the fix>",
+  "reasoning": "<detailed explanation of why this fix will work>",
+  "evidence": ["<evidence supporting this fix>"],
+  "risks": ["<potential risks or things to watch for>"],
+  "alternatives": ["<other approaches that could work>"]
+}
+
+## CRITICAL
+
+- The "oldCode" field is used for find-and-replace. It MUST match EXACTLY.
+- Include enough context in "oldCode" to uniquely identify the location (usually 3-5 lines).
+- Test your understanding of the code before generating the fix.`;
+    }
+    buildUserPrompt(input, context) {
+        const parts = [
+            '## Fix Generation Request',
+            '',
+            '### Test Information',
+            `- **File:** ${context.testFile}`,
+            `- **Test Name:** ${context.testName}`,
+            '',
+            '### Analysis Summary',
+            `- **Root Cause:** ${input.analysis.rootCauseCategory}`,
+            `- **Confidence:** ${input.analysis.confidence}%`,
+            `- **Explanation:** ${input.analysis.explanation}`,
+            `- **Suggested Approach:** ${input.analysis.suggestedApproach}`,
+            '',
+            '### Investigation Findings',
+            `- **Primary Finding:** ${input.investigation.primaryFinding?.description || 'None'}`,
+            `- **Is Test Code Fixable:** ${input.investigation.isTestCodeFixable}`,
+            `- **Recommended Approach:** ${input.investigation.recommendedApproach}`,
+        ];
+        if (input.investigation.selectorsToUpdate.length > 0) {
+            parts.push('', '### Selectors to Update');
+            for (const selector of input.investigation.selectorsToUpdate) {
+                parts.push(`- Current: \`${selector.current}\``, `  Reason: ${selector.reason}`, selector.suggestedReplacement
+                    ? `  Suggested: \`${selector.suggestedReplacement}\``
+                    : '');
+            }
+        }
+        parts.push('', '### Error Message', '```', context.errorMessage, '```');
+        if (context.sourceFileContent) {
+            parts.push('', '### Test File Content', '```javascript', context.sourceFileContent, '```');
+        }
+        if (input.previousFeedback) {
+            parts.push('', '### Previous Review Feedback', '⚠️ The previous fix attempt was rejected. Please address these issues:', '```', input.previousFeedback, '```');
+        }
+        parts.push('', '## Instructions', '1. Based on the analysis and investigation, generate the necessary code changes', '2. Ensure oldCode matches EXACTLY what appears in the test file', '3. Make minimal, targeted changes', '4. Provide clear justification for each change', '', 'Respond with the JSON object as specified in the system prompt.');
+        return parts.filter(Boolean).join('\n');
+    }
+    parseResponse(response) {
+        try {
+            const jsonMatch = response.match(/\{[\s\S]*\}/);
+            if (!jsonMatch) {
+                this.log('No JSON found in response', 'warning');
+                return null;
+            }
+            const parsed = JSON.parse(jsonMatch[0]);
+            if (!Array.isArray(parsed.changes) || parsed.changes.length === 0) {
+                this.log('No changes in response', 'warning');
+                return null;
+            }
+            const changes = parsed.changes.map((c) => ({
+                file: c.file || '',
+                line: c.line || 0,
+                oldCode: c.oldCode || '',
+                newCode: c.newCode || '',
+                justification: c.justification || '',
+                changeType: c.changeType || 'OTHER',
+            }));
+            for (const change of changes) {
+                if (!change.file || !change.oldCode || !change.newCode) {
+                    this.log('Change missing required fields', 'warning');
+                    return null;
+                }
+            }
+            return {
+                changes,
+                confidence: typeof parsed.confidence === 'number' ? parsed.confidence : 50,
+                summary: parsed.summary || '',
+                reasoning: parsed.reasoning || '',
+                evidence: Array.isArray(parsed.evidence) ? parsed.evidence : [],
+                risks: Array.isArray(parsed.risks) ? parsed.risks : [],
+                alternatives: Array.isArray(parsed.alternatives)
+                    ? parsed.alternatives
+                    : undefined,
+            };
+        }
+        catch (error) {
+            this.log(`Failed to parse response: ${error}`, 'warning');
+            return null;
+        }
+    }
+}
+exports.FixGenerationAgent = FixGenerationAgent;
+//# sourceMappingURL=fix-generation-agent.js.map
+
+/***/ }),
+
+/***/ 9796:
+/***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
+
+"use strict";
+
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __exportStar = (this && this.__exportStar) || function(m, exports) {
+    for (var p in m) if (p !== "default" && !Object.prototype.hasOwnProperty.call(exports, p)) __createBinding(exports, m, p);
+};
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.CodeReadingAgent = exports.createOrchestrator = exports.DEFAULT_ORCHESTRATOR_CONFIG = exports.AgentOrchestrator = void 0;
+__exportStar(__nccwpck_require__(6575), exports);
+var agent_orchestrator_1 = __nccwpck_require__(4674);
+Object.defineProperty(exports, "AgentOrchestrator", ({ enumerable: true, get: function () { return agent_orchestrator_1.AgentOrchestrator; } }));
+Object.defineProperty(exports, "DEFAULT_ORCHESTRATOR_CONFIG", ({ enumerable: true, get: function () { return agent_orchestrator_1.DEFAULT_ORCHESTRATOR_CONFIG; } }));
+Object.defineProperty(exports, "createOrchestrator", ({ enumerable: true, get: function () { return agent_orchestrator_1.createOrchestrator; } }));
+__exportStar(__nccwpck_require__(7216), exports);
+var code_reading_agent_1 = __nccwpck_require__(8410);
+Object.defineProperty(exports, "CodeReadingAgent", ({ enumerable: true, get: function () { return code_reading_agent_1.CodeReadingAgent; } }));
+__exportStar(__nccwpck_require__(7581), exports);
+__exportStar(__nccwpck_require__(9302), exports);
+__exportStar(__nccwpck_require__(1218), exports);
+//# sourceMappingURL=index.js.map
+
+/***/ }),
+
+/***/ 7581:
+/***/ ((__unused_webpack_module, exports, __nccwpck_require__) => {
+
+"use strict";
+
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.InvestigationAgent = void 0;
+const base_agent_1 = __nccwpck_require__(6575);
+class InvestigationAgent extends base_agent_1.BaseAgent {
+    constructor(openaiClient, config) {
+        super(openaiClient, 'InvestigationAgent', config);
+    }
+    async execute(input, context) {
+        return this.executeWithTimeout(input, context);
+    }
+    getSystemPrompt() {
+        return `You are an expert investigator for test failures. Your job is to cross-reference error analysis with actual code to identify the specific cause of failures.
+
+## Investigation Process
+
+1. **Compare Selectors**: Check if selectors in the test exist in the codebase
+2. **Trace Changes**: Look for recent changes that might have caused the issue
+3. **Check Timing**: Identify potential timing issues between test expectations and app behavior
+4. **Validate State**: Verify if test assumptions about state are correct
+5. **Cross-Reference**: Match error patterns with code patterns
+
+## Finding Types
+
+- SELECTOR_CHANGE: A selector in the test no longer matches elements in the app
+- MISSING_ELEMENT: An element the test expects doesn't exist
+- TIMING_GAP: Test is too fast/slow for the app's behavior
+- STATE_ISSUE: Test depends on state that isn't set up correctly
+- CODE_CHANGE: Recent code changes broke the test
+- OTHER: Something else
+
+## Output Format
+
+You MUST respond with a JSON object matching this schema:
+{
+  "findings": [
+    {
+      "type": "<finding type>",
+      "severity": "<HIGH|MEDIUM|LOW>",
+      "description": "<what was found>",
+      "evidence": ["<supporting evidence>"],
+      "location": {
+        "file": "<file path>",
+        "line": <line number>,
+        "code": "<relevant code snippet>"
+      },
+      "relationToError": "<how this finding explains the error>"
+    }
+  ],
+  "primaryFinding": <the most important finding object>,
+  "isTestCodeFixable": <boolean - can this be fixed by changing test code?>,
+  "recommendedApproach": "<one paragraph describing the fix approach>",
+  "selectorsToUpdate": [
+    {
+      "current": "<current selector>",
+      "reason": "<why it needs updating>",
+      "suggestedReplacement": "<suggested new selector if known>"
+    }
+  ],
+  "confidence": <0-100>
+}`;
+    }
+    buildUserPrompt(input, context) {
+        const parts = [
+            '## Investigation Request',
+            '',
+            '### Error Analysis Results',
+            `- **Root Cause Category:** ${input.analysis.rootCauseCategory}`,
+            `- **Analysis Confidence:** ${input.analysis.confidence}%`,
+            `- **Issue Location:** ${input.analysis.issueLocation}`,
+            `- **Explanation:** ${input.analysis.explanation}`,
+            '',
+            '### Identified Selectors',
+            input.analysis.selectors.length > 0
+                ? input.analysis.selectors.map((s) => `- \`${s}\``).join('\n')
+                : '- No selectors identified',
+            '',
+            '### Detected Patterns',
+            `- Timeout: ${input.analysis.patterns.hasTimeout}`,
+            `- Visibility Issue: ${input.analysis.patterns.hasVisibilityIssue}`,
+            `- Network Call: ${input.analysis.patterns.hasNetworkCall}`,
+            `- State Assertion: ${input.analysis.patterns.hasStateAssertion}`,
+            `- Dynamic Content: ${input.analysis.patterns.hasDynamicContent}`,
+            `- Responsive Issue: ${input.analysis.patterns.hasResponsiveIssue}`,
+        ];
+        if (input.codeContext) {
+            parts.push('', '### Test File Content', '```javascript', input.codeContext.testFileContent.slice(0, 4000), '```');
+            if (input.codeContext.relatedFiles.length > 0) {
+                parts.push('', '### Related Files');
+                for (const file of input.codeContext.relatedFiles.slice(0, 3)) {
+                    parts.push('', `#### ${file.path}`, `Relevance: ${file.relevance}`, '```', file.content.slice(0, 1500), '```');
+                }
+            }
+            if (input.codeContext.customCommands.length > 0) {
+                parts.push('', '### Custom Commands', input.codeContext.customCommands
+                    .map((c) => `- \`cy.${c.name}()\` in ${c.file}`)
+                    .join('\n'));
+            }
+        }
+        if (context.prDiff && context.prDiff.files.length > 0) {
+            parts.push('', '### Recent Changes (PR Diff)');
+            for (const file of context.prDiff.files.slice(0, 5)) {
+                parts.push(`- **${file.filename}** (${file.status})`);
+                if (file.patch) {
+                    parts.push('```diff', file.patch.slice(0, 1000), '```');
+                }
+            }
+        }
+        if (context.screenshots && context.screenshots.length > 0) {
+            parts.push('', '### Screenshots', `${context.screenshots.length} screenshot(s) are attached. Analyze them to see:`, '- What elements are visible', '- What the actual DOM state looks like', '- Any visual clues about the failure');
+        }
+        parts.push('', '## Instructions', 'Based on all the information above:', '1. Identify all findings that explain or contribute to the failure', '2. Determine the primary cause', '3. Check if the issue can be fixed in test code', '4. List any selectors that need to be updated', '5. Provide a recommended fix approach', '', 'Respond with the JSON object as specified in the system prompt.');
+        return parts.join('\n');
+    }
+    parseResponse(response) {
+        try {
+            const jsonMatch = response.match(/\{[\s\S]*\}/);
+            if (!jsonMatch) {
+                this.log('No JSON found in response', 'warning');
+                return null;
+            }
+            const parsed = JSON.parse(jsonMatch[0]);
+            const findings = Array.isArray(parsed.findings)
+                ? parsed.findings.map((f) => ({
+                    type: f.type || 'OTHER',
+                    severity: f.severity || 'MEDIUM',
+                    description: f.description || '',
+                    evidence: Array.isArray(f.evidence) ? f.evidence : [],
+                    location: f.location,
+                    relationToError: f.relationToError || '',
+                }))
+                : [];
+            const selectorsToUpdate = Array.isArray(parsed.selectorsToUpdate)
+                ? parsed.selectorsToUpdate.map((s) => ({
+                    current: s.current || '',
+                    reason: s.reason || '',
+                    suggestedReplacement: s.suggestedReplacement,
+                }))
+                : [];
+            return {
+                findings,
+                primaryFinding: parsed.primaryFinding || findings[0],
+                isTestCodeFixable: parsed.isTestCodeFixable !== false,
+                recommendedApproach: parsed.recommendedApproach || '',
+                selectorsToUpdate,
+                confidence: typeof parsed.confidence === 'number' ? parsed.confidence : 50,
+            };
+        }
+        catch (error) {
+            this.log(`Failed to parse response: ${error}`, 'warning');
+            return null;
+        }
+    }
+}
+exports.InvestigationAgent = InvestigationAgent;
+//# sourceMappingURL=investigation-agent.js.map
+
+/***/ }),
+
+/***/ 1218:
+/***/ ((__unused_webpack_module, exports, __nccwpck_require__) => {
+
+"use strict";
+
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.ReviewAgent = void 0;
+const base_agent_1 = __nccwpck_require__(6575);
+class ReviewAgent extends base_agent_1.BaseAgent {
+    constructor(openaiClient, config) {
+        super(openaiClient, 'ReviewAgent', config);
+    }
+    async execute(input, context) {
+        return this.executeWithTimeout(input, context);
+    }
+    getSystemPrompt() {
+        return `You are a senior QA engineer reviewing proposed test fixes.
+
+## Your Role
+
+Review code changes proposed to fix failing tests. Your job is to:
+1. Verify the fix addresses the root cause
+2. Check that oldCode matches the actual file content
+3. Ensure newCode is syntactically valid
+4. Validate the fix won't introduce new issues
+5. Confirm the fix follows best practices
+
+## Review Criteria
+
+### CRITICAL Issues (Must Fix)
+- oldCode doesn't match the file content
+- Syntax errors in newCode
+- Fix doesn't address the root cause
+- Fix could cause other tests to fail
+- Security vulnerabilities
+
+### WARNING Issues (Should Fix)
+- Suboptimal selector choice
+- Missing error handling
+- Fragile timing assumptions
+- Hardcoded values that should be configurable
+
+### SUGGESTION Issues (Nice to Have)
+- Code style inconsistencies
+- Opportunities for better readability
+- Minor improvements
+
+## Output Format
+
+You MUST respond with a JSON object matching this schema:
+{
+  "approved": <boolean - true only if no CRITICAL issues>,
+  "issues": [
+    {
+      "severity": "<CRITICAL|WARNING|SUGGESTION>",
+      "changeIndex": <index of the change with the issue>,
+      "description": "<what's wrong>",
+      "suggestion": "<how to fix it>"
+    }
+  ],
+  "assessment": "<overall assessment paragraph>",
+  "fixConfidence": <0-100 - likelihood the fix will work>,
+  "improvements": ["<optional suggestions for improvement>"]
+}
+
+## Approval Rules
+
+- Approve if: No CRITICAL issues AND fix addresses root cause
+- Reject if: Any CRITICAL issues OR fix doesn't address the problem
+- CRITICAL issues automatically mean rejection`;
+    }
+    buildUserPrompt(input, context) {
+        const parts = [
+            '## Fix Review Request',
+            '',
+            '### Root Cause Being Fixed',
+            `- **Category:** ${input.analysis.rootCauseCategory}`,
+            `- **Explanation:** ${input.analysis.explanation}`,
+            '',
+            '### Proposed Fix',
+            `- **Summary:** ${input.proposedFix.summary}`,
+            `- **Confidence:** ${input.proposedFix.confidence}%`,
+            `- **Reasoning:** ${input.proposedFix.reasoning}`,
+            '',
+            '### Code Changes',
+        ];
+        for (let i = 0; i < input.proposedFix.changes.length; i++) {
+            const change = input.proposedFix.changes[i];
+            parts.push('', `#### Change ${i + 1}: ${change.file}`, `Line: ${change.line}`, `Type: ${change.changeType}`, `Justification: ${change.justification}`, '', '**Old Code:**', '```', change.oldCode, '```', '', '**New Code:**', '```', change.newCode, '```');
+        }
+        if (context.sourceFileContent) {
+            parts.push('', '### Original File Content (for verification)', '```javascript', context.sourceFileContent, '```');
+        }
+        if (input.proposedFix.risks.length > 0) {
+            parts.push('', '### Identified Risks', input.proposedFix.risks.map((r) => `- ${r}`).join('\n'));
+        }
+        parts.push('', '## Review Instructions', '1. For each change, verify oldCode appears EXACTLY in the file', '2. Check that newCode is syntactically valid', '3. Verify the fix addresses the root cause', '4. Look for potential side effects', '5. Assess overall likelihood of success', '', 'Respond with the JSON object as specified in the system prompt.');
+        return parts.join('\n');
+    }
+    parseResponse(response) {
+        try {
+            const jsonMatch = response.match(/\{[\s\S]*\}/);
+            if (!jsonMatch) {
+                this.log('No JSON found in response', 'warning');
+                return null;
+            }
+            const parsed = JSON.parse(jsonMatch[0]);
+            const issues = Array.isArray(parsed.issues)
+                ? parsed.issues.map((i) => ({
+                    severity: i.severity || 'WARNING',
+                    changeIndex: typeof i.changeIndex === 'number' ? i.changeIndex : 0,
+                    description: i.description || '',
+                    suggestion: i.suggestion,
+                }))
+                : [];
+            const hasCritical = issues.some((i) => i.severity === 'CRITICAL');
+            const approved = !hasCritical && parsed.approved !== false;
+            return {
+                approved,
+                issues,
+                assessment: parsed.assessment || '',
+                fixConfidence: typeof parsed.fixConfidence === 'number' ? parsed.fixConfidence : 50,
+                improvements: Array.isArray(parsed.improvements)
+                    ? parsed.improvements
+                    : undefined,
+            };
+        }
+        catch (error) {
+            this.log(`Failed to parse response: ${error}`, 'warning');
+            return null;
+        }
+    }
+    validateOldCodeExists(changes, fileContent) {
+        const issues = [];
+        for (let i = 0; i < changes.length; i++) {
+            const change = changes[i];
+            if (!fileContent.includes(change.oldCode)) {
+                issues.push({
+                    severity: 'CRITICAL',
+                    changeIndex: i,
+                    description: `oldCode not found in file. The code to replace doesn't exist in ${change.file}`,
+                    suggestion: 'Verify the exact code content including whitespace and indentation',
+                });
+            }
+        }
+        return issues;
+    }
+}
+exports.ReviewAgent = ReviewAgent;
+//# sourceMappingURL=review-agent.js.map
+
+/***/ }),
+
 /***/ 3914:
 /***/ ((__unused_webpack_module, exports, __nccwpck_require__) => {
 
@@ -807,7 +2330,7 @@ exports.ArtifactFetcher = ArtifactFetcher;
 "use strict";
 
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.AUTO_FIX = exports.TEST_ISSUE_CATEGORIES = exports.ERROR_TYPES = exports.FORMATTING = exports.ARTIFACTS = exports.OPENAI = exports.CONFIDENCE = exports.LOG_LIMITS = void 0;
+exports.AGENT_CONFIG = exports.AUTO_FIX = exports.TEST_ISSUE_CATEGORIES = exports.ERROR_TYPES = exports.FORMATTING = exports.ARTIFACTS = exports.OPENAI = exports.CONFIDENCE = exports.LOG_LIMITS = void 0;
 exports.LOG_LIMITS = {
     GITHUB_MAX_SIZE: 50_000,
     ARTIFACT_SOFT_CAP: 20_000,
@@ -870,6 +2393,16 @@ exports.TEST_ISSUE_CATEGORIES = {
 exports.AUTO_FIX = {
     DEFAULT_MIN_CONFIDENCE: 70,
     BRANCH_PREFIX: 'fix/triage-agent/',
+};
+exports.AGENT_CONFIG = {
+    ENABLE_AGENTIC_REPAIR: process.env.ENABLE_AGENTIC_REPAIR === 'true' || false,
+    MAX_AGENT_ITERATIONS: 3,
+    AGENT_TIMEOUT_MS: 120_000,
+    INDIVIDUAL_AGENT_TIMEOUT_MS: 60_000,
+    REVIEW_REQUIRED_CONFIDENCE: 70,
+    AGENT_TEMPERATURE: 0.3,
+    AGENT_MAX_TOKENS: 4000,
+    FALLBACK_TO_SINGLE_SHOT: true,
 };
 //# sourceMappingURL=constants.js.map
 
@@ -942,7 +2475,7 @@ async function run() {
                 const workflowRun = await octokit.actions.getWorkflowRun({
                     owner,
                     repo,
-                    run_id: parseInt(runId, 10)
+                    run_id: parseInt(runId, 10),
                 });
                 if (workflowRun.data.status !== 'completed') {
                     core.warning(`Workflow run ${runId} is still in progress (status: ${workflowRun.data.status})`);
@@ -954,8 +2487,8 @@ async function run() {
                         indicators: [],
                         metadata: {
                             analyzedAt: new Date().toISOString(),
-                            workflowStatus: workflowRun.data.status
-                        }
+                            workflowStatus: workflowRun.data.status,
+                        },
                     };
                     core.setOutput('verdict', 'PENDING');
                     core.setOutput('confidence', '0');
@@ -980,7 +2513,7 @@ async function run() {
                 result.fixRecommendation = fixRecommendation;
                 if (inputs.enableAutoFix) {
                     const autoFixTargetRepo = resolveAutoFixTargetRepo(inputs);
-                    autoFixResult = await attemptAutoFix(inputs, fixRecommendation, octokit, autoFixTargetRepo);
+                    autoFixResult = await attemptAutoFix(inputs, fixRecommendation, octokit, autoFixTargetRepo, errorData);
                 }
             }
         }
@@ -1015,9 +2548,14 @@ function getInputs() {
         testFrameworks: core.getInput('TEST_FRAMEWORKS'),
         enableAutoFix: core.getInput('ENABLE_AUTO_FIX') === 'true',
         autoFixBaseBranch: core.getInput('AUTO_FIX_BASE_BRANCH') || 'main',
-        autoFixMinConfidence: parseInt(core.getInput('AUTO_FIX_MIN_CONFIDENCE') || String(constants_1.AUTO_FIX.DEFAULT_MIN_CONFIDENCE), 10),
+        autoFixMinConfidence: parseInt(core.getInput('AUTO_FIX_MIN_CONFIDENCE') ||
+            String(constants_1.AUTO_FIX.DEFAULT_MIN_CONFIDENCE), 10),
         autoFixTargetRepo: core.getInput('AUTO_FIX_TARGET_REPO') || undefined,
         branch: core.getInput('BRANCH') || undefined,
+        enableValidation: core.getInput('ENABLE_VALIDATION') === 'true',
+        validationWorkflow: core.getInput('VALIDATION_WORKFLOW') || 'validate-fix.yml',
+        validationPreviewUrl: core.getInput('VALIDATION_PREVIEW_URL') || undefined,
+        validationSpec: core.getInput('VALIDATION_SPEC') || undefined,
     };
 }
 function resolveRepository(inputs) {
@@ -1055,7 +2593,7 @@ async function generateFixRecommendation(inputs, repoDetails, errorData, openaiC
             branch: github.context.ref.replace('refs/heads/', ''),
             repository: inputs.repository || `${repoDetails.owner}/${repoDetails.repo}`,
             prNumber: inputs.prNumber,
-            targetAppPrNumber: inputs.prNumber
+            targetAppPrNumber: inputs.prNumber,
         });
         const autoFixTargetRepo = resolveAutoFixTargetRepo(inputs);
         const repairAgent = new simplified_repair_agent_1.SimplifiedRepairAgent(openaiClient, {
@@ -1078,7 +2616,7 @@ async function generateFixRecommendation(inputs, repoDetails, errorData, openaiC
         return null;
     }
 }
-async function attemptAutoFix(inputs, fixRecommendation, octokit, repoDetails) {
+async function attemptAutoFix(inputs, fixRecommendation, octokit, repoDetails, errorData) {
     core.info('\n🤖 Auto-fix is enabled, attempting to apply fix...');
     const fixApplier = (0, fix_applier_1.createFixApplier)({
         octokit,
@@ -1086,6 +2624,8 @@ async function attemptAutoFix(inputs, fixRecommendation, octokit, repoDetails) {
         repo: repoDetails.repo,
         baseBranch: inputs.autoFixBaseBranch || 'main',
         minConfidence: inputs.autoFixMinConfidence || constants_1.AUTO_FIX.DEFAULT_MIN_CONFIDENCE,
+        enableValidation: inputs.enableValidation,
+        validationWorkflow: inputs.validationWorkflow,
     });
     if (!fixApplier.canApply(fixRecommendation)) {
         core.info('⏭️ Auto-fix skipped: confidence below threshold or no changes proposed');
@@ -1098,6 +2638,38 @@ async function attemptAutoFix(inputs, fixRecommendation, octokit, repoDetails) {
             core.info(`   Branch: ${result.branchName}`);
             core.info(`   Commit: ${result.commitSha}`);
             core.info(`   Files: ${result.modifiedFiles.join(', ')}`);
+            if (inputs.enableValidation && result.branchName) {
+                core.info('\n🧪 Triggering validation workflow...');
+                const spec = inputs.validationSpec ||
+                    errorData?.fileName ||
+                    fixRecommendation.proposedChanges[0]?.file;
+                const previewUrl = inputs.validationPreviewUrl || '';
+                if (!previewUrl) {
+                    core.warning('No preview URL available for validation, skipping validation trigger');
+                    result.validationStatus = 'skipped';
+                }
+                else if (!spec) {
+                    core.warning('No spec file identified for validation, skipping validation trigger');
+                    result.validationStatus = 'skipped';
+                }
+                else {
+                    const validationResult = await fixApplier.triggerValidation({
+                        branch: result.branchName,
+                        spec,
+                        previewUrl,
+                        triageRunId: github.context.runId.toString(),
+                    });
+                    if (validationResult) {
+                        result.validationRunId = validationResult.runId;
+                        result.validationStatus = 'pending';
+                        core.info(`✅ Validation workflow triggered: run ID ${validationResult.runId}`);
+                    }
+                    else {
+                        core.warning('Could not trigger validation workflow');
+                        result.validationStatus = 'skipped';
+                    }
+                }
+            }
         }
         else {
             core.warning(`❌ Auto-fix failed: ${result.error}`);
@@ -1120,8 +2692,8 @@ function setInconclusiveOutput(result, inputs, errorData) {
             analyzedAt: new Date().toISOString(),
             confidenceThreshold: inputs.confidenceThreshold,
             hasScreenshots: (errorData.screenshots && errorData.screenshots.length > 0) || false,
-            logSize: errorData.logs?.join('').length || 0
-        }
+            logSize: errorData.logs?.join('').length || 0,
+        },
     };
     core.setOutput('verdict', 'INCONCLUSIVE');
     core.setOutput('confidence', result.confidence.toString());
@@ -1136,23 +2708,33 @@ function setSuccessOutput(result, errorData, autoFixResult) {
         reasoning: result.reasoning,
         summary: result.summary,
         indicators: result.indicators || [],
-        ...(result.verdict === 'PRODUCT_ISSUE' && result.suggestedSourceLocations ? { suggestedSourceLocations: result.suggestedSourceLocations } : {}),
-        ...(result.verdict === 'TEST_ISSUE' && result.fixRecommendation ? { fixRecommendation: result.fixRecommendation } : {}),
-        ...(autoFixResult?.success ? {
-            autoFix: {
-                applied: true,
-                branch: autoFixResult.branchName,
-                commit: autoFixResult.commitSha,
-                files: autoFixResult.modifiedFiles,
+        ...(result.verdict === 'PRODUCT_ISSUE' && result.suggestedSourceLocations
+            ? { suggestedSourceLocations: result.suggestedSourceLocations }
+            : {}),
+        ...(result.verdict === 'TEST_ISSUE' && result.fixRecommendation
+            ? { fixRecommendation: result.fixRecommendation }
+            : {}),
+        ...(autoFixResult?.success
+            ? {
+                autoFix: {
+                    applied: true,
+                    branch: autoFixResult.branchName,
+                    commit: autoFixResult.commitSha,
+                    files: autoFixResult.modifiedFiles,
+                    validation: {
+                        status: autoFixResult.validationStatus || 'skipped',
+                        runId: autoFixResult.validationRunId,
+                    },
+                },
             }
-        } : {}),
+            : {}),
         metadata: {
             analyzedAt: new Date().toISOString(),
             hasScreenshots: (errorData.screenshots && errorData.screenshots.length > 0) || false,
             logSize: errorData.logs?.join('').length || 0,
             hasFixRecommendation: !!result.fixRecommendation,
             autoFixApplied: autoFixResult?.success || false,
-        }
+        },
     };
     core.setOutput('verdict', result.verdict);
     core.setOutput('confidence', result.confidence.toString());
@@ -1173,14 +2755,25 @@ function setSuccessOutput(result, errorData, autoFixResult) {
         core.setOutput('auto_fix_branch', autoFixResult.branchName || '');
         core.setOutput('auto_fix_commit', autoFixResult.commitSha || '');
         core.setOutput('auto_fix_files', JSON.stringify(autoFixResult.modifiedFiles));
+        if (autoFixResult.validationRunId) {
+            core.setOutput('validation_run_id', autoFixResult.validationRunId.toString());
+            core.setOutput('validation_status', autoFixResult.validationStatus || 'pending');
+            core.setOutput('validation_url', `https://github.com/${github.context.repo.owner}/${github.context.repo.repo}/actions/runs/${autoFixResult.validationRunId}`);
+        }
+        else {
+            core.setOutput('validation_status', autoFixResult.validationStatus || 'skipped');
+        }
     }
     else {
         core.setOutput('auto_fix_applied', 'false');
+        core.setOutput('validation_status', 'skipped');
     }
     core.info(`Verdict: ${result.verdict}`);
     core.info(`Confidence: ${result.confidence}%`);
     core.info(`Summary: ${result.summary}`);
-    if (result.verdict === 'PRODUCT_ISSUE' && result.suggestedSourceLocations && result.suggestedSourceLocations.length > 0) {
+    if (result.verdict === 'PRODUCT_ISSUE' &&
+        result.suggestedSourceLocations &&
+        result.suggestedSourceLocations.length > 0) {
         core.info('\n🎯 Suggested Source Locations to Investigate:');
         result.suggestedSourceLocations.forEach((location, index) => {
             core.info(`  ${index + 1}. ${location.file} (lines ${location.lines})`);
@@ -1199,7 +2792,15 @@ function setSuccessOutput(result, errorData, autoFixResult) {
             core.info(`  Branch: ${autoFixResult.branchName}`);
             core.info(`  Commit: ${autoFixResult.commitSha}`);
             core.info(`  Files: ${autoFixResult.modifiedFiles.join(', ')}`);
-            core.info('\n👉 To create a PR, visit your repository and open a PR from the branch above.');
+            if (autoFixResult.validationRunId) {
+                core.info(`\n🧪 Validation: ${autoFixResult.validationStatus}`);
+                core.info(`  Run ID: ${autoFixResult.validationRunId}`);
+                core.info(`  URL: https://github.com/${github.context.repo.owner}/${github.context.repo.repo}/actions/runs/${autoFixResult.validationRunId}`);
+                core.info('\n👉 PR will be created automatically if validation passes.');
+            }
+            else {
+                core.info('\n👉 To create a PR, visit your repository and open a PR from the branch above.');
+            }
         }
     }
 }
@@ -1802,7 +3403,7 @@ const RETRY_CONFIG = {
     maxDelayMs: 10000,
 };
 function sleep(ms) {
-    return new Promise(resolve => setTimeout(resolve, ms));
+    return new Promise((resolve) => setTimeout(resolve, ms));
 }
 function isRateLimitError(error) {
     if (error && typeof error === 'object' && 'status' in error) {
@@ -1865,7 +3466,8 @@ class GitHubFixApplier {
             core.info(`Fix confidence (${recommendation.confidence}%) is below threshold (${this.config.minConfidence}%)`);
             return false;
         }
-        if (!recommendation.proposedChanges || recommendation.proposedChanges.length === 0) {
+        if (!recommendation.proposedChanges ||
+            recommendation.proposedChanges.length === 0) {
             core.info('No proposed changes in fix recommendation');
             return false;
         }
@@ -1879,7 +3481,8 @@ class GitHubFixApplier {
         core.info(`Target repository: ${owner}/${repo}`);
         core.info(`Base branch: ${baseBranch}`);
         try {
-            if (!recommendation.proposedChanges || recommendation.proposedChanges.length === 0) {
+            if (!recommendation.proposedChanges ||
+                recommendation.proposedChanges.length === 0) {
                 return {
                     success: false,
                     modifiedFiles: [],
@@ -1918,7 +3521,8 @@ class GitHubFixApplier {
                 core.info(`Created branch: ${branchName}`);
             }
             catch (error) {
-                if (error instanceof Error && error.message.includes('Reference already exists')) {
+                if (error instanceof Error &&
+                    error.message.includes('Reference already exists')) {
                     branchName = generateFixBranchName(testFile, new Date(), true);
                     core.info(`Branch exists, trying with unique name: ${branchName}`);
                     await withRetry(() => octokit.git.createRef({
@@ -1942,7 +3546,8 @@ class GitHubFixApplier {
                         path: filePath,
                         ref: branchName,
                     }), `getting file content for ${filePath}`);
-                    if (Array.isArray(fileResponse.data) || fileResponse.data.type !== 'file') {
+                    if (Array.isArray(fileResponse.data) ||
+                        fileResponse.data.type !== 'file') {
                         core.warning(`${filePath} is not a file, skipping`);
                         continue;
                     }
@@ -2027,8 +3632,74 @@ Confidence: ${recommendation.confidence}%`;
             core.debug(`Cleaned up branch ${branchName} (${reason})`);
         }
         catch (cleanupError) {
-            const errorMsg = cleanupError instanceof Error ? cleanupError.message : String(cleanupError);
+            const errorMsg = cleanupError instanceof Error
+                ? cleanupError.message
+                : String(cleanupError);
             core.debug(`Failed to clean up branch ${branchName}: ${errorMsg}`);
+        }
+    }
+    async triggerValidation(params) {
+        const { octokit, owner, repo, validationWorkflow, enableValidation } = this.config;
+        if (!enableValidation) {
+            core.info('Validation is not enabled, skipping validation trigger');
+            return null;
+        }
+        const workflowFile = validationWorkflow || 'validate-fix.yml';
+        core.info(`Triggering validation workflow: ${workflowFile}`);
+        core.info(`  Branch: ${params.branch}`);
+        core.info(`  Spec: ${params.spec}`);
+        core.info(`  Preview URL: ${params.previewUrl}`);
+        try {
+            await withRetry(() => octokit.actions.createWorkflowDispatch({
+                owner,
+                repo,
+                workflow_id: workflowFile,
+                ref: 'main',
+                inputs: {
+                    branch: params.branch,
+                    spec: params.spec,
+                    preview_url: params.previewUrl,
+                    triage_run_id: params.triageRunId || '',
+                    fix_branch_name: params.branch,
+                },
+            }), 'triggering validation workflow');
+            core.info('Validation workflow triggered successfully');
+            await sleep(2000);
+            const runs = await withRetry(() => octokit.actions.listWorkflowRuns({
+                owner,
+                repo,
+                workflow_id: workflowFile,
+                branch: 'main',
+                per_page: 5,
+                status: 'queued',
+            }), 'listing workflow runs');
+            if (runs.data.workflow_runs.length > 0) {
+                const latestRun = runs.data.workflow_runs[0];
+                core.info(`Validation workflow run ID: ${latestRun.id}`);
+                core.info(`Validation workflow URL: ${latestRun.html_url}`);
+                return { runId: latestRun.id };
+            }
+            const inProgressRuns = await withRetry(() => octokit.actions.listWorkflowRuns({
+                owner,
+                repo,
+                workflow_id: workflowFile,
+                branch: 'main',
+                per_page: 5,
+                status: 'in_progress',
+            }), 'listing in_progress workflow runs');
+            if (inProgressRuns.data.workflow_runs.length > 0) {
+                const latestRun = inProgressRuns.data.workflow_runs[0];
+                core.info(`Validation workflow run ID: ${latestRun.id}`);
+                core.info(`Validation workflow URL: ${latestRun.html_url}`);
+                return { runId: latestRun.id };
+            }
+            core.warning('Could not find validation workflow run ID');
+            return null;
+        }
+        catch (error) {
+            const errorMsg = getErrorMessage(error, 'triggering validation workflow');
+            core.error(errorMsg);
+            return null;
         }
     }
 }
@@ -2049,7 +3720,7 @@ function generateFixBranchName(testFile, timestamp = new Date(), forceUnique = f
     return `${constants_1.AUTO_FIX.BRANCH_PREFIX}${sanitizedFile}-${dateStr}${uniqueSuffix}`;
 }
 function generateFixCommitMessage(recommendation) {
-    const files = recommendation.proposedChanges.map(c => c.file).join(', ');
+    const files = recommendation.proposedChanges.map((c) => c.file).join(', ');
     const summary = recommendation.summary.slice(0, 50);
     return `fix(test): ${summary}
 
@@ -2109,10 +3780,13 @@ const fs = __importStar(__nccwpck_require__(9896));
 const openai_client_1 = __nccwpck_require__(191);
 const summary_generator_1 = __nccwpck_require__(8220);
 const constants_1 = __nccwpck_require__(8361);
+const agents_1 = __nccwpck_require__(9796);
 class SimplifiedRepairAgent {
     openaiClient;
     sourceFetchContext;
-    constructor(openaiClientOrApiKey, sourceFetchContext) {
+    config;
+    orchestrator;
+    constructor(openaiClientOrApiKey, sourceFetchContext, config) {
         if (typeof openaiClientOrApiKey === 'string') {
             this.openaiClient = new openai_client_1.OpenAIClient(openaiClientOrApiKey);
         }
@@ -2120,49 +3794,117 @@ class SimplifiedRepairAgent {
             this.openaiClient = openaiClientOrApiKey;
         }
         this.sourceFetchContext = sourceFetchContext;
+        this.config = {
+            enableAgenticRepair: constants_1.AGENT_CONFIG.ENABLE_AGENTIC_REPAIR,
+            ...config,
+        };
+        if (this.config.enableAgenticRepair && this.sourceFetchContext) {
+            this.orchestrator = (0, agents_1.createOrchestrator)(this.openaiClient, {
+                maxIterations: constants_1.AGENT_CONFIG.MAX_AGENT_ITERATIONS,
+                totalTimeoutMs: constants_1.AGENT_CONFIG.AGENT_TIMEOUT_MS,
+                minConfidence: constants_1.AGENT_CONFIG.REVIEW_REQUIRED_CONFIDENCE,
+                ...this.config.orchestratorConfig,
+            }, {
+                octokit: this.sourceFetchContext.octokit,
+                owner: this.sourceFetchContext.owner,
+                repo: this.sourceFetchContext.repo,
+                branch: this.sourceFetchContext.branch || 'main',
+            });
+        }
     }
     async generateFixRecommendation(repairContext, errorData) {
         try {
             core.info('🔧 Generating fix recommendation...');
-            let sourceFileContent = null;
-            const cleanFilePath = this.extractFilePath(repairContext.testFile);
-            if (this.sourceFetchContext && cleanFilePath) {
-                sourceFileContent = await this.fetchSourceFile(cleanFilePath);
-                if (sourceFileContent) {
-                    core.info(`  ✅ Fetched source file: ${cleanFilePath} (${sourceFileContent.length} chars)`);
+            if (this.config.enableAgenticRepair && this.orchestrator) {
+                core.info('🤖 Attempting agentic repair...');
+                const agenticResult = await this.tryAgenticRepair(repairContext, errorData);
+                if (agenticResult) {
+                    core.info(`✅ Agentic repair succeeded with ${agenticResult.confidence}% confidence`);
+                    return agenticResult;
                 }
+                core.info('🔄 Agentic repair did not produce a fix, falling back to single-shot...');
             }
-            const prompt = this.buildPrompt(repairContext, errorData, sourceFileContent, cleanFilePath);
-            if (process.env.DEBUG_FIX_RECOMMENDATION) {
-                const promptFile = `fix-prompt-${Date.now()}.md`;
-                fs.writeFileSync(promptFile, prompt);
-                core.info(`  📝 Full prompt saved to ${promptFile}`);
-            }
-            const recommendation = await this.getRecommendationFromAI(prompt, repairContext, errorData);
-            if (!recommendation || recommendation.confidence < constants_1.CONFIDENCE.MIN_FIX_CONFIDENCE) {
-                core.info('Cannot generate confident fix recommendation');
-                return null;
-            }
-            const fixRecommendation = {
-                confidence: recommendation.confidence,
-                summary: this.generateSummary(recommendation, repairContext),
-                proposedChanges: (recommendation.changes || []).map(change => ({
-                    file: change.file,
-                    line: change.line || 0,
-                    oldCode: change.oldCode || '',
-                    newCode: change.newCode || '',
-                    justification: change.justification
-                })),
-                evidence: recommendation.evidence || [],
-                reasoning: recommendation.reasoning || 'Fix based on error pattern analysis'
-            };
-            core.info(`✅ Fix recommendation generated with ${fixRecommendation.confidence}% confidence`);
-            return fixRecommendation;
+            return await this.singleShotRepair(repairContext, errorData);
         }
         catch (error) {
             core.warning(`Failed to generate fix recommendation: ${error}`);
             return null;
         }
+    }
+    async tryAgenticRepair(repairContext, errorData) {
+        if (!this.orchestrator) {
+            return null;
+        }
+        try {
+            const agentContext = (0, agents_1.createAgentContext)({
+                errorMessage: repairContext.errorMessage,
+                testFile: repairContext.testFile,
+                testName: repairContext.testName,
+                errorType: repairContext.errorType,
+                errorSelector: repairContext.errorSelector,
+                stackTrace: errorData?.stackTrace,
+                screenshots: errorData?.screenshots,
+                logs: errorData?.logs,
+                prDiff: errorData?.prDiff
+                    ? {
+                        files: errorData.prDiff.files.map((f) => ({
+                            filename: f.filename,
+                            patch: f.patch,
+                            status: f.status,
+                        })),
+                    }
+                    : undefined,
+            });
+            const result = await this.orchestrator.orchestrate(agentContext, errorData);
+            if (result.success && result.fix) {
+                core.info(`🤖 Agentic approach: ${result.approach}, iterations: ${result.iterations}, time: ${result.totalTimeMs}ms`);
+                return result.fix;
+            }
+            core.info(`🤖 Agentic approach failed: ${result.error || 'No fix generated'}`);
+            return null;
+        }
+        catch (error) {
+            const errorMsg = error instanceof Error ? error.message : String(error);
+            core.warning(`Agentic repair error: ${errorMsg}`);
+            return null;
+        }
+    }
+    async singleShotRepair(repairContext, errorData) {
+        let sourceFileContent = null;
+        const cleanFilePath = this.extractFilePath(repairContext.testFile);
+        if (this.sourceFetchContext && cleanFilePath) {
+            sourceFileContent = await this.fetchSourceFile(cleanFilePath);
+            if (sourceFileContent) {
+                core.info(`  ✅ Fetched source file: ${cleanFilePath} (${sourceFileContent.length} chars)`);
+            }
+        }
+        const prompt = this.buildPrompt(repairContext, errorData, sourceFileContent, cleanFilePath);
+        if (process.env.DEBUG_FIX_RECOMMENDATION) {
+            const promptFile = `fix-prompt-${Date.now()}.md`;
+            fs.writeFileSync(promptFile, prompt);
+            core.info(`  📝 Full prompt saved to ${promptFile}`);
+        }
+        const recommendation = await this.getRecommendationFromAI(prompt, repairContext, errorData);
+        if (!recommendation ||
+            recommendation.confidence < constants_1.CONFIDENCE.MIN_FIX_CONFIDENCE) {
+            core.info('Cannot generate confident fix recommendation');
+            return null;
+        }
+        const fixRecommendation = {
+            confidence: recommendation.confidence,
+            summary: this.generateSummary(recommendation, repairContext),
+            proposedChanges: (recommendation.changes || []).map((change) => ({
+                file: change.file,
+                line: change.line || 0,
+                oldCode: change.oldCode || '',
+                newCode: change.newCode || '',
+                justification: change.justification,
+            })),
+            evidence: recommendation.evidence || [],
+            reasoning: recommendation.reasoning || 'Fix based on error pattern analysis',
+        };
+        core.info(`✅ Fix recommendation generated with ${fixRecommendation.confidence}% confidence`);
+        return fixRecommendation;
     }
     extractFilePath(rawPath) {
         if (!rawPath)
@@ -2225,11 +3967,13 @@ ${context.errorLine ? `- **Error Line:** ${context.errorLine}` : ''}`;
                 const startLine = Math.max(0, errorLine - 20);
                 const endLine = Math.min(lines.length, errorLine + 20);
                 const relevantLines = lines.slice(startLine, endLine);
-                const numberedLines = relevantLines.map((line, i) => {
+                const numberedLines = relevantLines
+                    .map((line, i) => {
                     const lineNum = startLine + i + 1;
                     const marker = lineNum === errorLine ? '>>> ' : '    ';
                     return `${marker}${lineNum}: ${line}`;
-                }).join('\n');
+                })
+                    .join('\n');
                 contextInfo += `\n\n## Source File: ${cleanFilePath} (lines ${startLine + 1}-${endLine})
 \`\`\`javascript
 ${numberedLines}
@@ -2237,7 +3981,9 @@ ${numberedLines}
             }
             else {
                 const previewLines = lines.slice(0, 100);
-                const numberedLines = previewLines.map((line, i) => `${i + 1}: ${line}`).join('\n');
+                const numberedLines = previewLines
+                    .map((line, i) => `${i + 1}: ${line}`)
+                    .join('\n');
                 contextInfo += `\n\n## Source File: ${cleanFilePath} (first 100 lines)
 \`\`\`javascript
 ${numberedLines}
@@ -2280,7 +4026,7 @@ ${lines.length > 100 ? `\n... (${lines.length - 100} more lines)` : ''}
                 if (errorData.prDiff.files && errorData.prDiff.files.length > 0) {
                     contextInfo += `\n### Changed Files (Most Relevant):\n`;
                     const relevantFiles = errorData.prDiff.files.slice(0, 10);
-                    relevantFiles.forEach(file => {
+                    relevantFiles.forEach((file) => {
                         contextInfo += `\n#### ${file.filename} (${file.status})\n`;
                         contextInfo += `- Changes: +${file.additions || 0}/-${file.deletions || 0} lines\n`;
                         if (file.patch) {
@@ -2367,17 +4113,22 @@ You MUST respond in strict JSON only with this schema:
     }
   ]
 }`;
-                const userParts = [
-                    { type: 'text', text: prompt }
-                ];
-                if (fullErrorData?.screenshots && fullErrorData.screenshots.length > 0) {
+                const userParts = [{ type: 'text', text: prompt }];
+                if (fullErrorData?.screenshots &&
+                    fullErrorData.screenshots.length > 0) {
                     for (const s of fullErrorData.screenshots) {
                         if (s.base64Data) {
                             userParts.push({
                                 type: 'image_url',
-                                image_url: { url: `data:image/png;base64,${s.base64Data}`, detail: 'high' }
+                                image_url: {
+                                    url: `data:image/png;base64,${s.base64Data}`,
+                                    detail: 'high',
+                                },
                             });
-                            userParts.push({ type: 'text', text: `Screenshot: ${s.name}${s.timestamp ? ` (at ${s.timestamp})` : ''}` });
+                            userParts.push({
+                                type: 'text',
+                                text: `Screenshot: ${s.name}${s.timestamp ? ` (at ${s.timestamp})` : ''}`,
+                            });
                         }
                     }
                 }
@@ -2385,7 +4136,7 @@ You MUST respond in strict JSON only with this schema:
                     systemPrompt,
                     userContent: userParts,
                     responseAsJson: true,
-                    temperature: 0.3
+                    temperature: 0.3,
                 });
                 try {
                     const recommendation = JSON.parse(content);
@@ -2398,7 +4149,7 @@ You MUST respond in strict JSON only with this schema:
                         reasoning: content,
                         changes: this.extractChangesFromText(content, context),
                         evidence: [],
-                        rootCause: 'Derived from repair response text'
+                        rootCause: 'Derived from repair response text',
                     };
                 }
             }
@@ -2406,7 +4157,7 @@ You MUST respond in strict JSON only with this schema:
                 message: prompt,
                 framework: 'cypress',
                 testName: context.testName,
-                fileName: context.testFile
+                fileName: context.testFile,
             };
             const triageLike = await clientAny.analyze(errorData, []);
             try {
@@ -2419,7 +4170,7 @@ You MUST respond in strict JSON only with this schema:
                     reasoning: triageLike.reasoning,
                     changes: this.extractChangesFromText(triageLike.reasoning, context),
                     evidence: triageLike.indicators || [],
-                    rootCause: 'Error pattern suggests test needs update'
+                    rootCause: 'Error pattern suggests test needs update',
                 };
             }
         }
@@ -2436,7 +4187,7 @@ You MUST respond in strict JSON only with this schema:
                 line: context.errorLine || 0,
                 oldCode: context.errorSelector,
                 newCode: '// TODO: Update selector to match current application',
-                justification: 'Selector not found - needs to be updated to match current DOM'
+                justification: 'Selector not found - needs to be updated to match current DOM',
             });
         }
         if (context.errorType === 'TIMEOUT') {
@@ -2445,7 +4196,7 @@ You MUST respond in strict JSON only with this schema:
                 line: context.errorLine || 0,
                 oldCode: '// Timeout occurred here',
                 newCode: 'cy.wait(1000); // Consider adding explicit wait or retry logic',
-                justification: 'Adding wait time to handle slow-loading elements'
+                justification: 'Adding wait time to handle slow-loading elements',
             });
         }
         return changes;

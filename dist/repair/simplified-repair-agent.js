@@ -39,10 +39,13 @@ const fs = __importStar(require("fs"));
 const openai_client_1 = require("../openai-client");
 const summary_generator_1 = require("../analysis/summary-generator");
 const constants_1 = require("../config/constants");
+const agents_1 = require("../agents");
 class SimplifiedRepairAgent {
     openaiClient;
     sourceFetchContext;
-    constructor(openaiClientOrApiKey, sourceFetchContext) {
+    config;
+    orchestrator;
+    constructor(openaiClientOrApiKey, sourceFetchContext, config) {
         if (typeof openaiClientOrApiKey === 'string') {
             this.openaiClient = new openai_client_1.OpenAIClient(openaiClientOrApiKey);
         }
@@ -50,49 +53,117 @@ class SimplifiedRepairAgent {
             this.openaiClient = openaiClientOrApiKey;
         }
         this.sourceFetchContext = sourceFetchContext;
+        this.config = {
+            enableAgenticRepair: constants_1.AGENT_CONFIG.ENABLE_AGENTIC_REPAIR,
+            ...config,
+        };
+        if (this.config.enableAgenticRepair && this.sourceFetchContext) {
+            this.orchestrator = (0, agents_1.createOrchestrator)(this.openaiClient, {
+                maxIterations: constants_1.AGENT_CONFIG.MAX_AGENT_ITERATIONS,
+                totalTimeoutMs: constants_1.AGENT_CONFIG.AGENT_TIMEOUT_MS,
+                minConfidence: constants_1.AGENT_CONFIG.REVIEW_REQUIRED_CONFIDENCE,
+                ...this.config.orchestratorConfig,
+            }, {
+                octokit: this.sourceFetchContext.octokit,
+                owner: this.sourceFetchContext.owner,
+                repo: this.sourceFetchContext.repo,
+                branch: this.sourceFetchContext.branch || 'main',
+            });
+        }
     }
     async generateFixRecommendation(repairContext, errorData) {
         try {
             core.info('🔧 Generating fix recommendation...');
-            let sourceFileContent = null;
-            const cleanFilePath = this.extractFilePath(repairContext.testFile);
-            if (this.sourceFetchContext && cleanFilePath) {
-                sourceFileContent = await this.fetchSourceFile(cleanFilePath);
-                if (sourceFileContent) {
-                    core.info(`  ✅ Fetched source file: ${cleanFilePath} (${sourceFileContent.length} chars)`);
+            if (this.config.enableAgenticRepair && this.orchestrator) {
+                core.info('🤖 Attempting agentic repair...');
+                const agenticResult = await this.tryAgenticRepair(repairContext, errorData);
+                if (agenticResult) {
+                    core.info(`✅ Agentic repair succeeded with ${agenticResult.confidence}% confidence`);
+                    return agenticResult;
                 }
+                core.info('🔄 Agentic repair did not produce a fix, falling back to single-shot...');
             }
-            const prompt = this.buildPrompt(repairContext, errorData, sourceFileContent, cleanFilePath);
-            if (process.env.DEBUG_FIX_RECOMMENDATION) {
-                const promptFile = `fix-prompt-${Date.now()}.md`;
-                fs.writeFileSync(promptFile, prompt);
-                core.info(`  📝 Full prompt saved to ${promptFile}`);
-            }
-            const recommendation = await this.getRecommendationFromAI(prompt, repairContext, errorData);
-            if (!recommendation || recommendation.confidence < constants_1.CONFIDENCE.MIN_FIX_CONFIDENCE) {
-                core.info('Cannot generate confident fix recommendation');
-                return null;
-            }
-            const fixRecommendation = {
-                confidence: recommendation.confidence,
-                summary: this.generateSummary(recommendation, repairContext),
-                proposedChanges: (recommendation.changes || []).map(change => ({
-                    file: change.file,
-                    line: change.line || 0,
-                    oldCode: change.oldCode || '',
-                    newCode: change.newCode || '',
-                    justification: change.justification
-                })),
-                evidence: recommendation.evidence || [],
-                reasoning: recommendation.reasoning || 'Fix based on error pattern analysis'
-            };
-            core.info(`✅ Fix recommendation generated with ${fixRecommendation.confidence}% confidence`);
-            return fixRecommendation;
+            return await this.singleShotRepair(repairContext, errorData);
         }
         catch (error) {
             core.warning(`Failed to generate fix recommendation: ${error}`);
             return null;
         }
+    }
+    async tryAgenticRepair(repairContext, errorData) {
+        if (!this.orchestrator) {
+            return null;
+        }
+        try {
+            const agentContext = (0, agents_1.createAgentContext)({
+                errorMessage: repairContext.errorMessage,
+                testFile: repairContext.testFile,
+                testName: repairContext.testName,
+                errorType: repairContext.errorType,
+                errorSelector: repairContext.errorSelector,
+                stackTrace: errorData?.stackTrace,
+                screenshots: errorData?.screenshots,
+                logs: errorData?.logs,
+                prDiff: errorData?.prDiff
+                    ? {
+                        files: errorData.prDiff.files.map((f) => ({
+                            filename: f.filename,
+                            patch: f.patch,
+                            status: f.status,
+                        })),
+                    }
+                    : undefined,
+            });
+            const result = await this.orchestrator.orchestrate(agentContext, errorData);
+            if (result.success && result.fix) {
+                core.info(`🤖 Agentic approach: ${result.approach}, iterations: ${result.iterations}, time: ${result.totalTimeMs}ms`);
+                return result.fix;
+            }
+            core.info(`🤖 Agentic approach failed: ${result.error || 'No fix generated'}`);
+            return null;
+        }
+        catch (error) {
+            const errorMsg = error instanceof Error ? error.message : String(error);
+            core.warning(`Agentic repair error: ${errorMsg}`);
+            return null;
+        }
+    }
+    async singleShotRepair(repairContext, errorData) {
+        let sourceFileContent = null;
+        const cleanFilePath = this.extractFilePath(repairContext.testFile);
+        if (this.sourceFetchContext && cleanFilePath) {
+            sourceFileContent = await this.fetchSourceFile(cleanFilePath);
+            if (sourceFileContent) {
+                core.info(`  ✅ Fetched source file: ${cleanFilePath} (${sourceFileContent.length} chars)`);
+            }
+        }
+        const prompt = this.buildPrompt(repairContext, errorData, sourceFileContent, cleanFilePath);
+        if (process.env.DEBUG_FIX_RECOMMENDATION) {
+            const promptFile = `fix-prompt-${Date.now()}.md`;
+            fs.writeFileSync(promptFile, prompt);
+            core.info(`  📝 Full prompt saved to ${promptFile}`);
+        }
+        const recommendation = await this.getRecommendationFromAI(prompt, repairContext, errorData);
+        if (!recommendation ||
+            recommendation.confidence < constants_1.CONFIDENCE.MIN_FIX_CONFIDENCE) {
+            core.info('Cannot generate confident fix recommendation');
+            return null;
+        }
+        const fixRecommendation = {
+            confidence: recommendation.confidence,
+            summary: this.generateSummary(recommendation, repairContext),
+            proposedChanges: (recommendation.changes || []).map((change) => ({
+                file: change.file,
+                line: change.line || 0,
+                oldCode: change.oldCode || '',
+                newCode: change.newCode || '',
+                justification: change.justification,
+            })),
+            evidence: recommendation.evidence || [],
+            reasoning: recommendation.reasoning || 'Fix based on error pattern analysis',
+        };
+        core.info(`✅ Fix recommendation generated with ${fixRecommendation.confidence}% confidence`);
+        return fixRecommendation;
     }
     extractFilePath(rawPath) {
         if (!rawPath)
@@ -155,11 +226,13 @@ ${context.errorLine ? `- **Error Line:** ${context.errorLine}` : ''}`;
                 const startLine = Math.max(0, errorLine - 20);
                 const endLine = Math.min(lines.length, errorLine + 20);
                 const relevantLines = lines.slice(startLine, endLine);
-                const numberedLines = relevantLines.map((line, i) => {
+                const numberedLines = relevantLines
+                    .map((line, i) => {
                     const lineNum = startLine + i + 1;
                     const marker = lineNum === errorLine ? '>>> ' : '    ';
                     return `${marker}${lineNum}: ${line}`;
-                }).join('\n');
+                })
+                    .join('\n');
                 contextInfo += `\n\n## Source File: ${cleanFilePath} (lines ${startLine + 1}-${endLine})
 \`\`\`javascript
 ${numberedLines}
@@ -167,7 +240,9 @@ ${numberedLines}
             }
             else {
                 const previewLines = lines.slice(0, 100);
-                const numberedLines = previewLines.map((line, i) => `${i + 1}: ${line}`).join('\n');
+                const numberedLines = previewLines
+                    .map((line, i) => `${i + 1}: ${line}`)
+                    .join('\n');
                 contextInfo += `\n\n## Source File: ${cleanFilePath} (first 100 lines)
 \`\`\`javascript
 ${numberedLines}
@@ -210,7 +285,7 @@ ${lines.length > 100 ? `\n... (${lines.length - 100} more lines)` : ''}
                 if (errorData.prDiff.files && errorData.prDiff.files.length > 0) {
                     contextInfo += `\n### Changed Files (Most Relevant):\n`;
                     const relevantFiles = errorData.prDiff.files.slice(0, 10);
-                    relevantFiles.forEach(file => {
+                    relevantFiles.forEach((file) => {
                         contextInfo += `\n#### ${file.filename} (${file.status})\n`;
                         contextInfo += `- Changes: +${file.additions || 0}/-${file.deletions || 0} lines\n`;
                         if (file.patch) {
@@ -297,17 +372,22 @@ You MUST respond in strict JSON only with this schema:
     }
   ]
 }`;
-                const userParts = [
-                    { type: 'text', text: prompt }
-                ];
-                if (fullErrorData?.screenshots && fullErrorData.screenshots.length > 0) {
+                const userParts = [{ type: 'text', text: prompt }];
+                if (fullErrorData?.screenshots &&
+                    fullErrorData.screenshots.length > 0) {
                     for (const s of fullErrorData.screenshots) {
                         if (s.base64Data) {
                             userParts.push({
                                 type: 'image_url',
-                                image_url: { url: `data:image/png;base64,${s.base64Data}`, detail: 'high' }
+                                image_url: {
+                                    url: `data:image/png;base64,${s.base64Data}`,
+                                    detail: 'high',
+                                },
                             });
-                            userParts.push({ type: 'text', text: `Screenshot: ${s.name}${s.timestamp ? ` (at ${s.timestamp})` : ''}` });
+                            userParts.push({
+                                type: 'text',
+                                text: `Screenshot: ${s.name}${s.timestamp ? ` (at ${s.timestamp})` : ''}`,
+                            });
                         }
                     }
                 }
@@ -315,7 +395,7 @@ You MUST respond in strict JSON only with this schema:
                     systemPrompt,
                     userContent: userParts,
                     responseAsJson: true,
-                    temperature: 0.3
+                    temperature: 0.3,
                 });
                 try {
                     const recommendation = JSON.parse(content);
@@ -328,7 +408,7 @@ You MUST respond in strict JSON only with this schema:
                         reasoning: content,
                         changes: this.extractChangesFromText(content, context),
                         evidence: [],
-                        rootCause: 'Derived from repair response text'
+                        rootCause: 'Derived from repair response text',
                     };
                 }
             }
@@ -336,7 +416,7 @@ You MUST respond in strict JSON only with this schema:
                 message: prompt,
                 framework: 'cypress',
                 testName: context.testName,
-                fileName: context.testFile
+                fileName: context.testFile,
             };
             const triageLike = await clientAny.analyze(errorData, []);
             try {
@@ -349,7 +429,7 @@ You MUST respond in strict JSON only with this schema:
                     reasoning: triageLike.reasoning,
                     changes: this.extractChangesFromText(triageLike.reasoning, context),
                     evidence: triageLike.indicators || [],
-                    rootCause: 'Error pattern suggests test needs update'
+                    rootCause: 'Error pattern suggests test needs update',
                 };
             }
         }
@@ -366,7 +446,7 @@ You MUST respond in strict JSON only with this schema:
                 line: context.errorLine || 0,
                 oldCode: context.errorSelector,
                 newCode: '// TODO: Update selector to match current application',
-                justification: 'Selector not found - needs to be updated to match current DOM'
+                justification: 'Selector not found - needs to be updated to match current DOM',
             });
         }
         if (context.errorType === 'TIMEOUT') {
@@ -375,7 +455,7 @@ You MUST respond in strict JSON only with this schema:
                 line: context.errorLine || 0,
                 oldCode: '// Timeout occurred here',
                 newCode: 'cy.wait(1000); // Consider adding explicit wait or retry logic',
-                justification: 'Adding wait time to handle slow-loading elements'
+                justification: 'Adding wait time to handle slow-loading elements',
             });
         }
         return changes;

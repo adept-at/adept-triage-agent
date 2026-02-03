@@ -112,6 +112,14 @@ export interface ActionInputs {
   autoFixTargetRepo?: string;
   /** Branch being tested (for fetching branch diff when no PR number) */
   branch?: string;
+  /** Enable validation workflow trigger after fix is applied */
+  enableValidation?: boolean;
+  /** Name of the validation workflow file */
+  validationWorkflow?: string;
+  /** Preview URL for validation tests (if different from original) */
+  validationPreviewUrl?: string;
+  /** Spec file for validation tests (if different from detected) */
+  validationSpec?: string;
 }
 
 export interface PRDiff {
@@ -132,10 +140,10 @@ export interface PRDiffFile {
 
 export interface StructuredErrorSummary {
   primaryError: {
-    type: string;  // AssertionError, NetworkError, etc.
+    type: string; // AssertionError, NetworkError, etc.
     message: string;
-    location?: { 
-      file: string; 
+    location?: {
+      file: string;
       line: number;
       isTestCode: boolean;
       isAppCode: boolean;
@@ -172,4 +180,4 @@ export interface StructuredErrorSummary {
     hasScreenshots: boolean;
     logSize: number;
   };
-} 
+}

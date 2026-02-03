@@ -23,7 +23,12 @@ async function run(): Promise<void> {
     const artifactFetcher = new ArtifactFetcher(octokit);
 
     // Get error data using the log processor service
-    const errorData = await processWorkflowLogs(octokit, artifactFetcher, inputs, repoDetails);
+    const errorData = await processWorkflowLogs(
+      octokit,
+      artifactFetcher,
+      inputs,
+      repoDetails
+    );
 
     if (!errorData) {
       // Check if this is due to workflow still running
@@ -35,26 +40,35 @@ async function run(): Promise<void> {
         const workflowRun = await octokit.actions.getWorkflowRun({
           owner,
           repo,
-          run_id: parseInt(runId, 10)
+          run_id: parseInt(runId, 10),
         });
 
         if (workflowRun.data.status !== 'completed') {
-          core.warning(`Workflow run ${runId} is still in progress (status: ${workflowRun.data.status})`);
+          core.warning(
+            `Workflow run ${runId} is still in progress (status: ${workflowRun.data.status})`
+          );
           const pendingTriageJson = {
             verdict: 'PENDING',
             confidence: 0,
-            reasoning: 'Workflow is still running. Please wait for it to complete before running triage analysis.',
+            reasoning:
+              'Workflow is still running. Please wait for it to complete before running triage analysis.',
             summary: 'Analysis pending - workflow not completed',
             indicators: [],
             metadata: {
               analyzedAt: new Date().toISOString(),
-              workflowStatus: workflowRun.data.status
-            }
+              workflowStatus: workflowRun.data.status,
+            },
           };
           core.setOutput('verdict', 'PENDING');
           core.setOutput('confidence', '0');
-          core.setOutput('reasoning', 'Workflow is still running. Please wait for it to complete before running triage analysis.');
-          core.setOutput('summary', 'Analysis pending - workflow not completed');
+          core.setOutput(
+            'reasoning',
+            'Workflow is still running. Please wait for it to complete before running triage analysis.'
+          );
+          core.setOutput(
+            'summary',
+            'Analysis pending - workflow not completed'
+          );
           core.setOutput('triage_json', JSON.stringify(pendingTriageJson));
           return;
         }
@@ -74,7 +88,13 @@ async function run(): Promise<void> {
     let autoFixResult: ApplyResult | null = null;
 
     if (result.verdict === 'TEST_ISSUE') {
-      fixRecommendation = await generateFixRecommendation(inputs, repoDetails, errorData, openaiClient, octokit);
+      fixRecommendation = await generateFixRecommendation(
+        inputs,
+        repoDetails,
+        errorData,
+        openaiClient,
+        octokit
+      );
       if (fixRecommendation) {
         result.fixRecommendation = fixRecommendation;
 
@@ -82,21 +102,28 @@ async function run(): Promise<void> {
         if (inputs.enableAutoFix) {
           // Use separate target repo for auto-fix (test code may live in different repo than logs)
           const autoFixTargetRepo = resolveAutoFixTargetRepo(inputs);
-          autoFixResult = await attemptAutoFix(inputs, fixRecommendation, octokit, autoFixTargetRepo);
+          autoFixResult = await attemptAutoFix(
+            inputs,
+            fixRecommendation,
+            octokit,
+            autoFixTargetRepo,
+            errorData
+          );
         }
       }
     }
 
     // Check confidence threshold
     if (result.confidence < inputs.confidenceThreshold) {
-      core.warning(`Confidence ${result.confidence}% is below threshold ${inputs.confidenceThreshold}%`);
+      core.warning(
+        `Confidence ${result.confidence}% is below threshold ${inputs.confidenceThreshold}%`
+      );
       setInconclusiveOutput(result, inputs, errorData);
       return;
     }
 
     // Set successful outputs
     setSuccessOutput(result, errorData, autoFixResult);
-
   } catch (error) {
     if (error instanceof Error) {
       core.setFailed(`Action failed: ${error.message}`);
@@ -109,12 +136,16 @@ async function run(): Promise<void> {
 function getInputs(): ActionInputs {
   const repositoryInput = core.getInput('REPOSITORY');
   return {
-    githubToken: core.getInput('GITHUB_TOKEN') || process.env.GITHUB_TOKEN || '',
+    githubToken:
+      core.getInput('GITHUB_TOKEN') || process.env.GITHUB_TOKEN || '',
     openaiApiKey: core.getInput('OPENAI_API_KEY', { required: true }),
     errorMessage: core.getInput('ERROR_MESSAGE'),
     workflowRunId: core.getInput('WORKFLOW_RUN_ID'),
     jobName: core.getInput('JOB_NAME'),
-    confidenceThreshold: parseInt(core.getInput('CONFIDENCE_THRESHOLD') || '70', 10),
+    confidenceThreshold: parseInt(
+      core.getInput('CONFIDENCE_THRESHOLD') || '70',
+      10
+    ),
     prNumber: core.getInput('PR_NUMBER'),
     commitSha: core.getInput('COMMIT_SHA'),
     repository: repositoryInput ? repositoryInput.trim() : undefined,
@@ -122,34 +153,51 @@ function getInputs(): ActionInputs {
     enableAutoFix: core.getInput('ENABLE_AUTO_FIX') === 'true',
     autoFixBaseBranch: core.getInput('AUTO_FIX_BASE_BRANCH') || 'main',
     autoFixMinConfidence: parseInt(
-      core.getInput('AUTO_FIX_MIN_CONFIDENCE') || String(AUTO_FIX.DEFAULT_MIN_CONFIDENCE),
+      core.getInput('AUTO_FIX_MIN_CONFIDENCE') ||
+        String(AUTO_FIX.DEFAULT_MIN_CONFIDENCE),
       10
     ),
     autoFixTargetRepo: core.getInput('AUTO_FIX_TARGET_REPO') || undefined,
     branch: core.getInput('BRANCH') || undefined,
+    // Validation inputs
+    enableValidation: core.getInput('ENABLE_VALIDATION') === 'true',
+    validationWorkflow:
+      core.getInput('VALIDATION_WORKFLOW') || 'validate-fix.yml',
+    validationPreviewUrl: core.getInput('VALIDATION_PREVIEW_URL') || undefined,
+    validationSpec: core.getInput('VALIDATION_SPEC') || undefined,
   };
 }
 
-function resolveRepository(inputs: ActionInputs): { owner: string; repo: string } {
+function resolveRepository(inputs: ActionInputs): {
+  owner: string;
+  repo: string;
+} {
   if (inputs.repository) {
     const cleaned = inputs.repository.replace(/\.git$/i, '').trim();
     const parts = cleaned.split('/');
     if (parts.length === 2 && parts[0] && parts[1]) {
       return { owner: parts[0], repo: parts[1] };
     }
-    core.warning(`Invalid repository input '${inputs.repository}'. Falling back to current repository context.`);
+    core.warning(
+      `Invalid repository input '${inputs.repository}'. Falling back to current repository context.`
+    );
   }
   return github.context.repo;
 }
 
-function resolveAutoFixTargetRepo(inputs: ActionInputs): { owner: string; repo: string } {
+function resolveAutoFixTargetRepo(inputs: ActionInputs): {
+  owner: string;
+  repo: string;
+} {
   if (inputs.autoFixTargetRepo) {
     const cleaned = inputs.autoFixTargetRepo.replace(/\.git$/i, '').trim();
     const parts = cleaned.split('/');
     if (parts.length === 2 && parts[0] && parts[1]) {
       return { owner: parts[0], repo: parts[1] };
     }
-    core.warning(`Invalid AUTO_FIX_TARGET_REPO '${inputs.autoFixTargetRepo}'. Falling back to current repository.`);
+    core.warning(
+      `Invalid AUTO_FIX_TARGET_REPO '${inputs.autoFixTargetRepo}'. Falling back to current repository.`
+    );
   }
   // Default to the repo where the workflow is running (where test code lives)
   return github.context.repo;
@@ -173,9 +221,10 @@ async function generateFixRecommendation(
       jobName: inputs.jobName || 'unknown',
       commitSha: inputs.commitSha || github.context.sha,
       branch: github.context.ref.replace('refs/heads/', ''),
-      repository: inputs.repository || `${repoDetails.owner}/${repoDetails.repo}`,
+      repository:
+        inputs.repository || `${repoDetails.owner}/${repoDetails.repo}`,
       prNumber: inputs.prNumber,
-      targetAppPrNumber: inputs.prNumber
+      targetAppPrNumber: inputs.prNumber,
     });
 
     // Resolve where the test code lives (for fetching source files)
@@ -188,10 +237,15 @@ async function generateFixRecommendation(
       repo: autoFixTargetRepo.repo,
       branch: inputs.autoFixBaseBranch || 'main',
     });
-    const recommendation = await repairAgent.generateFixRecommendation(repairContext, errorData as import('./types').ErrorData);
+    const recommendation = await repairAgent.generateFixRecommendation(
+      repairContext,
+      errorData as import('./types').ErrorData
+    );
 
     if (recommendation) {
-      core.info(`✅ Fix recommendation generated with ${recommendation.confidence}% confidence`);
+      core.info(
+        `✅ Fix recommendation generated with ${recommendation.confidence}% confidence`
+      );
     } else {
       core.info('❌ Could not generate fix recommendation');
     }
@@ -206,7 +260,8 @@ async function attemptAutoFix(
   inputs: ActionInputs,
   fixRecommendation: FixRecommendation,
   octokit: Octokit,
-  repoDetails: { owner: string; repo: string }
+  repoDetails: { owner: string; repo: string },
+  errorData?: { fileName?: string }
 ): Promise<ApplyResult | null> {
   core.info('\n🤖 Auto-fix is enabled, attempting to apply fix...');
 
@@ -215,12 +270,17 @@ async function attemptAutoFix(
     owner: repoDetails.owner,
     repo: repoDetails.repo,
     baseBranch: inputs.autoFixBaseBranch || 'main',
-    minConfidence: inputs.autoFixMinConfidence || AUTO_FIX.DEFAULT_MIN_CONFIDENCE,
+    minConfidence:
+      inputs.autoFixMinConfidence || AUTO_FIX.DEFAULT_MIN_CONFIDENCE,
+    enableValidation: inputs.enableValidation,
+    validationWorkflow: inputs.validationWorkflow,
   });
 
   // Check if the fix can be applied (confidence check)
   if (!fixApplier.canApply(fixRecommendation)) {
-    core.info('⏭️ Auto-fix skipped: confidence below threshold or no changes proposed');
+    core.info(
+      '⏭️ Auto-fix skipped: confidence below threshold or no changes proposed'
+    );
     return null;
   }
 
@@ -232,6 +292,48 @@ async function attemptAutoFix(
       core.info(`   Branch: ${result.branchName}`);
       core.info(`   Commit: ${result.commitSha}`);
       core.info(`   Files: ${result.modifiedFiles.join(', ')}`);
+
+      // Trigger validation if enabled
+      if (inputs.enableValidation && result.branchName) {
+        core.info('\n🧪 Triggering validation workflow...');
+
+        // Determine spec and preview URL for validation
+        const spec =
+          inputs.validationSpec ||
+          errorData?.fileName ||
+          fixRecommendation.proposedChanges[0]?.file;
+        const previewUrl = inputs.validationPreviewUrl || '';
+
+        if (!previewUrl) {
+          core.warning(
+            'No preview URL available for validation, skipping validation trigger'
+          );
+          result.validationStatus = 'skipped';
+        } else if (!spec) {
+          core.warning(
+            'No spec file identified for validation, skipping validation trigger'
+          );
+          result.validationStatus = 'skipped';
+        } else {
+          const validationResult = await fixApplier.triggerValidation({
+            branch: result.branchName,
+            spec,
+            previewUrl,
+            triageRunId: github.context.runId.toString(),
+          });
+
+          if (validationResult) {
+            result.validationRunId = validationResult.runId;
+            result.validationStatus = 'pending';
+            core.info(
+              `✅ Validation workflow triggered: run ID ${validationResult.runId}`
+            );
+          } else {
+            core.warning('Could not trigger validation workflow');
+            result.validationStatus = 'skipped';
+          }
+        }
+      }
     } else {
       core.warning(`❌ Auto-fix failed: ${result.error}`);
     }
@@ -257,9 +359,10 @@ function setInconclusiveOutput(
     metadata: {
       analyzedAt: new Date().toISOString(),
       confidenceThreshold: inputs.confidenceThreshold,
-      hasScreenshots: (errorData.screenshots && errorData.screenshots.length > 0) || false,
-      logSize: errorData.logs?.join('').length || 0
-    }
+      hasScreenshots:
+        (errorData.screenshots && errorData.screenshots.length > 0) || false,
+      logSize: errorData.logs?.join('').length || 0,
+    },
   };
   core.setOutput('verdict', 'INCONCLUSIVE');
   core.setOutput('confidence', result.confidence.toString());
@@ -275,7 +378,11 @@ function setSuccessOutput(
     reasoning: string;
     summary?: string;
     indicators?: string[];
-    suggestedSourceLocations?: { file: string; lines: string; reason: string }[];
+    suggestedSourceLocations?: {
+      file: string;
+      lines: string;
+      reason: string;
+    }[];
     fixRecommendation?: FixRecommendation;
   },
   errorData: { screenshots?: Array<{ name: string }>; logs?: string[] },
@@ -287,23 +394,34 @@ function setSuccessOutput(
     reasoning: result.reasoning,
     summary: result.summary,
     indicators: result.indicators || [],
-    ...(result.verdict === 'PRODUCT_ISSUE' && result.suggestedSourceLocations ? { suggestedSourceLocations: result.suggestedSourceLocations } : {}),
-    ...(result.verdict === 'TEST_ISSUE' && result.fixRecommendation ? { fixRecommendation: result.fixRecommendation } : {}),
-    ...(autoFixResult?.success ? {
-      autoFix: {
-        applied: true,
-        branch: autoFixResult.branchName,
-        commit: autoFixResult.commitSha,
-        files: autoFixResult.modifiedFiles,
-      }
-    } : {}),
+    ...(result.verdict === 'PRODUCT_ISSUE' && result.suggestedSourceLocations
+      ? { suggestedSourceLocations: result.suggestedSourceLocations }
+      : {}),
+    ...(result.verdict === 'TEST_ISSUE' && result.fixRecommendation
+      ? { fixRecommendation: result.fixRecommendation }
+      : {}),
+    ...(autoFixResult?.success
+      ? {
+          autoFix: {
+            applied: true,
+            branch: autoFixResult.branchName,
+            commit: autoFixResult.commitSha,
+            files: autoFixResult.modifiedFiles,
+            validation: {
+              status: autoFixResult.validationStatus || 'skipped',
+              runId: autoFixResult.validationRunId,
+            },
+          },
+        }
+      : {}),
     metadata: {
       analyzedAt: new Date().toISOString(),
-      hasScreenshots: (errorData.screenshots && errorData.screenshots.length > 0) || false,
+      hasScreenshots:
+        (errorData.screenshots && errorData.screenshots.length > 0) || false,
       logSize: errorData.logs?.join('').length || 0,
       hasFixRecommendation: !!result.fixRecommendation,
       autoFixApplied: autoFixResult?.success || false,
-    }
+    },
   };
 
   core.setOutput('verdict', result.verdict);
@@ -315,9 +433,15 @@ function setSuccessOutput(
   // Add fix recommendation outputs if available
   if (result.fixRecommendation) {
     core.setOutput('has_fix_recommendation', 'true');
-    core.setOutput('fix_recommendation', JSON.stringify(result.fixRecommendation));
+    core.setOutput(
+      'fix_recommendation',
+      JSON.stringify(result.fixRecommendation)
+    );
     core.setOutput('fix_summary', result.fixRecommendation.summary);
-    core.setOutput('fix_confidence', result.fixRecommendation.confidence.toString());
+    core.setOutput(
+      'fix_confidence',
+      result.fixRecommendation.confidence.toString()
+    );
   } else {
     core.setOutput('has_fix_recommendation', 'false');
   }
@@ -327,9 +451,34 @@ function setSuccessOutput(
     core.setOutput('auto_fix_applied', 'true');
     core.setOutput('auto_fix_branch', autoFixResult.branchName || '');
     core.setOutput('auto_fix_commit', autoFixResult.commitSha || '');
-    core.setOutput('auto_fix_files', JSON.stringify(autoFixResult.modifiedFiles));
+    core.setOutput(
+      'auto_fix_files',
+      JSON.stringify(autoFixResult.modifiedFiles)
+    );
+
+    // Add validation outputs
+    if (autoFixResult.validationRunId) {
+      core.setOutput(
+        'validation_run_id',
+        autoFixResult.validationRunId.toString()
+      );
+      core.setOutput(
+        'validation_status',
+        autoFixResult.validationStatus || 'pending'
+      );
+      core.setOutput(
+        'validation_url',
+        `https://github.com/${github.context.repo.owner}/${github.context.repo.repo}/actions/runs/${autoFixResult.validationRunId}`
+      );
+    } else {
+      core.setOutput(
+        'validation_status',
+        autoFixResult.validationStatus || 'skipped'
+      );
+    }
   } else {
     core.setOutput('auto_fix_applied', 'false');
+    core.setOutput('validation_status', 'skipped');
   }
 
   // Log results
@@ -338,7 +487,11 @@ function setSuccessOutput(
   core.info(`Summary: ${result.summary}`);
 
   // Log suggested source locations for PRODUCT_ISSUE
-  if (result.verdict === 'PRODUCT_ISSUE' && result.suggestedSourceLocations && result.suggestedSourceLocations.length > 0) {
+  if (
+    result.verdict === 'PRODUCT_ISSUE' &&
+    result.suggestedSourceLocations &&
+    result.suggestedSourceLocations.length > 0
+  ) {
     core.info('\n🎯 Suggested Source Locations to Investigate:');
     result.suggestedSourceLocations.forEach((location, index) => {
       core.info(`  ${index + 1}. ${location.file} (lines ${location.lines})`);
@@ -350,8 +503,12 @@ function setSuccessOutput(
   if (result.verdict === 'TEST_ISSUE' && result.fixRecommendation) {
     core.info('\n🔧 Fix Recommendation Generated:');
     core.info(`  Confidence: ${result.fixRecommendation.confidence}%`);
-    core.info(`  Changes: ${result.fixRecommendation.proposedChanges.length} file(s)`);
-    core.info(`  Evidence: ${result.fixRecommendation.evidence.length} item(s)`);
+    core.info(
+      `  Changes: ${result.fixRecommendation.proposedChanges.length} file(s)`
+    );
+    core.info(
+      `  Evidence: ${result.fixRecommendation.evidence.length} item(s)`
+    );
     core.info('\n📝 Fix Summary:');
     core.info(result.fixRecommendation.summary);
 
@@ -361,7 +518,22 @@ function setSuccessOutput(
       core.info(`  Branch: ${autoFixResult.branchName}`);
       core.info(`  Commit: ${autoFixResult.commitSha}`);
       core.info(`  Files: ${autoFixResult.modifiedFiles.join(', ')}`);
-      core.info('\n👉 To create a PR, visit your repository and open a PR from the branch above.');
+
+      // Log validation status
+      if (autoFixResult.validationRunId) {
+        core.info(`\n🧪 Validation: ${autoFixResult.validationStatus}`);
+        core.info(`  Run ID: ${autoFixResult.validationRunId}`);
+        core.info(
+          `  URL: https://github.com/${github.context.repo.owner}/${github.context.repo.repo}/actions/runs/${autoFixResult.validationRunId}`
+        );
+        core.info(
+          '\n👉 PR will be created automatically if validation passes.'
+        );
+      } else {
+        core.info(
+          '\n👉 To create a PR, visit your repository and open a PR from the branch above.'
+        );
+      }
     }
   }
 }
