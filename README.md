@@ -68,6 +68,7 @@ The agents iterate up to 3 times, with the review agent providing feedback for i
 ```
 
 **Trade-offs:**
+
 | Approach | API Calls | Quality | Speed |
 |----------|-----------|---------|-------|
 | Single-Shot | 1 | Good | ~5s |
@@ -95,6 +96,7 @@ You can validate fixes by running the actual test before creating a PR:
 ```
 
 When validation is enabled:
+
 1. Fix is applied to a branch
 2. Validation workflow runs the specific test against the fix
 3. If test passes → PR is created automatically
@@ -535,12 +537,14 @@ npm run all
 This project uses Husky to ensure code quality and build consistency:
 
 **Pre-commit hook:**
+
 - Runs linting (`npm run lint`)
 - Builds the TypeScript code
 - Packages the action and updates `dist/` if needed
 - Automatically stages updated `dist/` files
 
 **Pre-push hook:**
+
 - Verifies `dist/` is up-to-date
 - Runs all tests
 
@@ -573,6 +577,7 @@ gh release create v$(node -p "require('./package.json').version") \
 ### Verification
 
 The repository includes automatic checks to ensure `dist/` is always up-to-date:
+
 - **check-dist.yml**: Verifies dist/ matches source on every push
 - **npm run verify-dist**: Local verification command
 
@@ -582,7 +587,7 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ## Support
 
-- 📧 Email: support@adept.at
+- 📧 Email: <support@adept.at>
 - 🐛 Issues: [GitHub Issues](https://github.com/adept-at/adept-triage-agent/issues)
 - 💬 Discussions: [GitHub Discussions](https://github.com/adept-at/adept-triage-agent/discussions)
 

@@ -22,7 +22,7 @@ exports.CONFIDENCE = {
     MIN_FIX_CONFIDENCE: 50,
 };
 exports.OPENAI = {
-    MODEL: 'gpt-5.2',
+    MODEL: 'gpt-5.2-codex',
     TEMPERATURE: 0.3,
     MAX_COMPLETION_TOKENS: 16384,
     MAX_RETRIES: 3,

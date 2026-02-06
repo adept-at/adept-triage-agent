@@ -19,7 +19,7 @@ export declare const CONFIDENCE: {
     readonly MIN_FIX_CONFIDENCE: 50;
 };
 export declare const OPENAI: {
-    readonly MODEL: "gpt-5.2";
+    readonly MODEL: "gpt-5.2-codex";
     readonly TEMPERATURE: 0.3;
     readonly MAX_COMPLETION_TOKENS: 16384;
     readonly MAX_RETRIES: 3;

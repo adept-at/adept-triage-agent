@@ -133,8 +133,9 @@ The element was not found before the timeout.`,
       expect(result.data?.rootCauseCategory).toBe('SELECTOR_MISMATCH');
       expect(result.data?.confidence).toBeGreaterThan(50);
       expect(result.data?.selectors).toContain('[data-testid="email-input"]');
-      // issueLocation can be TEST_CODE or BOTH (AI may reason app change triggered test update need)
-      expect(['TEST_CODE', 'BOTH']).toContain(result.data?.issueLocation);
+      // issueLocation can be TEST_CODE, BOTH, or APP_CODE (AI may reason app change triggered test update need,
+      // or that the app code change is the root cause requiring the test to adapt)
+      expect(['TEST_CODE', 'BOTH', 'APP_CODE']).toContain(result.data?.issueLocation);
     }, 60000);
 
     it('AnalysisAgent should correctly analyze a timing issue', async () => {

@@ -13,7 +13,10 @@ jest.mock('../src/repair-context');
 jest.mock('../src/repair/simplified-repair-agent');
 
 // Import required modules
-import { analyzeFailure, extractErrorFromLogs } from '../src/simplified-analyzer';
+import {
+  analyzeFailure,
+  extractErrorFromLogs,
+} from '../src/simplified-analyzer';
 import { ArtifactFetcher } from '../src/artifact-fetcher';
 import { buildRepairContext } from '../src/repair-context';
 import { SimplifiedRepairAgent } from '../src/repair/simplified-repair-agent';
@@ -24,22 +27,24 @@ describe('Fix Recommendation Integration', () => {
   let mockGithub: jest.Mocked<typeof github>;
   let mockOctokit: jest.Mocked<Octokit>;
   let mockAnalyzeFailure: jest.MockedFunction<typeof analyzeFailure>;
-  let mockExtractErrorFromLogs: jest.MockedFunction<typeof extractErrorFromLogs>;
+  let mockExtractErrorFromLogs: jest.MockedFunction<
+    typeof extractErrorFromLogs
+  >;
   let mockArtifactFetcher: jest.Mocked<ArtifactFetcher>;
   let mockBuildRepairContext: jest.MockedFunction<typeof buildRepairContext>;
   let mockGenerateFixRecommendation: jest.Mock;
 
   beforeEach(() => {
     jest.clearAllMocks();
-    
+
     // Setup core mocks
     mockCore = core as jest.Mocked<typeof core>;
     mockCore.getInput.mockImplementation((name: string) => {
       const inputs: Record<string, string> = {
-        'GITHUB_TOKEN': 'github-token',
-        'OPENAI_API_KEY': 'openai-key',
-        'CONFIDENCE_THRESHOLD': '70',
-        'ERROR_MESSAGE': 'Test error message',
+        GITHUB_TOKEN: 'github-token',
+        OPENAI_API_KEY: 'openai-key',
+        CONFIDENCE_THRESHOLD: '70',
+        ERROR_MESSAGE: 'Test error message',
       };
       return inputs[name] || '';
     });
@@ -64,12 +69,18 @@ describe('Fix Recommendation Integration', () => {
         listJobsForWorkflowRun: jest.fn(),
       },
     } as any;
-    (Octokit as jest.MockedClass<typeof Octokit>).mockImplementation(() => mockOctokit);
+    (Octokit as jest.MockedClass<typeof Octokit>).mockImplementation(
+      () => mockOctokit
+    );
 
     // Setup analyzer mocks
-    mockAnalyzeFailure = analyzeFailure as jest.MockedFunction<typeof analyzeFailure>;
-    mockExtractErrorFromLogs = extractErrorFromLogs as jest.MockedFunction<typeof extractErrorFromLogs>;
-    
+    mockAnalyzeFailure = analyzeFailure as jest.MockedFunction<
+      typeof analyzeFailure
+    >;
+    mockExtractErrorFromLogs = extractErrorFromLogs as jest.MockedFunction<
+      typeof extractErrorFromLogs
+    >;
+
     // Setup artifact fetcher mock
     mockArtifactFetcher = {
       fetchScreenshots: jest.fn().mockResolvedValue([]),
@@ -77,10 +88,14 @@ describe('Fix Recommendation Integration', () => {
       fetchPRDiff: jest.fn().mockResolvedValue(null),
       fetchCypressArtifactLogs: jest.fn().mockResolvedValue(''),
     } as any;
-    (ArtifactFetcher as jest.MockedClass<typeof ArtifactFetcher>).mockImplementation(() => mockArtifactFetcher);
+    (
+      ArtifactFetcher as jest.MockedClass<typeof ArtifactFetcher>
+    ).mockImplementation(() => mockArtifactFetcher);
 
     // Setup repair context mock
-    mockBuildRepairContext = buildRepairContext as jest.MockedFunction<typeof buildRepairContext>;
+    mockBuildRepairContext = buildRepairContext as jest.MockedFunction<
+      typeof buildRepairContext
+    >;
     mockBuildRepairContext.mockReturnValue({
       testFile: 'test.cy.ts',
       testName: 'test name',
@@ -96,9 +111,14 @@ describe('Fix Recommendation Integration', () => {
 
     // Setup SimplifiedRepairAgent mock
     mockGenerateFixRecommendation = jest.fn();
-    (SimplifiedRepairAgent as jest.MockedClass<typeof SimplifiedRepairAgent>).mockImplementation(() => ({
-      generateFixRecommendation: mockGenerateFixRecommendation,
-    } as any));
+    (
+      SimplifiedRepairAgent as jest.MockedClass<typeof SimplifiedRepairAgent>
+    ).mockImplementation(
+      () =>
+        ({
+          generateFixRecommendation: mockGenerateFixRecommendation,
+        } as any)
+    );
   });
 
   describe('TEST_ISSUE with fix recommendation', () => {
@@ -107,13 +127,15 @@ describe('Fix Recommendation Integration', () => {
       const fixRecommendation = {
         confidence: 85,
         summary: 'Fix recommendation summary',
-        proposedChanges: [{
-          file: 'test.cy.ts',
-          line: 42,
-          oldCode: 'old',
-          newCode: 'new',
-          justification: 'reason',
-        }],
+        proposedChanges: [
+          {
+            file: 'test.cy.ts',
+            line: 42,
+            oldCode: 'old',
+            newCode: 'new',
+            justification: 'reason',
+          },
+        ],
         evidence: ['evidence 1'],
         reasoning: 'Fix reasoning',
       };
@@ -134,7 +156,7 @@ describe('Fix Recommendation Integration', () => {
       // Verify fix recommendation was attempted
       // SimplifiedRepairAgent now accepts an OpenAI client instance, source fetch context, and config
       expect(SimplifiedRepairAgent).toHaveBeenCalledWith(
-        expect.any(Object),  // OpenAI client
+        expect.any(Object), // OpenAI client
         expect.objectContaining({
           octokit: expect.any(Object),
           owner: expect.any(String),
@@ -146,7 +168,7 @@ describe('Fix Recommendation Integration', () => {
         })
       );
       expect(mockGenerateFixRecommendation).toHaveBeenCalled();
-      
+
       // Verify repair context was built
       expect(mockBuildRepairContext).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -156,13 +178,24 @@ describe('Fix Recommendation Integration', () => {
       );
 
       // Verify outputs include fix recommendation
-      expect(mockCore.setOutput).toHaveBeenCalledWith('has_fix_recommendation', 'true');
-      expect(mockCore.setOutput).toHaveBeenCalledWith('fix_recommendation', JSON.stringify(fixRecommendation));
-      expect(mockCore.setOutput).toHaveBeenCalledWith('fix_summary', 'Fix recommendation summary');
+      expect(mockCore.setOutput).toHaveBeenCalledWith(
+        'has_fix_recommendation',
+        'true'
+      );
+      expect(mockCore.setOutput).toHaveBeenCalledWith(
+        'fix_recommendation',
+        JSON.stringify(fixRecommendation)
+      );
+      expect(mockCore.setOutput).toHaveBeenCalledWith(
+        'fix_summary',
+        'Fix recommendation summary'
+      );
       expect(mockCore.setOutput).toHaveBeenCalledWith('fix_confidence', '85');
-      
+
       // Verify triage JSON includes fix recommendation
-      const triageJsonCall = mockCore.setOutput.mock.calls.find(call => call[0] === 'triage_json');
+      const triageJsonCall = mockCore.setOutput.mock.calls.find(
+        (call) => call[0] === 'triage_json'
+      );
       const triageJson = JSON.parse(triageJsonCall[1]);
       expect(triageJson.fixRecommendation).toEqual(fixRecommendation);
       expect(triageJson.metadata.hasFixRecommendation).toBe(true);
@@ -186,13 +219,27 @@ describe('Fix Recommendation Integration', () => {
       expect(mockGenerateFixRecommendation).toHaveBeenCalled();
 
       // Verify outputs indicate no fix recommendation
-      expect(mockCore.setOutput).toHaveBeenCalledWith('has_fix_recommendation', 'false');
-      expect(mockCore.setOutput).not.toHaveBeenCalledWith('fix_recommendation', expect.anything());
-      expect(mockCore.setOutput).not.toHaveBeenCalledWith('fix_summary', expect.anything());
-      expect(mockCore.setOutput).not.toHaveBeenCalledWith('fix_confidence', expect.anything());
-      
+      expect(mockCore.setOutput).toHaveBeenCalledWith(
+        'has_fix_recommendation',
+        'false'
+      );
+      expect(mockCore.setOutput).not.toHaveBeenCalledWith(
+        'fix_recommendation',
+        expect.anything()
+      );
+      expect(mockCore.setOutput).not.toHaveBeenCalledWith(
+        'fix_summary',
+        expect.anything()
+      );
+      expect(mockCore.setOutput).not.toHaveBeenCalledWith(
+        'fix_confidence',
+        expect.anything()
+      );
+
       // Verify triage JSON doesn't include fix recommendation
-      const triageJsonCall = mockCore.setOutput.mock.calls.find(call => call[0] === 'triage_json');
+      const triageJsonCall = mockCore.setOutput.mock.calls.find(
+        (call) => call[0] === 'triage_json'
+      );
       const triageJson = JSON.parse(triageJsonCall[1]);
       expect(triageJson.fixRecommendation).toBeUndefined();
       expect(triageJson.metadata.hasFixRecommendation).toBe(false);
@@ -213,11 +260,16 @@ describe('Fix Recommendation Integration', () => {
       await run();
 
       // Verify error was handled gracefully
-      expect(mockCore.warning).toHaveBeenCalledWith(expect.stringContaining('Failed to generate fix recommendation'));
-      
+      expect(mockCore.warning).toHaveBeenCalledWith(
+        expect.stringContaining('Failed to generate fix recommendation')
+      );
+
       // Verify outputs indicate no fix recommendation
-      expect(mockCore.setOutput).toHaveBeenCalledWith('has_fix_recommendation', 'false');
-      
+      expect(mockCore.setOutput).toHaveBeenCalledWith(
+        'has_fix_recommendation',
+        'false'
+      );
+
       // Verify action still completes successfully
       expect(mockCore.setFailed).not.toHaveBeenCalled();
       expect(mockCore.setOutput).toHaveBeenCalledWith('verdict', 'TEST_ISSUE');
@@ -232,11 +284,13 @@ describe('Fix Recommendation Integration', () => {
         reasoning: 'Product bug detected',
         summary: 'Product issue detected',
         indicators: ['indicator1'],
-        suggestedSourceLocations: [{
-          file: 'app.js',
-          lines: '10-20',
-          reason: 'Likely bug location',
-        }],
+        suggestedSourceLocations: [
+          {
+            file: 'app.js',
+            lines: '10-20',
+            reason: 'Likely bug location',
+          },
+        ],
       });
 
       // Run the action
@@ -245,13 +299,21 @@ describe('Fix Recommendation Integration', () => {
       // Verify fix recommendation was NOT attempted
       expect(SimplifiedRepairAgent).not.toHaveBeenCalled();
       expect(mockGenerateFixRecommendation).not.toHaveBeenCalled();
-      
+
       // Verify outputs don't include fix recommendation
-      expect(mockCore.setOutput).toHaveBeenCalledWith('has_fix_recommendation', 'false');
-      expect(mockCore.setOutput).not.toHaveBeenCalledWith('fix_recommendation', expect.anything());
-      
+      expect(mockCore.setOutput).toHaveBeenCalledWith(
+        'has_fix_recommendation',
+        'false'
+      );
+      expect(mockCore.setOutput).not.toHaveBeenCalledWith(
+        'fix_recommendation',
+        expect.anything()
+      );
+
       // Verify triage JSON includes suggestedSourceLocations but not fixRecommendation
-      const triageJsonCall = mockCore.setOutput.mock.calls.find(call => call[0] === 'triage_json');
+      const triageJsonCall = mockCore.setOutput.mock.calls.find(
+        (call) => call[0] === 'triage_json'
+      );
       const triageJson = JSON.parse(triageJsonCall[1]);
       expect(triageJson.suggestedSourceLocations).toBeDefined();
       expect(triageJson.fixRecommendation).toBeUndefined();
@@ -263,29 +325,33 @@ describe('Fix Recommendation Integration', () => {
       // Don't set ERROR_MESSAGE to simulate extraction from logs
       mockCore.getInput.mockImplementation((name: string) => {
         const inputs: Record<string, string> = {
-          'GITHUB_TOKEN': 'github-token',
-          'OPENAI_API_KEY': 'openai-key',
-          'CONFIDENCE_THRESHOLD': '70',
-          'WORKFLOW_RUN_ID': '123456',
+          GITHUB_TOKEN: 'github-token',
+          OPENAI_API_KEY: 'openai-key',
+          CONFIDENCE_THRESHOLD: '70',
+          WORKFLOW_RUN_ID: '123456',
         };
         return inputs[name] || '';
       });
 
       // Mock workflow API calls
       mockOctokit.actions.getWorkflowRun.mockResolvedValue({
-        data: { status: 'completed' }
+        data: { status: 'completed' },
       });
-      
+
       mockOctokit.actions.listJobsForWorkflowRun.mockResolvedValue({
         data: {
-          jobs: [{
-            name: 'test-job',
-            conclusion: 'failure',
-            steps: [{
-              name: 'Run tests',
+          jobs: [
+            {
+              name: 'test-job',
               conclusion: 'failure',
-            }],
-          }],
+              steps: [
+                {
+                  name: 'Run tests',
+                  conclusion: 'failure',
+                },
+              ],
+            },
+          ],
         },
       });
 
@@ -325,7 +391,10 @@ describe('Fix Recommendation Integration', () => {
 
       // Verify fix recommendation was still attempted
       expect(mockGenerateFixRecommendation).toHaveBeenCalled();
-      expect(mockCore.setOutput).toHaveBeenCalledWith('has_fix_recommendation', 'true');
+      expect(mockCore.setOutput).toHaveBeenCalledWith(
+        'has_fix_recommendation',
+        'true'
+      );
     });
 
     it('should log fix recommendation details when generated', async () => {
@@ -333,8 +402,20 @@ describe('Fix Recommendation Integration', () => {
         confidence: 90,
         summary: '## Fix Summary\nDetailed fix information',
         proposedChanges: [
-          { file: 'test1.cy.ts', line: 10, oldCode: 'old1', newCode: 'new1', justification: 'fix1' },
-          { file: 'test2.cy.ts', line: 20, oldCode: 'old2', newCode: 'new2', justification: 'fix2' },
+          {
+            file: 'test1.cy.ts',
+            line: 10,
+            oldCode: 'old1',
+            newCode: 'new1',
+            justification: 'fix1',
+          },
+          {
+            file: 'test2.cy.ts',
+            line: 20,
+            oldCode: 'old2',
+            newCode: 'new2',
+            justification: 'fix2',
+          },
         ],
         evidence: ['evidence1', 'evidence2', 'evidence3'],
         reasoning: 'Detailed reasoning',
@@ -354,11 +435,21 @@ describe('Fix Recommendation Integration', () => {
       await run();
 
       // Verify detailed logging
-      expect(mockCore.info).toHaveBeenCalledWith(expect.stringContaining('🔧 Fix Recommendation Generated:'));
-      expect(mockCore.info).toHaveBeenCalledWith(expect.stringContaining('Confidence: 90%'));
-      expect(mockCore.info).toHaveBeenCalledWith(expect.stringContaining('Changes: 2 file(s)'));
-      expect(mockCore.info).toHaveBeenCalledWith(expect.stringContaining('Evidence: 3 item(s)'));
-      expect(mockCore.info).toHaveBeenCalledWith(expect.stringContaining('📝 Fix Summary:'));
+      expect(mockCore.info).toHaveBeenCalledWith(
+        expect.stringContaining('🔧 Fix Recommendation Generated:')
+      );
+      expect(mockCore.info).toHaveBeenCalledWith(
+        expect.stringContaining('Confidence: 90%')
+      );
+      expect(mockCore.info).toHaveBeenCalledWith(
+        expect.stringContaining('Changes: 2 file(s)')
+      );
+      expect(mockCore.info).toHaveBeenCalledWith(
+        expect.stringContaining('Evidence: 3 item(s)')
+      );
+      expect(mockCore.info).toHaveBeenCalledWith(
+        expect.stringContaining('📝 Fix Summary:')
+      );
       expect(mockCore.info).toHaveBeenCalledWith(fixRecommendation.summary);
     });
   });

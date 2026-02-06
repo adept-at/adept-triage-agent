@@ -6,7 +6,7 @@ export declare class OpenAIClient {
     private retryDelay;
     constructor(apiKey: string);
     analyze(errorData: ErrorData, examples: FewShotExample[]): Promise<OpenAIResponse>;
-    private buildMessages;
+    private convertToResponsesInput;
     private buildUserContent;
     private getSystemPrompt;
     private buildPrompt;

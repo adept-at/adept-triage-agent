@@ -12,7 +12,7 @@
 import OpenAI from 'openai';
 
 // Test different models to find the right one
-const MODELS_TO_TEST = ['gpt-5.2', 'gpt-5.2-chat-latest', 'gpt-4o', 'gpt-5'];
+const MODELS_TO_TEST = ['gpt-5.2-codex', 'gpt-5-codex', 'gpt-5.2', 'gpt-4o'];
 
 async function testModel() {
   const apiKey = process.env.OPENAI_API_KEY;

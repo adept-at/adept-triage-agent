@@ -12,22 +12,31 @@ export class OpenAIClient {
   }
 
   async analyze(errorData: ErrorData, examples: FewShotExample[]): Promise<OpenAIResponse> {
-    // Use GPT-5.2 Codex (latest model optimized for code analysis)
-    const model = 'gpt-5.2';
-    core.info('🧠 Using GPT-5.2-codex model for analysis');
+    // Use GPT-5.2 Codex via Responses API (most advanced agentic coding model)
+    const model = 'gpt-5.2-codex';
+    core.info('🧠 Using GPT-5.2-codex model for analysis (Responses API)');
     
-    const messages = this.buildMessages(errorData, examples);
+    const systemPrompt = this.getSystemPrompt();
+    const userContent = this.buildUserContent(errorData, examples);
     
     // Debug: Log the actual prompt content
-    if (messages[1] && messages[1].role === 'user') {
-      const userMessage = messages[1].content;
-      if (typeof userMessage === 'string') {
-        // Check if structured summary is in the prompt
-        if (userMessage.includes('QUICK ANALYSIS SUMMARY')) {
+    if (typeof userContent === 'string') {
+      if (userContent.includes('QUICK ANALYSIS SUMMARY')) {
+        core.info('📊 Structured summary header included in prompt!');
+        const summaryStart = userContent.indexOf('QUICK ANALYSIS SUMMARY');
+        const summarySection = userContent.substring(summaryStart, summaryStart + 500);
+        core.info(`Summary preview:\n${summarySection}...`);
+      } else {
+        core.info('⚠️  Structured summary header NOT found in prompt');
+      }
+    } else {
+      // Multimodal content - check first text part
+      const firstTextPart = userContent.find(p => p.type === 'text');
+      if (firstTextPart && 'text' in firstTextPart) {
+        if (firstTextPart.text.includes('QUICK ANALYSIS SUMMARY')) {
           core.info('📊 Structured summary header included in prompt!');
-          // Log first 500 chars of the summary section
-          const summaryStart = userMessage.indexOf('QUICK ANALYSIS SUMMARY');
-          const summarySection = userMessage.substring(summaryStart, summaryStart + 500);
+          const summaryStart = firstTextPart.text.indexOf('QUICK ANALYSIS SUMMARY');
+          const summarySection = firstTextPart.text.substring(summaryStart, summaryStart + 500);
           core.info(`Summary preview:\n${summarySection}...`);
         } else {
           core.info('⚠️  Structured summary header NOT found in prompt');
@@ -56,21 +65,21 @@ export class OpenAIClient {
       core.info('⚠️  ErrorData does NOT contain structured summary');
     }
     
+    const input = this.convertToResponsesInput(userContent);
+    
     for (let attempt = 1; attempt <= this.maxRetries; attempt++) {
       try {
         core.info(`Analyzing with ${model} (attempt ${attempt}/${this.maxRetries})`);
         
-        const requestParams = {
+        const response = await this.openai.responses.create({
           model,
-          messages,
-          temperature: 0.3,
-          max_completion_tokens: 16384,
-          response_format: { type: 'json_object' as const }
-        } as const;
-        
-        const response = await this.openai.chat.completions.create(requestParams);
+          instructions: systemPrompt,
+          input,
+          max_output_tokens: 16384,
+          text: { format: { type: 'json_object' as const } },
+        });
 
-        const content = response.choices[0]?.message?.content;
+        const content = response.output_text;
         if (!content) {
           throw new Error('Empty response from OpenAI');
         }
@@ -94,31 +103,37 @@ export class OpenAIClient {
     throw new Error('Failed to get analysis from OpenAI after all retries');
   }
 
-  private buildMessages(errorData: ErrorData, examples: FewShotExample[]): OpenAI.Chat.Completions.ChatCompletionMessageParam[] {
-    const messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [
-      {
-        role: 'system',
-        content: this.getSystemPrompt()
-      }
-    ];
-
-    // Build user message content
-    const userContent = this.buildUserContent(errorData, examples);
-    
-    // Add user message based on whether we have screenshots
-    if (errorData.screenshots && errorData.screenshots.length > 0) {
-      messages.push({
-        role: 'user',
-        content: userContent
-      });
-    } else {
-      messages.push({
-        role: 'user',
-        content: userContent
-      });
+  /**
+   * Convert Chat Completions content format to Responses API input format.
+   * This allows agents to continue using Chat Completions types while
+   * the client uses the Responses API internally.
+   */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private convertToResponsesInput(
+    userContent: string | Array<OpenAI.Chat.Completions.ChatCompletionContentPartText | OpenAI.Chat.Completions.ChatCompletionContentPartImage>
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  ): any[] {
+    if (typeof userContent === 'string') {
+      return [{ role: 'user' as const, content: userContent }];
     }
-
-    return messages;
+    
+    // Convert Chat Completions content parts to Responses API format
+    const convertedParts = userContent.map((part) => {
+      if (part.type === 'text') {
+        return { type: 'input_text' as const, text: part.text };
+      }
+      if (part.type === 'image_url') {
+        const imageUrl = part.image_url;
+        return {
+          type: 'input_image' as const,
+          image_url: typeof imageUrl === 'string' ? imageUrl : imageUrl.url,
+          detail: (typeof imageUrl === 'string' ? 'auto' : (imageUrl.detail || 'auto')) as 'auto' | 'low' | 'high',
+        };
+      }
+      return part;
+    });
+    
+    return [{ role: 'user' as const, content: convertedParts }];
   }
 
   private buildUserContent(errorData: ErrorData, examples: FewShotExample[]): string | Array<OpenAI.Chat.Completions.ChatCompletionContentPartText | OpenAI.Chat.Completions.ChatCompletionContentPartImage> {
@@ -511,10 +526,14 @@ FOR PRODUCT_ISSUES: You MUST analyze the diff patches above to:
   }
 
   /**
-   * Generic chat entry point that allows callers to supply their own
+   * Generic entry point that allows callers to supply their own
    * system prompt and user content (text or multimodal parts). This is used
    * by the repair agent to request a structured JSON repair plan, without
    * going through the triage-specific prompt path.
+   *
+   * Uses the Responses API with gpt-5.2-codex model.
+   * Note: temperature parameter is accepted for backward compatibility but
+   * is not supported by Codex models and will be ignored.
    */
   async generateWithCustomPrompt(params: {
     systemPrompt: string;
@@ -522,21 +541,18 @@ FOR PRODUCT_ISSUES: You MUST analyze the diff patches above to:
     responseAsJson?: boolean;
     temperature?: number;
   }): Promise<string> {
-    const model = 'gpt-5.2';
-    const messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [
-      { role: 'system', content: params.systemPrompt },
-      { role: 'user', content: params.userContent }
-    ];
+    const model = 'gpt-5.2-codex';
+    const input = this.convertToResponsesInput(params.userContent);
 
-    const response = await this.openai.chat.completions.create({
+    const response = await this.openai.responses.create({
       model,
-      messages,
-      temperature: params.temperature ?? 0.3,
-      max_completion_tokens: 16384,
-      response_format: params.responseAsJson ? { type: 'json_object' as const } : undefined
+      instructions: params.systemPrompt,
+      input,
+      max_output_tokens: 16384,
+      text: params.responseAsJson ? { format: { type: 'json_object' as const } } : undefined,
     });
 
-    const content = response.choices[0]?.message?.content;
+    const content = response.output_text;
     if (!content) {
       throw new Error('Empty response from OpenAI');
     }

@@ -45,7 +45,7 @@ export const CONFIDENCE = {
 /** OpenAI API configuration */
 export const OPENAI = {
   /** Model to use for analysis */
-  MODEL: 'gpt-5.2',
+  MODEL: 'gpt-5.2-codex',
   /** Temperature for deterministic responses */
   TEMPERATURE: 0.3,
   /** Maximum completion tokens */

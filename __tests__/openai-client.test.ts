@@ -36,10 +36,8 @@ describe('OpenAIClient', () => {
     
     mockCreate = jest.fn();
     mockOpenAI = {
-      chat: {
-        completions: {
-          create: mockCreate,
-        },
+      responses: {
+        create: mockCreate,
       },
     } as any;
 
@@ -51,15 +49,11 @@ describe('OpenAIClient', () => {
   describe('analyze', () => {
     it('should successfully analyze error and return response', async () => {
       const mockResponse = {
-        choices: [{
-          message: {
-            content: JSON.stringify({
-              verdict: 'TEST_ISSUE',
-              reasoning: 'This is a test synchronization issue',
-              indicators: ['timeout', 'element not found'],
-            }),
-          },
-        }],
+        output_text: JSON.stringify({
+          verdict: 'TEST_ISSUE',
+          reasoning: 'This is a test synchronization issue',
+          indicators: ['timeout', 'element not found'],
+        }),
       };
 
       mockCreate.mockResolvedValueOnce(mockResponse);
@@ -74,15 +68,16 @@ describe('OpenAIClient', () => {
 
       expect(mockCreate).toHaveBeenCalledWith(
         expect.objectContaining({
-          model: 'gpt-5.2',
-          temperature: 0.3,
-          max_completion_tokens: 16384,
-          response_format: { type: 'json_object' },
+          model: 'gpt-5.2-codex',
+          max_output_tokens: 16384,
+          text: { format: { type: 'json_object' } },
+          instructions: expect.any(String),
+          input: expect.any(Array),
         })
       );
     });
 
-    it('should use GPT-5.2 with vision when screenshots are provided', async () => {
+    it('should use GPT-5.2-codex with vision when screenshots are provided', async () => {
       const errorDataWithScreenshots: ErrorData = {
         ...mockErrorData,
         screenshots: [{
@@ -93,15 +88,11 @@ describe('OpenAIClient', () => {
       };
 
       const mockResponse = {
-        choices: [{
-          message: {
-            content: JSON.stringify({
-              verdict: 'PRODUCT_ISSUE',
-              reasoning: 'UI element is missing from the page as shown in screenshot',
-              indicators: ['missing element', 'visual bug'],
-            }),
-          },
-        }],
+        output_text: JSON.stringify({
+          verdict: 'PRODUCT_ISSUE',
+          reasoning: 'UI element is missing from the page as shown in screenshot',
+          indicators: ['missing element', 'visual bug'],
+        }),
       };
 
       mockCreate.mockResolvedValueOnce(mockResponse);
@@ -111,21 +102,20 @@ describe('OpenAIClient', () => {
       expect(result.verdict).toBe('PRODUCT_ISSUE');
       expect(mockCreate).toHaveBeenCalledWith(
         expect.objectContaining({
-          model: 'gpt-5.2',
-          temperature: 0.3,
-          max_completion_tokens: 16384,
-          response_format: { type: 'json_object' },
+          model: 'gpt-5.2-codex',
+          max_output_tokens: 16384,
+          text: { format: { type: 'json_object' } },
         })
       );
 
-      // Verify the message structure includes image content
+      // Verify the input structure includes converted image content
       const call = mockCreate.mock.calls[0][0];
-      expect(call.messages[1].content).toContainEqual(
+      const userMessage = call.input[0];
+      expect(userMessage.role).toBe('user');
+      expect(userMessage.content).toContainEqual(
         expect.objectContaining({
-          type: 'image_url',
-          image_url: expect.objectContaining({
-            url: expect.stringContaining('data:image/png;base64,'),
-          }),
+          type: 'input_image',
+          image_url: expect.stringContaining('data:image/png;base64,'),
         })
       );
     });
@@ -141,11 +131,7 @@ describe('OpenAIClient', () => {
       };
 
       const mockResponse = {
-        choices: [{
-          message: {
-            content: 'Verdict: TEST_ISSUE\nReasoning: The test is using wrong selectors\nIndicators: wrong selector, element exists',
-          },
-        }],
+        output_text: 'Verdict: TEST_ISSUE\nReasoning: The test is using wrong selectors\nIndicators: wrong selector, element exists',
       };
 
       mockCreate.mockResolvedValueOnce(mockResponse);
@@ -161,15 +147,11 @@ describe('OpenAIClient', () => {
 
     it('should retry on failure and succeed', async () => {
       const mockResponse = {
-        choices: [{
-          message: {
-            content: JSON.stringify({
-              verdict: 'PRODUCT_ISSUE',
-              reasoning: 'Database connection error',
-              indicators: ['ECONNREFUSED'],
-            }),
-          },
-        }],
+        output_text: JSON.stringify({
+          verdict: 'PRODUCT_ISSUE',
+          reasoning: 'Database connection error',
+          indicators: ['ECONNREFUSED'],
+        }),
       };
 
       mockCreate
@@ -196,28 +178,9 @@ describe('OpenAIClient', () => {
 
     it('should throw error when response is empty', async () => {
       mockCreate
-        .mockResolvedValueOnce({
-          choices: [{
-            message: {
-              content: null,
-            },
-          }],
-        })
-        .mockResolvedValueOnce({
-          choices: [{
-            message: {
-              content: null,
-            },
-          }],
-        })
-        .mockResolvedValueOnce({
-          choices: [{
-            message: {
-              content: null,
-            },
-          }],
-        })
-        .mockRejectedValueOnce(new TypeError("Cannot read properties of undefined (reading 'choices')"));
+        .mockResolvedValueOnce({ output_text: null })
+        .mockResolvedValueOnce({ output_text: null })
+        .mockResolvedValueOnce({ output_text: null });
 
       await expect(client.analyze(mockErrorData, mockExamples))
         .rejects.toThrow('Failed to get analysis from OpenAI after 3 attempts');
@@ -225,22 +188,17 @@ describe('OpenAIClient', () => {
 
     it('should throw error when response has invalid verdict', async () => {
       const invalidResponse = {
-        choices: [{
-          message: {
-            content: JSON.stringify({
-              verdict: 'INVALID_VERDICT',
-              reasoning: 'Some reasoning',
-              indicators: [],
-            }),
-          },
-        }],
+        output_text: JSON.stringify({
+          verdict: 'INVALID_VERDICT',
+          reasoning: 'Some reasoning',
+          indicators: [],
+        }),
       };
 
       mockCreate
         .mockResolvedValueOnce(invalidResponse)
         .mockResolvedValueOnce(invalidResponse)
-        .mockResolvedValueOnce(invalidResponse)
-        .mockRejectedValueOnce(new TypeError("Cannot read properties of undefined (reading 'choices')"));
+        .mockResolvedValueOnce(invalidResponse);
 
       await expect(client.analyze(mockErrorData, mockExamples))
         .rejects.toThrow('Failed to get analysis from OpenAI after 3 attempts');
@@ -248,14 +206,10 @@ describe('OpenAIClient', () => {
 
     it('should handle missing indicators in response', async () => {
       const mockResponse = {
-        choices: [{
-          message: {
-            content: JSON.stringify({
-              verdict: 'TEST_ISSUE',
-              reasoning: 'Valid reasoning without indicators',
-            }),
-          },
-        }],
+        output_text: JSON.stringify({
+          verdict: 'TEST_ISSUE',
+          reasoning: 'Valid reasoning without indicators',
+        }),
       };
 
       mockCreate.mockResolvedValueOnce(mockResponse);
@@ -284,20 +238,16 @@ describe('OpenAIClient', () => {
       };
 
       const mockResponse = {
-        choices: [{
-          message: {
-            content: JSON.stringify({
-              verdict: 'PRODUCT_ISSUE',
-              reasoning: 'Null pointer error due to removed null check in UserProfile component',
-              indicators: ['TypeError', 'Cannot read property name of null'],
-              suggestedSourceLocations: [{
-                file: 'src/components/UserProfile.tsx',
-                lines: '45-47',
-                reason: 'Removed null check for user.name causing null pointer error',
-              }],
-            }),
-          },
-        }],
+        output_text: JSON.stringify({
+          verdict: 'PRODUCT_ISSUE',
+          reasoning: 'Null pointer error due to removed null check in UserProfile component',
+          indicators: ['TypeError', 'Cannot read property name of null'],
+          suggestedSourceLocations: [{
+            file: 'src/components/UserProfile.tsx',
+            lines: '45-47',
+            reason: 'Removed null check for user.name causing null pointer error',
+          }],
+        }),
       };
 
       mockCreate.mockResolvedValueOnce(mockResponse);
@@ -331,15 +281,11 @@ describe('OpenAIClient', () => {
       };
 
       const mockResponse = {
-        choices: [{
-          message: {
-            content: JSON.stringify({
-              verdict: 'TEST_ISSUE',
-              reasoning: 'Test timeout due to missing wait for element',
-              indicators: ['TimeoutError', 'element not visible'],
-            }),
-          },
-        }],
+        output_text: JSON.stringify({
+          verdict: 'TEST_ISSUE',
+          reasoning: 'Test timeout due to missing wait for element',
+          indicators: ['TimeoutError', 'element not visible'],
+        }),
       };
 
       mockCreate.mockResolvedValueOnce(mockResponse);
@@ -352,16 +298,12 @@ describe('OpenAIClient', () => {
 
     it('should handle response with empty suggestedSourceLocations array', async () => {
       const mockResponse = {
-        choices: [{
-          message: {
-            content: JSON.stringify({
-              verdict: 'PRODUCT_ISSUE',
-              reasoning: 'Product issue but no specific location identified',
-              indicators: ['500 error'],
-              suggestedSourceLocations: [],
-            }),
-          },
-        }],
+        output_text: JSON.stringify({
+          verdict: 'PRODUCT_ISSUE',
+          reasoning: 'Product issue but no specific location identified',
+          indicators: ['500 error'],
+          suggestedSourceLocations: [],
+        }),
       };
 
       mockCreate.mockResolvedValueOnce(mockResponse);
@@ -374,17 +316,13 @@ describe('OpenAIClient', () => {
   });
 
   describe('generateWithCustomPrompt', () => {
-    it('should call OpenAI with custom system and user prompts', async () => {
+    it('should call OpenAI Responses API with custom system and user prompts', async () => {
       const mockResponse = {
-        choices: [{
-          message: {
-            content: JSON.stringify({
-              confidence: 85,
-              reasoning: 'Test fix identified',
-              changes: [],
-            }),
-          },
-        }],
+        output_text: JSON.stringify({
+          confidence: 85,
+          reasoning: 'Test fix identified',
+          changes: [],
+        }),
       };
 
       mockCreate.mockResolvedValueOnce(mockResponse);
@@ -397,14 +335,11 @@ describe('OpenAIClient', () => {
 
       expect(mockCreate).toHaveBeenCalledWith(
         expect.objectContaining({
-          model: 'gpt-5.2',
-          temperature: 0.3,
-          max_completion_tokens: 16384,
-          response_format: { type: 'json_object' },
-          messages: expect.arrayContaining([
-            expect.objectContaining({ role: 'system', content: 'You are an expert at fixing tests.' }),
-            expect.objectContaining({ role: 'user', content: 'Fix this test failure.' }),
-          ]),
+          model: 'gpt-5.2-codex',
+          max_output_tokens: 16384,
+          text: { format: { type: 'json_object' } },
+          instructions: 'You are an expert at fixing tests.',
+          input: [{ role: 'user', content: 'Fix this test failure.' }],
         })
       );
 
@@ -415,13 +350,9 @@ describe('OpenAIClient', () => {
       }));
     });
 
-    it('should support custom temperature', async () => {
+    it('should accept temperature parameter for backward compatibility', async () => {
       const mockResponse = {
-        choices: [{
-          message: {
-            content: 'Creative response',
-          },
-        }],
+        output_text: 'Creative response',
       };
 
       mockCreate.mockResolvedValueOnce(mockResponse);
@@ -432,20 +363,20 @@ describe('OpenAIClient', () => {
         temperature: 0.8,
       });
 
+      // Temperature is not passed to Codex models (not supported)
       expect(mockCreate).toHaveBeenCalledWith(
         expect.objectContaining({
-          temperature: 0.8,
+          model: 'gpt-5.2-codex',
         })
       );
+      // Verify temperature is NOT in the request
+      const call = mockCreate.mock.calls[0][0];
+      expect(call.temperature).toBeUndefined();
     });
 
     it('should handle multimodal content with images', async () => {
       const mockResponse = {
-        choices: [{
-          message: {
-            content: 'Analysis of images',
-          },
-        }],
+        output_text: 'Analysis of images',
       };
 
       mockCreate.mockResolvedValueOnce(mockResponse);
@@ -463,14 +394,20 @@ describe('OpenAIClient', () => {
         userContent: multimodalContent,
       });
 
-      expect(mockCreate).toHaveBeenCalledWith(
+      // Verify content was converted to Responses API format
+      const call = mockCreate.mock.calls[0][0];
+      const userMessage = call.input[0];
+      expect(userMessage.role).toBe('user');
+      expect(userMessage.content).toContainEqual(
         expect.objectContaining({
-          messages: expect.arrayContaining([
-            expect.objectContaining({
-              role: 'user',
-              content: multimodalContent,
-            }),
-          ]),
+          type: 'input_text',
+          text: 'Analyze these images',
+        })
+      );
+      expect(userMessage.content).toContainEqual(
+        expect.objectContaining({
+          type: 'input_image',
+          image_url: 'data:image/png;base64,abc123',
         })
       );
 
@@ -478,13 +415,7 @@ describe('OpenAIClient', () => {
     });
 
     it('should throw error when response is empty', async () => {
-      mockCreate.mockResolvedValueOnce({
-        choices: [{
-          message: {
-            content: null,
-          },
-        }],
-      });
+      mockCreate.mockResolvedValueOnce({ output_text: null });
 
       await expect(client.generateWithCustomPrompt({
         systemPrompt: 'Test',
@@ -492,13 +423,9 @@ describe('OpenAIClient', () => {
       })).rejects.toThrow('Empty response from OpenAI');
     });
 
-    it('should not include response_format when responseAsJson is false', async () => {
+    it('should not include text format when responseAsJson is false', async () => {
       const mockResponse = {
-        choices: [{
-          message: {
-            content: 'Plain text response',
-          },
-        }],
+        output_text: 'Plain text response',
       };
 
       mockCreate.mockResolvedValueOnce(mockResponse);
@@ -511,9 +438,9 @@ describe('OpenAIClient', () => {
 
       expect(mockCreate).toHaveBeenCalledWith(
         expect.objectContaining({
-          response_format: undefined,
+          text: undefined,
         })
       );
     });
   });
-}); 
+});

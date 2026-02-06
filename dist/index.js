@@ -2352,7 +2352,7 @@ exports.CONFIDENCE = {
     MIN_FIX_CONFIDENCE: 50,
 };
 exports.OPENAI = {
-    MODEL: 'gpt-5.2',
+    MODEL: 'gpt-5.2-codex',
     TEMPERATURE: 0.3,
     MAX_COMPLETION_TOKENS: 16384,
     MAX_RETRIES: 3,
@@ -2867,16 +2867,28 @@ class OpenAIClient {
         this.openai = new openai_1.default({ apiKey });
     }
     async analyze(errorData, examples) {
-        const model = 'gpt-5.2';
-        core.info('🧠 Using GPT-5.2-codex model for analysis');
-        const messages = this.buildMessages(errorData, examples);
-        if (messages[1] && messages[1].role === 'user') {
-            const userMessage = messages[1].content;
-            if (typeof userMessage === 'string') {
-                if (userMessage.includes('QUICK ANALYSIS SUMMARY')) {
+        const model = 'gpt-5.2-codex';
+        core.info('🧠 Using GPT-5.2-codex model for analysis (Responses API)');
+        const systemPrompt = this.getSystemPrompt();
+        const userContent = this.buildUserContent(errorData, examples);
+        if (typeof userContent === 'string') {
+            if (userContent.includes('QUICK ANALYSIS SUMMARY')) {
+                core.info('📊 Structured summary header included in prompt!');
+                const summaryStart = userContent.indexOf('QUICK ANALYSIS SUMMARY');
+                const summarySection = userContent.substring(summaryStart, summaryStart + 500);
+                core.info(`Summary preview:\n${summarySection}...`);
+            }
+            else {
+                core.info('⚠️  Structured summary header NOT found in prompt');
+            }
+        }
+        else {
+            const firstTextPart = userContent.find(p => p.type === 'text');
+            if (firstTextPart && 'text' in firstTextPart) {
+                if (firstTextPart.text.includes('QUICK ANALYSIS SUMMARY')) {
                     core.info('📊 Structured summary header included in prompt!');
-                    const summaryStart = userMessage.indexOf('QUICK ANALYSIS SUMMARY');
-                    const summarySection = userMessage.substring(summaryStart, summaryStart + 500);
+                    const summaryStart = firstTextPart.text.indexOf('QUICK ANALYSIS SUMMARY');
+                    const summarySection = firstTextPart.text.substring(summaryStart, summaryStart + 500);
                     core.info(`Summary preview:\n${summarySection}...`);
                 }
                 else {
@@ -2903,18 +2915,18 @@ class OpenAIClient {
         else {
             core.info('⚠️  ErrorData does NOT contain structured summary');
         }
+        const input = this.convertToResponsesInput(userContent);
         for (let attempt = 1; attempt <= this.maxRetries; attempt++) {
             try {
                 core.info(`Analyzing with ${model} (attempt ${attempt}/${this.maxRetries})`);
-                const requestParams = {
+                const response = await this.openai.responses.create({
                     model,
-                    messages,
-                    temperature: 0.3,
-                    max_completion_tokens: 16384,
-                    response_format: { type: 'json_object' }
-                };
-                const response = await this.openai.chat.completions.create(requestParams);
-                const content = response.choices[0]?.message?.content;
+                    instructions: systemPrompt,
+                    input,
+                    max_output_tokens: 16384,
+                    text: { format: { type: 'json_object' } },
+                });
+                const content = response.output_text;
                 if (!content) {
                     throw new Error('Empty response from OpenAI');
                 }
@@ -2932,27 +2944,25 @@ class OpenAIClient {
         }
         throw new Error('Failed to get analysis from OpenAI after all retries');
     }
-    buildMessages(errorData, examples) {
-        const messages = [
-            {
-                role: 'system',
-                content: this.getSystemPrompt()
+    convertToResponsesInput(userContent) {
+        if (typeof userContent === 'string') {
+            return [{ role: 'user', content: userContent }];
+        }
+        const convertedParts = userContent.map((part) => {
+            if (part.type === 'text') {
+                return { type: 'input_text', text: part.text };
             }
-        ];
-        const userContent = this.buildUserContent(errorData, examples);
-        if (errorData.screenshots && errorData.screenshots.length > 0) {
-            messages.push({
-                role: 'user',
-                content: userContent
-            });
-        }
-        else {
-            messages.push({
-                role: 'user',
-                content: userContent
-            });
-        }
-        return messages;
+            if (part.type === 'image_url') {
+                const imageUrl = part.image_url;
+                return {
+                    type: 'input_image',
+                    image_url: typeof imageUrl === 'string' ? imageUrl : imageUrl.url,
+                    detail: (typeof imageUrl === 'string' ? 'auto' : (imageUrl.detail || 'auto')),
+                };
+            }
+            return part;
+        });
+        return [{ role: 'user', content: convertedParts }];
     }
     buildUserContent(errorData, examples) {
         if (errorData.screenshots && errorData.screenshots.length > 0) {
@@ -3286,19 +3296,16 @@ FOR PRODUCT_ISSUES: You MUST analyze the diff patches above to:
         return new Promise(resolve => setTimeout(resolve, ms));
     }
     async generateWithCustomPrompt(params) {
-        const model = 'gpt-5.2';
-        const messages = [
-            { role: 'system', content: params.systemPrompt },
-            { role: 'user', content: params.userContent }
-        ];
-        const response = await this.openai.chat.completions.create({
+        const model = 'gpt-5.2-codex';
+        const input = this.convertToResponsesInput(params.userContent);
+        const response = await this.openai.responses.create({
             model,
-            messages,
-            temperature: params.temperature ?? 0.3,
-            max_completion_tokens: 16384,
-            response_format: params.responseAsJson ? { type: 'json_object' } : undefined
+            instructions: params.systemPrompt,
+            input,
+            max_output_tokens: 16384,
+            text: params.responseAsJson ? { format: { type: 'json_object' } } : undefined,
         });
-        const content = response.choices[0]?.message?.content;
+        const content = response.output_text;
         if (!content) {
             throw new Error('Empty response from OpenAI');
         }
