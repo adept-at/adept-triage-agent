@@ -239,6 +239,43 @@ Running: test.cy.js
       expect(result?.framework).toBe('webdriverio');
       expect(result?.message).toMatch(/ProtocolError|SauceLabsError/);
     });
+
+    it('should extract WDIO Error in "test name" without colon (real SauceLabs format)', () => {
+      const logs = `
+2026-02-11T17:03:48.0818283Z [0-0] getting testing cookie
+2026-02-11T17:03:48.1698972Z [0-0] Found the testing flag:  1
+2026-02-11T17:03:56.8504978Z [0-0] Error in "Editors can take skill lock.Log in and open skill, grab lock, and edit skill on browser 1 with user 1"
+2026-02-11T17:03:56.8506185Z Error: expect(received).toContain(expected) // indexOf
+2026-02-11T17:03:56.8506564Z
+2026-02-11T17:03:56.8506749Z Expected substring: "1 min"
+2026-02-11T17:03:56.8507283Z Received string:    "philsu, philcy100, philcy200"
+2026-02-11T17:03:56.8508509Z     at openSkillForEdit (/home/runner/work/lib-wdio-8-multi-remote/lib-wdio-8-multi-remote/test/specs/skills/multi.skill.lock.editor.ts:52:5)
+2026-02-11T17:04:02.1199606Z [0-0] FAILED in MultiRemote - file:///test/specs/skills/multi.skill.lock.editor.ts
+`;
+
+      const result = extractErrorFromLogs(logs);
+
+      expect(result).toBeTruthy();
+      expect(result?.framework).toBe('webdriverio');
+      expect(result?.testName).toContain('Editors can take skill lock');
+      expect(result?.message).toContain('Error in');
+      expect(result?.fileName).toContain('multi.skill.lock.editor.ts');
+    });
+
+    it('should extract WDIO FAILED in MultiRemote with file path', () => {
+      const logs = `
+[0-0] FAILED in MultiRemote - file:///test/specs/skills/multi.skill.lock.editor.ts
+[MultiremoteBrowser on chrome and chrome #0-0]    ✖ Log in and open skill, grab lock, and edit skill on browser 1 with user 1
+[MultiremoteBrowser on chrome and chrome #0-0] 1 failing (31.1s)
+[MultiremoteBrowser on chrome and chrome #0-0] Error: expect(received).toContain(expected) // indexOf
+`;
+
+      const result = extractErrorFromLogs(logs);
+
+      expect(result).toBeTruthy();
+      expect(result?.framework).toBe('webdriverio');
+      expect(result?.fileName).toContain('multi.skill.lock.editor.ts');
+    });
   });
 
   describe('Test name extraction', () => {

@@ -65,9 +65,8 @@ export class ArtifactFetcher {
                (name.includes('cy-') && (name.includes('logs') || name.includes('artifacts')));
       });
 
-      // If jobName is provided, filter to only artifacts for that specific job
+      // If jobName is provided, try to narrow to job-specific artifacts
       if (jobName) {
-        // Extract matrix name from job name format: "previewUrlTest (matrix-name.js)"
         const matrixMatch = jobName.match(/\((.*?)\)/);
         const searchName = matrixMatch ? matrixMatch[1] : jobName;
         
@@ -79,8 +78,7 @@ export class ArtifactFetcher {
           core.info(`Found ${jobSpecificArtifacts.length} artifact(s) specific to job: ${jobName} (searching for: ${searchName})`);
           screenshotArtifacts = jobSpecificArtifacts;
         } else {
-          core.info(`No artifacts found specific to job: ${jobName} (searched for: ${searchName})`);
-          return screenshots;
+          core.info(`No job-specific artifacts for "${searchName}", using all ${screenshotArtifacts.length} matching artifact(s)`);
         }
       }
 
@@ -109,8 +107,8 @@ export class ArtifactFetcher {
           for (const entry of entries) {
             const entryName = entry.entryName;
             
-            // Check if this is a screenshot file
-            if (this.isScreenshotFile(entryName)) {
+            // Check if this is a screenshot file (pass artifact name for WDIO context)
+            if (this.isScreenshotFile(entryName, artifact.name)) {
               const fileName = path.basename(entryName);
               const fileData = entry.getData();
               
@@ -138,19 +136,26 @@ export class ArtifactFetcher {
     }
   }
 
-  private isScreenshotFile(fileName: string): boolean {
+  private isScreenshotFile(fileName: string, artifactName?: string): boolean {
     const lowerName = fileName.toLowerCase();
-    // Common screenshot file extensions
     const imageExtensions = ['.png', '.jpg', '.jpeg', '.gif', '.webp'];
     
-    // Check if it's an image file and likely a screenshot
-    return imageExtensions.some(ext => lowerName.endsWith(ext)) &&
-           (lowerName.includes('screenshot') ||
-            lowerName.includes('failure') ||
-            lowerName.includes('error') ||
-            /\(failed\)/.test(lowerName) ||
-            lowerName.includes('cypress/screenshots/') ||
-            lowerName.includes('data/'));
+    if (!imageExtensions.some(ext => lowerName.endsWith(ext))) return false;
+
+    // Inside a WDIO artifact, any image at the root is a test failure screenshot
+    if (artifactName) {
+      const lowerArtifact = artifactName.toLowerCase();
+      if (lowerArtifact.includes('wdio') || lowerArtifact.includes('webdriver')) {
+        return true;
+      }
+    }
+
+    return lowerName.includes('screenshot') ||
+           lowerName.includes('failure') ||
+           lowerName.includes('error') ||
+           /\(failed\)/.test(lowerName) ||
+           lowerName.includes('cypress/screenshots/') ||
+           lowerName.includes('data/');
   }
 
   async fetchLogs(_runId: string, jobId: number, repoDetails?: RepoDetails): Promise<string[]> {

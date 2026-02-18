@@ -109,6 +109,10 @@ export function extractErrorFromLogs(logs: string): ErrorData | null {
     // WDIO / Mocha errors (describe, hooks, spec titles)
     { pattern: /Error in ["'].*?["']\s*:\s*(.+)/, framework: 'webdriverio', priority: 10 },
     { pattern: /Error in ["'](?:before all|before each|after all|after each)["'].*?:\s*(.+)/, framework: 'webdriverio', priority: 10 },
+    // WDIO Error in "test name" on its own line (error message follows on next line)
+    { pattern: /\[[\d-]+\]\s*Error in ["'](.+?)["']\s*$/m, framework: 'webdriverio', priority: 11 },
+    // WDIO FAILED in MultiRemote
+    { pattern: /FAILED in (?:MultiRemote|chrome|firefox|safari)\s*-\s*file:\/\/\/(.+)/, framework: 'webdriverio', priority: 9 },
     
     // WDIO waitFor timeout (element ("selector") still not visible after N ms)
     { pattern: /element\s*\([^)]+\)\s+still not (?:visible|displayed|enabled|existing|clickable).+after\s+\d+\s*ms/i, framework: 'webdriverio', priority: 9 },
@@ -167,8 +171,11 @@ export function extractErrorFromLogs(logs: string): ErrorData | null {
       
       // Extract test name if available - look for more patterns
       const testNamePatterns = [
+        /Error in ["'](.+?)["']/,  // WDIO Error in "test name"
+        /✖\s+(.+?)(?:\n|$)/,  // WDIO/Mocha ✖ test name
+        /FAILED in .+? - file:\/\/\/.+?\/([^/]+\.[jt]sx?)$/m,  // WDIO FAILED in ... - file
         /(?:it|test|describe)\(['"`]([^'"`]+)['"`]/,
-        /\d+\)\s+(.+?)(?:\n|$)/,  // Numbered test output like "1) Test name"
+        /\d+\)\s+(.+?)(?:\n|$)/,
         /Running test:\s*(.+?)(?:\n|$)/,
         /Test:\s*["']?(.+?)["']?(?:\n|$)/
       ];
@@ -185,7 +192,9 @@ export function extractErrorFromLogs(logs: string): ErrorData | null {
       // Extract file name if available - more patterns
       const filePatterns = [
         /at\s+.+?\((.+?\.(js|ts|jsx|tsx)):\d+:\d+\)/,  // Stack trace format
-        /(?:Running:|File:|spec:)\s*([^\s]+\.(cy|spec|test)\.[jt]sx?)/,
+        /FAILED in .+? - file:\/\/\/(.+?\.[jt]sx?)/,  // WDIO FAILED line
+        /(?:Running:|File:|spec:)\s*([^\s]+\.[jt]sx?)/,
+        /»\s+\/?(test\/.+?\.[jt]sx?)/,  // WDIO spec reporter: » /test/specs/...
         /webpack:\/\/[^/]+\/(.+?\.(js|ts|jsx|tsx))/  // Webpack format  
       ];
       

@@ -1965,8 +1965,7 @@ class ArtifactFetcher {
                     screenshotArtifacts = jobSpecificArtifacts;
                 }
                 else {
-                    core.info(`No artifacts found specific to job: ${jobName} (searched for: ${searchName})`);
-                    return screenshots;
+                    core.info(`No job-specific artifacts for "${searchName}", using all ${screenshotArtifacts.length} matching artifact(s)`);
                 }
             }
             if (screenshotArtifacts.length === 0) {
@@ -1987,7 +1986,7 @@ class ArtifactFetcher {
                     const entries = zip.getEntries();
                     for (const entry of entries) {
                         const entryName = entry.entryName;
-                        if (this.isScreenshotFile(entryName)) {
+                        if (this.isScreenshotFile(entryName, artifact.name)) {
                             const fileName = path.basename(entryName);
                             const fileData = entry.getData();
                             screenshots.push({
@@ -2012,16 +2011,23 @@ class ArtifactFetcher {
             return [];
         }
     }
-    isScreenshotFile(fileName) {
+    isScreenshotFile(fileName, artifactName) {
         const lowerName = fileName.toLowerCase();
         const imageExtensions = ['.png', '.jpg', '.jpeg', '.gif', '.webp'];
-        return imageExtensions.some(ext => lowerName.endsWith(ext)) &&
-            (lowerName.includes('screenshot') ||
-                lowerName.includes('failure') ||
-                lowerName.includes('error') ||
-                /\(failed\)/.test(lowerName) ||
-                lowerName.includes('cypress/screenshots/') ||
-                lowerName.includes('data/'));
+        if (!imageExtensions.some(ext => lowerName.endsWith(ext)))
+            return false;
+        if (artifactName) {
+            const lowerArtifact = artifactName.toLowerCase();
+            if (lowerArtifact.includes('wdio') || lowerArtifact.includes('webdriver')) {
+                return true;
+            }
+        }
+        return lowerName.includes('screenshot') ||
+            lowerName.includes('failure') ||
+            lowerName.includes('error') ||
+            /\(failed\)/.test(lowerName) ||
+            lowerName.includes('cypress/screenshots/') ||
+            lowerName.includes('data/');
     }
     async fetchLogs(_runId, jobId, repoDetails) {
         try {
@@ -4778,6 +4784,8 @@ function extractErrorFromLogs(logs) {
         { pattern: /Please start this server and then run Cypress again.*/, framework: 'cypress', priority: 11 },
         { pattern: /Error in ["'].*?["']\s*:\s*(.+)/, framework: 'webdriverio', priority: 10 },
         { pattern: /Error in ["'](?:before all|before each|after all|after each)["'].*?:\s*(.+)/, framework: 'webdriverio', priority: 10 },
+        { pattern: /\[[\d-]+\]\s*Error in ["'](.+?)["']\s*$/m, framework: 'webdriverio', priority: 11 },
+        { pattern: /FAILED in (?:MultiRemote|chrome|firefox|safari)\s*-\s*file:\/\/\/(.+)/, framework: 'webdriverio', priority: 9 },
         { pattern: /element\s*\([^)]+\)\s+still not (?:visible|displayed|enabled|existing|clickable).+after\s+\d+\s*ms/i, framework: 'webdriverio', priority: 9 },
         { pattern: /(?:waitForDisplayed|waitForExist|waitForClickable|waitForEnabled).+timeout/i, framework: 'webdriverio', priority: 9 },
         { pattern: /stale element reference/i, framework: 'webdriverio', priority: 9 },
@@ -4813,6 +4821,9 @@ function extractErrorFromLogs(logs) {
             }
             const errorContext = cleanLogs.substring(contextStart, contextEnd);
             const testNamePatterns = [
+                /Error in ["'](.+?)["']/,
+                /✖\s+(.+?)(?:\n|$)/,
+                /FAILED in .+? - file:\/\/\/.+?\/([^/]+\.[jt]sx?)$/m,
                 /(?:it|test|describe)\(['"`]([^'"`]+)['"`]/,
                 /\d+\)\s+(.+?)(?:\n|$)/,
                 /Running test:\s*(.+?)(?:\n|$)/,
@@ -4828,7 +4839,9 @@ function extractErrorFromLogs(logs) {
             }
             const filePatterns = [
                 /at\s+.+?\((.+?\.(js|ts|jsx|tsx)):\d+:\d+\)/,
-                /(?:Running:|File:|spec:)\s*([^\s]+\.(cy|spec|test)\.[jt]sx?)/,
+                /FAILED in .+? - file:\/\/\/(.+?\.[jt]sx?)/,
+                /(?:Running:|File:|spec:)\s*([^\s]+\.[jt]sx?)/,
+                /»\s+\/?(test\/.+?\.[jt]sx?)/,
                 /webpack:\/\/[^/]+\/(.+?\.(js|ts|jsx|tsx))/
             ];
             let fileName;

@@ -87,8 +87,7 @@ class ArtifactFetcher {
                     screenshotArtifacts = jobSpecificArtifacts;
                 }
                 else {
-                    core.info(`No artifacts found specific to job: ${jobName} (searched for: ${searchName})`);
-                    return screenshots;
+                    core.info(`No job-specific artifacts for "${searchName}", using all ${screenshotArtifacts.length} matching artifact(s)`);
                 }
             }
             if (screenshotArtifacts.length === 0) {
@@ -109,7 +108,7 @@ class ArtifactFetcher {
                     const entries = zip.getEntries();
                     for (const entry of entries) {
                         const entryName = entry.entryName;
-                        if (this.isScreenshotFile(entryName)) {
+                        if (this.isScreenshotFile(entryName, artifact.name)) {
                             const fileName = path.basename(entryName);
                             const fileData = entry.getData();
                             screenshots.push({
@@ -134,16 +133,23 @@ class ArtifactFetcher {
             return [];
         }
     }
-    isScreenshotFile(fileName) {
+    isScreenshotFile(fileName, artifactName) {
         const lowerName = fileName.toLowerCase();
         const imageExtensions = ['.png', '.jpg', '.jpeg', '.gif', '.webp'];
-        return imageExtensions.some(ext => lowerName.endsWith(ext)) &&
-            (lowerName.includes('screenshot') ||
-                lowerName.includes('failure') ||
-                lowerName.includes('error') ||
-                /\(failed\)/.test(lowerName) ||
-                lowerName.includes('cypress/screenshots/') ||
-                lowerName.includes('data/'));
+        if (!imageExtensions.some(ext => lowerName.endsWith(ext)))
+            return false;
+        if (artifactName) {
+            const lowerArtifact = artifactName.toLowerCase();
+            if (lowerArtifact.includes('wdio') || lowerArtifact.includes('webdriver')) {
+                return true;
+            }
+        }
+        return lowerName.includes('screenshot') ||
+            lowerName.includes('failure') ||
+            lowerName.includes('error') ||
+            /\(failed\)/.test(lowerName) ||
+            lowerName.includes('cypress/screenshots/') ||
+            lowerName.includes('data/');
     }
     async fetchLogs(_runId, jobId, repoDetails) {
         try {

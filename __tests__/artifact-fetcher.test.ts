@@ -124,6 +124,53 @@ describe('ArtifactFetcher', () => {
       });
     });
 
+    it('should fall back to all artifacts when job name does not match artifact names', async () => {
+      const mockArtifacts = [
+        { id: 5, name: 'wdio-logs', created_at: '2026-02-11T00:00:00Z' }
+      ];
+
+      mockOctokit.actions!.listWorkflowRunArtifacts = jest.fn().mockResolvedValue({
+        data: { total_count: 1, artifacts: mockArtifacts }
+      });
+
+      const zip = new AdmZip();
+      zip.addFile('Test-failure-screenshot.png', Buffer.from('screenshot-data'));
+      mockOctokit.actions!.downloadArtifact = jest.fn().mockResolvedValue({
+        data: zip.toBuffer()
+      });
+
+      const result = await artifactFetcher.fetchScreenshots('123', 'sauceTest');
+
+      expect(result.length).toBe(1);
+      expect(result[0].name).toBe('Test-failure-screenshot.png');
+      expect(core.info).toHaveBeenCalledWith(
+        expect.stringContaining('No job-specific artifacts')
+      );
+    });
+
+    it('should detect PNGs in wdio-named artifacts as screenshots', async () => {
+      const mockArtifacts = [
+        { id: 6, name: 'wdio-logs', created_at: '2026-02-11T00:00:00Z' }
+      ];
+
+      mockOctokit.actions!.listWorkflowRunArtifacts = jest.fn().mockResolvedValue({
+        data: { total_count: 1, artifacts: mockArtifacts }
+      });
+
+      const zip = new AdmZip();
+      zip.addFile('Log-in-and-open-skill.png', Buffer.from('png-data'));
+      zip.addFile('config.log', Buffer.from('wdio config'));
+      zip.addFile('wdio-0-0.log', Buffer.from('wdio detailed log'));
+      mockOctokit.actions!.downloadArtifact = jest.fn().mockResolvedValue({
+        data: zip.toBuffer()
+      });
+
+      const result = await artifactFetcher.fetchScreenshots('123');
+
+      expect(result.length).toBe(1);
+      expect(result[0].name).toBe('Log-in-and-open-skill.png');
+    });
+
     it('should handle artifact download errors gracefully', async () => {
       mockOctokit.actions!.listWorkflowRunArtifacts = jest.fn().mockResolvedValue({
         data: {
