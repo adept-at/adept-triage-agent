@@ -17,9 +17,12 @@ if (!GITHUB_TOKEN) {
   process.exit(1);
 }
 
-const RUN_ID = '21914697303';
-const JOB_NAME = 'sauceTest';
-const REPO = { owner: 'adept-at', repo: 'lib-wdio-8-multi-remote' };
+const RUN_ID = process.env.RUN_ID || '21914697303';
+const JOB_NAME = process.env.JOB_NAME || 'sauceTest';
+const REPO_STR = process.env.REPO || 'adept-at/lib-wdio-8-multi-remote';
+const [repoOwner, repoName] = REPO_STR.split('/');
+const REPO = { owner: repoOwner, repo: repoName };
+const EXPECTED_FRAMEWORK = process.env.EXPECTED_FRAMEWORK || 'webdriverio';
 
 async function main() {
   const octokit = new Octokit({ auth: GITHUB_TOKEN });
@@ -127,8 +130,8 @@ async function main() {
   console.log('\n═══ SUMMARY ═══');
   const issues: string[] = [];
   if (!errorData) issues.push('extractErrorFromLogs returned null');
-  if (errorData && errorData.framework !== 'webdriverio')
-    issues.push(`framework is "${errorData.framework}", expected "webdriverio"`);
+  if (errorData && errorData.framework !== EXPECTED_FRAMEWORK)
+    issues.push(`framework is "${errorData.framework}", expected "${EXPECTED_FRAMEWORK}"`);
   if (screenshots.length === 0)
     issues.push('No screenshots captured from artifacts');
   if (artifactLogs.length === 0) issues.push('No artifact logs captured');
