@@ -356,7 +356,7 @@ describe('ArtifactFetcher', () => {
     });
   });
   
-  describe('fetchCypressArtifactLogs', () => {
+  describe('fetchTestArtifactLogs', () => {
     it('should fetch and process Cypress artifact logs', async () => {
       const mockArtifacts = [
         {
@@ -382,7 +382,7 @@ describe('ArtifactFetcher', () => {
         data: zip.toBuffer()
       });
       
-      const result = await artifactFetcher.fetchCypressArtifactLogs('123');
+      const result = await artifactFetcher.fetchTestArtifactLogs('123');
       
       expect(result).toContain('Artifact: cy-logs-test-123');
       expect(result).toContain('Found: 1 screenshots, 0 videos, 2 text files');
@@ -410,7 +410,7 @@ describe('ArtifactFetcher', () => {
         data: zip.toBuffer()
       });
       
-      const result = await artifactFetcher.fetchCypressArtifactLogs('123', 'job2');
+      const result = await artifactFetcher.fetchTestArtifactLogs('123', 'job2');
       
       expect(mockOctokit.actions!.downloadArtifact).toHaveBeenCalledWith({
         owner: 'test-owner',
@@ -429,10 +429,10 @@ describe('ArtifactFetcher', () => {
         }
       });
       
-      const result = await artifactFetcher.fetchCypressArtifactLogs('123');
+      const result = await artifactFetcher.fetchTestArtifactLogs('123');
       
       expect(result).toBe('');
-      expect(core.info).toHaveBeenCalledWith('No Cypress log artifacts found');
+      expect(core.info).toHaveBeenCalledWith('No test log artifacts found');
     });
     
     it('should handle artifact processing errors gracefully', async () => {
@@ -449,7 +449,7 @@ describe('ArtifactFetcher', () => {
         new Error('Download failed')
       );
       
-      const result = await artifactFetcher.fetchCypressArtifactLogs('123');
+      const result = await artifactFetcher.fetchTestArtifactLogs('123');
 
       expect(result).toBe('');
       expect(core.warning).toHaveBeenCalledWith('Failed to process artifact cy-logs: Error: Download failed');

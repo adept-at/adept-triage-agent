@@ -271,10 +271,10 @@ ${lines.length > 100 ? `\n... (${lines.length - 100} more lines)` : ''}
                     }
                 });
             }
-            if (errorData.cypressArtifactLogs) {
-                core.info('  ✅ Including Cypress artifact logs (first 1000 chars)');
-                const cypressPreview = errorData.cypressArtifactLogs.substring(0, 1000);
-                contextInfo += `\n\n## Cypress Logs\n\`\`\`\n${cypressPreview}\n\`\`\``;
+            if (errorData.testArtifactLogs) {
+                core.info('  ✅ Including test artifact logs (first 1000 chars)');
+                const logsPreview = errorData.testArtifactLogs.substring(0, 1000);
+                contextInfo += `\n\n## Test Artifact Logs\n\`\`\`\n${logsPreview}\n\`\`\``;
             }
             if (errorData.prDiff) {
                 core.info(`  ✅ Including PR diff (${errorData.prDiff.totalChanges} files changed)`);
@@ -350,7 +350,8 @@ Respond with JSON only. If you cannot provide a confident fix, set confidence be
         try {
             const clientAny = this.openaiClient;
             if (typeof clientAny.generateWithCustomPrompt === 'function') {
-                const systemPrompt = `You are a test repair expert. Produce a concrete, review-ready fix plan for a Cypress TEST_ISSUE.
+                const frameworkLabel = fullErrorData?.framework === 'webdriverio' ? 'WebDriverIO' : 'Cypress';
+                const systemPrompt = `You are a test repair expert. Produce a concrete, review-ready fix plan for a ${frameworkLabel} TEST_ISSUE.
 
 CRITICAL: When providing "oldCode" in your changes, you MUST copy the EXACT code from the source file provided.
 The oldCode must be a verbatim match - including whitespace, quotes, semicolons, and formatting.

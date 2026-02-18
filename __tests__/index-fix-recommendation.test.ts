@@ -86,7 +86,7 @@ describe('Fix Recommendation Integration', () => {
       fetchScreenshots: jest.fn().mockResolvedValue([]),
       fetchLogs: jest.fn().mockResolvedValue(null),
       fetchPRDiff: jest.fn().mockResolvedValue(null),
-      fetchCypressArtifactLogs: jest.fn().mockResolvedValue(''),
+      fetchTestArtifactLogs: jest.fn().mockResolvedValue(''),
     } as any;
     (
       ArtifactFetcher as jest.MockedClass<typeof ArtifactFetcher>

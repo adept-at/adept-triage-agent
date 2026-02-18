@@ -10,7 +10,7 @@ export interface ErrorData {
   fileName?: string;
   screenshots?: Screenshot[];
   logs?: string[];
-  cypressArtifactLogs?: string;
+  testArtifactLogs?: string;
   prDiff?: PRDiff;
   structuredSummary?: StructuredErrorSummary;
 }
@@ -177,7 +177,7 @@ export interface StructuredErrorSummary {
     riskScore: 'high' | 'medium' | 'low' | 'none';
   };
   keyMetrics: {
-    totalCypressCommands?: number;
+    totalTestCommands?: number;
     lastCommand?: string;
     hasScreenshots: boolean;
     logSize: number;

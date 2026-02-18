@@ -66,7 +66,7 @@ describe('GitHub Action', () => {
     mockArtifactFetcher = {
       fetchScreenshots: jest.fn().mockResolvedValue([]),
       fetchLogs: jest.fn().mockResolvedValue([]),
-      fetchCypressArtifactLogs: jest.fn().mockResolvedValue(''),
+      fetchTestArtifactLogs: jest.fn().mockResolvedValue(''),
       fetchPRDiff: jest.fn().mockResolvedValue(null)
     } as any;
     
@@ -96,7 +96,7 @@ describe('GitHub Action', () => {
     it('should continue when screenshot fetching fails', async () => {
       // Simulate screenshot fetch failure
       mockArtifactFetcher.fetchScreenshots.mockRejectedValueOnce(new Error('Network error'));
-      mockArtifactFetcher.fetchCypressArtifactLogs.mockResolvedValueOnce('Some logs');
+      mockArtifactFetcher.fetchTestArtifactLogs.mockResolvedValueOnce('Some logs');
       
       mockOctokit.actions!.downloadJobLogsForWorkflowRun = jest.fn().mockResolvedValueOnce({
         data: 'Test failed with error'
@@ -128,7 +128,7 @@ describe('GitHub Action', () => {
       mockArtifactFetcher.fetchScreenshots.mockResolvedValueOnce([
         { name: 'error.png', path: 'screenshots/error.png', base64Data: 'data' }
       ]);
-      mockArtifactFetcher.fetchCypressArtifactLogs.mockRejectedValueOnce(new Error('API error'));
+      mockArtifactFetcher.fetchTestArtifactLogs.mockRejectedValueOnce(new Error('API error'));
       
       mockOctokit.actions!.downloadJobLogsForWorkflowRun = jest.fn().mockResolvedValueOnce({
         data: 'Test logs'
@@ -149,7 +149,7 @@ describe('GitHub Action', () => {
       
       await run();
       
-      expect(mockCore.warning).toHaveBeenCalledWith('Failed to fetch Cypress artifact logs: Error: API error');
+      expect(mockCore.warning).toHaveBeenCalledWith('Failed to fetch test artifact logs: Error: API error');
       expect(mockCore.info).toHaveBeenCalledWith('Data collected for analysis: logs=true, screenshots=true, artifactLogs=false, prDiff=false');
       expect(mockAnalyzeFailure).toHaveBeenCalled();
     });
@@ -196,7 +196,7 @@ describe('GitHub Action', () => {
         new Error('Logs unavailable')
       ) as any;
       mockArtifactFetcher.fetchScreenshots.mockRejectedValueOnce(new Error('Screenshots failed'));
-      mockArtifactFetcher.fetchCypressArtifactLogs.mockRejectedValueOnce(new Error('Cypress logs failed'));
+      mockArtifactFetcher.fetchTestArtifactLogs.mockRejectedValueOnce(new Error('Cypress logs failed'));
       
       mockAnalyzeFailure.mockResolvedValueOnce({
         verdict: 'TEST_ISSUE',
@@ -210,7 +210,7 @@ describe('GitHub Action', () => {
       
       expect(mockCore.warning).toHaveBeenCalledWith('Failed to download job logs: Error: Logs unavailable');
       expect(mockCore.warning).toHaveBeenCalledWith('Failed to fetch screenshots: Error: Screenshots failed');
-      expect(mockCore.warning).toHaveBeenCalledWith('Failed to fetch Cypress artifact logs: Error: Cypress logs failed');
+      expect(mockCore.warning).toHaveBeenCalledWith('Failed to fetch test artifact logs: Error: Cypress logs failed');
       expect(mockCore.warning).toHaveBeenCalledWith('No meaningful data collected for analysis (no logs, screenshots, artifacts, or PR diff)');
       expect(mockCore.info).toHaveBeenCalledWith('Attempting analysis with minimal context...');
       
@@ -230,7 +230,7 @@ describe('GitHub Action', () => {
       });
       
       mockArtifactFetcher.fetchScreenshots.mockRejectedValueOnce(new Error('Screenshot error'));
-      mockArtifactFetcher.fetchCypressArtifactLogs.mockResolvedValueOnce('Cypress logs content');
+      mockArtifactFetcher.fetchTestArtifactLogs.mockResolvedValueOnce('Cypress logs content');
       
       mockCore.getInput.mockImplementation((name: string) => {
         const inputs: Record<string, string> = {
@@ -266,7 +266,7 @@ describe('GitHub Action', () => {
       expect(analyzeCall[0]).toBeDefined(); // OpenAI client
       expect(analyzeCall[1]).toMatchObject({
         message: 'Test failed',
-        cypressArtifactLogs: 'Cypress logs content',
+        testArtifactLogs: 'Cypress logs content',
         screenshots: [],
         prDiff: undefined
       });
@@ -319,7 +319,7 @@ describe('GitHub Action', () => {
         { name: 'error.png', path: 'screenshots/error.png', base64Data: 'imagedata' }
       ]);
       
-      mockArtifactFetcher.fetchCypressArtifactLogs.mockResolvedValueOnce('Cypress test logs');
+      mockArtifactFetcher.fetchTestArtifactLogs.mockResolvedValueOnce('Cypress test logs');
       
       mockAnalyzeFailure.mockResolvedValueOnce({
         verdict: 'TEST_ISSUE',
@@ -334,7 +334,7 @@ describe('GitHub Action', () => {
       // Verify we collected all available data
       expect(mockOctokit.actions!.downloadJobLogsForWorkflowRun).toHaveBeenCalled();
       expect(mockArtifactFetcher.fetchScreenshots).toHaveBeenCalled();
-      expect(mockArtifactFetcher.fetchCypressArtifactLogs).toHaveBeenCalled();
+      expect(mockArtifactFetcher.fetchTestArtifactLogs).toHaveBeenCalled();
       
       // Verify PR diff was NOT attempted (no PR number provided)
       expect(mockArtifactFetcher.fetchPRDiff).not.toHaveBeenCalled();
@@ -347,7 +347,7 @@ describe('GitHub Action', () => {
           screenshots: expect.arrayContaining([
             expect.objectContaining({ name: 'error.png' })
           ]),
-          cypressArtifactLogs: 'Cypress test logs',
+          testArtifactLogs: 'Cypress test logs',
           prDiff: undefined
         })
       );
@@ -415,7 +415,7 @@ describe('GitHub Action', () => {
       ) as any;
       
       mockArtifactFetcher.fetchScreenshots.mockRejectedValueOnce(new Error('Screenshots failed'));
-      mockArtifactFetcher.fetchCypressArtifactLogs.mockRejectedValueOnce(new Error('Artifact logs failed'));
+      mockArtifactFetcher.fetchTestArtifactLogs.mockRejectedValueOnce(new Error('Artifact logs failed'));
       
       mockAnalyzeFailure.mockResolvedValueOnce({
         verdict: 'TEST_ISSUE',
@@ -430,7 +430,7 @@ describe('GitHub Action', () => {
       // Verify all warnings were logged
       expect(mockCore.warning).toHaveBeenCalledWith('Failed to download job logs: Error: Logs unavailable');
       expect(mockCore.warning).toHaveBeenCalledWith('Failed to fetch screenshots: Error: Screenshots failed');
-      expect(mockCore.warning).toHaveBeenCalledWith('Failed to fetch Cypress artifact logs: Error: Artifact logs failed');
+      expect(mockCore.warning).toHaveBeenCalledWith('Failed to fetch test artifact logs: Error: Artifact logs failed');
       expect(mockCore.warning).toHaveBeenCalledWith('No meaningful data collected for analysis (no logs, screenshots, artifacts, or PR diff)');
       
       // But analysis still proceeded

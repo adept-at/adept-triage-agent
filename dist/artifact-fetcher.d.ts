@@ -11,7 +11,7 @@ export declare class ArtifactFetcher {
     fetchScreenshots(runId: string, jobName?: string, repoDetails?: RepoDetails): Promise<Screenshot[]>;
     private isScreenshotFile;
     fetchLogs(_runId: string, jobId: number, repoDetails?: RepoDetails): Promise<string[]>;
-    fetchCypressArtifactLogs(runId: string, jobName?: string, repoDetails?: RepoDetails): Promise<string>;
+    fetchTestArtifactLogs(runId: string, jobName?: string, repoDetails?: RepoDetails): Promise<string>;
     private processArtifactForLogs;
     private extractErrorContext;
     fetchPRDiff(prNumber: string, repository?: string): Promise<PRDiff | null>;

@@ -73,6 +73,9 @@ class ArtifactFetcher {
                 const name = artifact.name.toLowerCase();
                 return name.includes('screenshot') ||
                     name.includes('cypress') ||
+                    name.includes('wdio') ||
+                    name.includes('wdio-logs') ||
+                    name.includes('webdriver') ||
                     (name.includes('cy-') && (name.includes('logs') || name.includes('artifacts')));
             });
             if (jobName) {
@@ -139,7 +142,8 @@ class ArtifactFetcher {
                 lowerName.includes('failure') ||
                 lowerName.includes('error') ||
                 /\(failed\)/.test(lowerName) ||
-                lowerName.includes('cypress/screenshots/'));
+                lowerName.includes('cypress/screenshots/') ||
+                lowerName.includes('data/'));
     }
     async fetchLogs(_runId, jobId, repoDetails) {
         try {
@@ -163,24 +167,25 @@ class ArtifactFetcher {
             return [];
         }
     }
-    async fetchCypressArtifactLogs(runId, jobName, repoDetails) {
+    async fetchTestArtifactLogs(runId, jobName, repoDetails) {
         try {
             const { owner, repo } = repoDetails ?? github.context.repo;
-            let cypressLogs = '';
+            let artifactLogs = '';
             const artifactsResponse = await this.octokit.actions.listWorkflowRunArtifacts({
                 owner,
                 repo,
                 run_id: parseInt(runId, 10)
             });
-            core.info(`Found ${artifactsResponse.data.total_count} artifacts for Cypress logs`);
+            core.info(`Found ${artifactsResponse.data.total_count} artifacts for test logs`);
             const logArtifacts = artifactsResponse.data.artifacts.filter(artifact => {
                 const name = artifact.name.toLowerCase();
                 return name.includes('cy-logs') || name.includes('cypress-logs') ||
+                    name.includes('wdio-logs') || name.includes('wdio-artifacts') ||
                     (name.includes('cypress') && (name.includes('log') || name.includes('artifacts')));
             });
             if (logArtifacts.length === 0) {
-                core.info('No Cypress log artifacts found');
-                return cypressLogs;
+                core.info('No test log artifacts found');
+                return artifactLogs;
             }
             if (jobName) {
                 const matrixMatch = jobName.match(/\((.*?)\)/);
@@ -194,13 +199,13 @@ class ArtifactFetcher {
             for (const artifact of logArtifacts) {
                 const logs = await this.processArtifactForLogs(artifact, { owner, repo });
                 if (logs) {
-                    cypressLogs += logs + '\n\n';
+                    artifactLogs += logs + '\n\n';
                 }
             }
-            return cypressLogs;
+            return artifactLogs;
         }
         catch (error) {
-            core.warning(`Failed to fetch Cypress artifact logs: ${error}`);
+            core.warning(`Failed to fetch test artifact logs: ${error}`);
             return '';
         }
     }

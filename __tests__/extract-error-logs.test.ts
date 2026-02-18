@@ -145,6 +145,102 @@ Running: test.cy.js
     });
   });
 
+  describe('WebDriverIO / WDIO errors', () => {
+    it('should extract WDIO waitForDisplayed timeout (element still not visible)', () => {
+      const logs = `
+[0-0] RUNNING in chrome - file:///test/specs/orginvites/invite.org.trainer.ts
+[0-0] Error: element ("[data-testid=invite-button]") still not visible after 10000 ms
+[0-0]     at Context.<anonymous> (test/specs/orginvites/invite.org.trainer.ts:45:12)
+`;
+
+      const result = extractErrorFromLogs(logs);
+      
+      expect(result).toBeTruthy();
+      expect(result?.framework).toBe('webdriverio');
+      expect(result?.message).toContain('still not visible');
+      expect(result?.message).toContain('invite-button');
+    });
+
+    it('should extract WDIO Error in describe/spec title', () => {
+      const logs = `
+[0-0] RUNNING in chrome - test/specs/orginvites/invite.org.learner.enroll.ts
+[0-0] Error in "invite learner enroll flow": element ("button[type=submit]") still not clickable after 5000 ms
+[0-0]     at Context.<anonymous> (test/specs/orginvites/invite.org.learner.enroll.ts:28:8)
+`;
+
+      const result = extractErrorFromLogs(logs);
+      
+      expect(result).toBeTruthy();
+      expect(result?.framework).toBe('webdriverio');
+      expect(result?.message).toContain('Error in "invite learner enroll flow"');
+    });
+
+    it('should extract Mocha hook errors (before all)', () => {
+      const logs = `
+[0-0] Error in "before all" hook: browser.url is not a function
+[0-0]     at Suite.<anonymous> (test/specs/support/hooks.ts:12:10)
+`;
+
+      const result = extractErrorFromLogs(logs);
+      
+      expect(result).toBeTruthy();
+      expect(result?.framework).toBe('webdriverio');
+      expect(result?.message).toContain('before all');
+    });
+
+    it('should extract no such element (Selenium/WebDriver)', () => {
+      const logs = `
+[0-0] WebDriverError: no such element: Unable to locate element: {"method":"css selector","selector":".missing-panel"}
+[0-0]     at processTicksAndRejections (node:internal/process/task_queues:95:5)
+`;
+
+      const result = extractErrorFromLogs(logs);
+      
+      expect(result).toBeTruthy();
+      expect(result?.framework).toBe('webdriverio');
+      expect(result?.message).toContain('no such element');
+    });
+
+    it('should extract stale element reference', () => {
+      const logs = `
+[0-0] stale element reference: element is not attached to the page document
+[0-0]     at Context.<anonymous> (test/specs/orginvites/invite.org.trainer.ts:60:15)
+`;
+
+      const result = extractErrorFromLogs(logs);
+      
+      expect(result).toBeTruthy();
+      expect(result?.framework).toBe('webdriverio');
+      expect(result?.message).toContain('stale element reference');
+    });
+
+    it('should extract element not interactable', () => {
+      const logs = `
+[0-0] element not interactable: element has zero size
+[0-0]     at Context.<anonymous> (test/specs/orginvites/invite.org.trainer.ts:33:8)
+`;
+
+      const result = extractErrorFromLogs(logs);
+      
+      expect(result).toBeTruthy();
+      expect(result?.framework).toBe('webdriverio');
+      expect(result?.message).toContain('element not interactable');
+    });
+
+    it('should extract ProtocolError / Sauce Labs style errors', () => {
+      const logs = `
+[0-0] ProtocolError: Protocol error (Target.setDiscoverTargets): Session closed.
+[0-0] SauceLabsError: Session [abc123] was terminated (timeout)
+`;
+
+      const result = extractErrorFromLogs(logs);
+      
+      expect(result).toBeTruthy();
+      expect(result?.framework).toBe('webdriverio');
+      expect(result?.message).toMatch(/ProtocolError|SauceLabsError/);
+    });
+  });
+
   describe('Test name extraction', () => {
     it('should extract test name from numbered format', () => {
       const logs = `

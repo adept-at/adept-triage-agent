@@ -40,7 +40,7 @@ inputs:
     required: false
     default: ${{ github.repository }}
   TEST_FRAMEWORKS:
-    description: 'Test framework to use. Currently only supports "cypress".'
+    description: 'Test framework: "cypress" or "webdriverio".'
     required: false
     default: 'cypress'
   OUTPUT_REPAIR_CONTEXT:

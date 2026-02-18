@@ -106,6 +106,20 @@ export function extractErrorFromLogs(logs: string): ErrorData | null {
     { pattern: /Cypress failed to verify that your server is running.*/, framework: 'cypress', priority: 12 },
     { pattern: /Please start this server and then run Cypress again.*/, framework: 'cypress', priority: 11 },
     
+    // WDIO / Mocha errors (describe, hooks, spec titles)
+    { pattern: /Error in ["'].*?["']\s*:\s*(.+)/, framework: 'webdriverio', priority: 10 },
+    { pattern: /Error in ["'](?:before all|before each|after all|after each)["'].*?:\s*(.+)/, framework: 'webdriverio', priority: 10 },
+    
+    // WDIO waitFor timeout (element ("selector") still not visible after N ms)
+    { pattern: /element\s*\([^)]+\)\s+still not (?:visible|displayed|enabled|existing|clickable).+after\s+\d+\s*ms/i, framework: 'webdriverio', priority: 9 },
+    { pattern: /(?:waitForDisplayed|waitForExist|waitForClickable|waitForEnabled).+timeout/i, framework: 'webdriverio', priority: 9 },
+    
+    // Selenium / WebDriver errors
+    { pattern: /stale element reference/i, framework: 'webdriverio', priority: 9 },
+    { pattern: /no such element:/i, framework: 'webdriverio', priority: 9 },
+    { pattern: /element not interactable/i, framework: 'webdriverio', priority: 9 },
+    { pattern: /(WebDriverError|ProtocolError|SauceLabsError):\s*(.+)/, framework: 'webdriverio', priority: 8 },
+    
     // Specific JavaScript errors with property access (high priority)
     { pattern: /TypeError: Cannot read propert(?:y|ies) .+ of (?:null|undefined).*/, framework: 'javascript', priority: 10 },
     { pattern: /TypeError: Cannot access .+ of (?:null|undefined).*/, framework: 'javascript', priority: 10 },

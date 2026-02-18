@@ -829,6 +829,12 @@ class CodeReadingAgent extends base_agent_1.BaseAgent {
             'cypress/support/e2e.ts',
             'cypress/support/index.js',
             'cypress/support/index.ts',
+            'test/helpers/index.ts',
+            'test/helpers/index.js',
+            'test/support/index.ts',
+            'test/support/index.js',
+            'wdio.conf.ts',
+            'wdio.conf.js',
         ];
         for (const path of supportPaths) {
             const content = await this.fetchFile(path);
@@ -874,6 +880,10 @@ class CodeReadingAgent extends base_agent_1.BaseAgent {
             `cypress/page-objects/${kebabCase}.js`,
             `cypress/pages/${kebabCase}.ts`,
             `cypress/pages/${kebabCase}.js`,
+            `test/pageobjects/${kebabCase}.ts`,
+            `test/pageobjects/${kebabCase}.js`,
+            `test/page-objects/${kebabCase}.ts`,
+            `test/page-objects/${kebabCase}.js`,
         ];
         for (const path of possiblePaths) {
             const content = await this.fetchFile(path);
@@ -990,11 +1000,11 @@ class FixGenerationAgent extends base_agent_1.BaseAgent {
         return this.executeWithTimeout(input, context);
     }
     getSystemPrompt() {
-        return `You are an expert Cypress test engineer who specializes in fixing failing tests.
+        return `You are an expert test engineer who specializes in fixing failing E2E tests (Cypress or WebDriverIO).
 
 ## Your Task
 
-Generate precise, working code changes to fix the failing test based on the analysis and investigation provided.
+Generate precise, working code changes to fix the failing test based on the analysis and investigation provided. Match the framework used in the source (Cypress vs WebDriverIO).
 
 ## Code Change Requirements
 
@@ -1009,7 +1019,7 @@ Generate precise, working code changes to fix the failing test based on the anal
 
 4. **Preserve Style**: Match the existing code style (quotes, semicolons, indentation).
 
-## Common Fix Patterns
+## Common Fix Patterns (Cypress)
 
 ### Selector Updates
 \`\`\`javascript
@@ -1056,6 +1066,41 @@ cy.get('body').then($body => {
     cy.get('[aria-label="Action"]').click()
   }
 })
+\`\`\`
+
+## Common Fix Patterns (WebDriverIO)
+
+### Selector and visibility
+\`\`\`javascript
+// OLD: Click without waiting for display
+await $('.old-button-class').click()
+
+// NEW: Use data-testid and wait for displayed
+await $('[data-testid="submit-button"]').waitForDisplayed();
+await $('[data-testid="submit-button"]').click()
+\`\`\`
+
+### Wait for element
+\`\`\`javascript
+// OLD: No wait
+await $('#result').getText()
+
+// NEW: Wait for displayed or exist
+await $('#result').waitForDisplayed({ timeout: 10000 });
+await $('#result').getText()
+// or browser.waitUntil
+await browser.waitUntil(async () => (await $('#result').isDisplayed()), { timeout: 10000 });
+\`\`\`
+
+### Multi-remote / browser scope
+\`\`\`javascript
+// OLD: Direct selector
+await $('button').click()
+
+// NEW: Ensure correct browser instance and wait
+const browser = await this.getBrowser(); // or context-specific
+await browser.$('button').waitForClickable();
+await browser.$('button').click();
 \`\`\`
 
 ## Output Format
@@ -1886,6 +1931,9 @@ class ArtifactFetcher {
                 const name = artifact.name.toLowerCase();
                 return name.includes('screenshot') ||
                     name.includes('cypress') ||
+                    name.includes('wdio') ||
+                    name.includes('wdio-logs') ||
+                    name.includes('webdriver') ||
                     (name.includes('cy-') && (name.includes('logs') || name.includes('artifacts')));
             });
             if (jobName) {
@@ -1952,7 +2000,8 @@ class ArtifactFetcher {
                 lowerName.includes('failure') ||
                 lowerName.includes('error') ||
                 /\(failed\)/.test(lowerName) ||
-                lowerName.includes('cypress/screenshots/'));
+                lowerName.includes('cypress/screenshots/') ||
+                lowerName.includes('data/'));
     }
     async fetchLogs(_runId, jobId, repoDetails) {
         try {
@@ -1976,24 +2025,25 @@ class ArtifactFetcher {
             return [];
         }
     }
-    async fetchCypressArtifactLogs(runId, jobName, repoDetails) {
+    async fetchTestArtifactLogs(runId, jobName, repoDetails) {
         try {
             const { owner, repo } = repoDetails ?? github.context.repo;
-            let cypressLogs = '';
+            let artifactLogs = '';
             const artifactsResponse = await this.octokit.actions.listWorkflowRunArtifacts({
                 owner,
                 repo,
                 run_id: parseInt(runId, 10)
             });
-            core.info(`Found ${artifactsResponse.data.total_count} artifacts for Cypress logs`);
+            core.info(`Found ${artifactsResponse.data.total_count} artifacts for test logs`);
             const logArtifacts = artifactsResponse.data.artifacts.filter(artifact => {
                 const name = artifact.name.toLowerCase();
                 return name.includes('cy-logs') || name.includes('cypress-logs') ||
+                    name.includes('wdio-logs') || name.includes('wdio-artifacts') ||
                     (name.includes('cypress') && (name.includes('log') || name.includes('artifacts')));
             });
             if (logArtifacts.length === 0) {
-                core.info('No Cypress log artifacts found');
-                return cypressLogs;
+                core.info('No test log artifacts found');
+                return artifactLogs;
             }
             if (jobName) {
                 const matrixMatch = jobName.match(/\((.*?)\)/);
@@ -2007,13 +2057,13 @@ class ArtifactFetcher {
             for (const artifact of logArtifacts) {
                 const logs = await this.processArtifactForLogs(artifact, { owner, repo });
                 if (logs) {
-                    cypressLogs += logs + '\n\n';
+                    artifactLogs += logs + '\n\n';
                 }
             }
-            return cypressLogs;
+            return artifactLogs;
         }
         catch (error) {
-            core.warning(`Failed to fetch Cypress artifact logs: ${error}`);
+            core.warning(`Failed to fetch test artifact logs: ${error}`);
             return '';
         }
     }
@@ -4022,10 +4072,10 @@ ${lines.length > 100 ? `\n... (${lines.length - 100} more lines)` : ''}
                     }
                 });
             }
-            if (errorData.cypressArtifactLogs) {
-                core.info('  ✅ Including Cypress artifact logs (first 1000 chars)');
-                const cypressPreview = errorData.cypressArtifactLogs.substring(0, 1000);
-                contextInfo += `\n\n## Cypress Logs\n\`\`\`\n${cypressPreview}\n\`\`\``;
+            if (errorData.testArtifactLogs) {
+                core.info('  ✅ Including test artifact logs (first 1000 chars)');
+                const logsPreview = errorData.testArtifactLogs.substring(0, 1000);
+                contextInfo += `\n\n## Test Artifact Logs\n\`\`\`\n${logsPreview}\n\`\`\``;
             }
             if (errorData.prDiff) {
                 core.info(`  ✅ Including PR diff (${errorData.prDiff.totalChanges} files changed)`);
@@ -4101,7 +4151,8 @@ Respond with JSON only. If you cannot provide a confident fix, set confidence be
         try {
             const clientAny = this.openaiClient;
             if (typeof clientAny.generateWithCustomPrompt === 'function') {
-                const systemPrompt = `You are a test repair expert. Produce a concrete, review-ready fix plan for a Cypress TEST_ISSUE.
+                const frameworkLabel = fullErrorData?.framework === 'webdriverio' ? 'WebDriverIO' : 'Cypress';
+                const systemPrompt = `You are a test repair expert. Produce a concrete, review-ready fix plan for a ${frameworkLabel} TEST_ISSUE.
 
 CRITICAL: When providing "oldCode" in your changes, you MUST copy the EXACT code from the source file provided.
 The oldCode must be a verbatim match - including whitespace, quotes, semicolons, and formatting.
@@ -4354,7 +4405,7 @@ async function processWorkflowLogs(octokit, artifactFetcher, inputs, _repoDetail
                 'Unknown',
             screenshots: screenshots,
             logs: [combinedContext],
-            cypressArtifactLogs: capArtifactLogs(artifactLogs),
+            testArtifactLogs: capArtifactLogs(artifactLogs),
             prDiff: prDiff || undefined,
         };
         errorData.structuredSummary = buildStructuredSummary(errorData);
@@ -4362,7 +4413,7 @@ async function processWorkflowLogs(octokit, artifactFetcher, inputs, _repoDetail
     }
     const fallbackError = {
         message: 'Test failure - see full context for details',
-        framework: 'cypress',
+        framework: inputs.testFrameworks || 'unknown',
         failureType: 'test-failure',
         context: `Job: ${failedJob.name}. Complete failure context including all logs and artifacts`,
         testName: failedJob.name,
@@ -4370,7 +4421,7 @@ async function processWorkflowLogs(octokit, artifactFetcher, inputs, _repoDetail
             'Unknown',
         screenshots: screenshots,
         logs: [combinedContext],
-        cypressArtifactLogs: capArtifactLogs(artifactLogs),
+        testArtifactLogs: capArtifactLogs(artifactLogs),
         prDiff: prDiff || undefined,
     };
     fallbackError.structuredSummary = buildStructuredSummary(fallbackError);
@@ -4482,15 +4533,15 @@ async function fetchArtifactsParallel(artifactFetcher, runId, jobName, repoDetai
         return [];
     });
     const artifactLogsPromise = artifactFetcher
-        .fetchCypressArtifactLogs(runId, jobName, repoDetails)
+        .fetchTestArtifactLogs(runId, jobName, repoDetails)
         .then((logs) => {
         if (logs) {
-            core.info(`Found Cypress artifact logs (${logs.length} characters)`);
+            core.info(`Found test artifact logs (${logs.length} characters)`);
         }
         return logs;
     })
         .catch((error) => {
-        core.warning(`Failed to fetch Cypress artifact logs: ${error}`);
+        core.warning(`Failed to fetch test artifact logs: ${error}`);
         return '';
     });
     const prDiffPromise = fetchDiffWithFallback(artifactFetcher, inputs);
@@ -4509,7 +4560,7 @@ function buildErrorContext(failedJob, extractedError, artifactLogs, fullLogs, in
         contextParts.push(`=== EXTRACTED ERROR CONTEXT ===`, extractedError.message, ``);
     }
     if (artifactLogs) {
-        contextParts.push(`=== CYPRESS ARTIFACT LOGS ===`, artifactLogs, ``);
+        contextParts.push(`=== TEST ARTIFACT LOGS ===`, artifactLogs, ``);
     }
     if (!inputs.prNumber || !extractedError) {
         const maxLogSize = constants_1.LOG_LIMITS.GITHUB_MAX_SIZE;
@@ -4703,6 +4754,14 @@ function extractErrorFromLogs(logs) {
         { pattern: /Cypress could not verify that this server is running.*/, framework: 'cypress', priority: 12 },
         { pattern: /Cypress failed to verify that your server is running.*/, framework: 'cypress', priority: 12 },
         { pattern: /Please start this server and then run Cypress again.*/, framework: 'cypress', priority: 11 },
+        { pattern: /Error in ["'].*?["']\s*:\s*(.+)/, framework: 'webdriverio', priority: 10 },
+        { pattern: /Error in ["'](?:before all|before each|after all|after each)["'].*?:\s*(.+)/, framework: 'webdriverio', priority: 10 },
+        { pattern: /element\s*\([^)]+\)\s+still not (?:visible|displayed|enabled|existing|clickable).+after\s+\d+\s*ms/i, framework: 'webdriverio', priority: 9 },
+        { pattern: /(?:waitForDisplayed|waitForExist|waitForClickable|waitForEnabled).+timeout/i, framework: 'webdriverio', priority: 9 },
+        { pattern: /stale element reference/i, framework: 'webdriverio', priority: 9 },
+        { pattern: /no such element:/i, framework: 'webdriverio', priority: 9 },
+        { pattern: /element not interactable/i, framework: 'webdriverio', priority: 9 },
+        { pattern: /(WebDriverError|ProtocolError|SauceLabsError):\s*(.+)/, framework: 'webdriverio', priority: 8 },
         { pattern: /TypeError: Cannot read propert(?:y|ies) .+ of (?:null|undefined).*/, framework: 'javascript', priority: 10 },
         { pattern: /TypeError: Cannot access .+ of (?:null|undefined).*/, framework: 'javascript', priority: 10 },
         { pattern: /(AssertionError|CypressError|TimeoutError):\s*(.+)/, framework: 'cypress', priority: 8 },

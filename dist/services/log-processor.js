@@ -128,7 +128,7 @@ async function processWorkflowLogs(octokit, artifactFetcher, inputs, _repoDetail
                 'Unknown',
             screenshots: screenshots,
             logs: [combinedContext],
-            cypressArtifactLogs: capArtifactLogs(artifactLogs),
+            testArtifactLogs: capArtifactLogs(artifactLogs),
             prDiff: prDiff || undefined,
         };
         errorData.structuredSummary = buildStructuredSummary(errorData);
@@ -136,7 +136,7 @@ async function processWorkflowLogs(octokit, artifactFetcher, inputs, _repoDetail
     }
     const fallbackError = {
         message: 'Test failure - see full context for details',
-        framework: 'cypress',
+        framework: inputs.testFrameworks || 'unknown',
         failureType: 'test-failure',
         context: `Job: ${failedJob.name}. Complete failure context including all logs and artifacts`,
         testName: failedJob.name,
@@ -144,7 +144,7 @@ async function processWorkflowLogs(octokit, artifactFetcher, inputs, _repoDetail
             'Unknown',
         screenshots: screenshots,
         logs: [combinedContext],
-        cypressArtifactLogs: capArtifactLogs(artifactLogs),
+        testArtifactLogs: capArtifactLogs(artifactLogs),
         prDiff: prDiff || undefined,
     };
     fallbackError.structuredSummary = buildStructuredSummary(fallbackError);
@@ -256,15 +256,15 @@ async function fetchArtifactsParallel(artifactFetcher, runId, jobName, repoDetai
         return [];
     });
     const artifactLogsPromise = artifactFetcher
-        .fetchCypressArtifactLogs(runId, jobName, repoDetails)
+        .fetchTestArtifactLogs(runId, jobName, repoDetails)
         .then((logs) => {
         if (logs) {
-            core.info(`Found Cypress artifact logs (${logs.length} characters)`);
+            core.info(`Found test artifact logs (${logs.length} characters)`);
         }
         return logs;
     })
         .catch((error) => {
-        core.warning(`Failed to fetch Cypress artifact logs: ${error}`);
+        core.warning(`Failed to fetch test artifact logs: ${error}`);
         return '';
     });
     const prDiffPromise = fetchDiffWithFallback(artifactFetcher, inputs);
@@ -283,7 +283,7 @@ function buildErrorContext(failedJob, extractedError, artifactLogs, fullLogs, in
         contextParts.push(`=== EXTRACTED ERROR CONTEXT ===`, extractedError.message, ``);
     }
     if (artifactLogs) {
-        contextParts.push(`=== CYPRESS ARTIFACT LOGS ===`, artifactLogs, ``);
+        contextParts.push(`=== TEST ARTIFACT LOGS ===`, artifactLogs, ``);
     }
     if (!inputs.prNumber || !extractedError) {
         const maxLogSize = constants_1.LOG_LIMITS.GITHUB_MAX_SIZE;

@@ -235,6 +235,12 @@ class CodeReadingAgent extends base_agent_1.BaseAgent {
             'cypress/support/e2e.ts',
             'cypress/support/index.js',
             'cypress/support/index.ts',
+            'test/helpers/index.ts',
+            'test/helpers/index.js',
+            'test/support/index.ts',
+            'test/support/index.js',
+            'wdio.conf.ts',
+            'wdio.conf.js',
         ];
         for (const path of supportPaths) {
             const content = await this.fetchFile(path);
@@ -280,6 +286,10 @@ class CodeReadingAgent extends base_agent_1.BaseAgent {
             `cypress/page-objects/${kebabCase}.js`,
             `cypress/pages/${kebabCase}.ts`,
             `cypress/pages/${kebabCase}.js`,
+            `test/pageobjects/${kebabCase}.ts`,
+            `test/pageobjects/${kebabCase}.js`,
+            `test/page-objects/${kebabCase}.ts`,
+            `test/page-objects/${kebabCase}.js`,
         ];
         for (const path of possiblePaths) {
             const content = await this.fetchFile(path);

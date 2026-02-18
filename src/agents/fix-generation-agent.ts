@@ -96,11 +96,11 @@ export class FixGenerationAgent extends BaseAgent<
    * Get the system prompt
    */
   protected getSystemPrompt(): string {
-    return `You are an expert Cypress test engineer who specializes in fixing failing tests.
+    return `You are an expert test engineer who specializes in fixing failing E2E tests (Cypress or WebDriverIO).
 
 ## Your Task
 
-Generate precise, working code changes to fix the failing test based on the analysis and investigation provided.
+Generate precise, working code changes to fix the failing test based on the analysis and investigation provided. Match the framework used in the source (Cypress vs WebDriverIO).
 
 ## Code Change Requirements
 
@@ -115,7 +115,7 @@ Generate precise, working code changes to fix the failing test based on the anal
 
 4. **Preserve Style**: Match the existing code style (quotes, semicolons, indentation).
 
-## Common Fix Patterns
+## Common Fix Patterns (Cypress)
 
 ### Selector Updates
 \`\`\`javascript
@@ -162,6 +162,41 @@ cy.get('body').then($body => {
     cy.get('[aria-label="Action"]').click()
   }
 })
+\`\`\`
+
+## Common Fix Patterns (WebDriverIO)
+
+### Selector and visibility
+\`\`\`javascript
+// OLD: Click without waiting for display
+await $('.old-button-class').click()
+
+// NEW: Use data-testid and wait for displayed
+await $('[data-testid="submit-button"]').waitForDisplayed();
+await $('[data-testid="submit-button"]').click()
+\`\`\`
+
+### Wait for element
+\`\`\`javascript
+// OLD: No wait
+await $('#result').getText()
+
+// NEW: Wait for displayed or exist
+await $('#result').waitForDisplayed({ timeout: 10000 });
+await $('#result').getText()
+// or browser.waitUntil
+await browser.waitUntil(async () => (await $('#result').isDisplayed()), { timeout: 10000 });
+\`\`\`
+
+### Multi-remote / browser scope
+\`\`\`javascript
+// OLD: Direct selector
+await $('button').click()
+
+// NEW: Ensure correct browser instance and wait
+const browser = await this.getBrowser(); // or context-specific
+await browser.$('button').waitForClickable();
+await browser.$('button').click();
 \`\`\`
 
 ## Output Format

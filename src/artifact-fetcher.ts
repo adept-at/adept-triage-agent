@@ -54,12 +54,14 @@ export class ArtifactFetcher {
 
       core.info(`Found ${artifactsResponse.data.total_count} artifacts`);
 
-      // Look for screenshot artifacts - these often have 'cypress' or 'cy-logs' in their names
+      // Look for screenshot artifacts - cypress, WDIO, or generic log artifacts
       let screenshotArtifacts = artifactsResponse.data.artifacts.filter(artifact => {
         const name = artifact.name.toLowerCase();
-        // Match various screenshot artifact patterns
-        return name.includes('screenshot') || 
-               name.includes('cypress') || 
+        return name.includes('screenshot') ||
+               name.includes('cypress') ||
+               name.includes('wdio') ||
+               name.includes('wdio-logs') ||
+               name.includes('webdriver') ||
                (name.includes('cy-') && (name.includes('logs') || name.includes('artifacts')));
       });
 
@@ -143,13 +145,12 @@ export class ArtifactFetcher {
     
     // Check if it's an image file and likely a screenshot
     return imageExtensions.some(ext => lowerName.endsWith(ext)) &&
-           (lowerName.includes('screenshot') || 
+           (lowerName.includes('screenshot') ||
             lowerName.includes('failure') ||
             lowerName.includes('error') ||
-            // Cypress default naming pattern
             /\(failed\)/.test(lowerName) ||
-            // Common in cypress/screenshots folder
-            lowerName.includes('cypress/screenshots/'));
+            lowerName.includes('cypress/screenshots/') ||
+            lowerName.includes('data/'));
   }
 
   async fetchLogs(_runId: string, jobId: number, repoDetails?: RepoDetails): Promise<string[]> {
@@ -181,10 +182,10 @@ export class ArtifactFetcher {
     }
   }
 
-  async fetchCypressArtifactLogs(runId: string, jobName?: string, repoDetails?: RepoDetails): Promise<string> {
+  async fetchTestArtifactLogs(runId: string, jobName?: string, repoDetails?: RepoDetails): Promise<string> {
     try {
       const { owner, repo } = repoDetails ?? github.context.repo;
-      let cypressLogs = '';
+      let artifactLogs = '';
 
       // List artifacts for the workflow run
       const artifactsResponse = await this.octokit.actions.listWorkflowRunArtifacts({
@@ -193,19 +194,19 @@ export class ArtifactFetcher {
         run_id: parseInt(runId, 10)
       });
 
-      core.info(`Found ${artifactsResponse.data.total_count} artifacts for Cypress logs`);
+      core.info(`Found ${artifactsResponse.data.total_count} artifacts for test logs`);
 
-      // Look for Cypress log artifacts
+      // Look for test log artifacts (Cypress or WDIO)
       const logArtifacts = artifactsResponse.data.artifacts.filter(artifact => {
         const name = artifact.name.toLowerCase();
-        // Match Cypress log artifact patterns - these contain screenshots/videos
-        return name.includes('cy-logs') || name.includes('cypress-logs') || 
+        return name.includes('cy-logs') || name.includes('cypress-logs') ||
+               name.includes('wdio-logs') || name.includes('wdio-artifacts') ||
                (name.includes('cypress') && (name.includes('log') || name.includes('artifacts')));
       });
 
       if (logArtifacts.length === 0) {
-        core.info('No Cypress log artifacts found');
-        return cypressLogs;
+        core.info('No test log artifacts found');
+        return artifactLogs;
       }
 
       // If jobName is provided, filter to specific job artifact
@@ -227,13 +228,13 @@ export class ArtifactFetcher {
       for (const artifact of logArtifacts) {
         const logs = await this.processArtifactForLogs(artifact, { owner, repo });
         if (logs) {
-          cypressLogs += logs + '\n\n';
+          artifactLogs += logs + '\n\n';
         }
       }
 
-      return cypressLogs;
+      return artifactLogs;
     } catch (error) {
-      core.warning(`Failed to fetch Cypress artifact logs: ${error}`);
+      core.warning(`Failed to fetch test artifact logs: ${error}`);
       return '';
     }
   }
