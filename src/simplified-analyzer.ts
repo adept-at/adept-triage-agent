@@ -116,7 +116,7 @@ export function extractErrorFromLogs(logs: string): ErrorData | null {
     
     // Selenium / WebDriver errors
     { pattern: /stale element reference/i, framework: 'webdriverio', priority: 9 },
-    { pattern: /no such element:/i, framework: 'webdriverio', priority: 9 },
+    { pattern: /no such element: Unable to locate element/i, framework: 'webdriverio', priority: 9 },
     { pattern: /element not interactable/i, framework: 'webdriverio', priority: 9 },
     { pattern: /(WebDriverError|ProtocolError|SauceLabsError):\s*(.+)/, framework: 'webdriverio', priority: 8 },
     

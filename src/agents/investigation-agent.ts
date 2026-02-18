@@ -8,6 +8,7 @@ import {
   AgentContext,
   AgentResult,
   AgentConfig,
+  getFrameworkLabel,
 } from './base-agent';
 import { OpenAIClient } from '../openai-client';
 import { AnalysisOutput } from './analysis-agent';
@@ -156,7 +157,7 @@ You MUST respond with a JSON object matching this schema:
     input: InvestigationInput,
     context: AgentContext
   ): string {
-    const frameworkLabel = context.framework === 'webdriverio' ? 'WebDriverIO' : context.framework === 'cypress' ? 'Cypress' : 'unknown';
+    const frameworkLabel = getFrameworkLabel(context.framework);
     const parts: string[] = [
       '## Investigation Request',
       '',
@@ -207,11 +208,12 @@ You MUST respond with a JSON object matching this schema:
       }
 
       if (input.codeContext.customCommands.length > 0) {
+        const cmdPrefix = context.framework === 'webdriverio' ? 'browser' : 'cy';
         parts.push(
           '',
           '### Custom Commands',
           input.codeContext.customCommands
-            .map((c) => `- \`cy.${c.name}()\` in ${c.file}`)
+            .map((c) => `- \`${cmdPrefix}.${c.name}()\` in ${c.file}`)
             .join('\n')
         );
       }

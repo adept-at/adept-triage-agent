@@ -453,5 +453,94 @@ describe('AgentOrchestrator', () => {
       expect(getPromptText(capturedCalls[0]?.userContent ?? '')).toContain('Cypress');
       expect(getPromptText(capturedCalls[2]?.userContent ?? '')).toContain('Cypress');
     });
+
+    it('should use "unknown" when framework is undefined', async () => {
+      const analysisResponse = {
+        rootCauseCategory: 'SELECTOR_MISMATCH',
+        contributingFactors: [],
+        confidence: 85,
+        explanation: 'Selector changed',
+        selectors: ['[data-testid="btn"]'],
+        elements: [],
+        issueLocation: 'TEST_CODE',
+        patterns: {
+          hasTimeout: false,
+          hasVisibilityIssue: false,
+          hasNetworkCall: false,
+          hasStateAssertion: false,
+          hasDynamicContent: false,
+          hasResponsiveIssue: false,
+        },
+        suggestedApproach: 'Update selector',
+      };
+      const investigationResponse = {
+        findings: [],
+        isTestCodeFixable: true,
+        recommendedApproach: 'Update selector',
+        selectorsToUpdate: [],
+        confidence: 80,
+      };
+      const fixGenerationResponse = {
+        changes: [
+          {
+            file: 'test/example.spec.ts',
+            line: 8,
+            oldCode: 'el.click()',
+            newCode: 'el.waitForDisplayed(); el.click()',
+            justification: 'Wait for element',
+            changeType: 'WAIT_ADDITION',
+          },
+        ],
+        confidence: 85,
+        summary: 'Add wait',
+        reasoning: 'Element not ready',
+        evidence: [],
+        risks: [],
+      };
+      const reviewResponse = { approved: true, issues: [], assessment: 'Good', fixConfidence: 85 };
+
+      let callCount = 0;
+      const capturedCalls: Array<{ userContent: string | unknown[] }> = [];
+      mockOpenAIClient.generateWithCustomPrompt = jest
+        .fn()
+        .mockImplementation((params: { userContent: string | unknown[] }) => {
+          capturedCalls.push({ userContent: params.userContent });
+          callCount++;
+          switch (callCount) {
+            case 1:
+              return Promise.resolve(JSON.stringify(analysisResponse));
+            case 2:
+              return Promise.resolve(JSON.stringify(investigationResponse));
+            case 3:
+              return Promise.resolve(JSON.stringify(fixGenerationResponse));
+            case 4:
+              return Promise.resolve(JSON.stringify(reviewResponse));
+            default:
+              return Promise.resolve('{}');
+          }
+        });
+
+      const orchestrator = createOrchestrator(mockOpenAIClient);
+      const context = createAgentContext({
+        errorMessage: 'Error: something went wrong',
+        testFile: 'test/example.spec.ts',
+        testName: 'example test',
+      });
+
+      const result = await orchestrator.orchestrate(context);
+
+      expect(result.success).toBe(true);
+      const getPromptText = (content: string | unknown[]): string => {
+        if (typeof content === 'string') return content;
+        const part = Array.isArray(content) && content[0] && typeof (content[0] as { text?: string }).text === 'string'
+          ? (content[0] as { text: string }).text
+          : '';
+        return part;
+      };
+      expect(getPromptText(capturedCalls[0]?.userContent ?? '')).toContain('unknown');
+      expect(getPromptText(capturedCalls[0]?.userContent ?? '')).toContain('Test framework');
+      expect(getPromptText(capturedCalls[0]?.userContent ?? '')).not.toContain('Cypress');
+      expect(getPromptText(capturedCalls[0]?.userContent ?? '')).not.toContain('WebDriverIO');
+    });
   });
 });

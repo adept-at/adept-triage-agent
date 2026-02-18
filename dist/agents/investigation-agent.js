@@ -61,7 +61,7 @@ You MUST respond with a JSON object matching this schema:
 }`;
     }
     buildUserPrompt(input, context) {
-        const frameworkLabel = context.framework === 'webdriverio' ? 'WebDriverIO' : context.framework === 'cypress' ? 'Cypress' : 'unknown';
+        const frameworkLabel = (0, base_agent_1.getFrameworkLabel)(context.framework);
         const parts = [
             '## Investigation Request',
             '',
@@ -95,8 +95,9 @@ You MUST respond with a JSON object matching this schema:
                 }
             }
             if (input.codeContext.customCommands.length > 0) {
+                const cmdPrefix = context.framework === 'webdriverio' ? 'browser' : 'cy';
                 parts.push('', '### Custom Commands', input.codeContext.customCommands
-                    .map((c) => `- \`cy.${c.name}()\` in ${c.file}`)
+                    .map((c) => `- \`${cmdPrefix}.${c.name}()\` in ${c.file}`)
                     .join('\n'));
             }
         }

@@ -12,6 +12,7 @@ import {
   createAgentContext,
   OrchestratorConfig,
 } from '../agents';
+import { getFrameworkLabel } from '../agents/base-agent';
 
 // Internal type for AI response structure
 interface AIRecommendation {
@@ -564,7 +565,7 @@ Respond with JSON only. If you cannot provide a confident fix, set confidence be
       };
 
       if (typeof clientAny.generateWithCustomPrompt === 'function') {
-        const frameworkLabel = fullErrorData?.framework === 'webdriverio' ? 'WebDriverIO' : 'Cypress';
+        const frameworkLabel = getFrameworkLabel(fullErrorData?.framework);
         // Build a repair-specific system prompt that enforces JSON output
         const systemPrompt = `You are a test repair expert. Produce a concrete, review-ready fix plan for a ${frameworkLabel} TEST_ISSUE.
 

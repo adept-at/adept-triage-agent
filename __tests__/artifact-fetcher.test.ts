@@ -435,6 +435,48 @@ describe('ArtifactFetcher', () => {
       expect(core.info).toHaveBeenCalledWith('No test log artifacts found');
     });
     
+    it('should match wdio-logs artifact names', async () => {
+      const mockArtifacts = [
+        { id: 10, name: 'wdio-logs', size_in_bytes: 5000 }
+      ];
+
+      mockOctokit.actions!.listWorkflowRunArtifacts = jest.fn().mockResolvedValue({
+        data: { total_count: 1, artifacts: mockArtifacts }
+      });
+
+      const zip = new AdmZip();
+      zip.addFile('output.txt', Buffer.from('WDIO test output log'));
+      mockOctokit.actions!.downloadArtifact = jest.fn().mockResolvedValue({
+        data: zip.toBuffer()
+      });
+
+      const result = await artifactFetcher.fetchTestArtifactLogs('123');
+
+      expect(result).toContain('Artifact: wdio-logs');
+      expect(mockOctokit.actions!.downloadArtifact).toHaveBeenCalled();
+    });
+
+    it('should match wdio-artifacts artifact names', async () => {
+      const mockArtifacts = [
+        { id: 11, name: 'wdio-artifacts-sauceTest', size_in_bytes: 3000 }
+      ];
+
+      mockOctokit.actions!.listWorkflowRunArtifacts = jest.fn().mockResolvedValue({
+        data: { total_count: 1, artifacts: mockArtifacts }
+      });
+
+      const zip = new AdmZip();
+      zip.addFile('error.log', Buffer.from('element still not visible'));
+      mockOctokit.actions!.downloadArtifact = jest.fn().mockResolvedValue({
+        data: zip.toBuffer()
+      });
+
+      const result = await artifactFetcher.fetchTestArtifactLogs('123');
+
+      expect(result).toContain('Artifact: wdio-artifacts-sauceTest');
+      expect(mockOctokit.actions!.downloadArtifact).toHaveBeenCalled();
+    });
+
     it('should handle artifact processing errors gracefully', async () => {
       const mockArtifacts = [{ id: 1, name: 'cy-logs' }];
       

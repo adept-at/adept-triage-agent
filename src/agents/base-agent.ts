@@ -12,6 +12,21 @@ type ChatContentPart =
   | OpenAI.Chat.Completions.ChatCompletionContentPartImage;
 
 /**
+ * Maps the internal framework identifier to a human-readable label for prompts.
+ * Single source of truth -- all agents should use this instead of inline ternaries.
+ */
+export function getFrameworkLabel(framework?: string): string {
+  switch (framework) {
+    case 'webdriverio':
+      return 'WebDriverIO';
+    case 'cypress':
+      return 'Cypress';
+    default:
+      return 'unknown';
+  }
+}
+
+/**
  * Result of an agent execution
  */
 export interface AgentResult<T = unknown> {

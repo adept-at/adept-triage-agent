@@ -145,7 +145,7 @@ You MUST respond with a JSON object matching this schema:
 - Test your understanding of the code before generating the fix.`;
     }
     buildUserPrompt(input, context) {
-        const frameworkLabel = context.framework === 'webdriverio' ? 'WebDriverIO' : context.framework === 'cypress' ? 'Cypress' : 'unknown';
+        const frameworkLabel = (0, base_agent_1.getFrameworkLabel)(context.framework);
         const parts = [
             '## Fix Generation Request',
             '',

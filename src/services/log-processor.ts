@@ -483,7 +483,7 @@ export function capArtifactLogs(raw: string): string {
   // Try to focus around error-like lines
   const lines = clean.split('\n');
   const errorRegex =
-    /(error|failed|failure|exception|assertion|expected|timeout|cypress error)/i;
+    /(error|failed|failure|exception|assertion|expected|timeout|cypress error|stale element|not interactable|no such element|still not (?:visible|displayed|clickable))/i;
   const focused: string[] = [];
   for (let i = 0; i < lines.length; i++) {
     if (errorRegex.test(lines[i])) {

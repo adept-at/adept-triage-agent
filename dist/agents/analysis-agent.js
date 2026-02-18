@@ -10,7 +10,7 @@ class AnalysisAgent extends base_agent_1.BaseAgent {
         return this.executeWithTimeout(input, context);
     }
     getSystemPrompt() {
-        return `You are an expert test failure analyst specializing in Cypress and end-to-end tests.
+        return `You are an expert test failure analyst specializing in end-to-end tests (Cypress and WebDriverIO).
 
 Your job is to analyze test failures and identify the root cause with high precision.
 
@@ -78,7 +78,7 @@ You MUST respond with a JSON object matching this schema:
 }`;
     }
     buildUserPrompt(input, context) {
-        const frameworkLabel = context.framework === 'webdriverio' ? 'WebDriverIO' : context.framework === 'cypress' ? 'Cypress' : 'unknown';
+        const frameworkLabel = (0, base_agent_1.getFrameworkLabel)(context.framework);
         const parts = [
             '## Error Analysis Request',
             '',

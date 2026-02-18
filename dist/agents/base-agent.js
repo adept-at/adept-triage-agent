@@ -34,8 +34,19 @@ var __importStar = (this && this.__importStar) || (function () {
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.BaseAgent = exports.DEFAULT_AGENT_CONFIG = void 0;
+exports.getFrameworkLabel = getFrameworkLabel;
 exports.createAgentContext = createAgentContext;
 const core = __importStar(require("@actions/core"));
+function getFrameworkLabel(framework) {
+    switch (framework) {
+        case 'webdriverio':
+            return 'WebDriverIO';
+        case 'cypress':
+            return 'Cypress';
+        default:
+            return 'unknown';
+    }
+}
 exports.DEFAULT_AGENT_CONFIG = {
     timeoutMs: 60000,
     temperature: 0.3,

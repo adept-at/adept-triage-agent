@@ -278,7 +278,7 @@ class AnalysisAgent extends base_agent_1.BaseAgent {
         return this.executeWithTimeout(input, context);
     }
     getSystemPrompt() {
-        return `You are an expert test failure analyst specializing in Cypress and end-to-end tests.
+        return `You are an expert test failure analyst specializing in end-to-end tests (Cypress and WebDriverIO).
 
 Your job is to analyze test failures and identify the root cause with high precision.
 
@@ -346,7 +346,7 @@ You MUST respond with a JSON object matching this schema:
 }`;
     }
     buildUserPrompt(input, context) {
-        const frameworkLabel = context.framework === 'webdriverio' ? 'WebDriverIO' : context.framework === 'cypress' ? 'Cypress' : 'unknown';
+        const frameworkLabel = (0, base_agent_1.getFrameworkLabel)(context.framework);
         const parts = [
             '## Error Analysis Request',
             '',
@@ -473,8 +473,19 @@ var __importStar = (this && this.__importStar) || (function () {
 })();
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.BaseAgent = exports.DEFAULT_AGENT_CONFIG = void 0;
+exports.getFrameworkLabel = getFrameworkLabel;
 exports.createAgentContext = createAgentContext;
 const core = __importStar(__nccwpck_require__(7484));
+function getFrameworkLabel(framework) {
+    switch (framework) {
+        case 'webdriverio':
+            return 'WebDriverIO';
+        case 'cypress':
+            return 'Cypress';
+        default:
+            return 'unknown';
+    }
+}
 exports.DEFAULT_AGENT_CONFIG = {
     timeoutMs: 60000,
     temperature: 0.3,
@@ -1135,7 +1146,7 @@ You MUST respond with a JSON object matching this schema:
 - Test your understanding of the code before generating the fix.`;
     }
     buildUserPrompt(input, context) {
-        const frameworkLabel = context.framework === 'webdriverio' ? 'WebDriverIO' : context.framework === 'cypress' ? 'Cypress' : 'unknown';
+        const frameworkLabel = (0, base_agent_1.getFrameworkLabel)(context.framework);
         const parts = [
             '## Fix Generation Request',
             '',
@@ -1325,7 +1336,7 @@ You MUST respond with a JSON object matching this schema:
 }`;
     }
     buildUserPrompt(input, context) {
-        const frameworkLabel = context.framework === 'webdriverio' ? 'WebDriverIO' : context.framework === 'cypress' ? 'Cypress' : 'unknown';
+        const frameworkLabel = (0, base_agent_1.getFrameworkLabel)(context.framework);
         const parts = [
             '## Investigation Request',
             '',
@@ -1359,8 +1370,9 @@ You MUST respond with a JSON object matching this schema:
                 }
             }
             if (input.codeContext.customCommands.length > 0) {
+                const cmdPrefix = context.framework === 'webdriverio' ? 'browser' : 'cy';
                 parts.push('', '### Custom Commands', input.codeContext.customCommands
-                    .map((c) => `- \`cy.${c.name}()\` in ${c.file}`)
+                    .map((c) => `- \`${cmdPrefix}.${c.name}()\` in ${c.file}`)
                     .join('\n'));
             }
         }
@@ -3849,6 +3861,7 @@ const openai_client_1 = __nccwpck_require__(191);
 const summary_generator_1 = __nccwpck_require__(8220);
 const constants_1 = __nccwpck_require__(8361);
 const agents_1 = __nccwpck_require__(9796);
+const base_agent_1 = __nccwpck_require__(6575);
 class SimplifiedRepairAgent {
     openaiClient;
     sourceFetchContext;
@@ -4160,7 +4173,7 @@ Respond with JSON only. If you cannot provide a confident fix, set confidence be
         try {
             const clientAny = this.openaiClient;
             if (typeof clientAny.generateWithCustomPrompt === 'function') {
-                const frameworkLabel = fullErrorData?.framework === 'webdriverio' ? 'WebDriverIO' : 'Cypress';
+                const frameworkLabel = (0, base_agent_1.getFrameworkLabel)(fullErrorData?.framework);
                 const systemPrompt = `You are a test repair expert. Produce a concrete, review-ready fix plan for a ${frameworkLabel} TEST_ISSUE.
 
 CRITICAL: When providing "oldCode" in your changes, you MUST copy the EXACT code from the source file provided.
@@ -4591,7 +4604,7 @@ function capArtifactLogs(raw) {
     if (clean.length <= MAX)
         return clean;
     const lines = clean.split('\n');
-    const errorRegex = /(error|failed|failure|exception|assertion|expected|timeout|cypress error)/i;
+    const errorRegex = /(error|failed|failure|exception|assertion|expected|timeout|cypress error|stale element|not interactable|no such element|still not (?:visible|displayed|clickable))/i;
     const focused = [];
     for (let i = 0; i < lines.length; i++) {
         if (errorRegex.test(lines[i])) {
@@ -4768,7 +4781,7 @@ function extractErrorFromLogs(logs) {
         { pattern: /element\s*\([^)]+\)\s+still not (?:visible|displayed|enabled|existing|clickable).+after\s+\d+\s*ms/i, framework: 'webdriverio', priority: 9 },
         { pattern: /(?:waitForDisplayed|waitForExist|waitForClickable|waitForEnabled).+timeout/i, framework: 'webdriverio', priority: 9 },
         { pattern: /stale element reference/i, framework: 'webdriverio', priority: 9 },
-        { pattern: /no such element:/i, framework: 'webdriverio', priority: 9 },
+        { pattern: /no such element: Unable to locate element/i, framework: 'webdriverio', priority: 9 },
         { pattern: /element not interactable/i, framework: 'webdriverio', priority: 9 },
         { pattern: /(WebDriverError|ProtocolError|SauceLabsError):\s*(.+)/, framework: 'webdriverio', priority: 8 },
         { pattern: /TypeError: Cannot read propert(?:y|ies) .+ of (?:null|undefined).*/, framework: 'javascript', priority: 10 },

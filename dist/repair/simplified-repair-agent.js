@@ -40,6 +40,7 @@ const openai_client_1 = require("../openai-client");
 const summary_generator_1 = require("../analysis/summary-generator");
 const constants_1 = require("../config/constants");
 const agents_1 = require("../agents");
+const base_agent_1 = require("../agents/base-agent");
 class SimplifiedRepairAgent {
     openaiClient;
     sourceFetchContext;
@@ -351,7 +352,7 @@ Respond with JSON only. If you cannot provide a confident fix, set confidence be
         try {
             const clientAny = this.openaiClient;
             if (typeof clientAny.generateWithCustomPrompt === 'function') {
-                const frameworkLabel = fullErrorData?.framework === 'webdriverio' ? 'WebDriverIO' : 'Cypress';
+                const frameworkLabel = (0, base_agent_1.getFrameworkLabel)(fullErrorData?.framework);
                 const systemPrompt = `You are a test repair expert. Produce a concrete, review-ready fix plan for a ${frameworkLabel} TEST_ISSUE.
 
 CRITICAL: When providing "oldCode" in your changes, you MUST copy the EXACT code from the source file provided.

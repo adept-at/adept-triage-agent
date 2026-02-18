@@ -1,4 +1,5 @@
 import { OpenAIClient } from '../openai-client';
+export declare function getFrameworkLabel(framework?: string): string;
 export interface AgentResult<T = unknown> {
     success: boolean;
     data?: T;

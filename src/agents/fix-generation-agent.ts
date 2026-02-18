@@ -8,6 +8,7 @@ import {
   AgentContext,
   AgentResult,
   AgentConfig,
+  getFrameworkLabel,
 } from './base-agent';
 import { OpenAIClient } from '../openai-client';
 import { AnalysisOutput } from './analysis-agent';
@@ -235,7 +236,7 @@ You MUST respond with a JSON object matching this schema:
     input: FixGenerationInput,
     context: AgentContext
   ): string {
-    const frameworkLabel = context.framework === 'webdriverio' ? 'WebDriverIO' : context.framework === 'cypress' ? 'Cypress' : 'unknown';
+    const frameworkLabel = getFrameworkLabel(context.framework);
     const parts: string[] = [
       '## Fix Generation Request',
       '',

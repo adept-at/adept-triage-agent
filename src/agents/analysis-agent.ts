@@ -8,6 +8,7 @@ import {
   AgentContext,
   AgentResult,
   AgentConfig,
+  getFrameworkLabel,
 } from './base-agent';
 import { OpenAIClient } from '../openai-client';
 
@@ -86,7 +87,7 @@ export class AnalysisAgent extends BaseAgent<AnalysisInput, AnalysisOutput> {
    * Get the system prompt
    */
   protected getSystemPrompt(): string {
-    return `You are an expert test failure analyst specializing in Cypress and end-to-end tests.
+    return `You are an expert test failure analyst specializing in end-to-end tests (Cypress and WebDriverIO).
 
 Your job is to analyze test failures and identify the root cause with high precision.
 
@@ -161,7 +162,7 @@ You MUST respond with a JSON object matching this schema:
     input: AnalysisInput,
     context: AgentContext
   ): string {
-    const frameworkLabel = context.framework === 'webdriverio' ? 'WebDriverIO' : context.framework === 'cypress' ? 'Cypress' : 'unknown';
+    const frameworkLabel = getFrameworkLabel(context.framework);
     const parts: string[] = [
       '## Error Analysis Request',
       '',

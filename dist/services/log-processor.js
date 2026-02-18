@@ -305,7 +305,7 @@ function capArtifactLogs(raw) {
     if (clean.length <= MAX)
         return clean;
     const lines = clean.split('\n');
-    const errorRegex = /(error|failed|failure|exception|assertion|expected|timeout|cypress error)/i;
+    const errorRegex = /(error|failed|failure|exception|assertion|expected|timeout|cypress error|stale element|not interactable|no such element|still not (?:visible|displayed|clickable))/i;
     const focused = [];
     for (let i = 0; i < lines.length; i++) {
         if (errorRegex.test(lines[i])) {

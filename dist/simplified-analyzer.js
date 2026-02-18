@@ -114,7 +114,7 @@ function extractErrorFromLogs(logs) {
         { pattern: /element\s*\([^)]+\)\s+still not (?:visible|displayed|enabled|existing|clickable).+after\s+\d+\s*ms/i, framework: 'webdriverio', priority: 9 },
         { pattern: /(?:waitForDisplayed|waitForExist|waitForClickable|waitForEnabled).+timeout/i, framework: 'webdriverio', priority: 9 },
         { pattern: /stale element reference/i, framework: 'webdriverio', priority: 9 },
-        { pattern: /no such element:/i, framework: 'webdriverio', priority: 9 },
+        { pattern: /no such element: Unable to locate element/i, framework: 'webdriverio', priority: 9 },
         { pattern: /element not interactable/i, framework: 'webdriverio', priority: 9 },
         { pattern: /(WebDriverError|ProtocolError|SauceLabsError):\s*(.+)/, framework: 'webdriverio', priority: 8 },
         { pattern: /TypeError: Cannot read propert(?:y|ies) .+ of (?:null|undefined).*/, framework: 'javascript', priority: 10 },
