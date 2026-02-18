@@ -156,8 +156,11 @@ You MUST respond with a JSON object matching this schema:
     input: InvestigationInput,
     context: AgentContext
   ): string {
+    const frameworkLabel = context.framework === 'webdriverio' ? 'WebDriverIO' : context.framework === 'cypress' ? 'Cypress' : 'unknown';
     const parts: string[] = [
       '## Investigation Request',
+      '',
+      `**Test framework:** ${frameworkLabel}`,
       '',
       '### Error Analysis Results',
       `- **Root Cause Category:** ${input.analysis.rootCauseCategory}`,

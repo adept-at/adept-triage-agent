@@ -252,5 +252,206 @@ describe('AgentOrchestrator', () => {
 
       expect(result.totalTimeMs).toBeGreaterThanOrEqual(0);
     });
+
+    it('should pass framework through pipeline and include it in agent prompts', async () => {
+      const analysisResponse = {
+        rootCauseCategory: 'SELECTOR_MISMATCH',
+        contributingFactors: [],
+        confidence: 85,
+        explanation: 'Selector changed',
+        selectors: ['[data-testid="invite-button"]'],
+        elements: [],
+        issueLocation: 'TEST_CODE',
+        patterns: {
+          hasTimeout: false,
+          hasVisibilityIssue: true,
+          hasNetworkCall: false,
+          hasStateAssertion: false,
+          hasDynamicContent: false,
+          hasResponsiveIssue: false,
+        },
+        suggestedApproach: 'Use waitForDisplayed',
+      };
+      const investigationResponse = {
+        findings: [
+          {
+            type: 'SELECTOR_CHANGE',
+            severity: 'HIGH',
+            description: 'Element not visible in time',
+            evidence: [],
+            relationToError: 'Direct cause',
+          },
+        ],
+        isTestCodeFixable: true,
+        recommendedApproach: 'Wait for element',
+        selectorsToUpdate: [],
+        confidence: 80,
+      };
+      const fixGenerationResponse = {
+        changes: [
+          {
+            file: 'test/specs/invite.org.trainer.ts',
+            line: 45,
+            oldCode: '$("[data-testid=invite-button]").click()',
+            newCode: '$("[data-testid=invite-button]").waitForDisplayed(); $("[data-testid=invite-button]").click()',
+            justification: 'Wait for displayed',
+            changeType: 'WAIT_ADDITION',
+          },
+        ],
+        confidence: 85,
+        summary: 'Add waitForDisplayed',
+        reasoning: 'WDIO element not visible',
+        evidence: [],
+        risks: [],
+      };
+      const reviewResponse = {
+        approved: true,
+        issues: [],
+        assessment: 'Fix looks good',
+        fixConfidence: 85,
+      };
+
+      let callCount = 0;
+      const capturedCalls: Array<{ systemPrompt: string; userContent: string | unknown[] }> = [];
+      mockOpenAIClient.generateWithCustomPrompt = jest
+        .fn()
+        .mockImplementation((params: { systemPrompt: string; userContent: string | unknown[] }) => {
+          capturedCalls.push({
+            systemPrompt: params.systemPrompt,
+            userContent: params.userContent,
+          });
+          callCount++;
+          switch (callCount) {
+            case 1:
+              return Promise.resolve(JSON.stringify(analysisResponse));
+            case 2:
+              return Promise.resolve(JSON.stringify(investigationResponse));
+            case 3:
+              return Promise.resolve(JSON.stringify(fixGenerationResponse));
+            case 4:
+              return Promise.resolve(JSON.stringify(reviewResponse));
+            default:
+              return Promise.resolve('{}');
+          }
+        });
+
+      const orchestrator = createOrchestrator(mockOpenAIClient);
+      const context = createAgentContext({
+        errorMessage: 'element ("[data-testid=invite-button]") still not visible after 10000 ms',
+        testFile: 'test/specs/orginvites/invite.org.trainer.ts',
+        testName: 'invite trainer flow',
+        framework: 'webdriverio',
+        sourceFileContent: 'await $("[data-testid=invite-button]").click();',
+      });
+
+      const result = await orchestrator.orchestrate(context);
+
+      expect(result.success).toBe(true);
+      expect(result.approach).toBe('agentic');
+
+      const getPromptText = (content: string | unknown[]): string => {
+        if (typeof content === 'string') return content;
+        const part = Array.isArray(content) && content[0] && typeof (content[0] as { text?: string }).text === 'string'
+          ? (content[0] as { text: string }).text
+          : '';
+        return part;
+      };
+
+      const analysisPrompt = getPromptText(capturedCalls[0]?.userContent ?? '');
+      const fixGenPrompt = getPromptText(capturedCalls[2]?.userContent ?? '');
+      expect(analysisPrompt).toContain('WebDriverIO');
+      expect(analysisPrompt).toContain('Test framework');
+      expect(fixGenPrompt).toContain('WebDriverIO');
+      expect(fixGenPrompt).toContain('Test framework');
+    });
+
+    it('should pass Cypress framework through pipeline and include it in agent prompts', async () => {
+      const analysisResponse = {
+        rootCauseCategory: 'SELECTOR_MISMATCH',
+        contributingFactors: [],
+        confidence: 85,
+        explanation: 'Selector changed',
+        selectors: ['[data-testid="btn"]'],
+        elements: [],
+        issueLocation: 'TEST_CODE',
+        patterns: {
+          hasTimeout: false,
+          hasVisibilityIssue: false,
+          hasNetworkCall: false,
+          hasStateAssertion: false,
+          hasDynamicContent: false,
+          hasResponsiveIssue: false,
+        },
+        suggestedApproach: 'Update selector',
+      };
+      const investigationResponse = {
+        findings: [],
+        isTestCodeFixable: true,
+        recommendedApproach: 'Update selector',
+        selectorsToUpdate: [{ current: '[data-testid="btn"]', reason: 'Changed', suggestedReplacement: '[data-testid="submit-btn"]' }],
+        confidence: 80,
+      };
+      const fixGenerationResponse = {
+        changes: [
+          {
+            file: 'cypress/e2e/login.cy.ts',
+            line: 8,
+            oldCode: 'cy.get("[data-testid=\\"btn\\"]")',
+            newCode: 'cy.get("[data-testid=\\"submit-btn\\"]")',
+            justification: 'Update selector',
+            changeType: 'SELECTOR_UPDATE',
+          },
+        ],
+        confidence: 85,
+        summary: 'Update selector',
+        reasoning: 'Selector changed',
+        evidence: [],
+        risks: [],
+      };
+      const reviewResponse = { approved: true, issues: [], assessment: 'Good', fixConfidence: 85 };
+
+      let callCount = 0;
+      const capturedCalls: Array<{ userContent: string | unknown[] }> = [];
+      mockOpenAIClient.generateWithCustomPrompt = jest
+        .fn()
+        .mockImplementation((params: { userContent: string | unknown[] }) => {
+          capturedCalls.push({ userContent: params.userContent });
+          callCount++;
+          switch (callCount) {
+            case 1:
+              return Promise.resolve(JSON.stringify(analysisResponse));
+            case 2:
+              return Promise.resolve(JSON.stringify(investigationResponse));
+            case 3:
+              return Promise.resolve(JSON.stringify(fixGenerationResponse));
+            case 4:
+              return Promise.resolve(JSON.stringify(reviewResponse));
+            default:
+              return Promise.resolve('{}');
+          }
+        });
+
+      const orchestrator = createOrchestrator(mockOpenAIClient);
+      const context = createAgentContext({
+        errorMessage: 'Timed out retrying: Expected to find element: [data-testid="btn"]',
+        testFile: 'cypress/e2e/login.cy.ts',
+        testName: 'should login',
+        framework: 'cypress',
+        sourceFileContent: 'cy.get("[data-testid=\\"btn\\"]").click();',
+      });
+
+      const result = await orchestrator.orchestrate(context);
+
+      expect(result.success).toBe(true);
+      const getPromptText = (content: string | unknown[]): string => {
+        if (typeof content === 'string') return content;
+        const part = Array.isArray(content) && content[0] && typeof (content[0] as { text?: string }).text === 'string'
+          ? (content[0] as { text: string }).text
+          : '';
+        return part;
+      };
+      expect(getPromptText(capturedCalls[0]?.userContent ?? '')).toContain('Cypress');
+      expect(getPromptText(capturedCalls[2]?.userContent ?? '')).toContain('Cypress');
+    });
   });
 });

@@ -176,6 +176,7 @@ export class SimplifiedRepairAgent {
               })),
             }
           : undefined,
+        framework: errorData?.framework,
       });
 
       // Run the orchestration

@@ -346,12 +346,14 @@ You MUST respond with a JSON object matching this schema:
 }`;
     }
     buildUserPrompt(input, context) {
+        const frameworkLabel = context.framework === 'webdriverio' ? 'WebDriverIO' : context.framework === 'cypress' ? 'Cypress' : 'unknown';
         const parts = [
             '## Error Analysis Request',
             '',
             '### Test Information',
             `- **Test File:** ${context.testFile}`,
             `- **Test Name:** ${context.testName}`,
+            `- **Test framework:** ${frameworkLabel}`,
             context.errorType ? `- **Error Type:** ${context.errorType}` : '',
             context.errorSelector
                 ? `- **Failed Selector:** ${context.errorSelector}`
@@ -582,6 +584,7 @@ function createAgentContext(params) {
         screenshots: params.screenshots,
         logs: params.logs,
         prDiff: params.prDiff,
+        framework: params.framework,
     };
 }
 //# sourceMappingURL=base-agent.js.map
@@ -1132,12 +1135,14 @@ You MUST respond with a JSON object matching this schema:
 - Test your understanding of the code before generating the fix.`;
     }
     buildUserPrompt(input, context) {
+        const frameworkLabel = context.framework === 'webdriverio' ? 'WebDriverIO' : context.framework === 'cypress' ? 'Cypress' : 'unknown';
         const parts = [
             '## Fix Generation Request',
             '',
             '### Test Information',
             `- **File:** ${context.testFile}`,
             `- **Test Name:** ${context.testName}`,
+            `- **Test framework:** ${frameworkLabel}`,
             '',
             '### Analysis Summary',
             `- **Root Cause:** ${input.analysis.rootCauseCategory}`,
@@ -1320,8 +1325,11 @@ You MUST respond with a JSON object matching this schema:
 }`;
     }
     buildUserPrompt(input, context) {
+        const frameworkLabel = context.framework === 'webdriverio' ? 'WebDriverIO' : context.framework === 'cypress' ? 'Cypress' : 'unknown';
         const parts = [
             '## Investigation Request',
+            '',
+            `**Test framework:** ${frameworkLabel}`,
             '',
             '### Error Analysis Results',
             `- **Root Cause Category:** ${input.analysis.rootCauseCategory}`,
@@ -3914,6 +3922,7 @@ class SimplifiedRepairAgent {
                         })),
                     }
                     : undefined,
+                framework: errorData?.framework,
             });
             const result = await this.orchestrator.orchestrate(agentContext, errorData);
             if (result.success && result.fix) {

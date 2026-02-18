@@ -60,6 +60,8 @@ export interface AgentContext {
       status: string;
     }>;
   };
+  /** Test framework: 'cypress' or 'webdriverio' (for sub-agent prompts) */
+  framework?: string;
   /** Source file content (if fetched) */
   sourceFileContent?: string;
   /** Related files content */
@@ -275,6 +277,8 @@ export function createAgentContext(params: {
   prDiff?: {
     files: Array<{ filename: string; patch?: string; status: string }>;
   };
+  /** Test framework: 'cypress' or 'webdriverio' */
+  framework?: string;
 }): AgentContext {
   return {
     errorMessage: params.errorMessage,
@@ -286,5 +290,6 @@ export function createAgentContext(params: {
     screenshots: params.screenshots,
     logs: params.logs,
     prDiff: params.prDiff,
+    framework: params.framework,
   };
 }

@@ -78,12 +78,14 @@ You MUST respond with a JSON object matching this schema:
 }`;
     }
     buildUserPrompt(input, context) {
+        const frameworkLabel = context.framework === 'webdriverio' ? 'WebDriverIO' : context.framework === 'cypress' ? 'Cypress' : 'unknown';
         const parts = [
             '## Error Analysis Request',
             '',
             '### Test Information',
             `- **Test File:** ${context.testFile}`,
             `- **Test Name:** ${context.testName}`,
+            `- **Test framework:** ${frameworkLabel}`,
             context.errorType ? `- **Error Type:** ${context.errorType}` : '',
             context.errorSelector
                 ? `- **Failed Selector:** ${context.errorSelector}`

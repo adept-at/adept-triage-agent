@@ -145,6 +145,7 @@ function createAgentContext(params) {
         screenshots: params.screenshots,
         logs: params.logs,
         prDiff: params.prDiff,
+        framework: params.framework,
     };
 }
 //# sourceMappingURL=base-agent.js.map

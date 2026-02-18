@@ -113,6 +113,7 @@ class SimplifiedRepairAgent {
                         })),
                     }
                     : undefined,
+                framework: errorData?.framework,
             });
             const result = await this.orchestrator.orchestrate(agentContext, errorData);
             if (result.success && result.fix) {

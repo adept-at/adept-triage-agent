@@ -26,6 +26,7 @@ export interface AgentContext {
             status: string;
         }>;
     };
+    framework?: string;
     sourceFileContent?: string;
     relatedFiles?: Map<string, string>;
 }
@@ -68,5 +69,6 @@ export declare function createAgentContext(params: {
             status: string;
         }>;
     };
+    framework?: string;
 }): AgentContext;
 //# sourceMappingURL=base-agent.d.ts.map
