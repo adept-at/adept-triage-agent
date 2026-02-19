@@ -214,8 +214,11 @@ export function extractErrorFromLogs(logs: string): ErrorData | null {
         errorType = 'CypressServerVerificationError';
       } else if (match[0].includes('Please start this server')) {
         errorType = 'CypressServerNotRunning';
+      } else if (/Error in ["']/.test(match[0]) || /FAILED in (?:MultiRemote|chrome|firefox|safari)/.test(match[0])) {
+        // WDIO "Error in "test"" or "FAILED in MultiRemote" - underlying error is typically Error
+        errorType = 'Error';
       } else {
-        errorType = match[0].split(':')[0] || 'Error';
+        errorType = match[0].split(':')[0].trim() || 'Error';
       }
       
       // Log what we're extracting for debugging

@@ -186,8 +186,11 @@ function extractErrorFromLogs(logs) {
             else if (match[0].includes('Please start this server')) {
                 errorType = 'CypressServerNotRunning';
             }
+            else if (/Error in ["']/.test(match[0]) || /FAILED in (?:MultiRemote|chrome|firefox|safari)/.test(match[0])) {
+                errorType = 'Error';
+            }
             else {
-                errorType = match[0].split(':')[0] || 'Error';
+                errorType = match[0].split(':')[0].trim() || 'Error';
             }
             core.debug(`Extracted error type: ${errorType}`);
             core.debug(`Extracted test name: ${testName || 'unknown'}`);
