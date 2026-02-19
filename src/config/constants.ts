@@ -16,6 +16,8 @@ export const LOG_LIMITS = {
   SERVER_ERROR_CONTEXT_BEFORE: 1000,
   /** Extended context for server verification errors */
   SERVER_ERROR_CONTEXT_AFTER: 2000,
+  /** Hard cap for combined log payload sent to the model (~50K tokens) */
+  PROMPT_MAX_LOG_SIZE: 200_000,
 } as const;
 
 /** Confidence calculation constants */

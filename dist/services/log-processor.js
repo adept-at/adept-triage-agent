@@ -105,7 +105,8 @@ async function processWorkflowLogs(octokit, artifactFetcher, inputs, _repoDetail
         core.warning(`Failed to download job logs: ${error}`);
     }
     const [screenshots, artifactLogs, prDiff] = await fetchArtifactsParallel(artifactFetcher, runId, failedJob.name, context.repo, inputs);
-    const combinedContext = buildErrorContext(failedJob, extractedError, artifactLogs, fullLogs, inputs);
+    const cappedArtifactLogs = capArtifactLogs(artifactLogs);
+    const combinedContext = buildErrorContext(failedJob, extractedError, cappedArtifactLogs, fullLogs, inputs);
     const hasLogs = !!(fullLogs && fullLogs.length > 0);
     const hasScreenshots = !!(screenshots && screenshots.length > 0);
     const hasArtifactLogs = !!(artifactLogs && artifactLogs.length > 0);

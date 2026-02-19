@@ -1,6 +1,7 @@
 import OpenAI from 'openai';
 import * as core from '@actions/core';
 import { OpenAIResponse, FewShotExample, ErrorData, PRDiff } from './types';
+import { LOG_LIMITS } from './config/constants';
 
 export class OpenAIClient {
   private openai: OpenAI;
@@ -379,13 +380,28 @@ ${errorData.context ? `- Additional Context: ${errorData.context}` : ''}
 ${errorData.prDiff ? this.formatPRDiffSection(errorData.prDiff) : ''}
 
 Full Logs and Context:
-${errorData.logs ? errorData.logs.join('\n\n') : 'No logs available'}
+${this.capLogsForPrompt(errorData.logs)}
 
 ${errorData.screenshots?.length ? `\nScreenshots Available: ${errorData.screenshots.length} screenshot(s) captured` : ''}
 
 Based on ALL the information provided (especially the PR changes if available), determine if this is a TEST_ISSUE or PRODUCT_ISSUE and explain your reasoning. Look carefully through the logs to find the actual error message and stack trace.`;
 
     return prompt;
+  }
+
+  private capLogsForPrompt(logs: string[] | undefined): string {
+    if (!logs || logs.length === 0) return 'No logs available';
+    const joined = logs.join('\n\n');
+    const max = LOG_LIMITS.PROMPT_MAX_LOG_SIZE;
+    if (joined.length <= max) return joined;
+
+    core.warning(
+      `Log payload (${joined.length} chars) exceeds PROMPT_MAX_LOG_SIZE (${max}). Truncating to tail.`
+    );
+    return (
+      joined.substring(joined.length - max) +
+      `\n\n[Logs truncated to last ${max} characters of ${joined.length} total]`
+    );
   }
 
   private formatPRDiffSection(prDiff: PRDiff): string {

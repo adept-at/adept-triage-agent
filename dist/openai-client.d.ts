@@ -10,6 +10,7 @@ export declare class OpenAIClient {
     private buildUserContent;
     private getSystemPrompt;
     private buildPrompt;
+    private capLogsForPrompt;
     private formatPRDiffSection;
     private parseResponse;
     private validateResponse;

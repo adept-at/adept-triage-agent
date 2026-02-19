@@ -5,6 +5,7 @@ export declare const LOG_LIMITS: {
     readonly ERROR_CONTEXT_AFTER: 1500;
     readonly SERVER_ERROR_CONTEXT_BEFORE: 1000;
     readonly SERVER_ERROR_CONTEXT_AFTER: 2000;
+    readonly PROMPT_MAX_LOG_SIZE: 200000;
 };
 export declare const CONFIDENCE: {
     readonly BASE: 70;

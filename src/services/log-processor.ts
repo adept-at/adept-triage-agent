@@ -151,11 +151,12 @@ export async function processWorkflowLogs(
     inputs
   );
 
-  // Build combined context
+  // Build combined context (cap artifact logs to prevent context-window overflow)
+  const cappedArtifactLogs = capArtifactLogs(artifactLogs);
   const combinedContext = buildErrorContext(
     failedJob,
     extractedError,
-    artifactLogs,
+    cappedArtifactLogs,
     fullLogs,
     inputs
   );

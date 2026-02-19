@@ -2414,6 +2414,7 @@ exports.LOG_LIMITS = {
     ERROR_CONTEXT_AFTER: 1500,
     SERVER_ERROR_CONTEXT_BEFORE: 1000,
     SERVER_ERROR_CONTEXT_AFTER: 2000,
+    PROMPT_MAX_LOG_SIZE: 200_000,
 };
 exports.CONFIDENCE = {
     BASE: 70,
@@ -2935,6 +2936,7 @@ Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.OpenAIClient = void 0;
 const openai_1 = __importDefault(__nccwpck_require__(2583));
 const core = __importStar(__nccwpck_require__(7484));
+const constants_1 = __nccwpck_require__(8361);
 class OpenAIClient {
     openai;
     maxRetries = 3;
@@ -3265,12 +3267,23 @@ ${errorData.context ? `- Additional Context: ${errorData.context}` : ''}
 ${errorData.prDiff ? this.formatPRDiffSection(errorData.prDiff) : ''}
 
 Full Logs and Context:
-${errorData.logs ? errorData.logs.join('\n\n') : 'No logs available'}
+${this.capLogsForPrompt(errorData.logs)}
 
 ${errorData.screenshots?.length ? `\nScreenshots Available: ${errorData.screenshots.length} screenshot(s) captured` : ''}
 
 Based on ALL the information provided (especially the PR changes if available), determine if this is a TEST_ISSUE or PRODUCT_ISSUE and explain your reasoning. Look carefully through the logs to find the actual error message and stack trace.`;
         return prompt;
+    }
+    capLogsForPrompt(logs) {
+        if (!logs || logs.length === 0)
+            return 'No logs available';
+        const joined = logs.join('\n\n');
+        const max = constants_1.LOG_LIMITS.PROMPT_MAX_LOG_SIZE;
+        if (joined.length <= max)
+            return joined;
+        core.warning(`Log payload (${joined.length} chars) exceeds PROMPT_MAX_LOG_SIZE (${max}). Truncating to tail.`);
+        return (joined.substring(joined.length - max) +
+            `\n\n[Logs truncated to last ${max} characters of ${joined.length} total]`);
     }
     formatPRDiffSection(prDiff) {
         let section = `\nPR Changes Analysis:
@@ -4410,7 +4423,8 @@ async function processWorkflowLogs(octokit, artifactFetcher, inputs, _repoDetail
         core.warning(`Failed to download job logs: ${error}`);
     }
     const [screenshots, artifactLogs, prDiff] = await fetchArtifactsParallel(artifactFetcher, runId, failedJob.name, context.repo, inputs);
-    const combinedContext = buildErrorContext(failedJob, extractedError, artifactLogs, fullLogs, inputs);
+    const cappedArtifactLogs = capArtifactLogs(artifactLogs);
+    const combinedContext = buildErrorContext(failedJob, extractedError, cappedArtifactLogs, fullLogs, inputs);
     const hasLogs = !!(fullLogs && fullLogs.length > 0);
     const hasScreenshots = !!(screenshots && screenshots.length > 0);
     const hasArtifactLogs = !!(artifactLogs && artifactLogs.length > 0);
