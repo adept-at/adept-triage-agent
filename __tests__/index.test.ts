@@ -892,7 +892,7 @@ describe('GitHub Action', () => {
 
       await run();
 
-      expect(mockCore.setFailed).toHaveBeenCalledWith('An unknown error occurred');
+      expect(mockCore.setFailed).toHaveBeenCalledWith('Action failed: An unknown error occurred');
     });
   });
 

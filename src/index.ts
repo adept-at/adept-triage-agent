@@ -76,6 +76,18 @@ async function run(): Promise<void> {
         core.debug(`Error checking workflow status: ${error}`);
       }
 
+      core.setOutput('verdict', 'ERROR');
+      core.setOutput('confidence', '0');
+      core.setOutput('reasoning', 'No error data found to analyze');
+      core.setOutput('summary', 'Triage failed: no error data found');
+      core.setOutput('triage_json', JSON.stringify({
+        verdict: 'ERROR',
+        confidence: 0,
+        reasoning: 'No error data found to analyze',
+        summary: 'Triage failed: no error data found',
+        indicators: [],
+        metadata: { analyzedAt: new Date().toISOString(), error: true },
+      }));
       core.setFailed('No error data found to analyze');
       return;
     }
@@ -125,11 +137,20 @@ async function run(): Promise<void> {
     // Set successful outputs
     setSuccessOutput(result, errorData, autoFixResult);
   } catch (error) {
-    if (error instanceof Error) {
-      core.setFailed(`Action failed: ${error.message}`);
-    } else {
-      core.setFailed('An unknown error occurred');
-    }
+    const errorMsg = error instanceof Error ? error.message : 'An unknown error occurred';
+    core.setOutput('verdict', 'ERROR');
+    core.setOutput('confidence', '0');
+    core.setOutput('reasoning', errorMsg);
+    core.setOutput('summary', `Triage failed: ${errorMsg}`);
+    core.setOutput('triage_json', JSON.stringify({
+      verdict: 'ERROR',
+      confidence: 0,
+      reasoning: errorMsg,
+      summary: `Triage failed: ${errorMsg}`,
+      indicators: [],
+      metadata: { analyzedAt: new Date().toISOString(), error: true },
+    }));
+    core.setFailed(`Action failed: ${errorMsg}`);
   }
 }
 

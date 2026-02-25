@@ -339,7 +339,7 @@ describe('OpenAIClient', () => {
           max_output_tokens: 16384,
           text: { format: { type: 'json_object' } },
           instructions: 'You are an expert at fixing tests.',
-          input: [{ role: 'user', content: 'Fix this test failure.' }],
+          input: [{ role: 'user', content: 'Fix this test failure.\n\nRespond with a JSON object.' }],
         })
       );
 

@@ -384,7 +384,9 @@ ${this.capLogsForPrompt(errorData.logs)}
 
 ${errorData.screenshots?.length ? `\nScreenshots Available: ${errorData.screenshots.length} screenshot(s) captured` : ''}
 
-Based on ALL the information provided (especially the PR changes if available), determine if this is a TEST_ISSUE or PRODUCT_ISSUE and explain your reasoning. Look carefully through the logs to find the actual error message and stack trace.`;
+Based on ALL the information provided (especially the PR changes if available), determine if this is a TEST_ISSUE or PRODUCT_ISSUE and explain your reasoning. Look carefully through the logs to find the actual error message and stack trace.
+
+Respond with your analysis as a JSON object.`;
 
     return prompt;
   }
@@ -537,6 +539,28 @@ FOR PRODUCT_ISSUES: You MUST analyze the diff patches above to:
     }
   }
 
+  /**
+   * Ensures the user content contains the word "json" — required by the
+   * Responses API when using text.format = json_object. The instructions
+   * field is NOT checked by the API, only input messages.
+   */
+  private ensureJsonMention(
+    content: string | Array<OpenAI.Chat.Completions.ChatCompletionContentPartText | OpenAI.Chat.Completions.ChatCompletionContentPartImage>
+  ): string | Array<OpenAI.Chat.Completions.ChatCompletionContentPartText | OpenAI.Chat.Completions.ChatCompletionContentPartImage> {
+    const hasJson = (text: string) => /json/i.test(text);
+
+    if (typeof content === 'string') {
+      return hasJson(content) ? content : content + '\n\nRespond with a JSON object.';
+    }
+
+    const alreadyMentions = content.some(
+      (part) => part.type === 'text' && hasJson(part.text)
+    );
+    if (alreadyMentions) return content;
+
+    return [...content, { type: 'text' as const, text: 'Respond with a JSON object.' }];
+  }
+
   private delay(ms: number): Promise<void> {
     return new Promise(resolve => setTimeout(resolve, ms));
   }
@@ -558,7 +582,10 @@ FOR PRODUCT_ISSUES: You MUST analyze the diff patches above to:
     temperature?: number;
   }): Promise<string> {
     const model = 'gpt-5.2-codex';
-    const input = this.convertToResponsesInput(params.userContent);
+    const userContent = params.responseAsJson
+      ? this.ensureJsonMention(params.userContent)
+      : params.userContent;
+    const input = this.convertToResponsesInput(userContent);
 
     const response = await this.openai.responses.create({
       model,

@@ -14,6 +14,7 @@ export declare class OpenAIClient {
     private formatPRDiffSection;
     private parseResponse;
     private validateResponse;
+    private ensureJsonMention;
     private delay;
     generateWithCustomPrompt(params: {
         systemPrompt: string;

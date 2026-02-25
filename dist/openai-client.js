@@ -374,7 +374,9 @@ ${this.capLogsForPrompt(errorData.logs)}
 
 ${errorData.screenshots?.length ? `\nScreenshots Available: ${errorData.screenshots.length} screenshot(s) captured` : ''}
 
-Based on ALL the information provided (especially the PR changes if available), determine if this is a TEST_ISSUE or PRODUCT_ISSUE and explain your reasoning. Look carefully through the logs to find the actual error message and stack trace.`;
+Based on ALL the information provided (especially the PR changes if available), determine if this is a TEST_ISSUE or PRODUCT_ISSUE and explain your reasoning. Look carefully through the logs to find the actual error message and stack trace.
+
+Respond with your analysis as a JSON object.`;
         return prompt;
     }
     capLogsForPrompt(logs) {
@@ -484,12 +486,25 @@ FOR PRODUCT_ISSUES: You MUST analyze the diff patches above to:
             resp.indicators = [];
         }
     }
+    ensureJsonMention(content) {
+        const hasJson = (text) => /json/i.test(text);
+        if (typeof content === 'string') {
+            return hasJson(content) ? content : content + '\n\nRespond with a JSON object.';
+        }
+        const alreadyMentions = content.some((part) => part.type === 'text' && hasJson(part.text));
+        if (alreadyMentions)
+            return content;
+        return [...content, { type: 'text', text: 'Respond with a JSON object.' }];
+    }
     delay(ms) {
         return new Promise(resolve => setTimeout(resolve, ms));
     }
     async generateWithCustomPrompt(params) {
         const model = 'gpt-5.2-codex';
-        const input = this.convertToResponsesInput(params.userContent);
+        const userContent = params.responseAsJson
+            ? this.ensureJsonMention(params.userContent)
+            : params.userContent;
+        const input = this.convertToResponsesInput(userContent);
         const response = await this.openai.responses.create({
             model,
             instructions: params.systemPrompt,
