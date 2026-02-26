@@ -238,48 +238,18 @@ jobs:
             
       - name: Send Slack notification
         if: always()
-        env:
-          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
-        run: |
-          VERDICT="${{ steps.parse.outputs.verdict }}"
-          CONFIDENCE="${{ steps.parse.outputs.confidence }}"
-          SUMMARY="${{ steps.parse.outputs.summary }}"
-          SPEC="${{ github.event.client_payload.spec }}"
-          ACTOR="${{ github.event.client_payload.actor }}"
-          WORKFLOW_URL="https://github.com/${{ github.repository }}/actions/runs/${{ github.event.client_payload.workflow_run_id }}"
-          
-          # Determine notification style based on verdict
-          if [ "$VERDICT" = "PRODUCT_ISSUE" ]; then
-            COLOR="danger"
-            EMOJI="🚨"
-            PRETEXT="<!channel> Product bug detected in tests!"
-          elif [ "$VERDICT" = "TEST_ISSUE" ]; then
-            COLOR="warning"
-            EMOJI="🧪"
-            PRETEXT="Test flakiness detected"
-          else
-            COLOR="warning"
-            EMOJI="❓"
-            PRETEXT="Test failure analyzed"
-          fi
-          
-          # Send to Slack
-          curl -X POST -H 'Content-type: application/json' --data "{
-            \"username\": \"AI Test Triage\",
-            \"icon_emoji\": \":robot_face:\",
-            \"attachments\": [{
-              \"color\": \"$COLOR\",
-              \"pretext\": \"$PRETEXT\",
-              \"title\": \"$EMOJI Test Failure: $SPEC\",
-              \"title_link\": \"$WORKFLOW_URL\",
-              \"fields\": [
-                {\"title\": \"Verdict\", \"value\": \"$VERDICT\", \"short\": true},
-                {\"title\": \"Confidence\", \"value\": \"$CONFIDENCE%\", \"short\": true},
-                {\"title\": \"Triggered by\", \"value\": \"$ACTOR\", \"short\": true},
-                {\"title\": \"Branch\", \"value\": \"${{ github.event.client_payload.branch }}\", \"short\": true}
-              ],
-              \"text\": \"$SUMMARY\",
-              \"footer\": \"AI Triage Agent\",
-              \"ts\": $(date +%s)
-            }]
-          }" $SLACK_WEBHOOK_URL 
+        uses: adept-at/adept-common/.github/actions/triage-slack-notify@main
+        with:
+          slack-webhook-url: ${{ secrets.SLACK_WEBHOOK_URL }}
+          verdict: ${{ steps.triage.outputs.verdict }}
+          confidence: ${{ steps.triage.outputs.confidence }}
+          summary: ${{ steps.triage.outputs.summary }}
+          job-name: ${{ github.event.client_payload.job_name }}
+          workflow-run-id: ${{ github.event.client_payload.workflow_run_id }}
+          spec: ${{ github.event.client_payload.spec }}
+          branch: ${{ github.event.client_payload.branch }}
+          commit-sha: ${{ github.event.client_payload.commit_sha }}
+          pr-number: ${{ github.event.client_payload.pr_number }}
+          has-fix-recommendation: ${{ steps.triage.outputs.has_fix_recommendation }}
+          fix-confidence: ${{ steps.triage.outputs.fix_confidence }}
+          fix-summary: ${{ steps.triage.outputs.fix_summary }}
