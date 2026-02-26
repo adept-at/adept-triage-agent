@@ -61,20 +61,11 @@ jobs:
       
       - name: Notify Slack
         if: always()
-        uses: slackapi/slack-github-action@v1.24.0
+        uses: adept-at/adept-common/.github/actions/triage-slack-notify@main
         with:
-          webhook: ${{ secrets.SLACK_WEBHOOK_URL }}
-          webhook-type: incoming-webhook
-          payload: |
-            {
-              "text": "Workflow Analysis Complete",
-              "blocks": [
-                {
-                  "type": "section",
-                  "text": {
-                    "type": "mrkdwn",
-                    "text": "*Workflow:* ${{ github.event.workflow_run.name }}\n*Verdict:* ${{ steps.triage.outputs.verdict }}\n*Confidence:* ${{ steps.triage.outputs.confidence }}%\n*Summary:* ${{ steps.triage.outputs.summary }}"
-                  }
-                }
-              ]
-            } 
+          slack-webhook-url: ${{ secrets.SLACK_WEBHOOK_URL }}
+          verdict: ${{ steps.triage.outputs.verdict }}
+          confidence: ${{ steps.triage.outputs.confidence }}
+          summary: ${{ steps.triage.outputs.summary }}
+          job-name: ${{ github.event.workflow_run.name }}
+          workflow-run-id: ${{ github.event.workflow_run.id }}
