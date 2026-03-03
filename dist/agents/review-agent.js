@@ -126,21 +126,6 @@ You MUST respond with a JSON object matching this schema:
             return null;
         }
     }
-    validateOldCodeExists(changes, fileContent) {
-        const issues = [];
-        for (let i = 0; i < changes.length; i++) {
-            const change = changes[i];
-            if (!fileContent.includes(change.oldCode)) {
-                issues.push({
-                    severity: 'CRITICAL',
-                    changeIndex: i,
-                    description: `oldCode not found in file. The code to replace doesn't exist in ${change.file}`,
-                    suggestion: 'Verify the exact code content including whitespace and indentation',
-                });
-            }
-        }
-        return issues;
-    }
 }
 exports.ReviewAgent = ReviewAgent;
 //# sourceMappingURL=review-agent.js.map

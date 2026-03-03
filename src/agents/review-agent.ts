@@ -12,7 +12,7 @@ import {
 import { OpenAIClient } from '../openai-client';
 import { AnalysisOutput } from './analysis-agent';
 import { CodeReadingOutput } from './code-reading-agent';
-import { FixGenerationOutput, CodeChange } from './fix-generation-agent';
+import { FixGenerationOutput } from './fix-generation-agent';
 
 /**
  * An issue found during review
@@ -251,31 +251,5 @@ You MUST respond with a JSON object matching this schema:
       this.log(`Failed to parse response: ${error}`, 'warning');
       return null;
     }
-  }
-
-  /**
-   * Perform a quick validation that oldCode exists in the file
-   * This is done locally without an API call
-   */
-  validateOldCodeExists(
-    changes: CodeChange[],
-    fileContent: string
-  ): ReviewIssue[] {
-    const issues: ReviewIssue[] = [];
-
-    for (let i = 0; i < changes.length; i++) {
-      const change = changes[i];
-      if (!fileContent.includes(change.oldCode)) {
-        issues.push({
-          severity: 'CRITICAL',
-          changeIndex: i,
-          description: `oldCode not found in file. The code to replace doesn't exist in ${change.file}`,
-          suggestion:
-            'Verify the exact code content including whitespace and indentation',
-        });
-      }
-    }
-
-    return issues;
   }
 }

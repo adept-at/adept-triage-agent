@@ -1,21 +1,20 @@
 import OpenAI from 'openai';
 import * as core from '@actions/core';
 import { OpenAIResponse, FewShotExample, ErrorData, PRDiff } from './types';
-import { LOG_LIMITS } from './config/constants';
+import { LOG_LIMITS, OPENAI, ARTIFACTS } from './config/constants';
 
 export class OpenAIClient {
   private openai: OpenAI;
-  private maxRetries: number = 3;
-  private retryDelay: number = 1000;
+  private maxRetries: number = OPENAI.MAX_RETRIES;
+  private retryDelay: number = OPENAI.RETRY_DELAY_MS;
 
   constructor(apiKey: string) {
     this.openai = new OpenAI({ apiKey });
   }
 
   async analyze(errorData: ErrorData, examples: FewShotExample[]): Promise<OpenAIResponse> {
-    // Use GPT-5.2 Codex via Responses API (most advanced agentic coding model)
-    const model = 'gpt-5.2-codex';
-    core.info('🧠 Using GPT-5.2-codex model for analysis (Responses API)');
+    const model = OPENAI.MODEL;
+    core.info(`🧠 Using ${model} model for analysis (Responses API)`);
     
     const systemPrompt = this.getSystemPrompt();
     const userContent = this.buildUserContent(errorData, examples);
@@ -76,7 +75,7 @@ export class OpenAIClient {
           model,
           instructions: systemPrompt,
           input,
-          max_output_tokens: 16384,
+          max_output_tokens: OPENAI.MAX_COMPLETION_TOKENS,
           text: { format: { type: 'json_object' as const } },
         });
 
@@ -415,10 +414,8 @@ Respond with your analysis as a JSON object.`;
 Changed Files Summary:
 `;
 
-    // Prioritize files related to the test failure
-    // Show up to 30 files but with limited patch context
-    const maxFiles = 30;
-    const maxPatchLines = 20; // Reduced from 30 to save tokens
+    const maxFiles = ARTIFACTS.MAX_PR_DIFF_FILES;
+    const maxPatchLines = ARTIFACTS.MAX_PATCH_LINES;
     
     const relevantFiles = prDiff.files.slice(0, maxFiles);
     
@@ -571,7 +568,7 @@ FOR PRODUCT_ISSUES: You MUST analyze the diff patches above to:
    * by the repair agent to request a structured JSON repair plan, without
    * going through the triage-specific prompt path.
    *
-   * Uses the Responses API with gpt-5.2-codex model.
+   * Uses the Responses API with the model configured in OPENAI.MODEL.
    * Note: temperature parameter is accepted for backward compatibility but
    * is not supported by Codex models and will be ignored.
    */
@@ -581,7 +578,7 @@ FOR PRODUCT_ISSUES: You MUST analyze the diff patches above to:
     responseAsJson?: boolean;
     temperature?: number;
   }): Promise<string> {
-    const model = 'gpt-5.2-codex';
+    const model = OPENAI.MODEL;
     const userContent = params.responseAsJson
       ? this.ensureJsonMention(params.userContent)
       : params.userContent;
@@ -591,7 +588,7 @@ FOR PRODUCT_ISSUES: You MUST analyze the diff patches above to:
       model,
       instructions: params.systemPrompt,
       input,
-      max_output_tokens: 16384,
+      max_output_tokens: OPENAI.MAX_COMPLETION_TOKENS,
       text: params.responseAsJson ? { format: { type: 'json_object' as const } } : undefined,
     });
 

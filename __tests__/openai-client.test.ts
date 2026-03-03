@@ -1,5 +1,6 @@
 import { OpenAIClient } from '../src/openai-client';
 import { ErrorData, FewShotExample } from '../src/types';
+import { OPENAI } from '../src/config/constants';
 import OpenAI from 'openai';
 
 // Mock OpenAI
@@ -68,8 +69,8 @@ describe('OpenAIClient', () => {
 
       expect(mockCreate).toHaveBeenCalledWith(
         expect.objectContaining({
-          model: 'gpt-5.2-codex',
-          max_output_tokens: 16384,
+          model: OPENAI.MODEL,
+          max_output_tokens: OPENAI.MAX_COMPLETION_TOKENS,
           text: { format: { type: 'json_object' } },
           instructions: expect.any(String),
           input: expect.any(Array),
@@ -77,7 +78,7 @@ describe('OpenAIClient', () => {
       );
     });
 
-    it('should use GPT-5.2-codex with vision when screenshots are provided', async () => {
+    it('should use configured model with vision when screenshots are provided', async () => {
       const errorDataWithScreenshots: ErrorData = {
         ...mockErrorData,
         screenshots: [{
@@ -102,8 +103,8 @@ describe('OpenAIClient', () => {
       expect(result.verdict).toBe('PRODUCT_ISSUE');
       expect(mockCreate).toHaveBeenCalledWith(
         expect.objectContaining({
-          model: 'gpt-5.2-codex',
-          max_output_tokens: 16384,
+          model: OPENAI.MODEL,
+          max_output_tokens: OPENAI.MAX_COMPLETION_TOKENS,
           text: { format: { type: 'json_object' } },
         })
       );
@@ -335,8 +336,8 @@ describe('OpenAIClient', () => {
 
       expect(mockCreate).toHaveBeenCalledWith(
         expect.objectContaining({
-          model: 'gpt-5.2-codex',
-          max_output_tokens: 16384,
+          model: OPENAI.MODEL,
+          max_output_tokens: OPENAI.MAX_COMPLETION_TOKENS,
           text: { format: { type: 'json_object' } },
           instructions: 'You are an expert at fixing tests.',
           input: [{ role: 'user', content: 'Fix this test failure.\n\nRespond with a JSON object.' }],
@@ -363,10 +364,9 @@ describe('OpenAIClient', () => {
         temperature: 0.8,
       });
 
-      // Temperature is not passed to Codex models (not supported)
       expect(mockCreate).toHaveBeenCalledWith(
         expect.objectContaining({
-          model: 'gpt-5.2-codex',
+          model: OPENAI.MODEL,
         })
       );
       // Verify temperature is NOT in the request

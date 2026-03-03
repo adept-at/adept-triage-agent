@@ -2,7 +2,7 @@ import { BaseAgent, AgentContext, AgentResult, AgentConfig } from './base-agent'
 import { OpenAIClient } from '../openai-client';
 import { AnalysisOutput } from './analysis-agent';
 import { CodeReadingOutput } from './code-reading-agent';
-import { FixGenerationOutput, CodeChange } from './fix-generation-agent';
+import { FixGenerationOutput } from './fix-generation-agent';
 export interface ReviewIssue {
     severity: 'CRITICAL' | 'WARNING' | 'SUGGESTION';
     changeIndex: number;
@@ -27,6 +27,5 @@ export declare class ReviewAgent extends BaseAgent<ReviewInput, ReviewOutput> {
     protected getSystemPrompt(): string;
     protected buildUserPrompt(input: ReviewInput, context: AgentContext): string;
     protected parseResponse(response: string): ReviewOutput | null;
-    validateOldCodeExists(changes: CodeChange[], fileContent: string): ReviewIssue[];
 }
 //# sourceMappingURL=review-agent.d.ts.map

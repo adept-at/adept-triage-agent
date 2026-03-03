@@ -5,8 +5,7 @@ import { CodeReadingOutput } from './code-reading-agent';
 import { InvestigationOutput } from './investigation-agent';
 import { FixGenerationOutput } from './fix-generation-agent';
 import { ReviewOutput } from './review-agent';
-import { FixRecommendation, ErrorData } from '../types';
-import { Octokit } from '@octokit/rest';
+import { FixRecommendation, ErrorData, SourceFetchContext } from '../types';
 export interface OrchestratorConfig {
     maxIterations: number;
     totalTimeoutMs: number;
@@ -15,12 +14,6 @@ export interface OrchestratorConfig {
     fallbackToSingleShot: boolean;
 }
 export declare const DEFAULT_ORCHESTRATOR_CONFIG: OrchestratorConfig;
-export interface SourceFetchContext {
-    octokit: Octokit;
-    owner: string;
-    repo: string;
-    branch: string;
-}
 export interface OrchestrationResult {
     success: boolean;
     fix?: FixRecommendation;

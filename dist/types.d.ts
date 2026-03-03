@@ -1,4 +1,25 @@
+import { Octokit } from '@octokit/rest';
 export type Verdict = 'TEST_ISSUE' | 'PRODUCT_ISSUE';
+export interface SourceFetchContext {
+    octokit: Octokit;
+    owner: string;
+    repo: string;
+    branch: string;
+}
+export interface AIRecommendation {
+    confidence: number;
+    reasoning: string;
+    changes: AIChange[];
+    evidence: string[];
+    rootCause: string;
+}
+export interface AIChange {
+    file: string;
+    line?: number;
+    oldCode?: string;
+    newCode?: string;
+    justification: string;
+}
 export interface ErrorData {
     message: string;
     stackTrace?: string;
@@ -43,11 +64,7 @@ export interface AnalysisResult {
     indicators?: string[];
     suggestedSourceLocations?: SourceLocation[];
     evidence?: string[];
-    suggestedAction?: string;
     category?: string;
-    affectedTests?: string[];
-    patterns?: Record<string, unknown>;
-    repairContext?: RepairContext;
     fixRecommendation?: FixRecommendation;
 }
 export interface FixRecommendation {

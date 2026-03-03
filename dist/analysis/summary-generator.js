@@ -2,13 +2,14 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.generateAnalysisSummary = generateAnalysisSummary;
 exports.generateFixSummary = generateFixSummary;
-exports.createBriefSummary = createBriefSummary;
-exports.formatVerdict = formatVerdict;
 const constants_1 = require("../config/constants");
 const slack_formatter_1 = require("../utils/slack-formatter");
 function generateAnalysisSummary(response, errorData) {
     const verdict = response.verdict === 'TEST_ISSUE' ? '🧪 Test Issue' : '🐛 Product Issue';
-    const reasoning = response.reasoning.split(/[.!?]/)[0].trim();
+    const sentenceEnd = response.reasoning.match(/^(.+?[.!?])(?:\s+[A-Z]|\s*$)/s);
+    const reasoning = sentenceEnd
+        ? sentenceEnd[1].trim()
+        : response.reasoning.split(/\n/)[0].trim();
     let summary = `${verdict}: ${reasoning}`;
     const contexts = [];
     if (errorData.testName) {
@@ -71,11 +72,5 @@ function generateFixSummary(recommendation, context, includeCodeBlocks = false) 
     summary += `---\n`;
     summary += `*This is an automated fix recommendation. Please review before applying.*\n`;
     return (0, slack_formatter_1.formatSummaryForSlack)(summary, includeCodeBlocks);
-}
-function createBriefSummary(verdict, confidence, fullSummary, testName) {
-    return (0, slack_formatter_1.createBriefSummary)(verdict, confidence, fullSummary, testName);
-}
-function formatVerdict(verdict) {
-    return verdict === 'TEST_ISSUE' ? '🧪 Test Issue' : '🐛 Product Issue';
 }
 //# sourceMappingURL=summary-generator.js.map

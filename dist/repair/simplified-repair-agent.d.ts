@@ -1,14 +1,6 @@
-import { Octokit } from '@octokit/rest';
 import { OpenAIClient } from '../openai-client';
-import { RepairContext, ErrorData } from '../types';
-import { FixRecommendation } from '../types';
+import { RepairContext, ErrorData, FixRecommendation, SourceFetchContext } from '../types';
 import { OrchestratorConfig } from '../agents';
-export interface SourceFetchContext {
-    octokit: Octokit;
-    owner: string;
-    repo: string;
-    branch?: string;
-}
 export interface RepairAgentConfig {
     enableAgenticRepair?: boolean;
     orchestratorConfig?: Partial<OrchestratorConfig>;

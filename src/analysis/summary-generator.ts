@@ -4,25 +4,8 @@
  */
 
 import { FORMATTING } from '../config/constants';
-import { ErrorData, OpenAIResponse, RepairContext, Verdict } from '../types';
-import { truncateForSlack, formatSummaryForSlack, createBriefSummary as createBriefSummaryFromSlack } from '../utils/slack-formatter';
-
-// Internal type for AI recommendation structure
-interface AIRecommendation {
-  confidence: number;
-  reasoning: string;
-  changes: AIChange[];
-  evidence: string[];
-  rootCause: string;
-}
-
-interface AIChange {
-  file: string;
-  line?: number;
-  oldCode?: string;
-  newCode?: string;
-  justification: string;
-}
+import { ErrorData, OpenAIResponse, RepairContext, AIRecommendation, AIChange } from '../types';
+import { truncateForSlack, formatSummaryForSlack } from '../utils/slack-formatter';
 
 /**
  * Generate a summary for analysis results
@@ -30,8 +13,12 @@ interface AIChange {
 export function generateAnalysisSummary(response: OpenAIResponse, errorData: ErrorData): string {
   const verdict = response.verdict === 'TEST_ISSUE' ? '🧪 Test Issue' : '🐛 Product Issue';
 
-  // Get the core reasoning
-  const reasoning = response.reasoning.split(/[.!?]/)[0].trim();
+  // Extract first sentence: split on [.!?] only when followed by whitespace + capital
+  // letter (new sentence) or end-of-string, so cy.wait(), URLs, etc. aren't split.
+  const sentenceEnd = response.reasoning.match(/^(.+?[.!?])(?:\s+[A-Z]|\s*$)/s);
+  const reasoning = sentenceEnd
+    ? sentenceEnd[1].trim()
+    : response.reasoning.split(/\n/)[0].trim();
 
   let summary = `${verdict}: ${reasoning}`;
 
@@ -120,24 +107,4 @@ export function generateFixSummary(
 
   // Apply Slack formatting
   return formatSummaryForSlack(summary, includeCodeBlocks);
-}
-
-/**
- * Creates a brief summary suitable for Slack from a longer summary
- * Delegates to the canonical implementation in slack-formatter
- */
-export function createBriefSummary(
-  verdict: Verdict,
-  confidence: number,
-  fullSummary: string,
-  testName?: string
-): string {
-  return createBriefSummaryFromSlack(verdict, confidence, fullSummary, testName);
-}
-
-/**
- * Format verdict for display
- */
-export function formatVerdict(verdict: Verdict): string {
-  return verdict === 'TEST_ISSUE' ? '🧪 Test Issue' : '🐛 Product Issue';
 }

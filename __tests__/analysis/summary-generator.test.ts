@@ -1,8 +1,6 @@
 import {
   generateAnalysisSummary,
   generateFixSummary,
-  createBriefSummary,
-  formatVerdict,
 } from '../../src/analysis/summary-generator';
 import { ErrorData, OpenAIResponse, RepairContext } from '../../src/types';
 
@@ -217,64 +215,4 @@ describe('summary-generator', () => {
     });
   });
 
-  describe('createBriefSummary', () => {
-    it('should create brief summary for TEST_ISSUE', () => {
-      const brief = createBriefSummary(
-        'TEST_ISSUE',
-        85,
-        'This is a detailed summary about the test failure.',
-        'should submit form'
-      );
-
-      expect(brief).toContain('TEST_ISSUE');
-      expect(brief).toContain('85%');
-    });
-
-    it('should create brief summary for PRODUCT_ISSUE', () => {
-      const brief = createBriefSummary(
-        'PRODUCT_ISSUE',
-        90,
-        'The API is returning 500 errors.',
-        'API test'
-      );
-
-      expect(brief).toContain('PRODUCT_ISSUE');
-      expect(brief).toContain('90%');
-    });
-
-    it('should handle missing test name', () => {
-      const brief = createBriefSummary(
-        'TEST_ISSUE',
-        75,
-        'Summary without test name'
-      );
-
-      expect(brief).toContain('TEST_ISSUE');
-      expect(brief).toContain('75%');
-    });
-
-    it('should truncate long summaries', () => {
-      const longSummary = 'This is a very long summary. '.repeat(50);
-      const brief = createBriefSummary(
-        'TEST_ISSUE',
-        80,
-        longSummary,
-        'test name'
-      );
-
-      expect(brief.length).toBeLessThanOrEqual(500);
-    });
-  });
-
-  describe('formatVerdict', () => {
-    it('should format TEST_ISSUE with test emoji', () => {
-      const formatted = formatVerdict('TEST_ISSUE');
-      expect(formatted).toBe('🧪 Test Issue');
-    });
-
-    it('should format PRODUCT_ISSUE with bug emoji', () => {
-      const formatted = formatVerdict('PRODUCT_ISSUE');
-      expect(formatted).toBe('🐛 Product Issue');
-    });
-  });
 });

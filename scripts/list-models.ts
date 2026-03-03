@@ -22,7 +22,7 @@ async function listModels() {
 
     // Filter for GPT models and sort by ID
     const gptModels = models.data
-      .filter(m => m.id.includes('gpt') || m.id.includes('o1') || m.id.includes('o3'))
+      .filter(m => m.id.includes('gpt') || m.id.includes('o1') || m.id.includes('o3') || m.id.includes('o4'))
       .sort((a, b) => a.id.localeCompare(b.id));
 
     console.log('Available GPT/O-series models:');

@@ -14,8 +14,7 @@ import {
   FixGenerationOutput,
 } from './fix-generation-agent';
 import { ReviewAgent, ReviewOutput } from './review-agent';
-import { FixRecommendation, ErrorData } from '../types';
-import { Octokit } from '@octokit/rest';
+import { FixRecommendation, ErrorData, SourceFetchContext } from '../types';
 
 /**
  * Configuration for the orchestrator
@@ -43,16 +42,6 @@ export const DEFAULT_ORCHESTRATOR_CONFIG: OrchestratorConfig = {
   requireReview: true,
   fallbackToSingleShot: true,
 };
-
-/**
- * Context for source file fetching
- */
-export interface SourceFetchContext {
-  octokit: Octokit;
-  owner: string;
-  repo: string;
-  branch: string;
-}
 
 /**
  * Result of the orchestration

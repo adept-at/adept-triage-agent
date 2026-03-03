@@ -1568,21 +1568,6 @@ You MUST respond with a JSON object matching this schema:
             return null;
         }
     }
-    validateOldCodeExists(changes, fileContent) {
-        const issues = [];
-        for (let i = 0; i < changes.length; i++) {
-            const change = changes[i];
-            if (!fileContent.includes(change.oldCode)) {
-                issues.push({
-                    severity: 'CRITICAL',
-                    changeIndex: i,
-                    description: `oldCode not found in file. The code to replace doesn't exist in ${change.file}`,
-                    suggestion: 'Verify the exact code content including whitespace and indentation',
-                });
-            }
-        }
-        return issues;
-    }
 }
 exports.ReviewAgent = ReviewAgent;
 //# sourceMappingURL=review-agent.js.map
@@ -1792,13 +1777,14 @@ function extractTestIssueEvidence(errorMessage) {
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.generateAnalysisSummary = generateAnalysisSummary;
 exports.generateFixSummary = generateFixSummary;
-exports.createBriefSummary = createBriefSummary;
-exports.formatVerdict = formatVerdict;
 const constants_1 = __nccwpck_require__(8361);
 const slack_formatter_1 = __nccwpck_require__(4112);
 function generateAnalysisSummary(response, errorData) {
     const verdict = response.verdict === 'TEST_ISSUE' ? '🧪 Test Issue' : '🐛 Product Issue';
-    const reasoning = response.reasoning.split(/[.!?]/)[0].trim();
+    const sentenceEnd = response.reasoning.match(/^(.+?[.!?])(?:\s+[A-Z]|\s*$)/s);
+    const reasoning = sentenceEnd
+        ? sentenceEnd[1].trim()
+        : response.reasoning.split(/\n/)[0].trim();
     let summary = `${verdict}: ${reasoning}`;
     const contexts = [];
     if (errorData.testName) {
@@ -1861,12 +1847,6 @@ function generateFixSummary(recommendation, context, includeCodeBlocks = false) 
     summary += `---\n`;
     summary += `*This is an automated fix recommendation. Please review before applying.*\n`;
     return (0, slack_formatter_1.formatSummaryForSlack)(summary, includeCodeBlocks);
-}
-function createBriefSummary(verdict, confidence, fullSummary, testName) {
-    return (0, slack_formatter_1.createBriefSummary)(verdict, confidence, fullSummary, testName);
-}
-function formatVerdict(verdict) {
-    return verdict === 'TEST_ISSUE' ? '🧪 Test Issue' : '🐛 Product Issue';
 }
 //# sourceMappingURL=summary-generator.js.map
 
@@ -2959,14 +2939,14 @@ const core = __importStar(__nccwpck_require__(7484));
 const constants_1 = __nccwpck_require__(8361);
 class OpenAIClient {
     openai;
-    maxRetries = 3;
-    retryDelay = 1000;
+    maxRetries = constants_1.OPENAI.MAX_RETRIES;
+    retryDelay = constants_1.OPENAI.RETRY_DELAY_MS;
     constructor(apiKey) {
         this.openai = new openai_1.default({ apiKey });
     }
     async analyze(errorData, examples) {
-        const model = 'gpt-5.2-codex';
-        core.info('🧠 Using GPT-5.2-codex model for analysis (Responses API)');
+        const model = constants_1.OPENAI.MODEL;
+        core.info(`🧠 Using ${model} model for analysis (Responses API)`);
         const systemPrompt = this.getSystemPrompt();
         const userContent = this.buildUserContent(errorData, examples);
         if (typeof userContent === 'string') {
@@ -3021,7 +3001,7 @@ class OpenAIClient {
                     model,
                     instructions: systemPrompt,
                     input,
-                    max_output_tokens: 16384,
+                    max_output_tokens: constants_1.OPENAI.MAX_COMPLETION_TOKENS,
                     text: { format: { type: 'json_object' } },
                 });
                 const content = response.output_text;
@@ -3315,8 +3295,8 @@ Respond with your analysis as a JSON object.`;
 
 Changed Files Summary:
 `;
-        const maxFiles = 30;
-        const maxPatchLines = 20;
+        const maxFiles = constants_1.ARTIFACTS.MAX_PR_DIFF_FILES;
+        const maxPatchLines = constants_1.ARTIFACTS.MAX_PATCH_LINES;
         const relevantFiles = prDiff.files.slice(0, maxFiles);
         for (const file of relevantFiles) {
             section += `\n${file.filename} (+${file.additions}/-${file.deletions})`;
@@ -3417,7 +3397,7 @@ FOR PRODUCT_ISSUES: You MUST analyze the diff patches above to:
         return new Promise(resolve => setTimeout(resolve, ms));
     }
     async generateWithCustomPrompt(params) {
-        const model = 'gpt-5.2-codex';
+        const model = constants_1.OPENAI.MODEL;
         const userContent = params.responseAsJson
             ? this.ensureJsonMention(params.userContent)
             : params.userContent;
@@ -3426,7 +3406,7 @@ FOR PRODUCT_ISSUES: You MUST analyze the diff patches above to:
             model,
             instructions: params.systemPrompt,
             input,
-            max_output_tokens: 16384,
+            max_output_tokens: constants_1.OPENAI.MAX_COMPLETION_TOKENS,
             text: params.responseAsJson ? { format: { type: 'json_object' } } : undefined,
         });
         const content = response.output_text;
@@ -3447,12 +3427,8 @@ exports.OpenAIClient = OpenAIClient;
 "use strict";
 
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.extractSelector = exports.classifyErrorType = void 0;
 exports.buildRepairContext = buildRepairContext;
-exports.enhanceAnalysisWithRepairContext = enhanceAnalysisWithRepairContext;
 const error_classifier_1 = __nccwpck_require__(3914);
-Object.defineProperty(exports, "classifyErrorType", ({ enumerable: true, get: function () { return error_classifier_1.classifyErrorType; } }));
-Object.defineProperty(exports, "extractSelector", ({ enumerable: true, get: function () { return error_classifier_1.extractSelector; } }));
 function buildRepairContext(analysisData) {
     const errorType = (0, error_classifier_1.classifyErrorType)(analysisData.errorMessage);
     const errorSelector = (0, error_classifier_1.extractSelector)(analysisData.errorMessage);
@@ -3470,16 +3446,6 @@ function buildRepairContext(analysisData) {
         repository: analysisData.repository,
         prNumber: analysisData.prNumber,
         targetAppPrNumber: analysisData.targetAppPrNumber
-    };
-}
-function enhanceAnalysisWithRepairContext(analysisResult, testData) {
-    if (analysisResult.verdict !== 'TEST_ISSUE') {
-        return analysisResult;
-    }
-    const repairContext = buildRepairContext(testData);
-    return {
-        ...analysisResult,
-        repairContext
     };
 }
 //# sourceMappingURL=repair-context.js.map
@@ -3528,7 +3494,6 @@ Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.GitHubFixApplier = void 0;
 exports.createFixApplier = createFixApplier;
 exports.generateFixBranchName = generateFixBranchName;
-exports.generateFixCommitMessage = generateFixCommitMessage;
 const core = __importStar(__nccwpck_require__(7484));
 const constants_1 = __nccwpck_require__(8361);
 const RETRY_CONFIG = {
@@ -3852,18 +3817,6 @@ function generateFixBranchName(testFile, timestamp = new Date(), forceUnique = f
         ? `-${timestamp.getTime().toString(36)}`
         : `-${timestamp.getMilliseconds().toString().padStart(3, '0')}`;
     return `${constants_1.AUTO_FIX.BRANCH_PREFIX}${sanitizedFile}-${dateStr}${uniqueSuffix}`;
-}
-function generateFixCommitMessage(recommendation) {
-    const files = recommendation.proposedChanges.map((c) => c.file).join(', ');
-    const summary = recommendation.summary.slice(0, 50);
-    return `fix(test): ${summary}
-
-Automated fix generated by adept-triage-agent.
-
-Files modified: ${files}
-Confidence: ${recommendation.confidence}%
-
-${recommendation.reasoning}`;
 }
 //# sourceMappingURL=fix-applier.js.map
 

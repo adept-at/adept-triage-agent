@@ -42,14 +42,14 @@ const core = __importStar(require("@actions/core"));
 const constants_1 = require("./config/constants");
 class OpenAIClient {
     openai;
-    maxRetries = 3;
-    retryDelay = 1000;
+    maxRetries = constants_1.OPENAI.MAX_RETRIES;
+    retryDelay = constants_1.OPENAI.RETRY_DELAY_MS;
     constructor(apiKey) {
         this.openai = new openai_1.default({ apiKey });
     }
     async analyze(errorData, examples) {
-        const model = 'gpt-5.2-codex';
-        core.info('🧠 Using GPT-5.2-codex model for analysis (Responses API)');
+        const model = constants_1.OPENAI.MODEL;
+        core.info(`🧠 Using ${model} model for analysis (Responses API)`);
         const systemPrompt = this.getSystemPrompt();
         const userContent = this.buildUserContent(errorData, examples);
         if (typeof userContent === 'string') {
@@ -104,7 +104,7 @@ class OpenAIClient {
                     model,
                     instructions: systemPrompt,
                     input,
-                    max_output_tokens: 16384,
+                    max_output_tokens: constants_1.OPENAI.MAX_COMPLETION_TOKENS,
                     text: { format: { type: 'json_object' } },
                 });
                 const content = response.output_text;
@@ -398,8 +398,8 @@ Respond with your analysis as a JSON object.`;
 
 Changed Files Summary:
 `;
-        const maxFiles = 30;
-        const maxPatchLines = 20;
+        const maxFiles = constants_1.ARTIFACTS.MAX_PR_DIFF_FILES;
+        const maxPatchLines = constants_1.ARTIFACTS.MAX_PATCH_LINES;
         const relevantFiles = prDiff.files.slice(0, maxFiles);
         for (const file of relevantFiles) {
             section += `\n${file.filename} (+${file.additions}/-${file.deletions})`;
@@ -500,7 +500,7 @@ FOR PRODUCT_ISSUES: You MUST analyze the diff patches above to:
         return new Promise(resolve => setTimeout(resolve, ms));
     }
     async generateWithCustomPrompt(params) {
-        const model = 'gpt-5.2-codex';
+        const model = constants_1.OPENAI.MODEL;
         const userContent = params.responseAsJson
             ? this.ensureJsonMention(params.userContent)
             : params.userContent;
@@ -509,7 +509,7 @@ FOR PRODUCT_ISSUES: You MUST analyze the diff patches above to:
             model,
             instructions: params.systemPrompt,
             input,
-            max_output_tokens: 16384,
+            max_output_tokens: constants_1.OPENAI.MAX_COMPLETION_TOKENS,
             text: params.responseAsJson ? { format: { type: 'json_object' } } : undefined,
         });
         const content = response.output_text;

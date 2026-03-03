@@ -1,4 +1,35 @@
+import { Octokit } from '@octokit/rest';
+
 export type Verdict = 'TEST_ISSUE' | 'PRODUCT_ISSUE';
+
+/**
+ * Context for fetching source files from GitHub
+ */
+export interface SourceFetchContext {
+  octokit: Octokit;
+  owner: string;
+  repo: string;
+  branch: string;
+}
+
+/**
+ * AI-generated fix recommendation structure
+ */
+export interface AIRecommendation {
+  confidence: number;
+  reasoning: string;
+  changes: AIChange[];
+  evidence: string[];
+  rootCause: string;
+}
+
+export interface AIChange {
+  file: string;
+  line?: number;
+  oldCode?: string;
+  newCode?: string;
+  justification: string;
+}
 
 export interface ErrorData {
   message: string;
@@ -54,12 +85,8 @@ export interface AnalysisResult {
   indicators?: string[];
   suggestedSourceLocations?: SourceLocation[];
   evidence?: string[];
-  suggestedAction?: string;
   category?: string;
-  affectedTests?: string[];
-  patterns?: Record<string, unknown>;
-  repairContext?: RepairContext; // Only populated for TEST_ISSUE
-  fixRecommendation?: FixRecommendation; // Fix suggestion for TEST_ISSUE
+  fixRecommendation?: FixRecommendation;
 }
 
 export interface FixRecommendation {

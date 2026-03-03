@@ -1,6 +1,7 @@
 #!/usr/bin/env npx ts-node
 /**
- * Local test script to verify gpt-5.2-codex model is working
+ * Local test script to verify the configured OpenAI model is working
+ * via the Responses API (matching production usage).
  *
  * Usage:
  *   OPENAI_API_KEY=your-key npx ts-node scripts/test-model-local.ts
@@ -10,9 +11,9 @@
  */
 
 import OpenAI from 'openai';
+import { OPENAI } from '../src/config/constants';
 
-// Test different models to find the right one
-const MODELS_TO_TEST = ['gpt-5.2-codex', 'gpt-5-codex', 'gpt-5.2', 'gpt-4o'];
+const MODELS_TO_TEST = [OPENAI.MODEL, 'gpt-4o'];
 
 async function testModel() {
   const apiKey = process.env.OPENAI_API_KEY;
@@ -31,7 +32,6 @@ async function testModel() {
     console.log('\n🧪 Testing OpenAI Model: ' + MODEL);
     console.log('━'.repeat(50));
 
-  // Simple test case - analyze a mock test failure
   const testErrorData = {
     message: 'Timed out retrying after 10000ms: Expected to find element: [data-testid="submit-button"], but never found it.',
     stackTrace: `at Context.eval (cypress/e2e/login.cy.ts:25:10)
@@ -54,28 +54,27 @@ Stack Trace:
 ${testErrorData.stackTrace}
 
 Framework: ${testErrorData.framework}
-Test: ${testErrorData.testName}`;
+Test: ${testErrorData.testName}
 
-  console.log('\n📤 Sending request to ' + MODEL + '...\n');
+Respond with a JSON object.`;
+
+  console.log('\n📤 Sending request to ' + MODEL + ' via Responses API...\n');
 
   const startTime = Date.now();
 
   try {
-    const response = await openai.chat.completions.create({
+    const response = await openai.responses.create({
       model: MODEL,
-      messages: [
-        { role: 'system', content: systemPrompt },
-        { role: 'user', content: userPrompt }
-      ],
-      temperature: 0.3,
-      max_completion_tokens: 1024,
-      response_format: { type: 'json_object' }
+      instructions: systemPrompt,
+      input: [{ role: 'user' as const, content: userPrompt }],
+      max_output_tokens: OPENAI.MAX_COMPLETION_TOKENS,
+      text: { format: { type: 'json_object' as const } },
     });
 
     const endTime = Date.now();
     const duration = ((endTime - startTime) / 1000).toFixed(2);
 
-    const content = response.choices[0]?.message?.content;
+    const content = response.output_text;
 
     if (!content) {
       console.error('❌ Empty response from model');
@@ -85,27 +84,26 @@ Test: ${testErrorData.testName}`;
     console.log('📥 Response received in ' + duration + 's');
     console.log('━'.repeat(50));
 
-    // Parse and display result
     const result = JSON.parse(content);
 
     console.log('\n✅ MODEL WORKING!\n');
     console.log('Model:      ' + MODEL);
+    console.log('API:        Responses API');
     console.log('Verdict:    ' + result.verdict);
     console.log('Reasoning:  ' + result.reasoning);
     console.log('Indicators: ' + (result.indicators?.join(', ') || 'none'));
 
-    // Show token usage
     if (response.usage) {
       console.log('\n📊 Token Usage:');
-      console.log('  Prompt:     ' + response.usage.prompt_tokens);
-      console.log('  Completion: ' + response.usage.completion_tokens);
+      console.log('  Input:      ' + response.usage.input_tokens);
+      console.log('  Output:     ' + response.usage.output_tokens);
       console.log('  Total:      ' + response.usage.total_tokens);
     }
 
     console.log('\n━'.repeat(50));
     console.log('🎉 Model "' + MODEL + '" test PASSED!');
     workingModel = MODEL;
-    break; // Found a working model
+    break;
 
     } catch (error: any) {
       console.error('\n❌ Model "' + MODEL + '" failed:');
@@ -121,9 +119,12 @@ Test: ${testErrorData.testName}`;
   if (workingModel) {
     console.log('\n' + '═'.repeat(50));
     console.log('✅ RECOMMENDED: Use model "' + workingModel + '" in your code');
+    if (workingModel === OPENAI.MODEL) {
+      console.log('   (matches OPENAI.MODEL in constants.ts)');
+    }
     console.log('═'.repeat(50));
   } else {
-    console.error('\n❌ No working chat models found!');
+    console.error('\n❌ No working models found!');
     process.exit(1);
   }
 }

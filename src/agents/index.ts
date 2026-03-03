@@ -10,9 +10,9 @@ export {
 } from './agent-orchestrator';
 export type {
   OrchestratorConfig,
-  SourceFetchContext,
   OrchestrationResult,
 } from './agent-orchestrator';
+export type { SourceFetchContext } from '../types';
 export * from './analysis-agent';
 export { CodeReadingAgent } from './code-reading-agent';
 export type { CodeReadingInput, CodeReadingOutput } from './code-reading-agent';

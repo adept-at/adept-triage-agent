@@ -10,17 +10,7 @@ import {
   AgentConfig,
 } from './base-agent';
 import { OpenAIClient } from '../openai-client';
-import { Octokit } from '@octokit/rest';
-
-/**
- * Context for fetching source files
- */
-export interface SourceFetchContext {
-  octokit: Octokit;
-  owner: string;
-  repo: string;
-  branch: string;
-}
+import { SourceFetchContext } from '../types';
 
 /**
  * Output from the Code Reading Agent

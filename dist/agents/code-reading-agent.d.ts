@@ -1,12 +1,6 @@
 import { BaseAgent, AgentContext, AgentResult, AgentConfig } from './base-agent';
 import { OpenAIClient } from '../openai-client';
-import { Octokit } from '@octokit/rest';
-export interface SourceFetchContext {
-    octokit: Octokit;
-    owner: string;
-    repo: string;
-    branch: string;
-}
+import { SourceFetchContext } from '../types';
 export interface CodeReadingOutput {
     testFileContent: string;
     relatedFiles: Array<{

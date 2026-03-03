@@ -1,9 +1,7 @@
 import * as core from '@actions/core';
 import * as fs from 'fs';
-import { Octokit } from '@octokit/rest';
 import { OpenAIClient } from '../openai-client';
-import { RepairContext, ErrorData } from '../types';
-import { FixRecommendation } from '../types';
+import { RepairContext, ErrorData, FixRecommendation, SourceFetchContext, AIRecommendation, AIChange } from '../types';
 import { generateFixSummary } from '../analysis/summary-generator';
 import { CONFIDENCE, AGENT_CONFIG } from '../config/constants';
 import {
@@ -13,34 +11,6 @@ import {
   OrchestratorConfig,
 } from '../agents';
 import { getFrameworkLabel } from '../agents/base-agent';
-
-// Internal type for AI response structure
-interface AIRecommendation {
-  confidence: number;
-  reasoning: string;
-  changes: AIChange[];
-  evidence: string[];
-  rootCause: string;
-}
-
-interface AIChange {
-  file: string;
-  line?: number;
-  oldCode?: string;
-  newCode?: string;
-  justification: string;
-}
-
-/**
- * Context for fetching source files from GitHub
- */
-export interface SourceFetchContext {
-  octokit: Octokit;
-  owner: string;
-  repo: string;
-  /** Branch to fetch from (defaults to 'main') */
-  branch?: string;
-}
 
 /**
  * Configuration for the repair agent
