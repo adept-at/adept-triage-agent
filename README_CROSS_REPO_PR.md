@@ -1,60 +1,66 @@
-# Cross-Repository PR Access in GitHub Actions
+# Cross-Repository Access in GitHub Actions
 
-## When You Need a PAT Token
+## When You Need a PAT or App Token
 
-A Personal Access Token (PAT) is **only required** when the Adept Triage Agent runs in a different repository than the source code being tested.
+The Adept Triage Agent uses three repository contexts:
 
-### Examples:
+- `github.context.repo`: where the triage workflow is running. Workflow runs, job logs, screenshots, and uploaded test artifacts are fetched from here.
+- `REPOSITORY`: the app/source repository used for PR, branch, or commit diff lookup.
+- `AUTO_FIX_TARGET_REPO`: the repository where source files are fetched for repair and where fix branches are created.
 
-- ✅ **PAT Required**: Triage agent in `org/triage-workflows` analyzing failures from `org/main-app`
-- ✅ **PAT Required**: Centralized workflow repository analyzing tests from multiple other repositories
-- ❌ **PAT Not Required**: Triage agent and test code both in the same repository `org/main-app`
+You only need a Personal Access Token (PAT) or GitHub App token when the action needs GitHub API access outside `github.context.repo`, typically because:
 
-## Problem
+- `REPOSITORY` points to a different repository for diff lookup
+- `AUTO_FIX_TARGET_REPO` points to a different repository for repair or auto-fix writes
 
-When the Adept Triage Agent runs in a GitHub Actions workflow and tries to fetch PR information from a different repository (e.g., `adept-at/learn-webapp`), it fails with:
+## Important Limitation
 
-```
+The current architecture does **not** support a centralized workflow repository fetching workflow runs and artifacts from some other repository just by supplying a PAT.
+
+This action always reads workflow runs and uploaded artifacts from the repository where the triage workflow is executing.
+
+## Examples
+
+- ❌ **Not supported by this action alone**: a centralized repo like `org/triage-workflows` trying to inspect workflow logs and artifacts from `org/main-app`
+- ✅ **Supported with default `GITHUB_TOKEN`**: triage workflow runs in `org/main-app` and also reads diffs from `org/main-app`
+- ✅ **Supported with PAT/App token**: triage workflow runs in `org/main-app`, but `REPOSITORY` points to `org/shared-frontend` for PR diff lookup
+- ✅ **Supported with PAT/App token**: triage workflow runs in `org/main-app`, but `AUTO_FIX_TARGET_REPO` points to `org/e2e-tests` for fix generation and branch creation
+
+## Why the Default `GITHUB_TOKEN` Fails
+
+When the action tries to fetch PR information, source files, or write branches in a different repository, the default `GITHUB_TOKEN` often fails with errors like:
+
+```text
 HttpError: Not Found - https://docs.github.com/rest/pulls/pulls#get-a-pull-request
 ```
 
-This happens because the default `GITHUB_TOKEN` in GitHub Actions only has access to the repository where the action is running.
+That happens because the default token usually only has access to the repository where the workflow is running.
 
-## Solutions
+## Option 1: Use a Personal Access Token
 
-### Option 1: Use a Personal Access Token (Recommended)
+1. Create a PAT:
+   - GitHub Settings -> Developer settings -> Personal access tokens
+   - Grant the minimum scopes needed for the target repositories
+   - For private repositories, this usually means `repo`
 
-1. **Create a Personal Access Token (PAT)**:
+2. Add it as a repository secret:
+   - Name it `CROSS_REPO_PAT` or another clear name
 
-   - Go to GitHub Settings → Developer settings → Personal access tokens → Tokens (classic)
-   - Click "Generate new token (classic)"
-   - Give it a descriptive name like "adept-triage-cross-repo"
-   - Select scopes:
-     - `repo` (full control of private repositories)
-     - Or at minimum: `public_repo` (if only accessing public repos)
-   - Generate and copy the token
+3. Pass it to the action:
 
-2. **Add the PAT as a repository secret**:
+```yaml
+- name: Run Adept Triage Agent
+  uses: adept-at/adept-triage-agent@v1
+  with:
+    GITHUB_TOKEN: ${{ secrets.CROSS_REPO_PAT }}
+    OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+    REPOSITORY: org/app-repo
+    AUTO_FIX_TARGET_REPO: org/test-repo
+```
 
-   - Go to your repository settings
-   - Navigate to Secrets and variables → Actions
-   - Click "New repository secret"
-   - Name: `CROSS_REPO_TOKEN` (or similar)
-   - Value: paste your PAT
+## Option 2: Use a GitHub App Token
 
-3. **Update your workflow to use the PAT**:
-   ```yaml
-   - name: Run Adept Triage Agent
-     uses: adept-at/adept-triage-agent@v1.3.0
-     with:
-       GITHUB_TOKEN: ${{ secrets.CROSS_REPO_TOKEN }} # Use PAT instead of default token
-       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-       # ... other inputs
-   ```
-
-### Option 2: Use GitHub App Token
-
-For organizations, you can create a GitHub App with appropriate permissions and use its token:
+For organizations, a GitHub App is usually the better long-term option:
 
 ```yaml
 - name: Generate GitHub App Token
@@ -63,44 +69,40 @@ For organizations, you can create a GitHub App with appropriate permissions and 
   with:
     app_id: ${{ secrets.APP_ID }}
     private_key: ${{ secrets.APP_PRIVATE_KEY }}
-    repositories: 'adept-triage-agent,learn-webapp'
+    repositories: 'app-repo,test-repo'
 
 - name: Run Adept Triage Agent
-  uses: adept-at/adept-triage-agent@v1.3.0
+  uses: adept-at/adept-triage-agent@v1
   with:
     GITHUB_TOKEN: ${{ steps.generate_token.outputs.token }}
-    # ... other inputs
-```
-
-### Option 3: Disable PR Fetching (Workaround)
-
-If PR information isn't critical for your use case, you can run the action without providing a PR number:
-
-```yaml
-- name: Run Adept Triage Agent
-  uses: adept-at/adept-triage-agent@v1.3.0
-  with:
-    GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-    # Don't provide PR_NUMBER if it's from another repo
-    # ... other inputs
 ```
+
+## Option 3: Stay Single-Repo
+
+If cross-repo diff or repair access is not required, omit `REPOSITORY` and `AUTO_FIX_TARGET_REPO` so the action can use the default `GITHUB_TOKEN`.
 
 ## Testing Locally
 
-To test if your token has the necessary permissions:
+To verify that your token can fetch PR diffs:
 
 ```bash
-# Set your token
 export GITHUB_TOKEN="your-token-here"
+npm run test:integration -- --testPathPattern=pr-diff-fetcher
+```
 
-# Run the test script
-node test-pr-fetch.js
+To target a specific repository or PR:
+
+```bash
+export GITHUB_TOKEN="your-token-here"
+export TEST_REPO="owner/repo"
+export TEST_PR_NUMBER="123"
+npm run test:integration -- --testPathPattern=pr-diff-fetcher
 ```
 
 ## Security Considerations
 
-- **PAT Rotation**: Regularly rotate your PATs (e.g., every 90 days)
-- **Minimal Permissions**: Only grant the minimum required permissions
-- **Secret Management**: Never commit tokens to your repository
-- **Audit Access**: Regularly review which workflows use cross-repo tokens
+- Rotate PATs regularly
+- Grant the minimum permissions required
+- Never commit tokens to the repository
+- Audit which workflows use cross-repo credentials

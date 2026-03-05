@@ -331,10 +331,19 @@ export class SimplifiedRepairAgent {
 - **Test Name:** ${context.testName}
 - **Error Type:** ${context.errorType}
 - **Error Message:** ${context.errorMessage}
+- **Analyzed Repository:** ${context.repository}
+- **Analyzed Branch:** ${context.branch}
+- **Analyzed Commit SHA:** ${context.commitSha}
 ${
   context.errorSelector ? `- **Failed Selector:** ${context.errorSelector}` : ''
 }
 ${context.errorLine ? `- **Error Line:** ${context.errorLine}` : ''}`;
+
+    if (this.sourceFetchContext) {
+      contextInfo += `\n\n## Repair Source Context
+- **Source Repository:** ${this.sourceFetchContext.owner}/${this.sourceFetchContext.repo}
+- **Source Branch:** ${this.sourceFetchContext.branch}`;
+    }
 
     // Add the actual source file content if we fetched it
     if (sourceFileContent && cleanFilePath) {

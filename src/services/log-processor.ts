@@ -38,7 +38,7 @@ export async function processWorkflowLogs(
   octokit: Octokit,
   artifactFetcher: ArtifactFetcher,
   inputs: ActionInputs,
-  _repoDetails: RepoDetails // Only used for PR diffs, not for workflow/artifact operations
+  repoDetails: RepoDetails // Only used for PR diffs, not for workflow/artifact operations
 ): Promise<ErrorData | null> {
   const context = github.context;
   // IMPORTANT: Workflow runs and artifacts live in the repo where the action runs (context.repo),
@@ -148,6 +148,7 @@ export async function processWorkflowLogs(
     runId,
     failedJob.name,
     context.repo, // Use context.repo for artifacts, not repoDetails
+    repoDetails,
     inputs
   );
 
@@ -288,20 +289,24 @@ function logDiffResult(diff: PRDiff | null, source: string): void {
  */
 export async function fetchDiffWithFallback(
   artifactFetcher: ArtifactFetcher,
-  inputs: ActionInputs
+  inputs: ActionInputs,
+  repoDetails?: RepoDetails
 ): Promise<PRDiff | null> {
   const mainBranches = ['main', 'master'];
+  const repository = repoDetails
+    ? `${repoDetails.owner}/${repoDetails.repo}`
+    : inputs.repository;
 
   // Strategy 1: PR diff (highest priority - most specific)
   if (inputs.prNumber) {
     const prNum = inputs.prNumber;
     core.info(
       `📋 Fetching PR diff for PR #${prNum} from ${
-        inputs.repository || 'current repo'
+        repository || 'current repo'
       }...`
     );
     try {
-      const diff = await artifactFetcher.fetchPRDiff(prNum, inputs.repository);
+      const diff = await artifactFetcher.fetchPRDiff(prNum, repository);
       logDiffResult(diff, 'PR diff');
       if (diff) return diff;
       core.warning(`⚠️ PR diff fetch returned null for PR #${prNum}`);
@@ -319,7 +324,7 @@ export async function fetchDiffWithFallback(
       const diff = await artifactFetcher.fetchBranchDiff(
         inputs.branch,
         'main',
-        inputs.repository
+        repository
       );
       logDiffResult(diff, 'branch diff');
       if (diff) return diff;
@@ -345,7 +350,7 @@ export async function fetchDiffWithFallback(
       try {
         const diff = await artifactFetcher.fetchCommitDiff(
           inputs.commitSha,
-          inputs.repository
+          repository
         );
         logDiffResult(diff, 'commit diff');
         if (diff) return diff;
@@ -381,11 +386,12 @@ async function fetchArtifactsParallel(
   artifactFetcher: ArtifactFetcher,
   runId: string,
   jobName: string,
-  repoDetails: RepoDetails,
+  artifactRepoDetails: RepoDetails,
+  diffRepoDetails: RepoDetails,
   inputs: ActionInputs
 ): Promise<[Screenshot[], string, PRDiff | null]> {
   const screenshotsPromise = artifactFetcher
-    .fetchScreenshots(runId, jobName, repoDetails)
+    .fetchScreenshots(runId, jobName, artifactRepoDetails)
     .then((screenshots) => {
       core.info(`Found ${screenshots.length} screenshots`);
       return screenshots;
@@ -396,7 +402,7 @@ async function fetchArtifactsParallel(
     });
 
   const artifactLogsPromise = artifactFetcher
-    .fetchTestArtifactLogs(runId, jobName, repoDetails)
+    .fetchTestArtifactLogs(runId, jobName, artifactRepoDetails)
     .then((logs) => {
       if (logs) {
         core.info(`Found test artifact logs (${logs.length} characters)`);
@@ -408,7 +414,11 @@ async function fetchArtifactsParallel(
       return '';
     });
 
-  const prDiffPromise = fetchDiffWithFallback(artifactFetcher, inputs);
+  const prDiffPromise = fetchDiffWithFallback(
+    artifactFetcher,
+    inputs,
+    diffRepoDetails
+  );
 
   return Promise.all([screenshotsPromise, artifactLogsPromise, prDiffPromise]);
 }

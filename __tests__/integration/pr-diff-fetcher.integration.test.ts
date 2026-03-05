@@ -4,10 +4,10 @@
  * These tests make real GitHub API calls to verify PR diff fetching works correctly.
  *
  * To run these tests:
- *   GITHUB_TOKEN=your_token npm test -- --testPathPattern=integration
+ *   GITHUB_TOKEN=your_token npm run test:integration -- --testPathPattern=pr-diff-fetcher
  *
  * Or for a specific PR:
- *   GITHUB_TOKEN=your_token TEST_PR_NUMBER=123 TEST_REPO=owner/repo npm test -- --testPathPattern=integration
+ *   GITHUB_TOKEN=your_token TEST_PR_NUMBER=123 TEST_REPO=owner/repo npm run test:integration -- --testPathPattern=pr-diff-fetcher
  */
 
 import { Octokit } from '@octokit/rest';

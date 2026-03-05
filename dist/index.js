@@ -2535,6 +2535,43 @@ async function run() {
                     run_id: parseInt(runId, 10),
                 });
                 if (workflowRun.data.status !== 'completed') {
+                    if (inputs.jobName) {
+                        try {
+                            const jobs = await octokit.actions.listJobsForWorkflowRun({
+                                owner,
+                                repo,
+                                run_id: parseInt(runId, 10),
+                                filter: 'latest',
+                            });
+                            const targetJob = jobs.data.jobs.find((job) => job.name === inputs.jobName);
+                            if (!targetJob) {
+                                core.warning(`Job '${inputs.jobName}' not found yet while workflow is still in progress`);
+                            }
+                            else if (targetJob.status === 'completed' &&
+                                targetJob.conclusion !== 'failure') {
+                                core.info(`Job '${inputs.jobName}' completed with conclusion: ${targetJob.conclusion} — nothing to triage`);
+                                core.setOutput('verdict', 'NO_FAILURE');
+                                core.setOutput('confidence', '100');
+                                core.setOutput('reasoning', `Job '${inputs.jobName}' did not fail (conclusion: ${targetJob.conclusion}). No triage needed.`);
+                                core.setOutput('summary', `No failure detected — job concluded with ${targetJob.conclusion}`);
+                                core.setOutput('triage_json', JSON.stringify({
+                                    verdict: 'NO_FAILURE',
+                                    confidence: 100,
+                                    reasoning: `Job '${inputs.jobName}' did not fail (conclusion: ${targetJob.conclusion}). No triage needed.`,
+                                    summary: `No failure detected — job concluded with ${targetJob.conclusion}`,
+                                    indicators: [],
+                                    metadata: {
+                                        analyzedAt: new Date().toISOString(),
+                                        jobConclusion: targetJob.conclusion,
+                                    },
+                                }));
+                                return;
+                            }
+                        }
+                        catch (jobCheckError) {
+                            core.debug(`Error checking job status: ${jobCheckError}`);
+                        }
+                    }
                     core.warning(`Workflow run ${runId} is still in progress (status: ${workflowRun.data.status})`);
                     const pendingTriageJson = {
                         verdict: 'PENDING',
@@ -2558,19 +2595,7 @@ async function run() {
             catch (error) {
                 core.debug(`Error checking workflow status: ${error}`);
             }
-            core.setOutput('verdict', 'ERROR');
-            core.setOutput('confidence', '0');
-            core.setOutput('reasoning', 'No error data found to analyze');
-            core.setOutput('summary', 'Triage failed: no error data found');
-            core.setOutput('triage_json', JSON.stringify({
-                verdict: 'ERROR',
-                confidence: 0,
-                reasoning: 'No error data found to analyze',
-                summary: 'Triage failed: no error data found',
-                indicators: [],
-                metadata: { analyzedAt: new Date().toISOString(), error: true },
-            }));
-            core.setFailed('No error data found to analyze');
+            setErrorOutput('No error data found to analyze');
             return;
         }
         const result = await (0, simplified_analyzer_1.analyzeFailure)(openaiClient, errorData);
@@ -2668,7 +2693,7 @@ async function generateFixRecommendation(inputs, repoDetails, errorData, openaiC
             workflowRunId: inputs.workflowRunId || github.context.runId.toString(),
             jobName: inputs.jobName || 'unknown',
             commitSha: inputs.commitSha || github.context.sha,
-            branch: github.context.ref.replace('refs/heads/', ''),
+            branch: inputs.branch || github.context.ref.replace('refs/heads/', ''),
             repository: inputs.repository || `${repoDetails.owner}/${repoDetails.repo}`,
             prNumber: inputs.prNumber,
             targetAppPrNumber: inputs.prNumber,
@@ -2740,9 +2765,15 @@ async function attemptAutoFix(inputs, fixRecommendation, octokit, repoDetails, e
                         triageRunId: github.context.runId.toString(),
                     });
                     if (validationResult) {
-                        result.validationRunId = validationResult.runId;
                         result.validationStatus = 'pending';
-                        core.info(`✅ Validation workflow triggered: run ID ${validationResult.runId}`);
+                        result.validationRunId = validationResult.runId;
+                        result.validationUrl = validationResult.url;
+                        if (validationResult.runId) {
+                            core.info(`✅ Validation workflow triggered: run ID ${validationResult.runId}`);
+                        }
+                        else {
+                            core.info('✅ Validation workflow triggered: run ID not available yet');
+                        }
                     }
                     else {
                         core.warning('Could not trigger validation workflow');
@@ -2781,6 +2812,21 @@ function setInconclusiveOutput(result, inputs, errorData) {
     core.setOutput('summary', 'Analysis inconclusive due to low confidence');
     core.setOutput('triage_json', JSON.stringify(inconclusiveTriageJson));
 }
+function setErrorOutput(reason) {
+    core.setOutput('verdict', 'ERROR');
+    core.setOutput('confidence', '0');
+    core.setOutput('reasoning', reason);
+    core.setOutput('summary', `Triage failed: ${reason}`);
+    core.setOutput('triage_json', JSON.stringify({
+        verdict: 'ERROR',
+        confidence: 0,
+        reasoning: reason,
+        summary: `Triage failed: ${reason}`,
+        indicators: [],
+        metadata: { analyzedAt: new Date().toISOString(), error: true },
+    }));
+    core.setFailed(reason);
+}
 function setSuccessOutput(result, errorData, autoFixResult) {
     const triageJson = {
         verdict: result.verdict,
@@ -2804,6 +2850,7 @@ function setSuccessOutput(result, errorData, autoFixResult) {
                     validation: {
                         status: autoFixResult.validationStatus || 'skipped',
                         runId: autoFixResult.validationRunId,
+                        url: autoFixResult.validationUrl,
                     },
                 },
             }
@@ -2838,7 +2885,14 @@ function setSuccessOutput(result, errorData, autoFixResult) {
         if (autoFixResult.validationRunId) {
             core.setOutput('validation_run_id', autoFixResult.validationRunId.toString());
             core.setOutput('validation_status', autoFixResult.validationStatus || 'pending');
-            core.setOutput('validation_url', `https://github.com/${github.context.repo.owner}/${github.context.repo.repo}/actions/runs/${autoFixResult.validationRunId}`);
+            core.setOutput('validation_url', autoFixResult.validationUrl ||
+                `https://github.com/${github.context.repo.owner}/${github.context.repo.repo}/actions/runs/${autoFixResult.validationRunId}`);
+        }
+        else if (autoFixResult.validationStatus === 'pending') {
+            core.setOutput('validation_status', 'pending');
+            if (autoFixResult.validationUrl) {
+                core.setOutput('validation_url', autoFixResult.validationUrl);
+            }
         }
         else {
             core.setOutput('validation_status', autoFixResult.validationStatus || 'skipped');
@@ -2875,8 +2929,19 @@ function setSuccessOutput(result, errorData, autoFixResult) {
             if (autoFixResult.validationRunId) {
                 core.info(`\n🧪 Validation: ${autoFixResult.validationStatus}`);
                 core.info(`  Run ID: ${autoFixResult.validationRunId}`);
-                core.info(`  URL: https://github.com/${github.context.repo.owner}/${github.context.repo.repo}/actions/runs/${autoFixResult.validationRunId}`);
-                core.info('\n👉 PR will be created automatically if validation passes.');
+                core.info(`  URL: ${autoFixResult.validationUrl ||
+                    `https://github.com/${github.context.repo.owner}/${github.context.repo.repo}/actions/runs/${autoFixResult.validationRunId}`}`);
+                core.info('\n👉 Validation was triggered. Any PR creation must happen in your downstream workflow or be done manually.');
+            }
+            else if (autoFixResult.validationStatus === 'pending') {
+                core.info('\n🧪 Validation: pending');
+                if (autoFixResult.validationUrl) {
+                    core.info(`  URL: ${autoFixResult.validationUrl}`);
+                }
+                else {
+                    core.info('  Run ID / URL not available yet');
+                }
+                core.info('\n👉 Validation was triggered. Any PR creation must happen in your downstream workflow or be done manually.');
             }
             else {
                 core.info('\n👉 To create a PR, visit your repository and open a PR from the branch above.');
@@ -3776,7 +3841,7 @@ Confidence: ${recommendation.confidence}%`;
                 const latestRun = runs.data.workflow_runs[0];
                 core.info(`Validation workflow run ID: ${latestRun.id}`);
                 core.info(`Validation workflow URL: ${latestRun.html_url}`);
-                return { runId: latestRun.id };
+                return { runId: latestRun.id, url: latestRun.html_url };
             }
             const inProgressRuns = await withRetry(() => octokit.actions.listWorkflowRuns({
                 owner,
@@ -3790,10 +3855,10 @@ Confidence: ${recommendation.confidence}%`;
                 const latestRun = inProgressRuns.data.workflow_runs[0];
                 core.info(`Validation workflow run ID: ${latestRun.id}`);
                 core.info(`Validation workflow URL: ${latestRun.html_url}`);
-                return { runId: latestRun.id };
+                return { runId: latestRun.id, url: latestRun.html_url };
             }
-            core.warning('Could not find validation workflow run ID');
-            return null;
+            core.warning('Validation workflow was triggered, but the run ID is not available yet');
+            return {};
         }
         catch (error) {
             const errorMsg = getErrorMessage(error, 'triggering validation workflow');
@@ -4046,8 +4111,16 @@ class SimplifiedRepairAgent {
 - **Test Name:** ${context.testName}
 - **Error Type:** ${context.errorType}
 - **Error Message:** ${context.errorMessage}
+- **Analyzed Repository:** ${context.repository}
+- **Analyzed Branch:** ${context.branch}
+- **Analyzed Commit SHA:** ${context.commitSha}
 ${context.errorSelector ? `- **Failed Selector:** ${context.errorSelector}` : ''}
 ${context.errorLine ? `- **Error Line:** ${context.errorLine}` : ''}`;
+        if (this.sourceFetchContext) {
+            contextInfo += `\n\n## Repair Source Context
+- **Source Repository:** ${this.sourceFetchContext.owner}/${this.sourceFetchContext.repo}
+- **Source Branch:** ${this.sourceFetchContext.branch}`;
+        }
         if (sourceFileContent && cleanFilePath) {
             core.info('  ✅ Including actual source file content in prompt');
             const lines = sourceFileContent.split('\n');
@@ -4347,7 +4420,7 @@ const core = __importStar(__nccwpck_require__(7484));
 const github = __importStar(__nccwpck_require__(3228));
 const simplified_analyzer_1 = __nccwpck_require__(78);
 const constants_1 = __nccwpck_require__(8361);
-async function processWorkflowLogs(octokit, artifactFetcher, inputs, _repoDetails) {
+async function processWorkflowLogs(octokit, artifactFetcher, inputs, repoDetails) {
     const context = github.context;
     const { owner, repo } = context.repo;
     if (inputs.errorMessage) {
@@ -4410,7 +4483,7 @@ async function processWorkflowLogs(octokit, artifactFetcher, inputs, _repoDetail
     catch (error) {
         core.warning(`Failed to download job logs: ${error}`);
     }
-    const [screenshots, artifactLogs, prDiff] = await fetchArtifactsParallel(artifactFetcher, runId, failedJob.name, context.repo, inputs);
+    const [screenshots, artifactLogs, prDiff] = await fetchArtifactsParallel(artifactFetcher, runId, failedJob.name, context.repo, repoDetails, inputs);
     const cappedArtifactLogs = capArtifactLogs(artifactLogs);
     const combinedContext = buildErrorContext(failedJob, extractedError, cappedArtifactLogs, fullLogs, inputs);
     const hasLogs = !!(fullLogs && fullLogs.length > 0);
@@ -4498,13 +4571,16 @@ function logDiffResult(diff, source) {
         }
     }
 }
-async function fetchDiffWithFallback(artifactFetcher, inputs) {
+async function fetchDiffWithFallback(artifactFetcher, inputs, repoDetails) {
     const mainBranches = ['main', 'master'];
+    const repository = repoDetails
+        ? `${repoDetails.owner}/${repoDetails.repo}`
+        : inputs.repository;
     if (inputs.prNumber) {
         const prNum = inputs.prNumber;
-        core.info(`📋 Fetching PR diff for PR #${prNum} from ${inputs.repository || 'current repo'}...`);
+        core.info(`📋 Fetching PR diff for PR #${prNum} from ${repository || 'current repo'}...`);
         try {
-            const diff = await artifactFetcher.fetchPRDiff(prNum, inputs.repository);
+            const diff = await artifactFetcher.fetchPRDiff(prNum, repository);
             logDiffResult(diff, 'PR diff');
             if (diff)
                 return diff;
@@ -4517,7 +4593,7 @@ async function fetchDiffWithFallback(artifactFetcher, inputs) {
     if (inputs.branch && !mainBranches.includes(inputs.branch.toLowerCase())) {
         core.info(`📋 Fetching branch diff: main...${inputs.branch} (preview URL mode)...`);
         try {
-            const diff = await artifactFetcher.fetchBranchDiff(inputs.branch, 'main', inputs.repository);
+            const diff = await artifactFetcher.fetchBranchDiff(inputs.branch, 'main', repository);
             logDiffResult(diff, 'branch diff');
             if (diff)
                 return diff;
@@ -4532,7 +4608,7 @@ async function fetchDiffWithFallback(artifactFetcher, inputs) {
         if (isMainBranch) {
             core.info(`📋 Fetching commit diff for ${inputs.commitSha.substring(0, 7)} (production deploy mode)...`);
             try {
-                const diff = await artifactFetcher.fetchCommitDiff(inputs.commitSha, inputs.repository);
+                const diff = await artifactFetcher.fetchCommitDiff(inputs.commitSha, repository);
                 logDiffResult(diff, 'commit diff');
                 if (diff)
                     return diff;
@@ -4551,9 +4627,9 @@ async function fetchDiffWithFallback(artifactFetcher, inputs) {
     }
     return null;
 }
-async function fetchArtifactsParallel(artifactFetcher, runId, jobName, repoDetails, inputs) {
+async function fetchArtifactsParallel(artifactFetcher, runId, jobName, artifactRepoDetails, diffRepoDetails, inputs) {
     const screenshotsPromise = artifactFetcher
-        .fetchScreenshots(runId, jobName, repoDetails)
+        .fetchScreenshots(runId, jobName, artifactRepoDetails)
         .then((screenshots) => {
         core.info(`Found ${screenshots.length} screenshots`);
         return screenshots;
@@ -4563,7 +4639,7 @@ async function fetchArtifactsParallel(artifactFetcher, runId, jobName, repoDetai
         return [];
     });
     const artifactLogsPromise = artifactFetcher
-        .fetchTestArtifactLogs(runId, jobName, repoDetails)
+        .fetchTestArtifactLogs(runId, jobName, artifactRepoDetails)
         .then((logs) => {
         if (logs) {
             core.info(`Found test artifact logs (${logs.length} characters)`);
@@ -4574,7 +4650,7 @@ async function fetchArtifactsParallel(artifactFetcher, runId, jobName, repoDetai
         core.warning(`Failed to fetch test artifact logs: ${error}`);
         return '';
     });
-    const prDiffPromise = fetchDiffWithFallback(artifactFetcher, inputs);
+    const prDiffPromise = fetchDiffWithFallback(artifactFetcher, inputs, diffRepoDetails);
     return Promise.all([screenshotsPromise, artifactLogsPromise, prDiffPromise]);
 }
 function buildErrorContext(failedJob, extractedError, artifactLogs, fullLogs, inputs) {

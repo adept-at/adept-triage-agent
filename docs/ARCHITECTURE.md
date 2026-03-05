@@ -6,11 +6,19 @@ The Adept Triage Agent is a GitHub Action that automatically analyzes test failu
 
 ### Key Features
 
-- **Intelligent Failure Classification**: Uses OpenAI GPT-5.2 to analyze test failures
-- **Multimodal Analysis**: Processes screenshots, logs, and PR diffs
+- **Intelligent Failure Classification**: Uses OpenAI GPT-5.3 Codex to analyze test failures
+- **Multimodal Analysis**: Processes screenshots, logs, and PR/branch/commit diffs
 - **Fix Recommendations**: Generates actionable fix suggestions for test issues
 - **GitHub Integration**: Seamlessly integrates with GitHub Actions workflows
 - **Configurable Confidence Thresholds**: Allows tuning of analysis certainty
+
+### Repository Contexts
+
+The action currently operates across up to three repository contexts:
+
+- `github.context.repo`: the repository where the triage workflow is running. Workflow runs, job logs, screenshots, and uploaded test artifacts are always read from here.
+- `REPOSITORY`: the app/source repository used for PR, branch, or commit diff lookup.
+- `AUTO_FIX_TARGET_REPO`: the repository where repair source files are fetched and fix branches are created.
 
 ---
 
@@ -59,7 +67,7 @@ graph TB
     end
 
     subgraph "External Services"
-        OPENAI[OpenAI API - GPT-5.2]
+        OPENAI[OpenAI API - GPT-5.3 Codex]
         GITHUB[GitHub API]
     end
 
@@ -77,7 +85,7 @@ graph TB
     LP --> EXT
     AF --> GITHUB
     AF --> |Screenshots| LP
-    AF --> |Cypress Logs| LP
+    AF --> |Test Artifact Logs| LP
     AF --> |PR Diff| LP
 
     LP --> |ErrorData| ANALYZE
@@ -132,11 +140,11 @@ flowchart TD
         EXTRACT_ERROR --> FETCH_PARALLEL[Fetch Artifacts in Parallel]
 
         FETCH_PARALLEL --> SCREENSHOTS[fetchScreenshots]
-        FETCH_PARALLEL --> CYPRESS_LOGS[fetchCypressArtifactLogs]
+        FETCH_PARALLEL --> TEST_ARTIFACT_LOGS[fetchTestArtifactLogs]
         FETCH_PARALLEL --> PR_DIFF[fetchPRDiff]
 
         SCREENSHOTS --> BUILD_CONTEXT[buildErrorContext]
-        CYPRESS_LOGS --> BUILD_CONTEXT
+        TEST_ARTIFACT_LOGS --> BUILD_CONTEXT
         PR_DIFF --> BUILD_CONTEXT
 
         BUILD_CONTEXT --> BUILD_SUMMARY[buildStructuredSummary]
@@ -286,7 +294,7 @@ Handles extraction and processing of workflow logs and artifacts.
 4. Find the target/failed job
 5. Download job logs
 6. Extract structured error from logs
-7. Fetch artifacts in parallel (screenshots, Cypress logs, PR diff)
+7. Fetch artifacts in parallel (screenshots, test artifact logs, PR/branch/commit diff)
 8. Build combined error context
 9. Return `ErrorData` object
 
@@ -334,7 +342,7 @@ Handles all communication with the OpenAI API.
 | Function | Purpose | Inputs | Outputs |
 |----------|---------|--------|---------|
 | `analyze()` | Main analysis call | ErrorData, FewShotExamples | `OpenAIResponse` |
-| `buildMessages()` | Build chat messages | ErrorData, examples | ChatCompletionMessageParam[] |
+| `convertToResponsesInput()` | Convert prompt parts to Responses API input | userContent | Responses API input |
 | `buildUserContent()` | Build multimodal content | ErrorData, examples | string \| ContentPart[] |
 | `getSystemPrompt()` | Get the system prompt | None | string |
 | `buildPrompt()` | Build user prompt | ErrorData, examples | string |
@@ -342,7 +350,7 @@ Handles all communication with the OpenAI API.
 | `generateWithCustomPrompt()` | Generic prompt call | Params object | string |
 
 #### Configuration
-- **Model**: `gpt-5.2` (GPT-5.2 Codex)
+- **Model**: `gpt-5.3-codex` (GPT-5.3 Codex)
 - **Temperature**: 0.3 (deterministic)
 - **Max Completion Tokens**: 16,384
 - **Max Retries**: 3
@@ -367,7 +375,7 @@ Fetches and processes workflow artifacts from GitHub.
 |----------|---------|--------|---------|
 | `fetchScreenshots()` | Fetch screenshot images | runId, jobName, repoDetails | `Screenshot[]` |
 | `fetchLogs()` | Fetch job logs | runId, jobId, repoDetails | `string[]` |
-| `fetchCypressArtifactLogs()` | Fetch Cypress-specific logs | runId, jobName, repoDetails | string |
+| `fetchTestArtifactLogs()` | Fetch uploaded Cypress or WebDriverIO logs | runId, jobName, repoDetails | string |
 | `fetchPRDiff()` | Fetch PR changes | prNumber, repository | `PRDiff \| null` |
 | `sortFilesByRelevance()` | Sort files by relevance | PRDiffFile[] | PRDiffFile[] |
 
@@ -429,7 +437,6 @@ Builds context objects for the repair agent.
 | Function | Purpose | Inputs | Outputs |
 |----------|---------|--------|---------|
 | `buildRepairContext()` | Build repair context | Analysis data | `RepairContext` |
-| `enhanceAnalysisWithRepairContext()` | Add repair context to result | AnalysisResult, testData | Enhanced `AnalysisResult` |
 
 ---
 
@@ -445,7 +452,6 @@ Applies automated fixes by creating branches and committing changes.
 | `canApply()` | Check if fix meets threshold | `FixRecommendation` | boolean |
 | `applyFix()` | Apply the fix to codebase | `FixRecommendation` | `ApplyResult` |
 | `generateFixBranchName()` | Generate branch name | testFile, timestamp | string |
-| `generateFixCommitMessage()` | Generate commit message | `FixRecommendation` | string |
 
 #### ApplyResult Interface
 ```typescript
@@ -455,6 +461,8 @@ interface ApplyResult {
   error?: string;          // Error message if fix failed
   commitSha?: string;      // Git commit SHA if committed
   branchName?: string;     // Branch name that was created
+  validationRunId?: number;
+  validationStatus?: 'pending' | 'skipped';
 }
 ```
 
@@ -463,6 +471,8 @@ interface ApplyResult {
 interface FixApplierConfig {
   baseBranch: string;     // Base branch to create fix branch from
   minConfidence: number;  // Minimum confidence threshold to apply fix
+  enableValidation?: boolean;
+  validationWorkflow?: string;
 }
 ```
 
@@ -471,8 +481,8 @@ interface FixApplierConfig {
 1. **Confidence Check**: Verify fix recommendation meets minimum confidence threshold
 2. **Branch Creation**: Fetch base branch and create new fix branch
 3. **Apply Changes**: For each proposed change, read file, apply string replacement, write back
-4. **Stage & Commit**: Stage modified files and create commit with structured message
-5. **Push**: Push the branch to origin
+4. **Commit via GitHub API**: Write updated file contents to the fix branch
+5. **Optional Validation Dispatch**: Trigger a follow-up workflow if validation is enabled
 6. **Cleanup on Failure**: If any step fails, delete the branch and return to original state
 
 ---
@@ -513,8 +523,6 @@ Generates human-readable summaries for various outputs.
 |----------|---------|--------|---------|
 | `generateAnalysisSummary()` | Generate analysis summary | OpenAIResponse, ErrorData | string |
 | `generateFixSummary()` | Generate fix summary | Recommendation, context, includeCode | string |
-| `createBriefSummary()` | Create brief summary | Verdict, confidence, summary, testName | string |
-| `formatVerdict()` | Format verdict for display | Verdict | string |
 
 ---
 
@@ -549,7 +557,7 @@ Centralized configuration values.
 #### OpenAI Configuration
 | Constant | Value | Description |
 |----------|-------|-------------|
-| `MODEL` | `gpt-5.2` | Model to use |
+| `MODEL` | `gpt-5.3-codex` | Model to use |
 | `TEMPERATURE` | 0.3 | Response temperature |
 | `MAX_COMPLETION_TOKENS` | 16,384 | Max tokens |
 | `MAX_RETRIES` | 3 | Retry attempts |
@@ -574,7 +582,7 @@ interface ErrorData {
   fileName?: string;
   screenshots?: Screenshot[];
   logs?: string[];
-  cypressArtifactLogs?: string;
+  testArtifactLogs?: string;
   prDiff?: PRDiff;
   structuredSummary?: StructuredErrorSummary;
 }
@@ -588,7 +596,6 @@ interface AnalysisResult {
   suggestedSourceLocations?: SourceLocation[];
   evidence?: string[];
   category?: string;
-  repairContext?: RepairContext;
   fixRecommendation?: FixRecommendation;
 }
 
@@ -606,6 +613,13 @@ interface ActionInputs {
   enableAutoFix?: boolean;         // Enable automatic branch creation
   autoFixBaseBranch?: string;      // Base branch to create fix from
   autoFixMinConfidence?: number;   // Minimum confidence for auto-fix
+  autoFixTargetRepo?: string;
+  branch?: string;
+  enableValidation?: boolean;
+  validationWorkflow?: string;
+  validationPreviewUrl?: string;
+  validationSpec?: string;
+  enableAgenticRepair?: boolean;
 }
 ```
 
@@ -615,7 +629,7 @@ interface ActionInputs {
 
 | Output | Type | Description |
 |--------|------|-------------|
-| `verdict` | string | `TEST_ISSUE`, `PRODUCT_ISSUE`, `INCONCLUSIVE`, or `PENDING` |
+| `verdict` | string | `TEST_ISSUE`, `PRODUCT_ISSUE`, `INCONCLUSIVE`, `PENDING`, or `ERROR` |
 | `confidence` | string | Confidence percentage (0-95) |
 | `reasoning` | string | Detailed reasoning for the verdict |
 | `summary` | string | Human-readable summary |
@@ -626,8 +640,11 @@ interface ActionInputs {
 | `fix_confidence` | string | Fix recommendation confidence (if available) |
 | `auto_fix_applied` | string | `true` or `false` - whether auto-fix branch was created |
 | `auto_fix_branch` | string | Name of the created branch (if auto-fix applied) |
-| `auto_fix_commit` | string | SHA of the fix commit (if auto-fix applied) |
+| `auto_fix_commit` | string | Last commit SHA created while applying the fix (if auto-fix applied) |
 | `auto_fix_files` | string | JSON array of modified files (if auto-fix applied) |
+| `validation_run_id` | string | Validation workflow run ID when discovered after dispatch |
+| `validation_status` | string | Validation dispatch status reported by this action: `pending` or `skipped` |
+| `validation_url` | string | URL for the dispatched validation workflow run when GitHub returns it |
 
 ---
 
@@ -639,13 +656,13 @@ interface ActionInputs {
 
 ### Graceful Degradation
 1. **Workflow still running**: Returns `PENDING` verdict
-2. **No error data**: Fails with descriptive message
+2. **No error data**: Returns `ERROR` outputs and fails the action with a descriptive message
 3. **Low confidence**: Returns `INCONCLUSIVE` verdict
 4. **Fix generation fails**: Continues without fix recommendation
 
 ### Error Recovery
 - Screenshots fetch failure: Continues with text-only analysis
-- Cypress artifact fetch failure: Uses GitHub Actions logs only
+- Uploaded test artifact fetch failure: Uses GitHub Actions logs only
 - PR diff fetch failure: Analyzes without PR context
 - JSON parse failure: Falls back to text extraction
 
@@ -662,7 +679,8 @@ interface ActionInputs {
     WORKFLOW_RUN_ID: ${{ github.run_id }}
     JOB_NAME: 'test-job'
     CONFIDENCE_THRESHOLD: '70'
-    PR_NUMBER: ${{ github.event.pull_request.number }}
+    BRANCH: ${{ github.ref_name }}
+    COMMIT_SHA: ${{ github.sha }}
 ```
 
 ---
@@ -676,8 +694,9 @@ The Auto-Fix feature allows the triage agent to automatically apply AI-generated
 When a test failure is classified as `TEST_ISSUE` and the fix recommendation meets confidence requirements, the auto-fix feature can:
 1. Create a new branch from your base branch
 2. Apply the proposed code changes
-3. Commit and push the changes
-4. Provide branch details for manual PR creation
+3. Commit the changes through the GitHub API
+4. Optionally dispatch a validation workflow
+5. Provide branch and validation details for downstream automation or manual review
 
 ### Auto-Fix Decision Flow
 
@@ -703,11 +722,12 @@ flowchart TD
     APPLY_FIX --> FETCH_BASE[Fetch Base Branch]
     FETCH_BASE --> CREATE_BRANCH[Create Fix Branch<br/>fix/triage-agent/...]
     CREATE_BRANCH --> APPLY_CHANGES[Apply Code Changes]
-    APPLY_CHANGES --> STAGE_FILES[Stage Modified Files]
-    STAGE_FILES --> COMMIT[Commit Changes]
-    COMMIT --> PUSH[Push Branch]
+    APPLY_CHANGES --> COMMIT[Commit Changes via<br/>GitHub API]
+    COMMIT --> VALIDATE{Validation<br/>Enabled?}
+    VALIDATE -->|Yes| DISPATCH[Dispatch Validation Workflow]
+    VALIDATE -->|No| SUCCESS
 
-    PUSH --> SUCCESS{Success?}
+    DISPATCH --> SUCCESS{Success?}
     SUCCESS --> |Yes| OUTPUT_SUCCESS[Output Results<br/>auto_fix_applied: true<br/>auto_fix_branch: ...<br/>auto_fix_commit: ...]
     SUCCESS --> |No| CLEANUP[Cleanup Branch<br/>auto_fix_applied: false]
 
@@ -744,7 +764,7 @@ flowchart TD
 |--------|------|-------------|
 | `auto_fix_applied` | string | `true` if auto-fix branch was created, `false` otherwise |
 | `auto_fix_branch` | string | Name of the created branch (e.g., `fix/triage-agent/my-test-cy-ts-20240130`) |
-| `auto_fix_commit` | string | SHA of the fix commit |
+| `auto_fix_commit` | string | Last commit SHA created while applying the fix |
 | `auto_fix_files` | string | JSON array of modified file paths |
 
 ### Example: Enabling Auto-Fix
@@ -757,17 +777,12 @@ on:
     types: [triage-failed-test]
 
 permissions:
-  contents: write  # Required for creating branches and pushing commits
+  contents: write  # Required for creating branches and committing via GitHub API
 
 jobs:
   analyze:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0  # Required for branch operations
-
       - name: Analyze failure with auto-fix
         id: triage
         uses: adept-at/adept-triage-agent@v1
@@ -858,7 +873,7 @@ After auto-fix applies, engineers receive:
 - Branch name for inspection
 - Commit SHA for verification
 - List of modified files for review
-- Direct link to create a PR when ready
+- Optional validation run details if a validation workflow was dispatched
 
 #### 4. Required Permissions
 
@@ -875,7 +890,6 @@ Without this permission, the auto-fix will fail gracefully and the fix recommend
 
 If any step of the auto-fix process fails, the agent:
 - Cleans up the partially created branch
-- Returns to the original checkout state
 - Reports the error in outputs
 - Sets `auto_fix_applied: false`
 
@@ -893,10 +907,10 @@ The auto-fix feature uses these constants from `src/config/constants.ts`:
 Auto-fix branches follow this naming pattern:
 
 ```
-fix/triage-agent/{sanitized-test-file}-{YYYYMMDD}
+fix/triage-agent/{sanitized-test-file}-{YYYYMMDD}-{suffix}
 ```
 
-Example: `fix/triage-agent/login-spec-cy-ts-20240130`
+Example: `fix/triage-agent/login-spec-cy-ts-20240130-123`
 
 The test file name is sanitized (special characters replaced with hyphens) and truncated to 50 characters to ensure valid git branch names.
 

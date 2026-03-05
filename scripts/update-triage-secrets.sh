@@ -36,7 +36,7 @@ fi
 
 for repo in "${REPOS[@]}"; do
   echo -n "  Setting CROSS_REPO_PAT on $repo... "
-  echo "$CROSS_REPO_PAT" | gh secret set CROSS_REPO_PAT --repo "$repo" 2>&1
+  printf '%s' "$CROSS_REPO_PAT" | gh secret set CROSS_REPO_PAT --repo "$repo" 2>&1
   echo "done"
 done
 echo ""
@@ -75,7 +75,7 @@ if [ ${#MISSING_OPENAI[@]} -gt 0 ]; then
   else
     for repo in "${MISSING_OPENAI[@]}"; do
       echo -n "  Setting OPENAI_API_KEY on $repo... "
-      echo "$OPENAI_KEY" | gh secret set OPENAI_API_KEY --repo "$repo" 2>&1
+      printf '%s' "$OPENAI_KEY" | gh secret set OPENAI_API_KEY --repo "$repo" 2>&1
       echo "done"
     done
   fi

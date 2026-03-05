@@ -41,7 +41,7 @@ const core = __importStar(require("@actions/core"));
 const github = __importStar(require("@actions/github"));
 const simplified_analyzer_1 = require("../simplified-analyzer");
 const constants_1 = require("../config/constants");
-async function processWorkflowLogs(octokit, artifactFetcher, inputs, _repoDetails) {
+async function processWorkflowLogs(octokit, artifactFetcher, inputs, repoDetails) {
     const context = github.context;
     const { owner, repo } = context.repo;
     if (inputs.errorMessage) {
@@ -104,7 +104,7 @@ async function processWorkflowLogs(octokit, artifactFetcher, inputs, _repoDetail
     catch (error) {
         core.warning(`Failed to download job logs: ${error}`);
     }
-    const [screenshots, artifactLogs, prDiff] = await fetchArtifactsParallel(artifactFetcher, runId, failedJob.name, context.repo, inputs);
+    const [screenshots, artifactLogs, prDiff] = await fetchArtifactsParallel(artifactFetcher, runId, failedJob.name, context.repo, repoDetails, inputs);
     const cappedArtifactLogs = capArtifactLogs(artifactLogs);
     const combinedContext = buildErrorContext(failedJob, extractedError, cappedArtifactLogs, fullLogs, inputs);
     const hasLogs = !!(fullLogs && fullLogs.length > 0);
@@ -192,13 +192,16 @@ function logDiffResult(diff, source) {
         }
     }
 }
-async function fetchDiffWithFallback(artifactFetcher, inputs) {
+async function fetchDiffWithFallback(artifactFetcher, inputs, repoDetails) {
     const mainBranches = ['main', 'master'];
+    const repository = repoDetails
+        ? `${repoDetails.owner}/${repoDetails.repo}`
+        : inputs.repository;
     if (inputs.prNumber) {
         const prNum = inputs.prNumber;
-        core.info(`📋 Fetching PR diff for PR #${prNum} from ${inputs.repository || 'current repo'}...`);
+        core.info(`📋 Fetching PR diff for PR #${prNum} from ${repository || 'current repo'}...`);
         try {
-            const diff = await artifactFetcher.fetchPRDiff(prNum, inputs.repository);
+            const diff = await artifactFetcher.fetchPRDiff(prNum, repository);
             logDiffResult(diff, 'PR diff');
             if (diff)
                 return diff;
@@ -211,7 +214,7 @@ async function fetchDiffWithFallback(artifactFetcher, inputs) {
     if (inputs.branch && !mainBranches.includes(inputs.branch.toLowerCase())) {
         core.info(`📋 Fetching branch diff: main...${inputs.branch} (preview URL mode)...`);
         try {
-            const diff = await artifactFetcher.fetchBranchDiff(inputs.branch, 'main', inputs.repository);
+            const diff = await artifactFetcher.fetchBranchDiff(inputs.branch, 'main', repository);
             logDiffResult(diff, 'branch diff');
             if (diff)
                 return diff;
@@ -226,7 +229,7 @@ async function fetchDiffWithFallback(artifactFetcher, inputs) {
         if (isMainBranch) {
             core.info(`📋 Fetching commit diff for ${inputs.commitSha.substring(0, 7)} (production deploy mode)...`);
             try {
-                const diff = await artifactFetcher.fetchCommitDiff(inputs.commitSha, inputs.repository);
+                const diff = await artifactFetcher.fetchCommitDiff(inputs.commitSha, repository);
                 logDiffResult(diff, 'commit diff');
                 if (diff)
                     return diff;
@@ -245,9 +248,9 @@ async function fetchDiffWithFallback(artifactFetcher, inputs) {
     }
     return null;
 }
-async function fetchArtifactsParallel(artifactFetcher, runId, jobName, repoDetails, inputs) {
+async function fetchArtifactsParallel(artifactFetcher, runId, jobName, artifactRepoDetails, diffRepoDetails, inputs) {
     const screenshotsPromise = artifactFetcher
-        .fetchScreenshots(runId, jobName, repoDetails)
+        .fetchScreenshots(runId, jobName, artifactRepoDetails)
         .then((screenshots) => {
         core.info(`Found ${screenshots.length} screenshots`);
         return screenshots;
@@ -257,7 +260,7 @@ async function fetchArtifactsParallel(artifactFetcher, runId, jobName, repoDetai
         return [];
     });
     const artifactLogsPromise = artifactFetcher
-        .fetchTestArtifactLogs(runId, jobName, repoDetails)
+        .fetchTestArtifactLogs(runId, jobName, artifactRepoDetails)
         .then((logs) => {
         if (logs) {
             core.info(`Found test artifact logs (${logs.length} characters)`);
@@ -268,7 +271,7 @@ async function fetchArtifactsParallel(artifactFetcher, runId, jobName, repoDetai
         core.warning(`Failed to fetch test artifact logs: ${error}`);
         return '';
     });
-    const prDiffPromise = fetchDiffWithFallback(artifactFetcher, inputs);
+    const prDiffPromise = fetchDiffWithFallback(artifactFetcher, inputs, diffRepoDetails);
     return Promise.all([screenshotsPromise, artifactLogsPromise, prDiffPromise]);
 }
 function buildErrorContext(failedJob, extractedError, artifactLogs, fullLogs, inputs) {

@@ -13,7 +13,7 @@ flowchart TB
     TRIGGER --> GHA["GitHub Action Entry<br/>src/index.ts"]
 
     GHA --> INPUTS["Parse Inputs<br/>getInputs()"]
-    INPUTS --> CLIENTS["Initialize Clients<br/>Octokit + OpenAIClient"]
+    INPUTS --> CLIENTS["Initialize Clients<br/>Octokit + OpenAIClient + ArtifactFetcher"]
     CLIENTS --> LOGS["Process Workflow Logs<br/>log-processor.ts"]
 
     LOGS --> FETCH_DATA
@@ -34,12 +34,12 @@ flowchart TB
 
     NULL_CHECK -->|Yes| ANALYZE["Analyze with AI<br/>simplified-analyzer.ts"]
 
-    ANALYZE --> AI_CALL["OpenAI Responses API<br/>gpt-5.2-codex<br/>openai-client.ts"]
+    ANALYZE --> AI_CALL["OpenAI Responses API<br/>gpt-5.3-codex<br/>openai-client.ts"]
 
     AI_CALL --> VERDICT{Verdict?}
 
     VERDICT -->|TEST_ISSUE| FIX_REC["Generate Fix Recommendation<br/>SimplifiedRepairAgent"]
-    VERDICT -->|PRODUCT_ISSUE| OUTPUT_PRODUCT["Output: PRODUCT_ISSUE<br/>+ Suggested Source Locations"]
+    VERDICT -->|PRODUCT_ISSUE| CONFIDENCE_CHECK
 
     FIX_REC --> AGENTIC_CHECK{Agentic<br/>Repair Enabled?}
 
@@ -51,23 +51,23 @@ flowchart TB
 
     FIX_RESULT{Fix<br/>Generated?}
     FIX_RESULT -->|Yes| AUTO_FIX_CHECK{Auto-Fix<br/>Enabled?}
-    FIX_RESULT -->|No| OUTPUT_TEST_NOFIX["Output: TEST_ISSUE<br/>(no fix)"]
+    FIX_RESULT -->|No| CONFIDENCE_CHECK
 
     AUTO_FIX_CHECK -->|Yes| APPLY_FIX["Apply Fix<br/>fix-applier.ts"]
-    AUTO_FIX_CHECK -->|No| OUTPUT_TEST_FIX["Output: TEST_ISSUE<br/>+ Fix Recommendation"]
+    AUTO_FIX_CHECK -->|No| CONFIDENCE_CHECK
 
     APPLY_FIX --> CREATE_BRANCH["Create Branch<br/>via GitHub API"]
     CREATE_BRANCH --> COMMIT["Commit Changes<br/>via GitHub API"]
     COMMIT --> VALIDATE_CHECK{Validation<br/>Enabled?}
 
     VALIDATE_CHECK -->|Yes| DISPATCH["Trigger Validation Workflow<br/>createWorkflowDispatch()"]
-    VALIDATE_CHECK -->|No| OUTPUT_AUTOFIX["Output: TEST_ISSUE<br/>+ Auto-Fix Applied"]
+    VALIDATE_CHECK -->|No| CONFIDENCE_CHECK
 
-    DISPATCH --> OUTPUT_VALIDATED["Output: TEST_ISSUE<br/>+ Auto-Fix + Validation Pending"]
+    DISPATCH --> CONFIDENCE_CHECK
 
-    ANALYZE --> CONFIDENCE_CHECK{Confidence ≥<br/>Threshold?}
+    CONFIDENCE_CHECK{Confidence ≥<br/>Threshold?}
     CONFIDENCE_CHECK -->|No| INCONCLUSIVE["Output: INCONCLUSIVE"]
-    CONFIDENCE_CHECK -->|Yes| VERDICT
+    CONFIDENCE_CHECK -->|Yes| FINAL_OUTPUT["Set Success Output<br/>(verdict + fix + auto-fix results)"]
 ```
 
 ## Multi-Agent Orchestration Pipeline
@@ -152,20 +152,20 @@ flowchart LR
     subgraph CONSUMER_REPOS["Consumer Repositories"]
         direction TB
 
-        subgraph LEARN["learn-webapp<br/>(Adept Learn)"]
-            LW_WF["cypress-saucelabs-with-triage.yml"]
-            LW_TESTS["Cypress E2E Tests<br/>• Skills preview URL tests<br/>• SauceLabs integration"]
+        subgraph LEARN["learn-webapp, lib-cypress-canary,<br/>lib-wdio-8-e2e-ts, lib-wdio-8-multi-remote<br/>(Consumer Repos)"]
+            LW_WF["Test + triage-failed-tests.yml workflows"]
+            LW_TESTS["E2E Tests<br/>• Cypress (learn-webapp, lib-cypress-canary)<br/>• WebDriverIO (lib-wdio-8-e2e-ts, multi-remote)"]
         end
 
         subgraph ANY_REPO["Any Repo<br/>(via examples)"]
-            AR_INLINE["Inline Usage<br/>(same workflow)"]
+            AR_INLINE["Inline Usage<br/>(same workflow, best-effort)"]
             AR_DISPATCH["Repository Dispatch<br/>(separate workflow)"]
             AR_WF_RUN["workflow_run Trigger<br/>(separate workflow)"]
         end
     end
 
     subgraph EXTERNAL["External Services"]
-        OPENAI["OpenAI API<br/>gpt-5.2-codex<br/>Responses API"]
+        OPENAI["OpenAI API<br/>gpt-5.3-codex<br/>Responses API"]
         GITHUB_API["GitHub REST API<br/>• Workflow logs<br/>• Artifacts<br/>• File content<br/>• PR diffs<br/>• Branch creation"]
         SLACK["Slack<br/>(via adept-common<br/>triage-slack-notify)"]
     end
@@ -195,9 +195,11 @@ flowchart LR
         OAI_KEY["OPENAI_API_KEY"]
         WF_RUN_ID["WORKFLOW_RUN_ID"]
         JOB["JOB_NAME"]
-        PR["PR_NUMBER"]
-        REPO["REPOSITORY"]
+        PR["PR_NUMBER + COMMIT_SHA"]
+        REPO["REPOSITORY + BRANCH"]
         CONF_THRESH["CONFIDENCE_THRESHOLD"]
+        FRAMEWORKS["TEST_FRAMEWORKS<br/>(cypress | webdriverio)"]
+        AUTOFIX_IN["ENABLE_AUTO_FIX<br/>ENABLE_AGENTIC_REPAIR"]
     end
 
     subgraph COLLECTION["Data Collection Layer"]
@@ -211,20 +213,20 @@ flowchart LR
     subgraph AI_LAYER["AI Analysis Layer"]
         direction TB
         PROMPT["Structured Prompt<br/>error + logs + screenshots + diff"]
-        MODEL["gpt-5.2-codex<br/>Responses API<br/>JSON output format<br/>max 16384 tokens"]
+        MODEL["gpt-5.3-codex<br/>Responses API<br/>JSON output format<br/>max 16384 tokens"]
         RESPONSE["Structured JSON Response"]
     end
 
     subgraph OUTPUT_LAYER["Outputs"]
         direction TB
-        VERDICT_OUT["verdict: TEST_ISSUE | PRODUCT_ISSUE"]
+        VERDICT_OUT["verdict: TEST_ISSUE | PRODUCT_ISSUE | INCONCLUSIVE | PENDING | ERROR"]
         CONF_OUT["confidence: 0-100"]
         REASON_OUT["reasoning: detailed explanation"]
         SUMMARY_OUT["summary: brief for PR comments"]
         JSON_OUT["triage_json: complete analysis"]
         FIX_OUT["fix_recommendation: proposed changes"]
         AUTOFIX_OUT["auto_fix_branch: branch name"]
-        VALID_OUT["validation_status: pending | passed | failed"]
+        VALID_OUT["validation_status: pending | skipped"]
     end
 
     INPUTS_LAYER --> COLLECTION

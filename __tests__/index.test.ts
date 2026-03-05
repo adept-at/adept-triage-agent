@@ -568,14 +568,68 @@ describe('GitHub Action', () => {
     });
 
     it('should handle workflow not completed', async () => {
-      mockOctokit.actions.getWorkflowRun.mockResolvedValueOnce({
+      mockOctokit.actions.getWorkflowRun.mockResolvedValue({
         data: { status: 'in_progress' },
+      } as any);
+      mockOctokit.actions.listJobsForWorkflowRun.mockResolvedValue({
+        data: { jobs: [{ name: 'test-job', status: 'in_progress', conclusion: null }] },
       } as any);
 
       await run();
 
-      expect(mockCore.warning).toHaveBeenCalledWith('Workflow run is not completed yet');
-      expect(mockCore.setFailed).toHaveBeenCalledWith('No error data found to analyze');
+      expect(mockCore.warning).toHaveBeenCalledWith(
+        'Workflow run is not completed yet'
+      );
+      expect(mockCore.warning).toHaveBeenCalledWith(
+        'Workflow run 12345 is still in progress (status: in_progress)'
+      );
+      expect(mockCore.setOutput).toHaveBeenCalledWith('verdict', 'PENDING');
+      expect(mockCore.setOutput).toHaveBeenCalledWith('confidence', '0');
+      expect(mockCore.setOutput).toHaveBeenCalledWith(
+        'reasoning',
+        'Workflow is still running. Please wait for it to complete before running triage analysis.'
+      );
+      expect(mockCore.setOutput).toHaveBeenCalledWith(
+        'summary',
+        'Analysis pending - workflow not completed'
+      );
+      expect(mockCore.setFailed).not.toHaveBeenCalled();
+    });
+
+    it('should remain pending when the target job is not available yet', async () => {
+      mockOctokit.actions.getWorkflowRun.mockResolvedValue({
+        data: { status: 'in_progress' },
+      } as any);
+      mockOctokit.actions.listJobsForWorkflowRun.mockResolvedValue({
+        data: { jobs: [] },
+      } as any);
+
+      await run();
+
+      expect(mockCore.warning).toHaveBeenCalledWith(
+        "Job 'test-job' not found yet while workflow is still in progress"
+      );
+      expect(mockCore.setOutput).toHaveBeenCalledWith('verdict', 'PENDING');
+      expect(mockCore.setFailed).not.toHaveBeenCalled();
+    });
+
+    it('should return NO_FAILURE when target job completed without failure', async () => {
+      mockOctokit.actions.getWorkflowRun.mockResolvedValue({
+        data: { status: 'in_progress' },
+      } as any);
+      mockOctokit.actions.listJobsForWorkflowRun.mockResolvedValue({
+        data: { jobs: [{ name: 'test-job', status: 'completed', conclusion: 'success' }] },
+      } as any);
+
+      await run();
+
+      expect(mockCore.setOutput).toHaveBeenCalledWith('verdict', 'NO_FAILURE');
+      expect(mockCore.setOutput).toHaveBeenCalledWith('confidence', '100');
+      expect(mockCore.setOutput).toHaveBeenCalledWith(
+        'summary',
+        expect.stringContaining('No failure detected')
+      );
+      expect(mockCore.setFailed).not.toHaveBeenCalled();
     });
 
     it('should handle no failed jobs', async () => {

@@ -70,7 +70,7 @@ jobs:
         echo "Confidence: ${{ steps.test-direct.outputs.confidence }}"
         echo "Summary: ${{ steps.test-direct.outputs.summary }}"
         
-        if [[ "${{ steps.test-direct.outputs.verdict }}" != "PRODUCT_ISSUE" && "${{ steps.test-direct.outputs.verdict }}" != "TEST_ISSUE" ]]; then
-          echo "Invalid verdict output"
+        if [[ "${{ steps.test-direct.outputs.verdict }}" != "PRODUCT_ISSUE" && "${{ steps.test-direct.outputs.verdict }}" != "TEST_ISSUE" && "${{ steps.test-direct.outputs.verdict }}" != "INCONCLUSIVE" && "${{ steps.test-direct.outputs.verdict }}" != "NO_FAILURE" ]]; then
+          echo "Unexpected verdict for direct ERROR_MESSAGE mode"
           exit 1
         fi 

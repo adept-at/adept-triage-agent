@@ -318,7 +318,7 @@ Confidence: ${recommendation.confidence}%`;
                 const latestRun = runs.data.workflow_runs[0];
                 core.info(`Validation workflow run ID: ${latestRun.id}`);
                 core.info(`Validation workflow URL: ${latestRun.html_url}`);
-                return { runId: latestRun.id };
+                return { runId: latestRun.id, url: latestRun.html_url };
             }
             const inProgressRuns = await withRetry(() => octokit.actions.listWorkflowRuns({
                 owner,
@@ -332,10 +332,10 @@ Confidence: ${recommendation.confidence}%`;
                 const latestRun = inProgressRuns.data.workflow_runs[0];
                 core.info(`Validation workflow run ID: ${latestRun.id}`);
                 core.info(`Validation workflow URL: ${latestRun.html_url}`);
-                return { runId: latestRun.id };
+                return { runId: latestRun.id, url: latestRun.html_url };
             }
-            core.warning('Could not find validation workflow run ID');
-            return null;
+            core.warning('Validation workflow was triggered, but the run ID is not available yet');
+            return {};
         }
         catch (error) {
             const errorMsg = getErrorMessage(error, 'triggering validation workflow');

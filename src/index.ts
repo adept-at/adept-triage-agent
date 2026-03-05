@@ -44,6 +44,60 @@ async function run(): Promise<void> {
         });
 
         if (workflowRun.data.status !== 'completed') {
+          if (inputs.jobName) {
+            try {
+              const jobs = await octokit.actions.listJobsForWorkflowRun({
+                owner,
+                repo,
+                run_id: parseInt(runId, 10),
+                filter: 'latest',
+              });
+              const targetJob = jobs.data.jobs.find(
+                (job) => job.name === inputs.jobName
+              );
+
+              if (!targetJob) {
+                core.warning(
+                  `Job '${inputs.jobName}' not found yet while workflow is still in progress`
+                );
+              } else if (
+                targetJob.status === 'completed' &&
+                targetJob.conclusion !== 'failure'
+              ) {
+                core.info(
+                  `Job '${inputs.jobName}' completed with conclusion: ${targetJob.conclusion} — nothing to triage`
+                );
+                core.setOutput('verdict', 'NO_FAILURE');
+                core.setOutput('confidence', '100');
+                core.setOutput(
+                  'reasoning',
+                  `Job '${inputs.jobName}' did not fail (conclusion: ${targetJob.conclusion}). No triage needed.`
+                );
+                core.setOutput(
+                  'summary',
+                  `No failure detected — job concluded with ${targetJob.conclusion}`
+                );
+                core.setOutput(
+                  'triage_json',
+                  JSON.stringify({
+                    verdict: 'NO_FAILURE',
+                    confidence: 100,
+                    reasoning: `Job '${inputs.jobName}' did not fail (conclusion: ${targetJob.conclusion}). No triage needed.`,
+                    summary: `No failure detected — job concluded with ${targetJob.conclusion}`,
+                    indicators: [],
+                    metadata: {
+                      analyzedAt: new Date().toISOString(),
+                      jobConclusion: targetJob.conclusion,
+                    },
+                  })
+                );
+                return;
+              }
+            } catch (jobCheckError) {
+              core.debug(`Error checking job status: ${jobCheckError}`);
+            }
+          }
+
           core.warning(
             `Workflow run ${runId} is still in progress (status: ${workflowRun.data.status})`
           );
@@ -76,19 +130,7 @@ async function run(): Promise<void> {
         core.debug(`Error checking workflow status: ${error}`);
       }
 
-      core.setOutput('verdict', 'ERROR');
-      core.setOutput('confidence', '0');
-      core.setOutput('reasoning', 'No error data found to analyze');
-      core.setOutput('summary', 'Triage failed: no error data found');
-      core.setOutput('triage_json', JSON.stringify({
-        verdict: 'ERROR',
-        confidence: 0,
-        reasoning: 'No error data found to analyze',
-        summary: 'Triage failed: no error data found',
-        indicators: [],
-        metadata: { analyzedAt: new Date().toISOString(), error: true },
-      }));
-      core.setFailed('No error data found to analyze');
+      setErrorOutput('No error data found to analyze');
       return;
     }
 
@@ -243,7 +285,8 @@ async function generateFixRecommendation(
       workflowRunId: inputs.workflowRunId || github.context.runId.toString(),
       jobName: inputs.jobName || 'unknown',
       commitSha: inputs.commitSha || github.context.sha,
-      branch: github.context.ref.replace('refs/heads/', ''),
+      branch:
+        inputs.branch || github.context.ref.replace('refs/heads/', ''),
       repository:
         inputs.repository || `${repoDetails.owner}/${repoDetails.repo}`,
       prNumber: inputs.prNumber,
@@ -352,11 +395,18 @@ async function attemptAutoFix(
           });
 
           if (validationResult) {
-            result.validationRunId = validationResult.runId;
             result.validationStatus = 'pending';
-            core.info(
-              `✅ Validation workflow triggered: run ID ${validationResult.runId}`
-            );
+            result.validationRunId = validationResult.runId;
+            result.validationUrl = validationResult.url;
+            if (validationResult.runId) {
+              core.info(
+                `✅ Validation workflow triggered: run ID ${validationResult.runId}`
+              );
+            } else {
+              core.info(
+                '✅ Validation workflow triggered: run ID not available yet'
+              );
+            }
           } else {
             core.warning('Could not trigger validation workflow');
             result.validationStatus = 'skipped';
@@ -400,6 +450,25 @@ function setInconclusiveOutput(
   core.setOutput('triage_json', JSON.stringify(inconclusiveTriageJson));
 }
 
+function setErrorOutput(reason: string): void {
+  core.setOutput('verdict', 'ERROR');
+  core.setOutput('confidence', '0');
+  core.setOutput('reasoning', reason);
+  core.setOutput('summary', `Triage failed: ${reason}`);
+  core.setOutput(
+    'triage_json',
+    JSON.stringify({
+      verdict: 'ERROR',
+      confidence: 0,
+      reasoning: reason,
+      summary: `Triage failed: ${reason}`,
+      indicators: [],
+      metadata: { analyzedAt: new Date().toISOString(), error: true },
+    })
+  );
+  core.setFailed(reason);
+}
+
 function setSuccessOutput(
   result: {
     verdict: string;
@@ -439,6 +508,7 @@ function setSuccessOutput(
             validation: {
               status: autoFixResult.validationStatus || 'skipped',
               runId: autoFixResult.validationRunId,
+              url: autoFixResult.validationUrl,
             },
           },
         }
@@ -497,8 +567,14 @@ function setSuccessOutput(
       );
       core.setOutput(
         'validation_url',
-        `https://github.com/${github.context.repo.owner}/${github.context.repo.repo}/actions/runs/${autoFixResult.validationRunId}`
+        autoFixResult.validationUrl ||
+          `https://github.com/${github.context.repo.owner}/${github.context.repo.repo}/actions/runs/${autoFixResult.validationRunId}`
       );
+    } else if (autoFixResult.validationStatus === 'pending') {
+      core.setOutput('validation_status', 'pending');
+      if (autoFixResult.validationUrl) {
+        core.setOutput('validation_url', autoFixResult.validationUrl);
+      }
     } else {
       core.setOutput(
         'validation_status',
@@ -553,10 +629,23 @@ function setSuccessOutput(
         core.info(`\n🧪 Validation: ${autoFixResult.validationStatus}`);
         core.info(`  Run ID: ${autoFixResult.validationRunId}`);
         core.info(
-          `  URL: https://github.com/${github.context.repo.owner}/${github.context.repo.repo}/actions/runs/${autoFixResult.validationRunId}`
+          `  URL: ${
+            autoFixResult.validationUrl ||
+            `https://github.com/${github.context.repo.owner}/${github.context.repo.repo}/actions/runs/${autoFixResult.validationRunId}`
+          }`
         );
         core.info(
-          '\n👉 PR will be created automatically if validation passes.'
+          '\n👉 Validation was triggered. Any PR creation must happen in your downstream workflow or be done manually.'
+        );
+      } else if (autoFixResult.validationStatus === 'pending') {
+        core.info('\n🧪 Validation: pending');
+        if (autoFixResult.validationUrl) {
+          core.info(`  URL: ${autoFixResult.validationUrl}`);
+        } else {
+          core.info('  Run ID / URL not available yet');
+        }
+        core.info(
+          '\n👉 Validation was triggered. Any PR creation must happen in your downstream workflow or be done manually.'
         );
       } else {
         core.info(

@@ -7,7 +7,7 @@ branding:
 
 inputs:
   GITHUB_TOKEN:
-    description: 'GitHub token for API access'
+    description: 'GitHub token for API access. Use a PAT or app token when REPOSITORY or AUTO_FIX_TARGET_REPO points to a different repo.'
     required: false
     default: ${{ github.token }}
   OPENAI_API_KEY:
@@ -36,17 +36,13 @@ inputs:
     description: 'Branch being tested (used to fetch branch diff when no PR number available)'
     required: false
   REPOSITORY:
-    description: 'Repository in owner/repo format'
+    description: 'App/source repository in owner/repo format for PR, branch, or commit diff lookup. Workflow runs and artifacts are still read from the repo where this action executes.'
     required: false
     default: ${{ github.repository }}
   TEST_FRAMEWORKS:
     description: 'Test framework: "cypress" or "webdriverio".'
     required: false
     default: 'cypress'
-  OUTPUT_REPAIR_CONTEXT:
-    description: 'Boolean indicating if repair context should be output (only for TEST_ISSUE verdicts)'
-    required: false
-    default: 'false'
   ENABLE_AUTO_FIX:
     description: 'Enable automatic branch creation with fix. Consumer opts in by setting this to true.'
     required: false
@@ -60,7 +56,7 @@ inputs:
     required: false
     default: '70'
   AUTO_FIX_TARGET_REPO:
-    description: 'Repository where fix branch should be created (owner/repo format). Use this when test code lives in a different repo than REPOSITORY.'
+    description: 'Repository where repair source files are fetched and fix branches are created (owner/repo format). Use this when test code lives in a different repo than REPOSITORY.'
     required: false
     default: ${{ github.repository }}
   ENABLE_VALIDATION:
@@ -84,7 +80,7 @@ inputs:
 
 outputs:
   verdict:
-    description: 'TEST_ISSUE or PRODUCT_ISSUE'
+    description: 'Classification result: TEST_ISSUE, PRODUCT_ISSUE, INCONCLUSIVE, PENDING, ERROR, or NO_FAILURE'
   confidence:
     description: 'Confidence score (0-100)'
   reasoning:
@@ -93,10 +89,6 @@ outputs:
     description: 'Brief summary for PR comments'
   triage_json:
     description: 'Complete triage analysis as JSON string'
-  repair_context:
-    description: 'Minimal context for repair agent (only populated for TEST_ISSUE verdicts when OUTPUT_REPAIR_CONTEXT is true)'
-  has_repair_context:
-    description: 'Boolean indicating if repair context is available'
   has_fix_recommendation:
     description: 'Boolean indicating if a fix recommendation was generated (TEST_ISSUE only)'
   fix_recommendation:
@@ -110,15 +102,15 @@ outputs:
   auto_fix_branch:
     description: 'Name of the created branch (if auto-fix applied)'
   auto_fix_commit:
-    description: 'SHA of the fix commit (if auto-fix applied)'
+    description: 'Last commit SHA created while applying the fix (if auto-fix applied)'
   auto_fix_files:
     description: 'JSON array of modified files (if auto-fix applied)'
   validation_run_id:
-    description: 'Workflow run ID of the validation workflow (if triggered)'
+    description: 'Workflow run ID of the validation workflow (when discovered)'
   validation_status:
-    description: 'Validation status: pending, passed, failed, or skipped'
+    description: 'Validation dispatch status reported by this action: pending or skipped'
   validation_url:
-    description: 'URL to the validation workflow run (if triggered)'
+    description: 'URL to the validation workflow run (when discovered or returned by GitHub)'
 
 runs:
   using: 'node20'

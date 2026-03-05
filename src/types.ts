@@ -1,6 +1,12 @@
 import { Octokit } from '@octokit/rest';
 
-export type Verdict = 'TEST_ISSUE' | 'PRODUCT_ISSUE';
+export type Verdict =
+  | 'TEST_ISSUE'
+  | 'PRODUCT_ISSUE'
+  | 'INCONCLUSIVE'
+  | 'PENDING'
+  | 'ERROR'
+  | 'NO_FAILURE';
 
 /**
  * Context for fetching source files from GitHub

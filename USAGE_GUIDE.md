@@ -2,25 +2,27 @@
 
 ## Overview
 
-The Adept Triage Agent is a GitHub Action that uses AI (GPT-4.1) to automatically analyze test failures and determine whether they are **test issues** (flaky tests, timing issues) or **product issues** (actual bugs).
+The Adept Triage Agent is a GitHub Action that uses AI (GPT-5.3 Codex) to automatically analyze test failures and determine whether they are **test issues** (flaky tests, timing issues) or **product issues** (actual bugs).
 
 The action returns a comprehensive JSON object containing the analysis results, which you can integrate into your existing notification systems, dashboards, or workflows.
 
 ## Important: Workflow Architecture
 
-⚠️ **The Adept Triage Agent must be run in a separate workflow from your tests.**
+⚠️ **The most reliable setup is to run the Adept Triage Agent in a separate workflow from your tests.**
 
-Running the triage agent within the same workflow that it's trying to analyze creates a circular dependency - the workflow can't be analyzed until it's complete, but it can't complete until the analysis is done. To solve this, use a two-workflow architecture:
+For full logs, uploaded artifacts, and completed workflow context, use a two-workflow architecture:
 
 1. **Test Workflow**: Runs your tests and dispatches an event on failure
 2. **Triage Workflow**: Listens for the dispatch event and runs the analysis
+
+Best-effort same-workflow analysis is still supported when you target the current job, but it has less complete context than the recommended separate-workflow pattern.
 
 ## Version Compatibility
 
 We recommend using the major version tag for automatic updates:
 
 - **`@v1`** - Automatically gets backward-compatible updates (recommended)
-- **`@v1.5.1`** - Pin to specific version if needed
+- **`@v1.18.1`** - Pin to specific version if needed
 
 ## Quick Start
 
@@ -117,8 +119,8 @@ jobs:
                 job_name: '${{ github.job }} (${{ matrix.test }})',
                 // Include any other context you want to pass
                 spec: '${{ matrix.test }}',
-                branch: context.ref.replace('refs/heads/', ''),
-                commit_sha: context.sha
+                branch: '${{ github.head_ref || github.ref_name }}',
+                commit_sha: '${{ github.event.pull_request.head.sha || github.sha }}'
               }
             });
 ```
@@ -173,8 +175,8 @@ jobs:
                 workflow_run_id: context.runId.toString(),
                 job_name: '${{ github.job }}',
                 spec: '${{ matrix.containers }}',
-                pr_number: '${{ github.event.pull_request.number }}',
-                branch: context.ref.replace('refs/heads/', '')
+                pr_number: '${{ github.event.pull_request.number || '' }}',
+                branch: '${{ github.head_ref || github.ref_name }}'
               }
             });
 ```
@@ -273,33 +275,36 @@ The triage agent needs to analyze the complete workflow run, including:
 - Screenshots
 - Timing information
 
-This information is only available after the workflow completes. Running the triage agent within the same workflow creates a deadlock:
+This information is only fully available after the workflow completes. Running the triage agent in a separate workflow avoids partial context and timing issues:
 
 - The workflow can't complete until all steps (including triage) finish
 - The triage can't run until the workflow completes
 
 By using separate workflows with repository dispatch events, we ensure the test workflow completes fully before analysis begins.
 
+If you point the action at the current in-progress job, it can still do a best-effort analysis from available logs, but that mode is intentionally less complete.
+
 ## Inputs
 
 | Input                  | Required | Default                    | Description                                                                                                                                                                                                                                       |
 | ---------------------- | -------- | -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `OPENAI_API_KEY`       | ✅ Yes   | -                          | Your OpenAI API key for AI analysis                                                                                                                                                                                                               |
-| `GITHUB_TOKEN`         | No       | `${{ github.token }}`      | GitHub token for API access. **Note**: A Personal Access Token (PAT) is only needed when the triage agent runs in a different repository than the source code being tested. See [Cross-Repository Access](./README_CROSS_REPO_PR.md) for details. |
+| `GITHUB_TOKEN`         | No       | `${{ github.token }}`      | GitHub token for API access. Use a PAT or GitHub App token when `REPOSITORY` or `AUTO_FIX_TARGET_REPO` points to a different repository. See [Cross-Repository Access](./README_CROSS_REPO_PR.md) for details. |
 | `WORKFLOW_RUN_ID`      | No       | Current run                | The workflow run ID to analyze                                                                                                                                                                                                                    |
 | `JOB_NAME`             | No       | All failed jobs            | Specific job name to analyze                                                                                                                                                                                                                      |
 | `ERROR_MESSAGE`        | No       | From logs/artifacts        | Error message to analyze (if not using artifacts)                                                                                                                                                                                                 |
 | `CONFIDENCE_THRESHOLD` | No       | `70`                       | Minimum confidence level for verdict (0-100)                                                                                                                                                                                                      |
 | `PR_NUMBER`            | No       | -                          | Pull request number to fetch diff from (enables PR diff analysis)                                                                                                                                                                                 |
 | `COMMIT_SHA`           | No       | -                          | Commit SHA associated with the test failure                                                                                                                                                                                                       |
-| `REPOSITORY`           | No       | `${{ github.repository }}` | Repository in owner/repo format                                                                                                                                                                                                                   |
-| `TEST_FRAMEWORKS`      | No       | `cypress`                  | Test framework to use. Currently only supports "cypress".                                                                                                                                                                                         |
+| `BRANCH`               | No       | -                          | Branch being tested, used for branch diff lookup when no PR number is available                                                                                                                                                                  |
+| `REPOSITORY`           | No       | `${{ github.repository }}` | App/source repository in owner/repo format for PR, branch, or commit diff lookup. Workflow runs and artifacts are still read from the repository where the action executes.                                                                    |
+| `TEST_FRAMEWORKS`      | No       | `cypress`                  | Test framework: "cypress" or "webdriverio"                                                                                                                                                                                                         |
 
 ## Outputs
 
 | Output        | Description                      | Example                                                     |
 | ------------- | -------------------------------- | ----------------------------------------------------------- |
-| `verdict`     | Classification of the failure    | `TEST_ISSUE`, `PRODUCT_ISSUE`, `INCONCLUSIVE`, or `PENDING` |
+| `verdict`     | Classification of the failure    | `TEST_ISSUE`, `PRODUCT_ISSUE`, `INCONCLUSIVE`, `PENDING`, or `ERROR` |
 | `confidence`  | Confidence score (0-100)         | `95`                                                        |
 | `reasoning`   | Detailed explanation             | "The test failed due to a timing issue..."                  |
 | `summary`     | Brief summary for notifications  | "🧪 Test Issue: Timing issue with auto-save indicator"      |
@@ -309,10 +314,11 @@ By using separate workflows with repository dispatch events, we ensure the test 
 
 - **`PENDING`**: The workflow is still running and analysis cannot be performed yet
 - **`INCONCLUSIVE`**: The analysis completed but confidence is below the threshold
+- **`ERROR`**: The action could not collect enough data or encountered a runtime failure
 
 ## Complete Integration Example
 
-The triage agent requires a two-workflow approach for proper integration:
+The recommended integration pattern uses two workflows:
 
 1. **Test Workflow**: Runs tests and dispatches events on failure
 2. **Triage Workflow**: Analyzes failures and sends notifications
@@ -555,17 +561,17 @@ To analyze all failed jobs in a workflow:
 ```yaml
 - name: Analyze All Failures
   if: failure()
-  uses: adept-at/adept-triage-agent@v1.3.1
+  uses: adept-at/adept-triage-agent@v1
   with:
     OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
     # Omit JOB_NAME to analyze all failed jobs
 ```
 
-### PR Diff Analysis
+### Change Diff Analysis
 
-When you provide a `PR_NUMBER`, the triage agent will:
+When you provide a `PR_NUMBER`, `BRANCH`, or `COMMIT_SHA`, the triage agent can:
 
-1. Fetch the PR diff to understand what code changed
+1. Fetch the relevant PR, branch, or commit diff to understand what code changed
 2. Analyze if the changes are related to the test failure
 3. Calculate a risk score (high/medium/low/none)
 4. Use this context to make more accurate verdicts
@@ -578,12 +584,12 @@ This is especially useful for determining if a test failure is caused by recent 
   with:
     OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
     WORKFLOW_RUN_ID: '${{ github.event.client_payload.workflow_run_id }}'
-    PR_NUMBER: '${{ github.event.pull_request.number }}' # Enable PR diff analysis
+    PR_NUMBER: '${{ github.event.client_payload.pr_number }}' # Or use BRANCH / COMMIT_SHA for non-PR runs
 ```
 
 ### Using with Different Test Frameworks
 
-The action currently supports Cypress test framework with optimized error extraction. While the `TEST_FRAMEWORKS` input accepts a value, only "cypress" is currently implemented:
+The action supports both Cypress and WebdriverIO test frameworks with optimized error extraction:
 
 ```yaml
 # Cypress example with artifacts
@@ -603,7 +609,7 @@ The action currently supports Cypress test framework with optimized error extrac
   uses: adept-at/adept-triage-agent@v1
   with:
     OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-    TEST_FRAMEWORKS: 'cypress' # Currently the only supported framework
+    TEST_FRAMEWORKS: 'cypress' # or 'webdriverio'
 ```
 
 ### Custom Confidence Thresholds
@@ -612,7 +618,7 @@ Adjust the confidence threshold for more or less strict verdicts:
 
 ```yaml
 - name: Strict Analysis
-  uses: adept-at/adept-triage-agent@v1.3.1
+  uses: adept-at/adept-triage-agent@v1
   with:
     OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
     CONFIDENCE_THRESHOLD: '90' # Require 90% confidence
@@ -620,11 +626,11 @@ Adjust the confidence threshold for more or less strict verdicts:
 
 ### Error Extraction
 
-The action is optimized for Cypress test framework and looks for Cypress-specific error patterns:
+The action supports both Cypress and WebdriverIO, while still recognizing many Cypress-specific error patterns:
 
 ```yaml
 - name: Analyze Cypress Tests
-  uses: adept-at/adept-triage-agent@v1.3.1
+  uses: adept-at/adept-triage-agent@v1
   with:
     OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
     TEST_FRAMEWORKS: 'cypress'
@@ -662,10 +668,10 @@ jobs:
 
 The agent handles missing optional inputs gracefully:
 
-- **No PR_NUMBER**: PR diff analysis is skipped
+- **No PR_NUMBER / BRANCH / COMMIT_SHA**: Change diff analysis is skipped
 - **No JOB_NAME**: Automatically finds the first failed job
 - **No COMMIT_SHA**: Not required for analysis
-- **No REPOSITORY**: Uses current repository context
+- **No REPOSITORY**: Uses the current repository for diff lookup as well
 
 Even if some data collection fails (e.g., screenshots unavailable), the agent will proceed with whatever data it can gather.
 
@@ -674,8 +680,8 @@ Even if some data collection fails (e.g., screenshots unavailable), the agent wi
 1. **Log Collection**: The action fetches all logs from the failed job(s)
 2. **Artifact Analysis**: Downloads and analyzes screenshots and test artifacts
 3. **Structured Error Extraction**: Automatically extracts and categorizes error information
-4. **PR Diff Analysis**: If PR number provided, analyzes code changes for relevance
-5. **AI Analysis**: Sends structured summary + logs + screenshots to GPT-4.1 for multimodal analysis
+4. **Change Diff Analysis**: If PR, branch, or commit context is provided, analyzes code changes for relevance
+5. **AI Analysis**: Sends structured summary + logs + screenshots to GPT-5.3 Codex for multimodal analysis
 6. **Verdict Generation**: Determines if the failure is a test or product issue
 7. **Confidence Scoring**: Provides a confidence score based on evidence
 
@@ -689,11 +695,11 @@ The triage agent automatically creates a structured summary of the error before 
 - **PR Impact Analysis**: Calculates risk score based on modified files
 - **Key Metrics**: Screenshot availability, last command, log size
 
-This pre-analysis helps GPT-4.1 make more accurate determinations between test issues and product bugs.
+This pre-analysis helps GPT-5.3 Codex make more accurate determinations between test issues and product bugs.
 
 ## Best Practices
 
-1. **Always use separate workflows** - Never run the triage agent in the same workflow it's analyzing
+1. **Prefer separate workflows** - Same-workflow analysis is best-effort only and has less complete context
 2. **Pass meaningful context** - Include job names, test specs, PR numbers, etc. in your dispatch payload
 3. **Handle timeouts gracefully** - The wait step should have a reasonable timeout (10 minutes is usually sufficient)
 4. **Don't block on triage** - Let your test workflow complete even if triage dispatch fails
@@ -720,7 +726,7 @@ This pre-analysis helps GPT-4.1 make more accurate determinations between test i
 
 ### API Rate Limits
 
-- The action uses GPT-4.1 which has generous rate limits
+- The action uses GPT-5.3 Codex which has generous rate limits
 - Each analysis typically uses 1-2 API calls
 
 ## Support

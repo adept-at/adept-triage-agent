@@ -13,11 +13,11 @@ AI-powered GitHub Action that automatically triages test failures to determine i
 
 ## 🎯 Features
 
-- 🧠 **Intelligent Analysis**: Uses OpenAI GPT-4.1 to understand test failure context
+- 🧠 **Intelligent Analysis**: Uses OpenAI GPT-5.3 Codex to understand test failure context
 - 🖼️ **Screenshot Analysis**: Automatically fetches and analyzes test screenshots when available
 - 📊 **Confidence Scoring**: Provides confidence levels for each verdict
 - 🔄 **Flexible Integration**: Works with various CI/CD workflows
-- 📝 **PR Diff Analysis**: Analyzes code changes from pull requests to better determine if failures are related to the changes
+- 📝 **Change Diff Analysis**: Analyzes PR, branch, or commit diffs to better determine if failures are related to recent changes
 
 ### Auto-Fix Feature
 
@@ -78,7 +78,7 @@ The agentic pipeline falls back to single-shot if it fails to produce a valid fi
 
 #### Fix Validation (Optional)
 
-You can validate fixes by running the actual test before creating a PR:
+You can validate fixes by triggering a follow-up workflow that re-runs the failing test against the generated fix branch:
 
 ```yaml
 - uses: adept-at/adept-triage-agent@v1
@@ -98,24 +98,24 @@ You can validate fixes by running the actual test before creating a PR:
 When validation is enabled:
 
 1. Fix is applied to a branch
-2. Validation workflow runs the specific test against the fix
-3. If test passes → PR is created automatically
-4. If test fails → Branch is deleted, Slack notification sent
+2. The action dispatches your validation workflow with the fix branch, preview URL, and spec
+3. The action reports validation as `pending` or `skipped`
+4. Any pass/fail handling, cleanup, or PR creation must happen in your downstream validation workflow
 
-**Important:** Auto-fix creates a branch only - it does NOT create a PR automatically (unless validation passes). Engineers must review and create the PR manually.
+**Important:** Auto-fix creates a branch only. This action does not wait for validation to finish and does not create a PR automatically.
 
 See [Architecture Documentation](docs/ARCHITECTURE.md#auto-fix-feature) for detailed configuration and safety guardrails.
 
-### PR Diff Analysis
+### Change Diff Analysis
 
-When PR information is provided, the agent will:
+When PR, branch, or commit information is provided, the agent will:
 
 - Fetch the complete diff of changed files
 - Analyze correlations between test failures and modified code
-- Consider whether failing tests are related to the PR changes
+- Consider whether failing tests are related to the recent changes
 - Provide more accurate verdicts based on code context
 
-To enable PR diff analysis, provide these additional inputs:
+To enable change diff analysis, provide these additional inputs:
 
 ```yaml
 - uses: adept-at/adept-triage-agent@v1
@@ -123,20 +123,31 @@ To enable PR diff analysis, provide these additional inputs:
     GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
     WORKFLOW_RUN_ID: ${{ github.event.workflow_run.id }}
-    PR_NUMBER: ${{ github.event.pull_request.number }}
-    COMMIT_SHA: ${{ github.sha }}
-    REPOSITORY: ${{ github.repository }}
+    BRANCH: '<branch from the original test workflow>'
+    COMMIT_SHA: '<commit SHA from the original test workflow>'
+    REPOSITORY: 'owner/repo'
+    # Add PR_NUMBER when your trigger payload includes it
 ```
+
+When you use the recommended `repository_dispatch` pattern, pass `PR_NUMBER`, `BRANCH`, and `COMMIT_SHA` through `client_payload` from the original test workflow rather than reading them from the triage workflow's own GitHub context.
 
 ## 🚀 Quick Start
 
-### Important: Two-Workflow Architecture Required
+### Recommended: Separate Triage Workflow
 
-⚠️ **The Adept Triage Agent must run in a separate workflow from your tests** to avoid circular dependencies.
+⚠️ **For full workflow logs and uploaded artifacts, run the Adept Triage Agent in a separate workflow from your tests.**
 
 ### Note on Authentication
 
-The default `GITHUB_TOKEN` works perfectly when the triage agent runs in the same repository as your source code. You only need a Personal Access Token (PAT) if you're running the triage agent from a different repository. See [Cross-Repository Access](./README_CROSS_REPO_PR.md) for details.
+The default `GITHUB_TOKEN` is enough when the action only needs to read workflow runs, artifacts, diffs, and fix targets from the current repository. Use a Personal Access Token (PAT) or GitHub App token when `REPOSITORY` or `AUTO_FIX_TARGET_REPO` points to a different repository. See [Cross-Repository Access](./README_CROSS_REPO_PR.md) for details.
+
+Repository roles:
+
+- `github.context.repo`: the repository where the triage workflow is running. Workflow runs, job logs, screenshots, and uploaded test artifacts are fetched from here.
+- `REPOSITORY`: the app/source repository used for PR, branch, or commit diff lookup.
+- `AUTO_FIX_TARGET_REPO`: the repository where source files are fetched for repair and where fix branches are created.
+
+Best-effort same-workflow analysis is still supported when you target the current job, but it has less complete context than the recommended separate-workflow pattern.
 
 ### Step 1: Update Your Test Workflow
 
@@ -171,7 +182,10 @@ jobs:
               event_type: 'triage-failed-test',
               client_payload: {
                 workflow_run_id: context.runId.toString(),
-                job_name: '${{ github.job }}'
+                job_name: '${{ github.job }}',
+                pr_number: '${{ github.event.pull_request.number || '' }}',
+                branch: '${{ github.head_ref || github.ref_name }}',
+                commit_sha: '${{ github.event.pull_request.head.sha || github.sha }}'
               }
             });
 ```
@@ -217,6 +231,9 @@ jobs:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           WORKFLOW_RUN_ID: '${{ github.event.client_payload.workflow_run_id }}'
           JOB_NAME: '${{ github.event.client_payload.job_name }}'
+          PR_NUMBER: '${{ github.event.client_payload.pr_number }}'
+          BRANCH: '${{ github.event.client_payload.branch }}'
+          COMMIT_SHA: '${{ github.event.client_payload.commit_sha }}'
 
       - name: Comment on PR (if applicable)
         if: github.event.client_payload.pr_number
@@ -358,7 +375,7 @@ Integrate AI triage results into your Slack notifications in the triage workflow
 
 | Input                  | Description                                                                                                                                                                                                                    | Required | Default                    |
 | ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------- | -------------------------- |
-| `GITHUB_TOKEN`         | GitHub token for API access. **Note**: A PAT is only needed when running the triage agent in a different repository than the source code being analyzed. See [Cross-Repository Access](./README_CROSS_REPO_PR.md) for details. | No       | `${{ github.token }}`      |
+| `GITHUB_TOKEN`         | GitHub token for API access. Use a PAT or GitHub App token when `REPOSITORY` or `AUTO_FIX_TARGET_REPO` points to a different repository. See [Cross-Repository Access](./README_CROSS_REPO_PR.md) for details. | No       | `${{ github.token }}`      |
 | `OPENAI_API_KEY`       | OpenAI API key for AI analysis                                                                                                                                                                                                 | Yes      | -                          |
 | `ERROR_MESSAGE`        | Error message to analyze (optional if using workflow artifacts)                                                                                                                                                                | No       | -                          |
 | `WORKFLOW_RUN_ID`      | Workflow run ID to fetch logs from                                                                                                                                                                                             | No       | -                          |
@@ -366,12 +383,14 @@ Integrate AI triage results into your Slack notifications in the triage workflow
 | `CONFIDENCE_THRESHOLD` | Minimum confidence level for verdict (0-100)                                                                                                                                                                                   | No       | `70`                       |
 | `PR_NUMBER`            | Pull request number to fetch diff from                                                                                                                                                                                         | No       | -                          |
 | `COMMIT_SHA`           | Commit SHA associated with the test failure                                                                                                                                                                                    | No       | -                          |
-| `REPOSITORY`           | Repository in owner/repo format                                                                                                                                                                                                | No       | `${{ github.repository }}` |
+| `BRANCH`               | Branch being tested (used to fetch branch diff when no PR number available)                                                                                                                                                    | No       | -                          |
+| `REPOSITORY`           | App/source repository in owner/repo format for PR, branch, or commit diff lookup. Workflow runs and artifacts are still read from the repository where this action executes.                                                 | No       | `${{ github.repository }}` |
+| `TEST_FRAMEWORKS`      | Test framework: "cypress" or "webdriverio"                                                                                                                                                                                     | No       | cypress                    |
 | **Auto-Fix Inputs** | | | |
 | `ENABLE_AUTO_FIX`      | Enable automatic branch creation with fix (opt-in)                                                                                                                                                                             | No       | `false`                    |
 | `AUTO_FIX_BASE_BRANCH` | Base branch to create fix branch from                                                                                                                                                                                          | No       | `main`                     |
 | `AUTO_FIX_MIN_CONFIDENCE` | Minimum fix confidence required to apply auto-fix (0-100)                                                                                                                                                                   | No       | `70`                       |
-| `AUTO_FIX_TARGET_REPO` | Repository where fix branch should be created (owner/repo format)                                                                                                                                                              | No       | `${{ github.repository }}` |
+| `AUTO_FIX_TARGET_REPO` | Repository where repair source files are fetched and fix branches are created (owner/repo format)                                                                                                                             | No       | `${{ github.repository }}` |
 | `ENABLE_AGENTIC_REPAIR` | Enable multi-agent repair pipeline for higher quality fixes (uses more API calls)                                                                                                                                             | No       | `false`                    |
 | **Validation Inputs** | | | |
 | `ENABLE_VALIDATION`    | Enable validation workflow trigger after fix is applied                                                                                                                                                                        | No       | `false`                    |
@@ -383,7 +402,7 @@ Integrate AI triage results into your Slack notifications in the triage workflow
 
 | Output        | Description                                                                        |
 | ------------- | ---------------------------------------------------------------------------------- |
-| `verdict`     | Classification result: `TEST_ISSUE`, `PRODUCT_ISSUE`, `INCONCLUSIVE`, or `PENDING` |
+| `verdict`     | Classification result: `TEST_ISSUE`, `PRODUCT_ISSUE`, `INCONCLUSIVE`, `PENDING`, or `ERROR` |
 | `confidence`  | Confidence score (0-100)                                                           |
 | `reasoning`   | Detailed explanation of the decision                                               |
 | `summary`     | Brief summary suitable for PR comments                                             |
@@ -396,17 +415,18 @@ Integrate AI triage results into your Slack notifications in the triage workflow
 | **Auto-Fix Outputs** | |
 | `auto_fix_applied` | `true` or `false` - whether auto-fix branch was created                        |
 | `auto_fix_branch` | Name of the created branch (if auto-fix applied)                                |
-| `auto_fix_commit` | SHA of the fix commit (if auto-fix applied)                                     |
+| `auto_fix_commit` | Last commit SHA created while applying the fix (if auto-fix applied)            |
 | `auto_fix_files` | JSON array of modified files (if auto-fix applied)                               |
 | **Validation Outputs** | |
-| `validation_run_id` | Workflow run ID of the validation workflow (if triggered)                      |
-| `validation_status` | Validation status: `pending`, `passed`, `failed`, or `skipped`                 |
-| `validation_url` | URL to the validation workflow run (if triggered)                                 |
+| `validation_run_id` | Workflow run ID of the validation workflow (when discovered)                   |
+| `validation_status` | Validation dispatch status from this action: `pending` or `skipped`            |
+| `validation_url` | URL to the validation workflow run (when discovered or returned by GitHub)        |
 
 ### Special Verdicts
 
 - **`PENDING`**: The workflow is still running and cannot be analyzed yet
 - **`INCONCLUSIVE`**: The analysis completed but confidence is below the threshold
+- **`ERROR`**: The action could not collect enough data or encountered a runtime failure
 
 ### Example triage_json Output
 
@@ -441,7 +461,7 @@ Integrate AI triage results into your Slack notifications in the triage workflow
 ## How It Works
 
 1. **Error Extraction**: The action extracts error messages, stack traces, and relevant context from test logs
-2. **AI Analysis**: Uses GPT-4.1 with carefully crafted prompts to analyze the failure
+2. **AI Analysis**: Uses GPT-5.3 Codex with carefully crafted prompts to analyze the failure
 3. **Classification**: Determines whether the failure is a test issue or product issue
 4. **Confidence Scoring**: Calculates confidence based on the clarity of indicators
 5. **Output Generation**: Provides structured output with verdict, confidence, and reasoning
@@ -487,8 +507,8 @@ npm run build
 
 ## Security
 
-- No source code is ever sent to OpenAI
-- Only error messages and stack traces are analyzed
+- Analysis requests can include workflow logs, screenshots, structured summaries, and PR/branch/commit diff patches when provided
+- When repair is enabled, source files fetched from `AUTO_FIX_TARGET_REPO` may also be sent to OpenAI to generate a fix recommendation
 - All API keys should be stored as secrets
 - The action runs in your GitHub Actions environment
 
@@ -497,7 +517,7 @@ npm run build
 We follow semantic versioning and provide multiple ways to reference this action:
 
 - **`@v1`** - Recommended for production. Automatically updates to the latest v1.x.x release
-- **`@v1.4.0`** - Pin to a specific version
+- **`@v1.18.1`** - Pin to a specific version
 - **`@main`** - Latest development version (use with caution)
 
 Example:
@@ -507,7 +527,7 @@ Example:
 uses: adept-at/adept-triage-agent@v1
 
 # Specific version - no automatic updates
-uses: adept-at/adept-triage-agent@v1.4.0
+uses: adept-at/adept-triage-agent@v1.18.1
 ```
 
 ## Development

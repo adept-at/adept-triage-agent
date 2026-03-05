@@ -8,6 +8,7 @@ export interface ApplyResult {
     branchName?: string;
     validationRunId?: number;
     validationStatus?: 'pending' | 'passed' | 'failed' | 'skipped';
+    validationUrl?: string;
 }
 export interface FixApplierConfig {
     octokit: Octokit;
@@ -28,7 +29,8 @@ export interface FixApplier {
     canApply(recommendation: FixRecommendation): boolean;
     applyFix(recommendation: FixRecommendation): Promise<ApplyResult>;
     triggerValidation(params: ValidationParams): Promise<{
-        runId: number;
+        runId?: number;
+        url?: string;
     } | null>;
 }
 export declare class GitHubFixApplier implements FixApplier {
@@ -38,7 +40,8 @@ export declare class GitHubFixApplier implements FixApplier {
     applyFix(recommendation: FixRecommendation): Promise<ApplyResult>;
     private cleanupBranch;
     triggerValidation(params: ValidationParams): Promise<{
-        runId: number;
+        runId?: number;
+        url?: string;
     } | null>;
 }
 export declare function createFixApplier(config: FixApplierConfig): FixApplier;

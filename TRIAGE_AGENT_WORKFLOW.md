@@ -2,7 +2,13 @@
 
 ## Overview
 
-The Triage Agent is an intelligent GitHub Actions tool that automatically analyzes test failures to determine whether they are caused by **test issues** (problems with the test code itself) or **product issues** (actual bugs in the application). When a test issue is identified, the agent can automatically generate fix recommendations using AI-powered analysis of test assets and PR code diffs.
+The Triage Agent is an intelligent GitHub Actions tool that automatically analyzes test failures to determine whether they are caused by **test issues** (problems with the test code itself) or **product issues** (actual bugs in the application). When a test issue is identified, the agent can automatically generate fix recommendations using AI-powered analysis of test assets and PR, branch, or commit diffs.
+
+Repository boundaries are important in the current design:
+
+- Workflow runs, job logs, screenshots, and uploaded test artifacts are always fetched from the repository where the triage workflow is running
+- `REPOSITORY` is used for PR, branch, or commit diff lookup
+- `AUTO_FIX_TARGET_REPO` is used for source fetching and fix branch creation
 
 ## Core Workflow
 
@@ -18,7 +24,7 @@ flowchart TD
     B1[Screenshots] --> B
     B2[Test Logs] --> B
     B3[PR Diff] --> B
-    B4[Cypress Artifacts] --> B
+    B4[Test Artifacts] --> B
 ```
 
 ## Detailed Architecture
@@ -31,11 +37,17 @@ The main orchestrator that coordinates the entire triage process:
 async function run(): Promise<void> {
   // 1. Initialize clients
   const octokit = new Octokit({ auth: inputs.githubToken });
+  const repoDetails = resolveRepository(inputs);
   const openaiClient = new OpenAIClient(inputs.openaiApiKey);
   const artifactFetcher = new ArtifactFetcher(octokit);
   
   // 2. Gather error data from multiple sources
-  const errorData = await getErrorData(octokit, artifactFetcher, inputs);
+  const errorData = await processWorkflowLogs(
+    octokit,
+    artifactFetcher,
+    inputs,
+    repoDetails
+  );
   
   // 3. Analyze with AI to determine verdict
   const result = await analyzeFailure(openaiClient, errorData);
@@ -43,7 +55,7 @@ async function run(): Promise<void> {
   // 4. If TEST_ISSUE, generate fix recommendation
   if (result.verdict === 'TEST_ISSUE') {
     const repairContext = buildRepairContext({...});
-    const repairAgent = new SimplifiedRepairAgent(inputs.openaiApiKey);
+    const repairAgent = new SimplifiedRepairAgent(openaiClient, sourceFetchContext);
     fixRecommendation = await repairAgent.generateFixRecommendation(repairContext, errorData);
   }
 }
@@ -64,13 +76,13 @@ async fetchScreenshots(runId: string, jobName?: string): Promise<Screenshot[]>
 - Filters for relevant screenshots (failure states, errors)
 - Encodes images as base64 for multimodal AI analysis
 
-#### 2.2 Cypress Artifact Logs
+#### 2.2 Test Artifact Logs
 
 ```typescript
-async fetchCypressArtifactLogs(runId: string, jobName?: string): Promise<string>
+async fetchTestArtifactLogs(runId: string, jobName?: string): Promise<string>
 ```
 
-- Retrieves Cypress-specific test artifacts
+- Retrieves uploaded Cypress or WebDriverIO test artifacts
 - Extracts structured test logs
 - Parses test execution details
 - Captures browser console output
@@ -99,7 +111,7 @@ interface PRDiff {
 
 ### 3. Failure Analysis (`src/simplified-analyzer.ts`)
 
-The analyzer uses OpenAI GPT-4.1 to determine the root cause:
+The analyzer uses OpenAI GPT-5.3 Codex to determine the root cause:
 
 #### 3.1 Error Classification Logic
 
@@ -149,7 +161,7 @@ The OpenAI client builds sophisticated prompts that leverage all available conte
 
 #### 4.1 Multimodal Analysis
 
-When screenshots are available, the agent uses GPT-4.1's vision capabilities:
+When screenshots are available, the agent uses GPT-5.3 Codex's vision capabilities:
 
 ```typescript
 private buildUserContent(errorData: ErrorData, examples: FewShotExample[]) {
@@ -380,6 +392,6 @@ The Triage Agent's power comes from its holistic approach to failure analysis. B
 - **Visual evidence** (screenshots)
 - **Execution context** (logs, artifacts)
 - **Code changes** (PR diffs)
-- **AI reasoning** (GPT-4.1)
+- **AI reasoning** (GPT-5.3 Codex)
 
 It can accurately differentiate between test issues and product bugs, and even suggest specific fixes for test issues. The PR diff analysis is particularly crucial, as it provides the "what changed" context that often determines whether a failure is due to a legitimate product regression or simply an outdated test that needs updating.

@@ -123,6 +123,17 @@ describe('Fix Recommendation Integration', () => {
 
   describe('TEST_ISSUE with fix recommendation', () => {
     it('should generate fix recommendation for TEST_ISSUE verdict', async () => {
+      mockCore.getInput.mockImplementation((name: string) => {
+        const inputs: Record<string, string> = {
+          GITHUB_TOKEN: 'github-token',
+          OPENAI_API_KEY: 'openai-key',
+          CONFIDENCE_THRESHOLD: '70',
+          ERROR_MESSAGE: 'Test error message',
+          BRANCH: 'feature-doc-alignment',
+        };
+        return inputs[name] || '';
+      });
+
       // Setup test data
       const fixRecommendation = {
         confidence: 85,
@@ -173,6 +184,7 @@ describe('Fix Recommendation Integration', () => {
       expect(mockBuildRepairContext).toHaveBeenCalledWith(
         expect.objectContaining({
           errorMessage: 'Test error message',
+          branch: 'feature-doc-alignment',
           repository: 'test-owner/test-repo',
         })
       );

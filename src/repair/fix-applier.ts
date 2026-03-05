@@ -27,6 +27,8 @@ export interface ApplyResult {
   validationRunId?: number;
   /** Validation status */
   validationStatus?: 'pending' | 'passed' | 'failed' | 'skipped';
+  /** Validation workflow URL (if available) */
+  validationUrl?: string;
 }
 
 /**
@@ -79,12 +81,12 @@ export interface FixApplier {
   applyFix(recommendation: FixRecommendation): Promise<ApplyResult>;
 
   /**
-   * Trigger validation workflow to test the fix
-   * Returns the workflow run ID
+   * Trigger validation workflow to test the fix.
+   * Returns run ID and URL when available, empty object if triggered but not yet discoverable, or null on failure.
    */
   triggerValidation(
     params: ValidationParams
-  ): Promise<{ runId: number } | null>;
+  ): Promise<{ runId?: number; url?: string } | null>;
 }
 
 /**
@@ -474,7 +476,7 @@ Confidence: ${recommendation.confidence}%`;
    */
   async triggerValidation(
     params: ValidationParams
-  ): Promise<{ runId: number } | null> {
+  ): Promise<{ runId?: number; url?: string } | null> {
     const { octokit, owner, repo, validationWorkflow, enableValidation } =
       this.config;
 
@@ -535,7 +537,7 @@ Confidence: ${recommendation.confidence}%`;
         const latestRun = runs.data.workflow_runs[0];
         core.info(`Validation workflow run ID: ${latestRun.id}`);
         core.info(`Validation workflow URL: ${latestRun.html_url}`);
-        return { runId: latestRun.id };
+        return { runId: latestRun.id, url: latestRun.html_url };
       }
 
       // If no queued runs, check in_progress
@@ -556,11 +558,13 @@ Confidence: ${recommendation.confidence}%`;
         const latestRun = inProgressRuns.data.workflow_runs[0];
         core.info(`Validation workflow run ID: ${latestRun.id}`);
         core.info(`Validation workflow URL: ${latestRun.html_url}`);
-        return { runId: latestRun.id };
+        return { runId: latestRun.id, url: latestRun.html_url };
       }
 
-      core.warning('Could not find validation workflow run ID');
-      return null;
+      core.warning(
+        'Validation workflow was triggered, but the run ID is not available yet'
+      );
+      return {};
     } catch (error) {
       const errorMsg = getErrorMessage(error, 'triggering validation workflow');
       core.error(errorMsg);
