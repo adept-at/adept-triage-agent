@@ -20,6 +20,11 @@ const FEW_SHOT_EXAMPLES: FewShotExample[] = [
     reasoning: 'Explicit "Intentional failure" indicates deliberate test failure for testing purposes.'
   },
   {
+    error: 'WebDriverError: The test session has already finished, and can\'t receive further commands',
+    verdict: 'INCONCLUSIVE',
+    reasoning: 'The remote browser session terminated unexpectedly, so there is not enough evidence to blame either the test or the product.'
+  },
+  {
     error: 'Cypress could not verify that this server is running: https://example.vercel.app',
     verdict: 'PRODUCT_ISSUE',
     reasoning: 'Server not accessible indicates deployment/infrastructure issue - the application server is down or unreachable.'
@@ -51,12 +56,71 @@ const FEW_SHOT_EXAMPLES: FewShotExample[] = [
   }
 ];
 
+const INFRASTRUCTURE_SESSION_PATTERNS = [
+  {
+    pattern: /The test session has already finished,? and can't receive further commands/i,
+    indicator: 'WebDriver session finished before the next command could run'
+  },
+  {
+    pattern: /Request failed with status 400 due to session is finished/i,
+    indicator: 'WebDriver command failed because the remote session was already finished'
+  },
+  {
+    pattern: /Requested session id [a-z0-9-]+ is not known/i,
+    indicator: 'Remote provider no longer recognized the browser session'
+  },
+  {
+    pattern: /Test did not see a new command for 90 seconds\. Timing out\./i,
+    indicator: 'Sauce Labs idle timeout terminated the session'
+  },
+  {
+    pattern: /session deleted because of timeout/i,
+    indicator: 'Remote browser session was deleted after timing out'
+  },
+  {
+    pattern: /Session \[[^\]]+\] was terminated \(timeout\)/i,
+    indicator: 'Sauce Labs reported the session was terminated due to timeout'
+  },
+  {
+    // Broad catch-all; the specific patterns above cover known Sauce Labs / WebDriver
+    // variants. This exists as a safety net but may match non-actionable log output.
+    pattern: /\bsession is finished\b/i,
+    indicator: 'Remote browser session ended unexpectedly'
+  }
+] as const;
+
+const INFRASTRUCTURE_SESSION_REGEX = new RegExp(
+  INFRASTRUCTURE_SESSION_PATTERNS.map(({ pattern }) => pattern.source).join('|'),
+  'i'
+);
+
+const STRONG_PRODUCT_SIGNAL_PATTERNS = [
+  /Internal Server Error/i,
+  /\bstatus 5\d\d\b/i,
+  /\bECONNREFUSED\b/i,
+  /\bGraphQL(?:\s+|)error\b/i,
+  /\bCypress could not verify that this server is running\b/i
+];
+
 /**
  * Main analysis function - simplified version
  */
 export async function analyzeFailure(client: OpenAIClient, errorData: ErrorData): Promise<AnalysisResult> {
   try {
     core.info(`Analyzing error: ${errorData.message.substring(0, 100)}...`);
+
+    const infrastructureHeuristic = detectInfrastructureFailure(errorData);
+    if (infrastructureHeuristic) {
+      core.info('Detected remote session termination pattern; returning INCONCLUSIVE without auto-fix.');
+
+      return {
+        verdict: infrastructureHeuristic.verdict,
+        confidence: 95,
+        reasoning: infrastructureHeuristic.reasoning,
+        summary: generateSummary(infrastructureHeuristic, errorData),
+        indicators: infrastructureHeuristic.indicators
+      };
+    }
     
     // Get AI analysis
     const response = await client.analyze(errorData, FEW_SHOT_EXAMPLES);
@@ -111,6 +175,8 @@ export function extractErrorFromLogs(logs: string): ErrorData | null {
     { pattern: /Error in ["'](?:before all|before each|after all|after each)["'].*?:\s*(.+)/, framework: 'webdriverio', priority: 10 },
     // WDIO Error in "test name" on its own line (error message follows on next line)
     { pattern: /\[[\d-]+\]\s*Error in ["'](.+?)["']\s*$/m, framework: 'webdriverio', priority: 11 },
+    // Remote session/provider failures should outrank transient element errors
+    { pattern: INFRASTRUCTURE_SESSION_REGEX, framework: 'webdriverio', priority: 11 },
     // WDIO FAILED in MultiRemote
     { pattern: /FAILED in (?:MultiRemote|chrome|firefox|safari)\s*-\s*file:\/\/\/(.+)/, framework: 'webdriverio', priority: 9 },
     
@@ -214,6 +280,8 @@ export function extractErrorFromLogs(logs: string): ErrorData | null {
         errorType = 'CypressServerVerificationError';
       } else if (match[0].includes('Please start this server')) {
         errorType = 'CypressServerNotRunning';
+      } else if (INFRASTRUCTURE_SESSION_REGEX.test(match[0])) {
+        errorType = 'SessionTerminated';
       } else if (/Error in ["']/.test(match[0]) || /FAILED in (?:MultiRemote|chrome|firefox|safari)/.test(match[0])) {
         // WDIO "Error in "test"" or "FAILED in MultiRemote" - underlying error is typically Error
         errorType = 'Error';
@@ -294,3 +362,55 @@ function generateSummary(response: OpenAIResponse, errorData: ErrorData): string
 }
 
 // extractTestIssueEvidence and categorizeTestIssue are now imported from analysis/error-classifier.ts
+
+function detectInfrastructureFailure(errorData: ErrorData): OpenAIResponse | null {
+  const combinedContext = [
+    errorData.message,
+    errorData.stackTrace,
+    errorData.context,
+    errorData.logs?.join('\n'),
+    errorData.testArtifactLogs
+  ]
+    .filter((value): value is string => Boolean(value))
+    .join('\n');
+
+  if (!combinedContext) {
+    return null;
+  }
+
+  const hasRemoteExecutionContext =
+    errorData.framework === 'webdriverio' ||
+    /webdriver|webdriverio|selenium|sauce labs|saucelabs|ondemand\.[\w.-]*saucelabs\.com/i.test(
+      combinedContext
+    );
+
+  if (!hasRemoteExecutionContext) {
+    return null;
+  }
+
+  const indicators = INFRASTRUCTURE_SESSION_PATTERNS
+    .filter(({ pattern }) => pattern.test(combinedContext))
+    .map(({ indicator }) => indicator);
+
+  if (indicators.length === 0) {
+    return null;
+  }
+
+  // Only check the extracted error message (not the full combined context) — the
+  // message is the primary signal; scanning all logs would be too noisy.
+  const extractedMessage = errorData.message || '';
+  const hasStrongProductSignal = STRONG_PRODUCT_SIGNAL_PATTERNS.some((pattern) =>
+    pattern.test(extractedMessage)
+  );
+
+  if (hasStrongProductSignal) {
+    return null;
+  }
+
+  return {
+    verdict: 'INCONCLUSIVE',
+    reasoning:
+      'Detected remote browser/session termination signals from WebDriver or Sauce Labs before the failing flow completed. That points to external execution infrastructure rather than an actionable test or product defect, so this failure should remain inconclusive and must not trigger auto-fix.',
+    indicators: Array.from(new Set(indicators))
+  };
+}

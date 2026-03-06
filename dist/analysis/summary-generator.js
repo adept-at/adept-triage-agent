@@ -5,7 +5,15 @@ exports.generateFixSummary = generateFixSummary;
 const constants_1 = require("../config/constants");
 const slack_formatter_1 = require("../utils/slack-formatter");
 function generateAnalysisSummary(response, errorData) {
-    const verdict = response.verdict === 'TEST_ISSUE' ? '🧪 Test Issue' : '🐛 Product Issue';
+    const verdictLabels = {
+        TEST_ISSUE: '🧪 Test Issue',
+        PRODUCT_ISSUE: '🐛 Product Issue',
+        INCONCLUSIVE: '❓ Inconclusive',
+        PENDING: '⏳ Pending',
+        ERROR: '⚠️ Error',
+        NO_FAILURE: '✅ No Failure'
+    };
+    const verdict = verdictLabels[response.verdict] || '❓ Inconclusive';
     const sentenceEnd = response.reasoning.match(/^(.+?[.!?])(?:\s+[A-Z]|\s*$)/s);
     const reasoning = sentenceEnd
         ? sentenceEnd[1].trim()

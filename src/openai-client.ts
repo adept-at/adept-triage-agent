@@ -184,7 +184,7 @@ export class OpenAIClient {
   }
 
   private getSystemPrompt(): string {
-    const basePrompt = `You are an expert at analyzing test failures and determining whether they are caused by issues in the test code itself (TEST_ISSUE) or actual bugs in the product code (PRODUCT_ISSUE).
+    const basePrompt = `You are an expert at analyzing test failures and determining whether they are caused by issues in the test code itself (TEST_ISSUE), actual bugs in the product code (PRODUCT_ISSUE), or external execution/provider failures where the evidence is insufficient to blame either side (INCONCLUSIVE).
 
 Your task is to analyze the complete test execution context including:
 - Full error messages and failure details
@@ -223,6 +223,13 @@ PRODUCT_ISSUE indicators:
 - UI components not rendering correctly
 - Missing or broken functionality
 
+INCONCLUSIVE indicators:
+- Sauce Labs / Selenium / WebDriver session termination
+- Errors like "session is finished", "session has already finished", or "Requested session id ... is not known"
+- Remote browser/provider idle timeouts, disconnections, or infrastructure collapse
+- The runner loses the browser session before the app or test failure is proven
+- Logs show conflicting or incomplete evidence and the safest verdict is to avoid blame
+
 When analyzing screenshots (if provided):
 - PRIORITIZE looking for any error messages, alerts, or error dialogs visible in the UI
 - Check for error states like "404 Not Found", "500 Internal Server Error", console errors displayed on screen
@@ -243,6 +250,7 @@ COMMON MISCLASSIFICATION PATTERNS TO AVOID:
 - When elements with alt text or aria-labels are "not found" but the screenshot shows the UI rendered correctly, the element is likely covered/obscured by overlays, tabs, or modals (TEST_ISSUE)
 - Long timeouts (>10s) that still fail often indicate the element exists but isn't in the expected state (covered, not visible, or conditionally rendered) rather than actual missing functionality
 - If placeholder content is visible instead of expected content, but no errors are shown, this may be normal application state rather than a bug
+- Do not force provider/browser session termination into TEST_ISSUE or PRODUCT_ISSUE when the logs only prove the remote session died; use INCONCLUSIVE instead
 
 When PR changes are provided:
 - Analyze if the test failure is related to the changed code
@@ -269,10 +277,10 @@ CONFIDENCE LEVELS:
 - LOW (0-59%): Conflicting indicators or insufficient information
 
 Always respond with a JSON object containing:
-- verdict: "TEST_ISSUE" or "PRODUCT_ISSUE"
+- verdict: "TEST_ISSUE", "PRODUCT_ISSUE", or "INCONCLUSIVE"
 - reasoning: detailed explanation of your decision including what you observed in the screenshots (if any) and how PR changes influenced your decision (if applicable)
 - indicators: array of specific indicators that led to your verdict
-- suggestedSourceLocations: (ONLY for PRODUCT_ISSUE) array of objects with {file: "path/to/file", lines: "line range", reason: "why this location is suspicious"}`;
+- suggestedSourceLocations: (ONLY for PRODUCT_ISSUE) array of objects with {file: "path/to/file", lines: "line range", reason: "why this location is suspicious"}. Return an empty array or omit this field for TEST_ISSUE and INCONCLUSIVE.`;
     
     return basePrompt;
   }
@@ -345,7 +353,7 @@ Always respond with a JSON object containing:
       summaryHeader += `\n---\n\n`;
     }
     
-    const prompt = `${summaryHeader}You are an expert test failure analyzer. Your task is to determine whether a test failure is a TEST_ISSUE (problem with the test code) or a PRODUCT_ISSUE (bug in the product being tested).
+    const prompt = `${summaryHeader}You are an expert test failure analyzer. Your task is to determine whether a test failure is a TEST_ISSUE (problem with the test code), a PRODUCT_ISSUE (bug in the product being tested), or INCONCLUSIVE (the evidence points to external execution/provider failure or is insufficient to blame either side).
 
 IMPORTANT: Carefully analyze the FULL LOGS provided to find the actual error. Look for patterns like:
 - TypeError: Cannot read properties of null (reading 'isValid')
@@ -360,6 +368,7 @@ The error message field may just say "see full context" - you MUST examine the l
 Guidelines:
 - TEST_ISSUE: Flaky tests, timing issues, incorrect selectors, mock/stub problems, test environment issues
 - PRODUCT_ISSUE: Actual bugs, crashes, network failures, incorrect behavior, data issues
+- INCONCLUSIVE: Remote browser/session termination, provider instability, or ambiguous evidence where auto-fix would be unsafe
 
 Examples to learn from:
 ${examples.map(ex => `
@@ -383,7 +392,7 @@ ${this.capLogsForPrompt(errorData.logs)}
 
 ${errorData.screenshots?.length ? `\nScreenshots Available: ${errorData.screenshots.length} screenshot(s) captured` : ''}
 
-Based on ALL the information provided (especially the PR changes if available), determine if this is a TEST_ISSUE or PRODUCT_ISSUE and explain your reasoning. Look carefully through the logs to find the actual error message and stack trace.
+Based on ALL the information provided (especially the PR changes if available), determine if this is a TEST_ISSUE, PRODUCT_ISSUE, or INCONCLUSIVE and explain your reasoning. Look carefully through the logs to find the actual error message and stack trace.
 
 Respond with your analysis as a JSON object.`;
 
@@ -485,12 +494,12 @@ FOR PRODUCT_ISSUES: You MUST analyze the diff patches above to:
       // Vision models might return formatted text instead of JSON
       core.info('Response is not JSON, attempting to parse structured text');
       
-      const verdictMatch = content.match(/verdict[:\s]*["']?(TEST_ISSUE|PRODUCT_ISSUE)["']?/i);
+      const verdictMatch = content.match(/verdict[:\s]*["']?(TEST_ISSUE|PRODUCT_ISSUE|INCONCLUSIVE)["']?/i);
       const reasoningMatch = content.match(/reasoning[:\s]*["']?([^"'\n]+)["']?/i);
       const indicatorsMatch = content.match(/indicators[:\s]*(?:\[([^\]]+)\]|([^\n]+))/i);
       
       if (verdictMatch && reasoningMatch) {
-        const verdict = verdictMatch[1] as 'TEST_ISSUE' | 'PRODUCT_ISSUE';
+        const verdict = verdictMatch[1] as 'TEST_ISSUE' | 'PRODUCT_ISSUE' | 'INCONCLUSIVE';
         const reasoning = reasoningMatch[1].trim();
         let indicators: string[] = [];
         
@@ -508,10 +517,10 @@ FOR PRODUCT_ISSUES: You MUST analyze the diff patches above to:
       }
       
       // Try another format
-      const altMatch = content.match(/(?:verdict|conclusion):\s*(TEST_ISSUE|PRODUCT_ISSUE)[\s\S]*?(?:reasoning|explanation):\s*([^\n]+)[\s\S]*?(?:indicators|factors):\s*([^\n]+)/i);
+      const altMatch = content.match(/(?:verdict|conclusion):\s*(TEST_ISSUE|PRODUCT_ISSUE|INCONCLUSIVE)[\s\S]*?(?:reasoning|explanation):\s*([^\n]+)[\s\S]*?(?:indicators|factors):\s*([^\n]+)/i);
       if (altMatch) {
         return {
-          verdict: altMatch[1] as 'TEST_ISSUE' | 'PRODUCT_ISSUE',
+          verdict: altMatch[1] as 'TEST_ISSUE' | 'PRODUCT_ISSUE' | 'INCONCLUSIVE',
           reasoning: altMatch[2].trim(),
           indicators: altMatch[3].split(/[,;]/).map(i => i.trim()).filter(i => i.length > 0)
         };
@@ -523,7 +532,7 @@ FOR PRODUCT_ISSUES: You MUST analyze the diff patches above to:
 
   private validateResponse(response: unknown): void {
     const resp = response as Record<string, unknown>;
-    if (!resp.verdict || !['TEST_ISSUE', 'PRODUCT_ISSUE'].includes(resp.verdict as string)) {
+    if (!resp.verdict || !['TEST_ISSUE', 'PRODUCT_ISSUE', 'INCONCLUSIVE'].includes(resp.verdict as string)) {
       throw new Error('Invalid verdict in response');
     }
     

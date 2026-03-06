@@ -11,7 +11,15 @@ import { truncateForSlack, formatSummaryForSlack } from '../utils/slack-formatte
  * Generate a summary for analysis results
  */
 export function generateAnalysisSummary(response: OpenAIResponse, errorData: ErrorData): string {
-  const verdict = response.verdict === 'TEST_ISSUE' ? '🧪 Test Issue' : '🐛 Product Issue';
+  const verdictLabels: Record<OpenAIResponse['verdict'], string> = {
+    TEST_ISSUE: '🧪 Test Issue',
+    PRODUCT_ISSUE: '🐛 Product Issue',
+    INCONCLUSIVE: '❓ Inconclusive',
+    PENDING: '⏳ Pending',
+    ERROR: '⚠️ Error',
+    NO_FAILURE: '✅ No Failure'
+  };
+  const verdict = verdictLabels[response.verdict] || '❓ Inconclusive';
 
   // Extract first sentence: split on [.!?] only when followed by whitespace + capital
   // letter (new sentence) or end-of-string, so cy.wait(), URLs, etc. aren't split.
