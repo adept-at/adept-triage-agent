@@ -51,6 +51,11 @@ const FEW_SHOT_EXAMPLES = [
         reasoning: 'The remote browser session terminated unexpectedly, so there is not enough evidence to blame either the test or the product.'
     },
     {
+        error: 'We detected that the Chromium Renderer process just crashed.',
+        verdict: 'INCONCLUSIVE',
+        reasoning: 'The browser renderer crashed during execution. This is an infrastructure failure, not a test or product defect.'
+    },
+    {
         error: 'Cypress could not verify that this server is running: https://example.vercel.app',
         verdict: 'PRODUCT_ISSUE',
         reasoning: 'Server not accessible indicates deployment/infrastructure issue - the application server is down or unreachable.'
@@ -81,7 +86,7 @@ const FEW_SHOT_EXAMPLES = [
         reasoning: 'HTTP 500 errors indicate server-side failures in the application.'
     }
 ];
-const INFRASTRUCTURE_SESSION_PATTERNS = [
+const INFRASTRUCTURE_FAILURE_PATTERNS = [
     {
         pattern: /The test session has already finished,? and can't receive further commands/i,
         indicator: 'WebDriver session finished before the next command could run'
@@ -109,9 +114,29 @@ const INFRASTRUCTURE_SESSION_PATTERNS = [
     {
         pattern: /\bsession is finished\b/i,
         indicator: 'Remote browser session ended unexpectedly'
+    },
+    {
+        pattern: /We detected that the .+ Renderer process just crashed/i,
+        indicator: 'Browser renderer process crashed during test execution'
+    },
+    {
+        pattern: /browser was not open when cypress attempted to reconnect/i,
+        indicator: 'Cypress lost connection to the browser process'
+    },
+    {
+        pattern: /Cypress process timed out waiting for the browser to ever open/i,
+        indicator: 'Browser failed to launch within the expected timeout'
+    },
+    {
+        pattern: /The cypress runner was force-killed/i,
+        indicator: 'Cypress runner was terminated by the CI environment'
+    },
+    {
+        pattern: /The test runner unexpectedly exited/i,
+        indicator: 'Test runner process exited unexpectedly'
     }
 ];
-const INFRASTRUCTURE_SESSION_REGEX = new RegExp(INFRASTRUCTURE_SESSION_PATTERNS.map(({ pattern }) => pattern.source).join('|'), 'i');
+const INFRASTRUCTURE_FAILURE_REGEX = new RegExp(INFRASTRUCTURE_FAILURE_PATTERNS.map(({ pattern }) => pattern.source).join('|'), 'i');
 const STRONG_PRODUCT_SIGNAL_PATTERNS = [
     /Internal Server Error/i,
     /\bstatus 5\d\d\b/i,
@@ -166,7 +191,7 @@ function extractErrorFromLogs(logs) {
         { pattern: /Error in ["'].*?["']\s*:\s*(.+)/, framework: 'webdriverio', priority: 10 },
         { pattern: /Error in ["'](?:before all|before each|after all|after each)["'].*?:\s*(.+)/, framework: 'webdriverio', priority: 10 },
         { pattern: /\[[\d-]+\]\s*Error in ["'](.+?)["']\s*$/m, framework: 'webdriverio', priority: 11 },
-        { pattern: INFRASTRUCTURE_SESSION_REGEX, framework: 'webdriverio', priority: 11 },
+        { pattern: INFRASTRUCTURE_FAILURE_REGEX, framework: 'unknown', priority: 11 },
         { pattern: /FAILED in (?:MultiRemote|chrome|firefox|safari)\s*-\s*file:\/\/\/(.+)/, framework: 'webdriverio', priority: 9 },
         { pattern: /element\s*\([^)]+\)\s+still not (?:visible|displayed|enabled|existing|clickable).+after\s+\d+\s*ms/i, framework: 'webdriverio', priority: 9 },
         { pattern: /(?:waitForDisplayed|waitForExist|waitForClickable|waitForEnabled).+timeout/i, framework: 'webdriverio', priority: 9 },
@@ -186,13 +211,22 @@ function extractErrorFromLogs(logs) {
         { pattern: /Failed:\s*(.+)/, framework: 'unknown', priority: 1 }
     ];
     errorPatterns.sort((a, b) => (b.priority || 0) - (a.priority || 0));
-    for (const { pattern, framework, priority } of errorPatterns) {
+    for (const { pattern, framework: patternFramework, priority } of errorPatterns) {
         const match = cleanLogs.match(pattern);
         if (match) {
             const beforeError = cleanLogs.substring(Math.max(0, (match.index || 0) - 100), match.index || 0);
             if (beforeError.includes('cy:xhr') && beforeError.includes('Status: 200')) {
                 if ((priority || 0) < 5)
                     continue;
+            }
+            let framework = patternFramework;
+            if (framework === 'unknown' && INFRASTRUCTURE_FAILURE_REGEX.test(match[0])) {
+                if (/cypress|chromium|renderer/i.test(match[0])) {
+                    framework = 'cypress';
+                }
+                else if (/webdriver|sauce|selenium|ProtocolError|SauceLabsError|session/i.test(match[0])) {
+                    framework = 'webdriverio';
+                }
             }
             const errorIndex = match.index || 0;
             let contextStart = Math.max(0, errorIndex - constants_1.LOG_LIMITS.ERROR_CONTEXT_BEFORE);
@@ -241,8 +275,8 @@ function extractErrorFromLogs(logs) {
             else if (match[0].includes('Please start this server')) {
                 errorType = 'CypressServerNotRunning';
             }
-            else if (INFRASTRUCTURE_SESSION_REGEX.test(match[0])) {
-                errorType = 'SessionTerminated';
+            else if (INFRASTRUCTURE_FAILURE_REGEX.test(match[0])) {
+                errorType = 'InfrastructureFailure';
             }
             else if (/Error in ["']/.test(match[0]) || /FAILED in (?:MultiRemote|chrome|firefox|safari)/.test(match[0])) {
                 errorType = 'Error';
@@ -309,12 +343,13 @@ function detectInfrastructureFailure(errorData) {
     if (!combinedContext) {
         return null;
     }
-    const hasRemoteExecutionContext = errorData.framework === 'webdriverio' ||
-        /webdriver|webdriverio|selenium|sauce labs|saucelabs|ondemand\.[\w.-]*saucelabs\.com/i.test(combinedContext);
-    if (!hasRemoteExecutionContext) {
+    const hasTestExecutionContext = errorData.framework === 'webdriverio' ||
+        errorData.framework === 'cypress' ||
+        /webdriver|webdriverio|selenium|sauce labs|saucelabs|ondemand\.[\w.-]*saucelabs\.com|cypress|chromium|chrome(?:driver)?/i.test(combinedContext);
+    if (!hasTestExecutionContext) {
         return null;
     }
-    const indicators = INFRASTRUCTURE_SESSION_PATTERNS
+    const indicators = INFRASTRUCTURE_FAILURE_PATTERNS
         .filter(({ pattern }) => pattern.test(combinedContext))
         .map(({ indicator }) => indicator);
     if (indicators.length === 0) {
@@ -327,7 +362,7 @@ function detectInfrastructureFailure(errorData) {
     }
     return {
         verdict: 'INCONCLUSIVE',
-        reasoning: 'Detected remote browser/session termination signals from WebDriver or Sauce Labs before the failing flow completed. That points to external execution infrastructure rather than an actionable test or product defect, so this failure should remain inconclusive and must not trigger auto-fix.',
+        reasoning: 'Detected browser or session infrastructure failure signals before the test flow completed. This points to execution infrastructure (browser crash, session termination, or provider instability) rather than an actionable test or product defect, so this failure should remain inconclusive and must not trigger auto-fix.',
         indicators: Array.from(new Set(indicators))
     };
 }

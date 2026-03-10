@@ -197,10 +197,13 @@ You MUST respond with a JSON object matching this schema:
     }
 
     if (context.prDiff && context.prDiff.files.length > 0) {
-      const changedFiles = context.prDiff.files
-        .map((f) => `- ${f.filename} (${f.status})`)
-        .join('\n');
-      parts.push('', '### Recent Changes (PR Diff)', changedFiles);
+      parts.push('', '### Recent Changes (PR Diff)');
+      for (const file of context.prDiff.files.slice(0, 5)) {
+        parts.push(`- **${file.filename}** (${file.status})`);
+        if (file.patch) {
+          parts.push('```diff', file.patch.slice(0, 800), '```');
+        }
+      }
     }
 
     if (input.additionalContext) {

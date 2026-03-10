@@ -97,6 +97,7 @@ Review code changes proposed to fix failing tests. Your job is to:
 - Fix doesn't address the root cause
 - Fix could cause other tests to fail
 - Security vulnerabilities
+- Fix reasoning contradicts the PR diff (e.g., claims code was "changed" when the diff shows it was NOT modified)
 
 ### WARNING Issues (Should Fix)
 - Suboptimal selector choice
@@ -186,6 +187,17 @@ You MUST respond with a JSON object matching this schema:
       );
     }
 
+    // Add PR diff so the reviewer can validate the fix against actual changes
+    if (context.prDiff && context.prDiff.files.length > 0) {
+      parts.push('', '### PR Changes (for context)');
+      for (const file of context.prDiff.files.slice(0, 5)) {
+        parts.push(`- **${file.filename}** (${file.status})`);
+        if (file.patch) {
+          parts.push('```diff', file.patch.slice(0, 800), '```');
+        }
+      }
+    }
+
     // Add risks identified
     if (input.proposedFix.risks.length > 0) {
       parts.push(
@@ -203,6 +215,7 @@ You MUST respond with a JSON object matching this schema:
       '3. Verify the fix addresses the root cause',
       '4. Look for potential side effects',
       '5. Assess overall likelihood of success',
+      '6. CRITICAL: If PR changes are provided, verify the fix reasoning is consistent with the diff — if the fix claims code was "changed" or "updated" but the diff does NOT show that change, flag as CRITICAL issue',
       '',
       'Respond with the JSON object as specified in the system prompt.'
     );

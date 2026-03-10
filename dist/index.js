@@ -372,10 +372,13 @@ You MUST respond with a JSON object matching this schema:
             parts.push('', '### Relevant Logs', '```', logsText, '```');
         }
         if (context.prDiff && context.prDiff.files.length > 0) {
-            const changedFiles = context.prDiff.files
-                .map((f) => `- ${f.filename} (${f.status})`)
-                .join('\n');
-            parts.push('', '### Recent Changes (PR Diff)', changedFiles);
+            parts.push('', '### Recent Changes (PR Diff)');
+            for (const file of context.prDiff.files.slice(0, 5)) {
+                parts.push(`- **${file.filename}** (${file.status})`);
+                if (file.patch) {
+                    parts.push('```diff', file.patch.slice(0, 800), '```');
+                }
+            }
         }
         if (input.additionalContext) {
             parts.push('', '### Additional Context', input.additionalContext);
@@ -1143,7 +1146,15 @@ You MUST respond with a JSON object matching this schema:
 
 - The "oldCode" field is used for find-and-replace. It MUST match EXACTLY.
 - Include enough context in "oldCode" to uniquely identify the location (usually 3-5 lines).
-- Test your understanding of the code before generating the fix.`;
+- Test your understanding of the code before generating the fix.
+
+## PR DIFF CONSISTENCY (VERY IMPORTANT)
+
+When PR changes are provided, your fix reasoning MUST be consistent with the diff:
+- If the failure is in code NOT touched by the PR (e.g., login helpers, shared commands, auth flow), do NOT claim that code was "changed" or "updated" — the diff is the source of truth.
+- If the error involves a selector or UI element that no PR file modified, the issue is likely pre-existing (environment drift, flaky test, or infrastructure change outside this PR).
+- In such cases, your fix should address the actual brittleness (e.g., add fallback selectors, improve waits) rather than "adapt to a UI change" that the diff doesn't show.
+- State clearly in your reasoning whether the failure area overlaps with PR changes or not.`;
     }
     buildUserPrompt(input, context) {
         const frameworkLabel = (0, base_agent_1.getFrameworkLabel)(context.framework);
@@ -1177,6 +1188,15 @@ You MUST respond with a JSON object matching this schema:
         parts.push('', '### Error Message', '```', context.errorMessage, '```');
         if (context.sourceFileContent) {
             parts.push('', '### Test File Content', '```javascript', context.sourceFileContent, '```');
+        }
+        if (context.prDiff && context.prDiff.files.length > 0) {
+            parts.push('', '### Recent PR Changes', 'These files were changed in the PR. IMPORTANT: Only these files were modified. If the failure involves code NOT listed here, do NOT claim it was changed by the PR — treat it as a pre-existing or environmental issue.');
+            for (const file of context.prDiff.files.slice(0, 5)) {
+                parts.push(`\n**${file.filename}** (${file.status})`);
+                if (file.patch) {
+                    parts.push('```diff', file.patch.slice(0, 1000), '```');
+                }
+            }
         }
         if (input.previousFeedback) {
             parts.push('', '### Previous Review Feedback', '⚠️ The previous fix attempt was rejected. Please address these issues:', '```', input.previousFeedback, '```');
@@ -1471,6 +1491,7 @@ Review code changes proposed to fix failing tests. Your job is to:
 - Fix doesn't address the root cause
 - Fix could cause other tests to fail
 - Security vulnerabilities
+- Fix reasoning contradicts the PR diff (e.g., claims code was "changed" when the diff shows it was NOT modified)
 
 ### WARNING Issues (Should Fix)
 - Suboptimal selector choice
@@ -1529,10 +1550,19 @@ You MUST respond with a JSON object matching this schema:
         if (context.sourceFileContent) {
             parts.push('', '### Original File Content (for verification)', '```javascript', context.sourceFileContent, '```');
         }
+        if (context.prDiff && context.prDiff.files.length > 0) {
+            parts.push('', '### PR Changes (for context)');
+            for (const file of context.prDiff.files.slice(0, 5)) {
+                parts.push(`- **${file.filename}** (${file.status})`);
+                if (file.patch) {
+                    parts.push('```diff', file.patch.slice(0, 800), '```');
+                }
+            }
+        }
         if (input.proposedFix.risks.length > 0) {
             parts.push('', '### Identified Risks', input.proposedFix.risks.map((r) => `- ${r}`).join('\n'));
         }
-        parts.push('', '## Review Instructions', '1. For each change, verify oldCode appears EXACTLY in the file', '2. Check that newCode is syntactically valid', '3. Verify the fix addresses the root cause', '4. Look for potential side effects', '5. Assess overall likelihood of success', '', 'Respond with the JSON object as specified in the system prompt.');
+        parts.push('', '## Review Instructions', '1. For each change, verify oldCode appears EXACTLY in the file', '2. Check that newCode is syntactically valid', '3. Verify the fix addresses the root cause', '4. Look for potential side effects', '5. Assess overall likelihood of success', '6. CRITICAL: If PR changes are provided, verify the fix reasoning is consistent with the diff — if the fix claims code was "changed" or "updated" but the diff does NOT show that change, flag as CRITICAL issue', '', 'Respond with the JSON object as specified in the system prompt.');
         return parts.join('\n');
     }
     parseResponse(response) {
@@ -2607,22 +2637,24 @@ async function run() {
             return;
         }
         const result = await (0, simplified_analyzer_1.analyzeFailure)(openaiClient, errorData);
-        let fixRecommendation = null;
-        let autoFixResult = null;
-        if (result.verdict === 'TEST_ISSUE') {
-            fixRecommendation = await generateFixRecommendation(inputs, repoDetails, errorData, openaiClient, octokit);
-            if (fixRecommendation) {
-                result.fixRecommendation = fixRecommendation;
-                if (inputs.enableAutoFix) {
-                    const autoFixTargetRepo = resolveAutoFixTargetRepo(inputs);
-                    autoFixResult = await attemptAutoFix(inputs, fixRecommendation, octokit, autoFixTargetRepo, errorData);
-                }
-            }
-        }
         if (result.confidence < inputs.confidenceThreshold) {
             core.warning(`Confidence ${result.confidence}% is below threshold ${inputs.confidenceThreshold}%`);
             setInconclusiveOutput(result, inputs, errorData);
             return;
+        }
+        if (result.verdict !== 'TEST_ISSUE') {
+            setSuccessOutput(result, errorData, null);
+            return;
+        }
+        let fixRecommendation = null;
+        let autoFixResult = null;
+        fixRecommendation = await generateFixRecommendation(inputs, repoDetails, errorData, openaiClient, octokit);
+        if (fixRecommendation) {
+            result.fixRecommendation = fixRecommendation;
+            if (inputs.enableAutoFix) {
+                const autoFixTargetRepo = resolveAutoFixTargetRepo(inputs);
+                autoFixResult = await attemptAutoFix(inputs, fixRecommendation, octokit, autoFixTargetRepo, errorData);
+            }
         }
         setSuccessOutput(result, errorData, autoFixResult);
     }
@@ -3194,6 +3226,9 @@ INCONCLUSIVE indicators:
 - Errors like "session is finished", "session has already finished", or "Requested session id ... is not known"
 - Remote browser/provider idle timeouts, disconnections, or infrastructure collapse
 - The runner loses the browser session before the app or test failure is proven
+- Browser renderer crashes (e.g. "Chromium Renderer process just crashed")
+- Cypress losing connection to the browser or the runner being force-killed
+- Test runner process exiting unexpectedly before the test completed
 - Logs show conflicting or incomplete evidence and the safest verdict is to avoid blame
 
 When analyzing screenshots (if provided):
@@ -3216,14 +3251,27 @@ COMMON MISCLASSIFICATION PATTERNS TO AVOID:
 - When elements with alt text or aria-labels are "not found" but the screenshot shows the UI rendered correctly, the element is likely covered/obscured by overlays, tabs, or modals (TEST_ISSUE)
 - Long timeouts (>10s) that still fail often indicate the element exists but isn't in the expected state (covered, not visible, or conditionally rendered) rather than actual missing functionality
 - If placeholder content is visible instead of expected content, but no errors are shown, this may be normal application state rather than a bug
-- Do not force provider/browser session termination into TEST_ISSUE or PRODUCT_ISSUE when the logs only prove the remote session died; use INCONCLUSIVE instead
+- Do not force provider/browser session termination or browser crashes into TEST_ISSUE or PRODUCT_ISSUE when the logs only prove the execution infrastructure failed; use INCONCLUSIVE instead
+- Browser renderer crashes ("Chromium Renderer process just crashed"), Cypress runner force-kills, and unexpected test runner exits are infrastructure failures, not test or product defects
 
 When PR changes are provided:
 - Analyze if the test failure is related to the changed code
 - If a test is failing and it tests functionality that was modified in the PR, lean towards PRODUCT_ISSUE
-- If a test is failing in an area unrelated to the PR changes, it's more likely a TEST_ISSUE
+- If a test is failing in an area unrelated to the PR changes, it's more likely a TEST_ISSUE or ENVIRONMENT_ISSUE
 - Look for correlations between changed files and the failing test file/functionality
 - Consider if the PR introduced breaking changes that the test correctly caught
+
+CAUSAL CONSISTENCY RULE (CRITICAL):
+Your root cause explanation MUST be consistent with the PR diff evidence. Before finalizing your analysis:
+1. State your hypothesis about what caused the failure
+2. Check: does the diff actually show changes to the code/files your hypothesis requires?
+3. If NOT — if your theory requires a change that does NOT appear in the diff — your theory is WRONG. Revise it.
+4. If the failure is in code untouched by the PR (e.g., login flow, auth, shared infrastructure), the most likely causes are:
+   - Pre-existing flaky test or environment drift (TEST_ISSUE)
+   - Environment/infrastructure change outside this PR (TEST_ISSUE or INCONCLUSIVE)
+   - Indirect side effect of PR changes (explain the causal chain specifically)
+5. NEVER claim "the UI was changed" or "the code was modified" when the diff shows no such change
+6. When the diff is unrelated to the failure area, say so explicitly in your reasoning
 
 When determining a PRODUCT_ISSUE and PR changes are available:
 - CRITICALLY IMPORTANT: Identify specific files and line numbers from the PR diff that likely contain the bug
@@ -3329,7 +3377,7 @@ The error message field may just say "see full context" - you MUST examine the l
 Guidelines:
 - TEST_ISSUE: Flaky tests, timing issues, incorrect selectors, mock/stub problems, test environment issues
 - PRODUCT_ISSUE: Actual bugs, crashes, network failures, incorrect behavior, data issues
-- INCONCLUSIVE: Remote browser/session termination, provider instability, or ambiguous evidence where auto-fix would be unsafe
+- INCONCLUSIVE: Remote browser/session termination, browser renderer crashes, provider instability, runner force-kills, or ambiguous evidence where auto-fix would be unsafe
 
 Examples to learn from:
 ${examples.map(ex => `
@@ -3411,6 +3459,12 @@ Changed Files Summary:
 2. Look for changes that could break existing functionality
 3. Consider if new code introduced bugs that tests are correctly catching
 4. If test is failing in code areas NOT touched by the PR, it's more likely a TEST_ISSUE
+5. NEVER hypothesize that code was "changed" or "updated" if the diff above does not show that change — the diff is the source of truth for what changed
+
+CAUSAL CONSISTENCY CHECK:
+- Review the list of changed files above. If the failure involves code/selectors/UI that is NOT in any changed file, do NOT claim the PR changed it.
+- Example of WRONG reasoning: "The login UI was changed to passwordless" when no auth/login files appear in the diff.
+- Example of CORRECT reasoning: "The login flow is failing but no auth code was changed in this PR, suggesting a pre-existing environment issue or flaky test."
 
 FOR PRODUCT_ISSUES: You MUST analyze the diff patches above to:
 - Identify the EXACT file paths and line numbers that likely contain the bug
@@ -4819,6 +4873,11 @@ const FEW_SHOT_EXAMPLES = [
         reasoning: 'The remote browser session terminated unexpectedly, so there is not enough evidence to blame either the test or the product.'
     },
     {
+        error: 'We detected that the Chromium Renderer process just crashed.',
+        verdict: 'INCONCLUSIVE',
+        reasoning: 'The browser renderer crashed during execution. This is an infrastructure failure, not a test or product defect.'
+    },
+    {
         error: 'Cypress could not verify that this server is running: https://example.vercel.app',
         verdict: 'PRODUCT_ISSUE',
         reasoning: 'Server not accessible indicates deployment/infrastructure issue - the application server is down or unreachable.'
@@ -4849,7 +4908,7 @@ const FEW_SHOT_EXAMPLES = [
         reasoning: 'HTTP 500 errors indicate server-side failures in the application.'
     }
 ];
-const INFRASTRUCTURE_SESSION_PATTERNS = [
+const INFRASTRUCTURE_FAILURE_PATTERNS = [
     {
         pattern: /The test session has already finished,? and can't receive further commands/i,
         indicator: 'WebDriver session finished before the next command could run'
@@ -4877,9 +4936,29 @@ const INFRASTRUCTURE_SESSION_PATTERNS = [
     {
         pattern: /\bsession is finished\b/i,
         indicator: 'Remote browser session ended unexpectedly'
+    },
+    {
+        pattern: /We detected that the .+ Renderer process just crashed/i,
+        indicator: 'Browser renderer process crashed during test execution'
+    },
+    {
+        pattern: /browser was not open when cypress attempted to reconnect/i,
+        indicator: 'Cypress lost connection to the browser process'
+    },
+    {
+        pattern: /Cypress process timed out waiting for the browser to ever open/i,
+        indicator: 'Browser failed to launch within the expected timeout'
+    },
+    {
+        pattern: /The cypress runner was force-killed/i,
+        indicator: 'Cypress runner was terminated by the CI environment'
+    },
+    {
+        pattern: /The test runner unexpectedly exited/i,
+        indicator: 'Test runner process exited unexpectedly'
     }
 ];
-const INFRASTRUCTURE_SESSION_REGEX = new RegExp(INFRASTRUCTURE_SESSION_PATTERNS.map(({ pattern }) => pattern.source).join('|'), 'i');
+const INFRASTRUCTURE_FAILURE_REGEX = new RegExp(INFRASTRUCTURE_FAILURE_PATTERNS.map(({ pattern }) => pattern.source).join('|'), 'i');
 const STRONG_PRODUCT_SIGNAL_PATTERNS = [
     /Internal Server Error/i,
     /\bstatus 5\d\d\b/i,
@@ -4934,7 +5013,7 @@ function extractErrorFromLogs(logs) {
         { pattern: /Error in ["'].*?["']\s*:\s*(.+)/, framework: 'webdriverio', priority: 10 },
         { pattern: /Error in ["'](?:before all|before each|after all|after each)["'].*?:\s*(.+)/, framework: 'webdriverio', priority: 10 },
         { pattern: /\[[\d-]+\]\s*Error in ["'](.+?)["']\s*$/m, framework: 'webdriverio', priority: 11 },
-        { pattern: INFRASTRUCTURE_SESSION_REGEX, framework: 'webdriverio', priority: 11 },
+        { pattern: INFRASTRUCTURE_FAILURE_REGEX, framework: 'unknown', priority: 11 },
         { pattern: /FAILED in (?:MultiRemote|chrome|firefox|safari)\s*-\s*file:\/\/\/(.+)/, framework: 'webdriverio', priority: 9 },
         { pattern: /element\s*\([^)]+\)\s+still not (?:visible|displayed|enabled|existing|clickable).+after\s+\d+\s*ms/i, framework: 'webdriverio', priority: 9 },
         { pattern: /(?:waitForDisplayed|waitForExist|waitForClickable|waitForEnabled).+timeout/i, framework: 'webdriverio', priority: 9 },
@@ -4954,13 +5033,22 @@ function extractErrorFromLogs(logs) {
         { pattern: /Failed:\s*(.+)/, framework: 'unknown', priority: 1 }
     ];
     errorPatterns.sort((a, b) => (b.priority || 0) - (a.priority || 0));
-    for (const { pattern, framework, priority } of errorPatterns) {
+    for (const { pattern, framework: patternFramework, priority } of errorPatterns) {
         const match = cleanLogs.match(pattern);
         if (match) {
             const beforeError = cleanLogs.substring(Math.max(0, (match.index || 0) - 100), match.index || 0);
             if (beforeError.includes('cy:xhr') && beforeError.includes('Status: 200')) {
                 if ((priority || 0) < 5)
                     continue;
+            }
+            let framework = patternFramework;
+            if (framework === 'unknown' && INFRASTRUCTURE_FAILURE_REGEX.test(match[0])) {
+                if (/cypress|chromium|renderer/i.test(match[0])) {
+                    framework = 'cypress';
+                }
+                else if (/webdriver|sauce|selenium|ProtocolError|SauceLabsError|session/i.test(match[0])) {
+                    framework = 'webdriverio';
+                }
             }
             const errorIndex = match.index || 0;
             let contextStart = Math.max(0, errorIndex - constants_1.LOG_LIMITS.ERROR_CONTEXT_BEFORE);
@@ -5009,8 +5097,8 @@ function extractErrorFromLogs(logs) {
             else if (match[0].includes('Please start this server')) {
                 errorType = 'CypressServerNotRunning';
             }
-            else if (INFRASTRUCTURE_SESSION_REGEX.test(match[0])) {
-                errorType = 'SessionTerminated';
+            else if (INFRASTRUCTURE_FAILURE_REGEX.test(match[0])) {
+                errorType = 'InfrastructureFailure';
             }
             else if (/Error in ["']/.test(match[0]) || /FAILED in (?:MultiRemote|chrome|firefox|safari)/.test(match[0])) {
                 errorType = 'Error';
@@ -5077,12 +5165,13 @@ function detectInfrastructureFailure(errorData) {
     if (!combinedContext) {
         return null;
     }
-    const hasRemoteExecutionContext = errorData.framework === 'webdriverio' ||
-        /webdriver|webdriverio|selenium|sauce labs|saucelabs|ondemand\.[\w.-]*saucelabs\.com/i.test(combinedContext);
-    if (!hasRemoteExecutionContext) {
+    const hasTestExecutionContext = errorData.framework === 'webdriverio' ||
+        errorData.framework === 'cypress' ||
+        /webdriver|webdriverio|selenium|sauce labs|saucelabs|ondemand\.[\w.-]*saucelabs\.com|cypress|chromium|chrome(?:driver)?/i.test(combinedContext);
+    if (!hasTestExecutionContext) {
         return null;
     }
-    const indicators = INFRASTRUCTURE_SESSION_PATTERNS
+    const indicators = INFRASTRUCTURE_FAILURE_PATTERNS
         .filter(({ pattern }) => pattern.test(combinedContext))
         .map(({ indicator }) => indicator);
     if (indicators.length === 0) {
@@ -5095,7 +5184,7 @@ function detectInfrastructureFailure(errorData) {
     }
     return {
         verdict: 'INCONCLUSIVE',
-        reasoning: 'Detected remote browser/session termination signals from WebDriver or Sauce Labs before the failing flow completed. That points to external execution infrastructure rather than an actionable test or product defect, so this failure should remain inconclusive and must not trigger auto-fix.',
+        reasoning: 'Detected browser or session infrastructure failure signals before the test flow completed. This points to execution infrastructure (browser crash, session termination, or provider instability) rather than an actionable test or product defect, so this failure should remain inconclusive and must not trigger auto-fix.',
         indicators: Array.from(new Set(indicators))
     };
 }

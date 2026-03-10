@@ -137,43 +137,48 @@ async function run(): Promise<void> {
     // Analyze with AI
     const result = await analyzeFailure(openaiClient, errorData);
 
-    // Generate fix recommendation for TEST_ISSUE verdicts
-    let fixRecommendation: FixRecommendation | null = null;
-    let autoFixResult: ApplyResult | null = null;
-
-    if (result.verdict === 'TEST_ISSUE') {
-      fixRecommendation = await generateFixRecommendation(
-        inputs,
-        repoDetails,
-        errorData,
-        openaiClient,
-        octokit
-      );
-      if (fixRecommendation) {
-        result.fixRecommendation = fixRecommendation;
-
-        // Attempt auto-fix if enabled
-        if (inputs.enableAutoFix) {
-          // Use separate target repo for auto-fix (test code may live in different repo than logs)
-          const autoFixTargetRepo = resolveAutoFixTargetRepo(inputs);
-          autoFixResult = await attemptAutoFix(
-            inputs,
-            fixRecommendation,
-            octokit,
-            autoFixTargetRepo,
-            errorData
-          );
-        }
-      }
-    }
-
-    // Check confidence threshold
+    // Short-circuit before any repair attempt when the verdict is not actionable
+    // or confidence is too low.  This prevents wasted API calls and avoids creating
+    // auto-fix branches that would later be overridden to INCONCLUSIVE.
     if (result.confidence < inputs.confidenceThreshold) {
       core.warning(
         `Confidence ${result.confidence}% is below threshold ${inputs.confidenceThreshold}%`
       );
       setInconclusiveOutput(result, inputs, errorData);
       return;
+    }
+
+    if (result.verdict !== 'TEST_ISSUE') {
+      setSuccessOutput(result, errorData, null);
+      return;
+    }
+
+    // Generate fix recommendation for TEST_ISSUE verdicts
+    let fixRecommendation: FixRecommendation | null = null;
+    let autoFixResult: ApplyResult | null = null;
+
+    fixRecommendation = await generateFixRecommendation(
+      inputs,
+      repoDetails,
+      errorData,
+      openaiClient,
+      octokit
+    );
+    if (fixRecommendation) {
+      result.fixRecommendation = fixRecommendation;
+
+      // Attempt auto-fix if enabled
+      if (inputs.enableAutoFix) {
+        // Use separate target repo for auto-fix (test code may live in different repo than logs)
+        const autoFixTargetRepo = resolveAutoFixTargetRepo(inputs);
+        autoFixResult = await attemptAutoFix(
+          inputs,
+          fixRecommendation,
+          octokit,
+          autoFixTargetRepo,
+          errorData
+        );
+      }
     }
 
     // Set successful outputs

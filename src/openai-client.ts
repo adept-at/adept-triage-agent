@@ -228,6 +228,9 @@ INCONCLUSIVE indicators:
 - Errors like "session is finished", "session has already finished", or "Requested session id ... is not known"
 - Remote browser/provider idle timeouts, disconnections, or infrastructure collapse
 - The runner loses the browser session before the app or test failure is proven
+- Browser renderer crashes (e.g. "Chromium Renderer process just crashed")
+- Cypress losing connection to the browser or the runner being force-killed
+- Test runner process exiting unexpectedly before the test completed
 - Logs show conflicting or incomplete evidence and the safest verdict is to avoid blame
 
 When analyzing screenshots (if provided):
@@ -250,14 +253,27 @@ COMMON MISCLASSIFICATION PATTERNS TO AVOID:
 - When elements with alt text or aria-labels are "not found" but the screenshot shows the UI rendered correctly, the element is likely covered/obscured by overlays, tabs, or modals (TEST_ISSUE)
 - Long timeouts (>10s) that still fail often indicate the element exists but isn't in the expected state (covered, not visible, or conditionally rendered) rather than actual missing functionality
 - If placeholder content is visible instead of expected content, but no errors are shown, this may be normal application state rather than a bug
-- Do not force provider/browser session termination into TEST_ISSUE or PRODUCT_ISSUE when the logs only prove the remote session died; use INCONCLUSIVE instead
+- Do not force provider/browser session termination or browser crashes into TEST_ISSUE or PRODUCT_ISSUE when the logs only prove the execution infrastructure failed; use INCONCLUSIVE instead
+- Browser renderer crashes ("Chromium Renderer process just crashed"), Cypress runner force-kills, and unexpected test runner exits are infrastructure failures, not test or product defects
 
 When PR changes are provided:
 - Analyze if the test failure is related to the changed code
 - If a test is failing and it tests functionality that was modified in the PR, lean towards PRODUCT_ISSUE
-- If a test is failing in an area unrelated to the PR changes, it's more likely a TEST_ISSUE
+- If a test is failing in an area unrelated to the PR changes, it's more likely a TEST_ISSUE or ENVIRONMENT_ISSUE
 - Look for correlations between changed files and the failing test file/functionality
 - Consider if the PR introduced breaking changes that the test correctly caught
+
+CAUSAL CONSISTENCY RULE (CRITICAL):
+Your root cause explanation MUST be consistent with the PR diff evidence. Before finalizing your analysis:
+1. State your hypothesis about what caused the failure
+2. Check: does the diff actually show changes to the code/files your hypothesis requires?
+3. If NOT — if your theory requires a change that does NOT appear in the diff — your theory is WRONG. Revise it.
+4. If the failure is in code untouched by the PR (e.g., login flow, auth, shared infrastructure), the most likely causes are:
+   - Pre-existing flaky test or environment drift (TEST_ISSUE)
+   - Environment/infrastructure change outside this PR (TEST_ISSUE or INCONCLUSIVE)
+   - Indirect side effect of PR changes (explain the causal chain specifically)
+5. NEVER claim "the UI was changed" or "the code was modified" when the diff shows no such change
+6. When the diff is unrelated to the failure area, say so explicitly in your reasoning
 
 When determining a PRODUCT_ISSUE and PR changes are available:
 - CRITICALLY IMPORTANT: Identify specific files and line numbers from the PR diff that likely contain the bug
@@ -368,7 +384,7 @@ The error message field may just say "see full context" - you MUST examine the l
 Guidelines:
 - TEST_ISSUE: Flaky tests, timing issues, incorrect selectors, mock/stub problems, test environment issues
 - PRODUCT_ISSUE: Actual bugs, crashes, network failures, incorrect behavior, data issues
-- INCONCLUSIVE: Remote browser/session termination, provider instability, or ambiguous evidence where auto-fix would be unsafe
+- INCONCLUSIVE: Remote browser/session termination, browser renderer crashes, provider instability, runner force-kills, or ambiguous evidence where auto-fix would be unsafe
 
 Examples to learn from:
 ${examples.map(ex => `
@@ -475,6 +491,12 @@ Changed Files Summary:
 2. Look for changes that could break existing functionality
 3. Consider if new code introduced bugs that tests are correctly catching
 4. If test is failing in code areas NOT touched by the PR, it's more likely a TEST_ISSUE
+5. NEVER hypothesize that code was "changed" or "updated" if the diff above does not show that change — the diff is the source of truth for what changed
+
+CAUSAL CONSISTENCY CHECK:
+- Review the list of changed files above. If the failure involves code/selectors/UI that is NOT in any changed file, do NOT claim the PR changed it.
+- Example of WRONG reasoning: "The login UI was changed to passwordless" when no auth/login files appear in the diff.
+- Example of CORRECT reasoning: "The login flow is failing but no auth code was changed in this PR, suggesting a pre-existing environment issue or flaky test."
 
 FOR PRODUCT_ISSUES: You MUST analyze the diff patches above to:
 - Identify the EXACT file paths and line numbers that likely contain the bug

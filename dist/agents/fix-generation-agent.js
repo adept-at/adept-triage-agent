@@ -142,7 +142,15 @@ You MUST respond with a JSON object matching this schema:
 
 - The "oldCode" field is used for find-and-replace. It MUST match EXACTLY.
 - Include enough context in "oldCode" to uniquely identify the location (usually 3-5 lines).
-- Test your understanding of the code before generating the fix.`;
+- Test your understanding of the code before generating the fix.
+
+## PR DIFF CONSISTENCY (VERY IMPORTANT)
+
+When PR changes are provided, your fix reasoning MUST be consistent with the diff:
+- If the failure is in code NOT touched by the PR (e.g., login helpers, shared commands, auth flow), do NOT claim that code was "changed" or "updated" — the diff is the source of truth.
+- If the error involves a selector or UI element that no PR file modified, the issue is likely pre-existing (environment drift, flaky test, or infrastructure change outside this PR).
+- In such cases, your fix should address the actual brittleness (e.g., add fallback selectors, improve waits) rather than "adapt to a UI change" that the diff doesn't show.
+- State clearly in your reasoning whether the failure area overlaps with PR changes or not.`;
     }
     buildUserPrompt(input, context) {
         const frameworkLabel = (0, base_agent_1.getFrameworkLabel)(context.framework);
@@ -176,6 +184,15 @@ You MUST respond with a JSON object matching this schema:
         parts.push('', '### Error Message', '```', context.errorMessage, '```');
         if (context.sourceFileContent) {
             parts.push('', '### Test File Content', '```javascript', context.sourceFileContent, '```');
+        }
+        if (context.prDiff && context.prDiff.files.length > 0) {
+            parts.push('', '### Recent PR Changes', 'These files were changed in the PR. IMPORTANT: Only these files were modified. If the failure involves code NOT listed here, do NOT claim it was changed by the PR — treat it as a pre-existing or environmental issue.');
+            for (const file of context.prDiff.files.slice(0, 5)) {
+                parts.push(`\n**${file.filename}** (${file.status})`);
+                if (file.patch) {
+                    parts.push('```diff', file.patch.slice(0, 1000), '```');
+                }
+            }
         }
         if (input.previousFeedback) {
             parts.push('', '### Previous Review Feedback', '⚠️ The previous fix attempt was rejected. Please address these issues:', '```', input.previousFeedback, '```');
