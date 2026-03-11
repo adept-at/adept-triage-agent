@@ -151,6 +151,22 @@ class SimplifiedRepairAgent {
             core.info('Cannot generate confident fix recommendation');
             return null;
         }
+        if (sourceFileContent && recommendation.changes) {
+            for (const change of recommendation.changes) {
+                if (change.oldCode && !sourceFileContent.includes(change.oldCode)) {
+                    core.warning(`⚠️ Model proposed oldCode that does not exist in source file: "${change.oldCode.substring(0, 80)}..."`);
+                    core.warning('   The model hallucinated code instead of using the actual source. Rejecting this change.');
+                    change.oldCode = '';
+                    change.newCode = '';
+                }
+            }
+            const validChanges = recommendation.changes.filter((c) => c.oldCode && c.newCode);
+            if (validChanges.length === 0) {
+                core.warning('❌ All proposed changes had hallucinated oldCode — no valid fix to apply');
+                return null;
+            }
+            recommendation.changes = validChanges;
+        }
         const fixRecommendation = {
             confidence: recommendation.confidence,
             summary: this.generateSummary(recommendation, repairContext),
@@ -177,6 +193,22 @@ class SimplifiedRepairAgent {
         const fileMatch = rawPath.match(/file:\/\/(.+)/);
         if (fileMatch) {
             return fileMatch[1];
+        }
+        const ciRunnerMatch = rawPath.match(/\/(?:home\/runner\/work|github\/workspace)\/[^/]+\/[^/]+\/(.+)/);
+        if (ciRunnerMatch) {
+            return ciRunnerMatch[1];
+        }
+        if (rawPath.startsWith('/')) {
+            const knownPrefixes = [
+                'test/', 'tests/', 'spec/', 'specs/',
+                'src/', 'lib/', 'cypress/', 'e2e/',
+            ];
+            for (const prefix of knownPrefixes) {
+                const idx = rawPath.indexOf(`/${prefix}`);
+                if (idx !== -1) {
+                    return rawPath.slice(idx + 1);
+                }
+            }
         }
         if (rawPath.startsWith('./')) {
             return rawPath.slice(2);
@@ -319,11 +351,13 @@ ${contextInfo}
 ## Your Task
 Based on the error type and message, provide a fix recommendation. Focus on the most likely cause and solution.
 
-**CRITICAL FOR AUTO-FIX:** You have been provided with the ACTUAL SOURCE FILE CONTENT above. When specifying "oldCode" in your changes:
-- Copy the EXACT code from the source file, including whitespace, quotes, and formatting
-- The oldCode must be a verbatim substring that exists in the file
-- Do NOT paraphrase or reformat the code
-- Include enough context (multiple lines if needed) to make the match unique
+**CRITICAL — ABSOLUTE RULES FOR oldCode:**
+1. You MUST copy oldCode **verbatim** from the Source File content provided above — character for character
+2. You MUST NOT invent, paraphrase, or reconstruct code from memory
+3. If no Source File content was provided above, set confidence below 50 and leave oldCode empty
+4. The oldCode will be used for an exact string match (find-and-replace). If it does not appear verbatim in the file, the fix WILL FAIL
+5. Include enough surrounding lines (3-5) to make the match unique in the file
+6. Preserve all whitespace, quotes, semicolons, variable names, and formatting exactly as shown in the source
 
 **Important:** If PR changes are provided, analyze whether recent code changes may have caused the test failure. Look for:
 - Changed selectors or UI components that the test depends on
@@ -363,9 +397,11 @@ Respond with JSON only. If you cannot provide a confident fix, set confidence be
                 const frameworkLabel = (0, base_agent_1.getFrameworkLabel)(fullErrorData?.framework);
                 const systemPrompt = `You are a test repair expert. Produce a concrete, review-ready fix plan for a ${frameworkLabel} TEST_ISSUE.
 
-CRITICAL: When providing "oldCode" in your changes, you MUST copy the EXACT code from the source file provided.
-The oldCode must be a verbatim match - including whitespace, quotes, semicolons, and formatting.
-If you cannot find the exact code to replace, set confidence below 50.
+ABSOLUTE RULES — VIOLATION MEANS THE FIX WILL FAIL:
+1. The "oldCode" field MUST be copied character-for-character from the "Source File" section in the user prompt.
+2. You MUST NOT invent, paraphrase, or reconstruct code. Only quote verbatim from the provided source.
+3. If no source file content is provided, set confidence below 50 and omit oldCode.
+4. oldCode is used for exact string find-and-replace. Any deviation — even whitespace — causes failure.
 
 You MUST respond in strict JSON only with this schema:
 {
