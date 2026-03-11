@@ -58,6 +58,11 @@ const FEW_SHOT_EXAMPLES: FewShotExample[] = [
     error: 'Error: Network request failed with status 500: Internal Server Error',
     verdict: 'PRODUCT_ISSUE',
     reasoning: 'HTTP 500 errors indicate server-side failures in the application.'
+  },
+  {
+    error: 'Timed out retrying after 15000ms: Expected to find element: #password, but never found it (from cypress/support/commands.js:232)',
+    verdict: 'PRODUCT_ISSUE',
+    reasoning: 'Login page failed to render form fields. The #password selector is correct and stable — when the login page does not render at all, the application deployment is broken (e.g., wrong API endpoint, missing env vars). This is not a test selector issue.'
   }
 ];
 
@@ -127,7 +132,10 @@ const STRONG_PRODUCT_SIGNAL_PATTERNS = [
   /\bstatus 5\d\d\b/i,
   /\bECONNREFUSED\b/i,
   /\bGraphQL(?:\s+|)error\b/i,
-  /\bCypress could not verify that this server is running\b/i
+  /\bCypress could not verify that this server is running\b/i,
+  /\bFailed to fetch\b/i,
+  /\bnet::ERR_/i,
+  /\bCORS\b.*\berror\b/i
 ];
 
 /**

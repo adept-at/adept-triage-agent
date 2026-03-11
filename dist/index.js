@@ -3219,6 +3219,9 @@ PRODUCT_ISSUE indicators:
 - API contract violations
 - UI components not rendering correctly
 - Missing or broken functionality
+- Login page or authentication flow completely failing to render (not just a slow load — the page content is wrong or missing)
+- API endpoint misconfiguration causing all network requests to fail
+- Environment/deployment issues where the app is deployed but non-functional (wrong API URL, missing env vars, broken build)
 
 INCONCLUSIVE indicators:
 - Sauce Labs / Selenium / WebDriver session termination
@@ -3239,6 +3242,8 @@ When analyzing screenshots (if provided):
 - Notice any validation errors, form submission failures, or API error responses shown in the UI
 - Check if the application failed to load or render properly (PRODUCT_ISSUE)
 - Look for visual bugs, layout issues, or incorrect rendering
+- CRITICAL: If the screenshot shows a login page WITHOUT a password field, username field, or login form, the app failed to render — this is a PRODUCT_ISSUE, not a selector problem
+- If the screenshot shows an error page, blank page, or unexpected page instead of the expected page, this is a PRODUCT_ISSUE
 
 Screenshots often contain crucial error information that logs might miss. If an error is visible in a screenshot, it should be a key factor in your analysis.
 
@@ -3247,6 +3252,15 @@ COMMON MISCLASSIFICATION PATTERNS TO AVOID:
 - Don't classify as PRODUCT_ISSUE just because of a timeout - many timeouts are test synchronization issues
 - GraphQL/API errors during tests often indicate real product issues, not test problems
 - "Element not found" can be either - check if UI actually rendered correctly in screenshots
+
+CRITICAL — SHARED PRECONDITION FAILURES:
+When tests fail during login, authentication, or other shared setup steps (e.g., "Expected to find element: #password" in a shared commands.js or login helper):
+- This is almost NEVER a TEST_ISSUE. The login helper works for every other PR — it's a shared, stable dependency.
+- If the login page fails to render its form fields, the APPLICATION is broken, not the test.
+- Common root causes: wrong API endpoint configured, broken deployment, missing environment variables, authentication service down.
+- If screenshots show a blank page, error page, or page without the login form, this is a PRODUCT_ISSUE.
+- If the PR diff contains environment config changes, API URL changes, or build configuration changes, this strongly suggests PRODUCT_ISSUE.
+- Only classify login failures as TEST_ISSUE if there is specific evidence that the login test code itself was recently changed and broken.
 - When elements with alt text or aria-labels are "not found" but the screenshot shows the UI rendered correctly, the element is likely covered/obscured by overlays, tabs, or modals (TEST_ISSUE)
 - Long timeouts (>10s) that still fail often indicate the element exists but isn't in the expected state (covered, not visible, or conditionally rendered) rather than actual missing functionality
 - If placeholder content is visible instead of expected content, but no errors are shown, this may be normal application state rather than a bug
@@ -4941,6 +4955,11 @@ const FEW_SHOT_EXAMPLES = [
         error: 'Error: Network request failed with status 500: Internal Server Error',
         verdict: 'PRODUCT_ISSUE',
         reasoning: 'HTTP 500 errors indicate server-side failures in the application.'
+    },
+    {
+        error: 'Timed out retrying after 15000ms: Expected to find element: #password, but never found it (from cypress/support/commands.js:232)',
+        verdict: 'PRODUCT_ISSUE',
+        reasoning: 'Login page failed to render form fields. The #password selector is correct and stable — when the login page does not render at all, the application deployment is broken (e.g., wrong API endpoint, missing env vars). This is not a test selector issue.'
     }
 ];
 const INFRASTRUCTURE_FAILURE_PATTERNS = [
@@ -4999,7 +5018,10 @@ const STRONG_PRODUCT_SIGNAL_PATTERNS = [
     /\bstatus 5\d\d\b/i,
     /\bECONNREFUSED\b/i,
     /\bGraphQL(?:\s+|)error\b/i,
-    /\bCypress could not verify that this server is running\b/i
+    /\bCypress could not verify that this server is running\b/i,
+    /\bFailed to fetch\b/i,
+    /\bnet::ERR_/i,
+    /\bCORS\b.*\berror\b/i
 ];
 async function analyzeFailure(client, errorData) {
     try {
