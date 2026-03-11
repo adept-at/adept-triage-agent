@@ -379,14 +379,16 @@ async function attemptAutoFix(
           inputs.validationSpec ||
           errorData?.fileName ||
           fixRecommendation.proposedChanges[0]?.file;
-        const previewUrl = inputs.validationPreviewUrl || '';
+        const previewUrl =
+          inputs.validationPreviewUrl || 'https://learn.adept.at';
 
-        if (!previewUrl) {
-          core.warning(
-            'No preview URL available for validation, skipping validation trigger'
+        if (!inputs.validationPreviewUrl) {
+          core.info(
+            `No preview URL provided, falling back to production: ${previewUrl}`
           );
-          result.validationStatus = 'skipped';
-        } else if (!spec) {
+        }
+
+        if (!spec) {
           core.warning(
             'No spec file identified for validation, skipping validation trigger'
           );
