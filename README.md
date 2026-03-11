@@ -402,7 +402,7 @@ Integrate AI triage results into your Slack notifications in the triage workflow
 
 | Output        | Description                                                                        |
 | ------------- | ---------------------------------------------------------------------------------- |
-| `verdict`     | Classification result: `TEST_ISSUE`, `PRODUCT_ISSUE`, `INCONCLUSIVE`, `PENDING`, or `ERROR` |
+| `verdict`     | Classification result: `TEST_ISSUE`, `PRODUCT_ISSUE`, `NO_FAILURE`, `INCONCLUSIVE`, `PENDING`, or `ERROR` |
 | `confidence`  | Confidence score (0-100)                                                           |
 | `reasoning`   | Detailed explanation of the decision                                               |
 | `summary`     | Brief summary suitable for PR comments                                             |
@@ -517,7 +517,7 @@ npm run build
 We follow semantic versioning and provide multiple ways to reference this action:
 
 - **`@v1`** - Recommended for production. Automatically updates to the latest v1.x.x release
-- **`@v1.18.1`** - Pin to a specific version
+- **`@v1`** - Pin to a specific version
 - **`@main`** - Latest development version (use with caution)
 
 Example:
@@ -527,7 +527,7 @@ Example:
 uses: adept-at/adept-triage-agent@v1
 
 # Specific version - no automatic updates
-uses: adept-at/adept-triage-agent@v1.18.1
+uses: adept-at/adept-triage-agent@v1
 ```
 
 ## Development

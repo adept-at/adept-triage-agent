@@ -1,8 +1,9 @@
 # Adept Triage Agent — Demo Script
 
 > **Audience**: Engineering team
-> **Duration**: ~15 minutes
-> **Format**: Screen-share walkthrough
+> **Duration**: ~20 minutes
+> **Format**: Screen-share walkthrough with live code navigation
+> **Version**: v1.21.0
 
 ---
 
@@ -10,42 +11,43 @@
 
 **What to say:**
 
-> "I'm going to walk you through the Adept Triage Agent — what it is, where it's installed, how it's wired up, and show you a real triage result from production. This is at v1.18.1 running on GPT-5.3 Codex."
+> "I'm going to walk you through the Adept Triage Agent — what it does, how the multi-agent orchestration works under the hood, where to find everything in the code, and show you a real improvement we just shipped that catches a class of reasoning bugs. This is v1.21.0 running on GPT-5.3 Codex."
 
 **What to show:**
 - Open the GitHub repo: `https://github.com/adept-at/adept-triage-agent`
-- Point at the description: "AI-powered GitHub Action that automatically triages test failures"
 
 ---
 
-## SECTION 1: The Problem We Solve (1 min)
+## SECTION 1: The Problem We Solve (2 min)
 
 **What to say:**
 
-> "When an E2E test fails in CI, someone has to figure out: is this a real bug, or is the test flaky? That takes time. The triage agent does this automatically — it reads the logs, screenshots, and PR diff, sends it to GPT-5.3 Codex, and comes back with a verdict: TEST_ISSUE or PRODUCT_ISSUE, with a confidence score."
+> "When an E2E test fails in CI, someone has to figure out: is this a real product bug, a flaky test, or an infrastructure hiccup? That takes time and context-switching. The triage agent does this automatically. It reads the CI logs, failure screenshots, uploaded test artifacts, and the PR diff — sends it all to GPT-5.3 Codex — and comes back with a structured verdict."
 
 **What to show:**
-- Show a Slack notification with a triage result (find one in `#learn-skillbuilder-cypress-tests` or similar)
-- Point out: verdict, confidence %, summary, spec name, branch
+- Show a Slack notification with a triage result
+- Point out: verdict emoji, confidence %, summary line, test name, branch name
+- Highlight the three possible verdicts:
+  - **TEST_ISSUE** — problem in test code (flaky selector, timing, environment)
+  - **PRODUCT_ISSUE** — real bug in the app (500 error, null reference, broken rendering)
+  - **INCONCLUSIVE** — infrastructure failure (browser crash, session timeout)
 
 ---
 
-## SECTION 2: Where It's Installed (2 min)
+## SECTION 2: Where It's Installed (1 min)
 
 **What to say:**
 
-> "The triage agent is a GitHub Action published on the marketplace. It's currently installed in 4 repositories."
+> "The triage agent is a GitHub Action. It's currently installed in 4 repositories across two test frameworks."
 
 **What to show:**
-- Open the GitHub Marketplace page: `https://github.com/marketplace/actions/adept-triage-agent`
-- Then show the 4 consumer repos (open each repo's Actions tab):
 
-| Repo | What it tests |
-|------|---------------|
-| `lib-cypress-canary` | Cypress E2E — skills, lexical editor, preview URLs |
-| `lib-wdio-8-e2e-ts` | WebDriverIO — labs, bastion, search, enrollments |
-| `learn-webapp` | Cypress — SauceLabs preview URL tests |
-| `lib-wdio-8-multi-remote` | WebDriverIO — multi-remote browser tests |
+| Repo | Framework | What it tests |
+|------|-----------|---------------|
+| `lib-cypress-canary` | Cypress | Skills, lexical editor, preview URLs |
+| `lib-wdio-8-e2e-ts` | WebDriverIO | Labs, bastion, search, enrollments |
+| `learn-webapp` | Cypress | SauceLabs preview URL tests |
+| `lib-wdio-8-multi-remote` | WebDriverIO | Multi-remote browser tests |
 
 ---
 
@@ -53,130 +55,229 @@
 
 **What to say:**
 
-> "There's a two-workflow architecture. The test workflow runs your tests, and if a job fails, it dispatches an event. A separate triage workflow picks that up, waits for the test run to finish, then calls the triage agent."
+> "There's a two-workflow architecture. The test workflow runs your tests. If a job fails, it dispatches an event. A separate triage workflow receives that event, waits for the test run to finish, then runs the triage agent."
 
-**What to show — Step by step:**
+**What to show — walk through the code:**
 
 ### 3a. The Dispatch Trigger (test workflow)
 
-- Open any test workflow, e.g. `lib-cypress-canary/.github/workflows/skillbuilder.on.deploy.to.prod.yml`
-- Scroll to the `Trigger triage analysis` step (runs `if: failure()`)
-- Highlight the `createDispatchEvent` call and the `client_payload`:
-
-```
-event_type: 'triage-failed-test'
-client_payload: {
-  workflow_run_id, job_name, spec,
-  repository, repo_url, branch,
-  commit_sha, pr_number, preview_url
-}
-```
+- Open any consumer repo test workflow (e.g., `lib-cypress-canary`)
+- Find the `Trigger triage analysis` step (runs `if: failure()`)
+- Show that we now standardize on the shared dispatch action:
+  ```
+  uses: adept-at/adept-common/.github/actions/triage-dispatch@main
+  ```
+- Show the dispatch payload it sends:
+  ```
+  event_type: 'triage-failed-test'
+  client_payload: { workflow_run_id, job_name, spec, repository, branch, commit_sha, pr_number }
+  ```
+- All four repos now use the shared dispatch action and shared reusable triage workflow. `learn-webapp` passes `GITHUB_TOKEN` as `CROSS_REPO_PAT` since tests and source live in the same repo; the other three use a PAT for cross-repo access.
 
 ### 3b. The Triage Workflow (receives the dispatch)
 
-- Open `lib-cypress-canary/.github/workflows/triage-failed-tests.yml`
-- Walk through the steps:
-  1. **Validate inputs** — prints the payload, fails fast if `workflow_run_id` missing
-  2. **Wait for workflow** — polls `getWorkflowRun` until status = completed
-  3. **Run triage analysis** — `uses: adept-at/adept-triage-agent@v1` with all inputs
-  4. **Save artifact** — writes `triage.json` for later reference
-  5. **Slack notify** — uses `adept-common/triage-slack-notify@main`
+Walk through the steps:
+1. **Validate inputs** — prints payload, fails fast if `workflow_run_id` missing
+2. **Wait for workflow** — polls `getWorkflowRun` until `status: completed`
+3. **Run triage analysis** — `uses: adept-at/adept-triage-agent@v1`
+4. **Save artifact** — writes `triage.json` for later reference
+5. **Slack notify** — uses `adept-at/adept-common/.github/actions/triage-slack-notify@main`
+
+All four consumer repos now use the shared reusable triage workflow: `adept-at/adept-common/.github/workflows/triage-failed-tests.yml@main`.
 
 ### 3c. Secrets Required
 
-- Open repo Settings → Secrets → Actions
-- Show the required secrets:
-  - `OPENAI_API_KEY` — for the AI analysis
-  - `CROSS_REPO_PAT` — only needed when the action must read diffs or write fixes in a different repository
+- `OPENAI_API_KEY` — for the AI analysis
+- `CROSS_REPO_PAT` — only needed for cross-repo diff or fix writes
 
 ---
 
-## SECTION 4: What Happens Inside the Agent (3 min)
+## SECTION 4: The Entry Point — Walking Through the Code (3 min)
 
 **What to say:**
 
-> "Let me show you the actual pipeline inside the agent."
+> "Let me show you what actually happens when the action runs. Everything starts in `src/index.ts`."
+
+**What to show — open each file as you talk:**
+
+### Entry: `src/index.ts` → `run()`
+
+> "The `run()` function is the main orchestrator. It parses inputs, initializes three clients — Octokit for GitHub, OpenAIClient for GPT, and ArtifactFetcher for screenshots/logs — then kicks off the pipeline."
+
+Key flow:
+```
+run()
+  → getInputs()
+  → processWorkflowLogs() → ErrorData | null
+  → analyzeFailure() → AnalysisResult (verdict + confidence + reasoning)
+  → [if TEST_ISSUE] generateFixRecommendation()
+  → [if auto-fix enabled] attemptAutoFix()
+  → setSuccessOutput()
+```
+
+### Data Collection: `src/services/log-processor.ts` → `processWorkflowLogs()`
+
+> "This is where we gather all the evidence. It downloads the CI job logs, extracts the error, then fetches everything in parallel — screenshots, uploaded test artifacts, and the PR diff."
+
+Show:
+- `fetchArtifactsParallel()` — three concurrent fetches
+- `fetchDiffWithFallback()` — tries PR diff → branch diff → commit diff
+- The resulting `ErrorData` object (show the type in `src/types.ts`)
+
+### Analysis: `src/simplified-analyzer.ts` → `analyzeFailure()`
+
+> "The analyzer first checks for infrastructure failures — browser crashes, session timeouts — those short-circuit to INCONCLUSIVE without calling the model. Otherwise, it builds a prompt with all the evidence and sends it to GPT-5.3 Codex."
+
+Show:
+- `detectInfrastructureFailure()` — the regex patterns
+- `FEW_SHOT_EXAMPLES` array — the 9 examples that guide the model
+- `calculateConfidence()` — the scoring formula
+
+### The Prompt: `src/openai-client.ts` → `getSystemPrompt()`
+
+> "This is the main system prompt. It tells the model how to classify failures, what screenshots to look for, and — this is new in v1.21.0 — it has a **Causal Consistency Rule** that prevents the model from fabricating theories that contradict the PR diff."
+
+Show:
+- The verdict classification rules (TEST_ISSUE / PRODUCT_ISSUE / INCONCLUSIVE indicators)
+- The screenshot analysis instructions
+- **The new CAUSAL CONSISTENCY RULE block** (line ~266)
+- `formatPRDiffSection()` and the new **CAUSAL CONSISTENCY CHECK** block
+
+---
+
+## SECTION 5: The Multi-Agent Pipeline (4 min)
+
+**What to say:**
+
+> "For higher-quality fixes, there's an optional 5-agent pipeline that replaces the single-shot repair. Each agent is a specialist. Let me walk you through all five."
 
 **What to show:**
-- Open `docs/agent-workflow-flowchart.md` in GitHub (renders the Mermaid diagrams)
-- Walk through the **Main Triage Pipeline** diagram:
 
-> "First it collects data — workflow logs, screenshots, uploaded test artifacts, and the PR or branch diff if there is one. Then it builds a structured prompt and sends everything to GPT-5.3 Codex via the Responses API. The model returns a JSON verdict."
+### The Orchestrator: `src/agents/agent-orchestrator.ts`
 
-- Highlight the key decision points:
-  - **TEST_ISSUE** → generates a fix recommendation
-  - **PRODUCT_ISSUE** → suggests source locations
-  - **INCONCLUSIVE** → confidence below threshold
+> "The orchestrator coordinates the agents in sequence: Analysis → Code Reading → Investigation → Fix Generation ↔ Review. The fix/review loop runs up to 3 times. If review rejects a fix, the feedback is sent back to the fix generator."
 
-- Briefly show the **Multi-Agent Orchestration Pipeline** diagram:
+Show `orchestrate()` method — the step-by-step flow.
 
-> "For higher-quality fixes, there's an optional 5-agent pipeline: Analysis, Code Reading, Investigation, Fix Generation, and Review. They iterate up to 3 times. This is opt-in via `ENABLE_AGENTIC_REPAIR`."
+### Agent 1 — AnalysisAgent: `src/agents/analysis-agent.ts`
+
+> "Classifies the root cause into categories like SELECTOR_MISMATCH, TIMING_ISSUE, ENVIRONMENT_ISSUE. It reads the error, logs, screenshots, and PR diff, then outputs a structured analysis."
+
+Show: `getSystemPrompt()` — the root cause categories, `buildUserPrompt()` — how PR diff is included.
+
+### Agent 2 — CodeReadingAgent: `src/agents/code-reading-agent.ts`
+
+> "This one is **not an LLM call** — it's deterministic. It fetches the actual test file from GitHub, parses imports to find helper files and page objects, and collects all the source context the later agents need."
+
+Show: `execute()` — the GitHub API file fetch logic.
+
+### Agent 3 — InvestigationAgent: `src/agents/investigation-agent.ts`
+
+> "Takes the analysis plus the source code, and does a deep investigation. It determines if the test code is fixable, identifies specific selectors to update, and recommends an approach."
+
+Show: output interface — `isTestCodeFixable`, `selectorsToUpdate`, `recommendedApproach`.
+
+### Agent 4 — FixGenerationAgent: `src/agents/fix-generation-agent.ts`
+
+> "Generates exact code changes — oldCode/newCode pairs that can be applied as find-and-replace. It gets the analysis, investigation, source file content, and PR diff. New in v1.21.0 — the PR Diff Consistency rule prevents it from generating fixes based on theories the diff doesn't support."
+
+Show: `getSystemPrompt()` — the **PR DIFF CONSISTENCY** section at the end.
+
+### Agent 5 — ReviewAgent: `src/agents/review-agent.ts`
+
+> "The quality gate. Reviews every proposed fix before it ships. Checks that oldCode actually matches the source file, that newCode is syntactically valid, and — new in v1.21.0 — that the fix reasoning doesn't contradict the PR diff. Any CRITICAL issue means rejection."
+
+Show:
+- The CRITICAL issues list — including the new diff-contradiction criterion
+- The review instruction #6 about verifying diff consistency
 
 ---
 
-## SECTION 5: Live Example — Real Triage Result (3 min)
+## SECTION 6: The v1.21.0 Story — Causal Consistency (3 min)
 
 **What to say:**
 
-> "Let me show you a real triage result from production."
+> "Let me tell you about a real failure that exposed a reasoning bug. This is why v1.21.0 exists."
+
+### The Incident
+
+> "A Cypress test in learn-webapp failed because `#password` wasn't found during a login hook. The PR only changed LMS rendering code — LessonRenderer, content-parser, a new ContentFallback component. Zero auth changes."
+
+### What the Agent Did Wrong (pre-v1.21.0)
+
+> "The agent saw the screenshot showing an email-only login page, saw a network call to `loginWithEmail`, and concluded: 'The login UI was changed to a passwordless flow.' Then it generated a fix to rewrite the login command to support 'both auth UIs.' 92% confidence."
+
+> "The problem? It had the PR diff right there showing NO auth changes. It fabricated a theory, then cherry-picked normal network traffic as evidence — classic confirmation bias."
+
+### The Fix
+
+> "We added Causal Consistency Rules to all four prompt layers."
 
 **What to show:**
-- Open a recent successful triage run in GitHub Actions:
-  `https://github.com/adept-at/lib-cypress-canary/actions/runs/22647644752`
-- Expand the **Run triage analysis** step log — show:
-  - The inputs being passed
-  - The analysis running
-  - The verdict output (TEST_ISSUE or PRODUCT_ISSUE)
-  - Confidence score
-  - Summary text
-- Then show the **Slack notification** that was sent
-- If there's a triage artifact, download it and show the JSON:
-  - `verdict`, `confidence`, `reasoning`, `indicators`
+
+1. **`src/openai-client.ts`** — Show the CAUSAL CONSISTENCY RULE (main analysis)
+2. **`src/openai-client.ts`** — Show the CAUSAL CONSISTENCY CHECK (in `formatPRDiffSection`)
+3. **`src/agents/fix-generation-agent.ts`** — Show the PR DIFF CONSISTENCY section
+4. **`src/agents/review-agent.ts`** — Show the new CRITICAL criterion and review instruction #6
+
+### The Proof
+
+> "We wrote an integration test that hits the real model with the exact same scenario — login failure, unrelated PR diff. It verifies three things:"
+
+**What to show:** Open `__tests__/integration/causal-consistency.integration.test.ts`
+
+1. **analyzeFailure**: The model now says "PR only changes lesson content rendering — login failure is unrelated to this PR"
+2. **FixGenerationAgent**: Generates a fix addressing selector brittleness, NOT a phantom "passwordless UI change"
+3. **ReviewAgent**: When fed the old bad fix, rejects it with a CRITICAL issue: "Fix reasoning is inconsistent with the provided PR diff"
 
 ---
 
-## SECTION 6: Auto-Fix & Validation (1 min)
+## SECTION 7: Auto-Fix & Validation (1 min)
 
 **What to say:**
 
-> "When the verdict is TEST_ISSUE and confidence is high enough, the agent can automatically create a fix branch. It reads the test code, generates a patch, and pushes it. If validation is enabled, it triggers a workflow to re-run the specific test against the fix branch. The action itself reports validation as pending or skipped. Any pass/fail handling, cleanup, or PR creation happens in downstream workflow automation."
+> "When the verdict is TEST_ISSUE and confidence is high enough, the agent can create a fix branch automatically. It reads the test code, generates a patch, and pushes it via the GitHub API. If validation is enabled, it triggers a workflow to re-run the specific test."
 
 **What to show:**
-- Point to the auto-fix inputs in the triage workflow:
-  - `ENABLE_AUTO_FIX: 'true'`
-  - `AUTO_FIX_BASE_BRANCH: 'main'`
-  - `AUTO_FIX_MIN_CONFIDENCE: '70'`
-  - `ENABLE_VALIDATION: 'true'`
+- The auto-fix inputs in a triage workflow
+- `src/repair/fix-applier.ts` — `applyFix()` method
 
 ---
 
-## SECTION 7: Recent Improvements (1 min)
+## WRAP-UP (1 min)
 
 **What to say:**
 
-> "We recently shipped several improvements:"
-
-- **Model upgrade**: `gpt-5.2-codex` → `gpt-5.3-codex` — ~25% faster responses
-- **Dead code cleanup**: removed unused functions, consolidated types, cleaner codebase
-- **Summary fix**: fixed a bug where AI summaries were getting truncated on dotted method names like `cy.wait()`
-- **Centralized config**: all AI model settings in one place (`src/config/constants.ts`)
-- **Shared Slack action**: standardized notifications via `adept-common/triage-slack-notify`
-- **Secret management**: bulk update script for rotating PATs across all consumer repos
-
----
-
-## WRAP-UP (30 sec)
-
-**What to say:**
-
-> "To recap: the triage agent runs automatically whenever a test fails in any of our 4 E2E repos. It analyzes the failure using GPT-5.3 Codex with full context — logs, screenshots, and code diffs — and tells us whether it's a test issue or a product bug. It can even auto-fix test issues and trigger validation. Results are posted after the test workflow completes and the triage workflow runs."
+> "To recap: the triage agent runs automatically whenever a test fails in any of our E2E repos. It gathers logs, screenshots, and code diffs, analyzes the failure using GPT-5.3 Codex, and returns a structured verdict. For test issues, it can generate and auto-apply fixes through a 5-agent pipeline with built-in review. And as of v1.21.0, every agent cross-references its reasoning against the PR diff to prevent fabricated theories."
 
 **What to show:**
-- The Repository Integration Map diagram from `docs/agent-workflow-flowchart.md`
+- Open `docs/agent-workflow-flowchart.md` in GitHub — the Mermaid diagrams render inline
+- Show the **Causal Consistency** diagram as the closing visual
 
 ---
 
 ## APPENDIX: Quick Reference
+
+### Source File Map
+
+| Component | File | Key Functions |
+|-----------|------|---------------|
+| Entry point | `src/index.ts` | `run()`, `getInputs()`, `generateFixRecommendation()` |
+| Log processing | `src/services/log-processor.ts` | `processWorkflowLogs()`, `fetchDiffWithFallback()` |
+| Error extraction | `src/simplified-analyzer.ts` | `analyzeFailure()`, `extractErrorFromLogs()` |
+| OpenAI prompts | `src/openai-client.ts` | `getSystemPrompt()`, `buildPrompt()`, `formatPRDiffSection()` |
+| Orchestrator | `src/agents/agent-orchestrator.ts` | `orchestrate()`, `runPipeline()` |
+| Analysis agent | `src/agents/analysis-agent.ts` | `execute()`, `getSystemPrompt()` |
+| Code reader | `src/agents/code-reading-agent.ts` | `execute()` (no LLM) |
+| Investigation | `src/agents/investigation-agent.ts` | `execute()`, `getSystemPrompt()` |
+| Fix generator | `src/agents/fix-generation-agent.ts` | `execute()`, `getSystemPrompt()` |
+| Reviewer | `src/agents/review-agent.ts` | `execute()`, `getSystemPrompt()` |
+| Base agent | `src/agents/base-agent.ts` | `createAgentContext()`, `executeWithTimeout()` |
+| Repair agent | `src/repair/simplified-repair-agent.ts` | `generateFixRecommendation()`, `tryAgenticRepair()` |
+| Fix applier | `src/repair/fix-applier.ts` | `canApply()`, `applyFix()` |
+| Artifacts | `src/artifact-fetcher.ts` | `fetchScreenshots()`, `fetchPRDiff()` |
+| Config | `src/config/constants.ts` | `OPENAI`, `CONFIDENCE`, `AGENT_CONFIG` |
+| Types | `src/types.ts` | `ErrorData`, `AnalysisResult`, `FixRecommendation`, `PRDiff` |
 
 ### Key URLs
 
@@ -188,25 +289,12 @@ client_payload: {
 | lib-wdio-8-e2e-ts Triage Runs | `https://github.com/adept-at/lib-wdio-8-e2e-ts/actions/workflows/triage-failed-tests.yml` |
 | Slack Channel | `#learn-skillbuilder-cypress-tests` |
 
-### Architecture at a Glance
-
-```
-Test fails in CI
-  → dispatch event (triage-failed-test)
-    → triage workflow starts
-      → waits for test workflow to complete
-        → adept-triage-agent@v1 runs
-          → collects: logs + screenshots + PR diff
-          → sends to GPT-5.3 Codex
-          → returns: verdict + confidence + reasoning
-            → Slack notification via adept-common
-            → (optional) auto-fix branch + validation
-```
-
 ### Version History
 
 | Version | Date | Highlights |
 |---------|------|------------|
-| v1.18.1 | 2026-03-04 | Upgrade to gpt-5.3-codex |
+| v1.21.0 | 2026-03-10 | Causal consistency — PR diff cross-reference in all agent prompts |
+| v1.20.0 | 2026-03-09 | INCONCLUSIVE verdict for infrastructure/session failures |
+| v1.19.0 | 2026-03-07 | Cross-repo diff fix, NO_FAILURE verdict, validation URL alignment |
+| v1.18.1 | 2026-03-04 | Upgrade to gpt-5.3-codex (~25% faster) |
 | v1.18.0 | 2026-03-03 | Dead code cleanup, summary truncation fix |
-| v1.17.7 | 2026-02-26 | Previous stable release |

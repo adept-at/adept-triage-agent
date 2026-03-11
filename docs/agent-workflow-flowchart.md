@@ -1,4 +1,4 @@
-# Adept Triage Agent - Workflow Flowchart
+# Adept Triage Agent — Workflow Flowchart
 
 ## Main Triage Pipeline
 
@@ -32,7 +32,10 @@ flowchart TB
     WF_STATUS -->|Yes| PENDING["Output: PENDING"]
     WF_STATUS -->|No| NO_DATA["Output: ERROR<br/>No error data found"]
 
-    NULL_CHECK -->|Yes| ANALYZE["Analyze with AI<br/>simplified-analyzer.ts"]
+    NULL_CHECK -->|Yes| INFRA_CHECK{"Infrastructure<br/>Failure Detected?<br/>detectInfrastructureFailure()"}
+
+    INFRA_CHECK -->|Yes| INCONC_INFRA["Output: INCONCLUSIVE<br/>(session/browser crash)"]
+    INFRA_CHECK -->|No| ANALYZE["Analyze with AI<br/>simplified-analyzer.ts"]
 
     ANALYZE --> AI_CALL["OpenAI Responses API<br/>gpt-5.3-codex<br/>openai-client.ts"]
 
@@ -40,6 +43,7 @@ flowchart TB
 
     VERDICT -->|TEST_ISSUE| FIX_REC["Generate Fix Recommendation<br/>SimplifiedRepairAgent"]
     VERDICT -->|PRODUCT_ISSUE| CONFIDENCE_CHECK
+    VERDICT -->|INCONCLUSIVE| CONFIDENCE_CHECK
 
     FIX_REC --> AGENTIC_CHECK{Agentic<br/>Repair Enabled?}
 
@@ -80,21 +84,21 @@ flowchart TB
 
     subgraph STEP1["Step 1: Analysis Agent"]
         AA["analysis-agent.ts<br/>→ OpenAI Responses API"]
-        AA --> AA_OUT["Output:<br/>• Root cause category<br/>• Confidence score<br/>• Selectors<br/>• Patterns"]
+        AA --> AA_OUT["Output:<br/>• Root cause category<br/>• Confidence score<br/>• Selectors & elements<br/>• Detected patterns<br/>• Suggested approach"]
     end
 
     STEP1 -->|Pass analysis + selectors| STEP2
 
     subgraph STEP2["Step 2: Code Reading Agent"]
         CRA["code-reading-agent.ts<br/>→ GitHub API (file fetch)"]
-        CRA --> CRA_OUT["Output:<br/>• Test file content<br/>• Related file contents<br/>• Support files"]
+        CRA --> CRA_OUT["Output:<br/>• Test file content<br/>• Related file contents<br/>• Custom commands<br/>• Page objects"]
     end
 
     STEP2 -->|Pass analysis + code context| STEP3
 
     subgraph STEP3["Step 3: Investigation Agent"]
         IA["investigation-agent.ts<br/>→ OpenAI Responses API"]
-        IA --> IA_OUT["Output:<br/>• Findings list<br/>• Recommended approach<br/>• Root cause detail"]
+        IA --> IA_OUT["Output:<br/>• Findings list<br/>• isTestCodeFixable<br/>• Recommended approach<br/>• Selectors to update"]
     end
 
     STEP3 --> LOOP_START
@@ -105,7 +109,8 @@ flowchart TB
 
         subgraph STEP4["Step 4: Fix Generation Agent"]
             FGA["fix-generation-agent.ts<br/>→ OpenAI Responses API"]
-            FGA --> FGA_OUT["Output:<br/>• Code changes<br/>• Confidence<br/>• Evidence<br/>• Reasoning"]
+            FGA --> DIFF_CHECK["PR Diff Consistency Check:<br/>Does fix reasoning match<br/>the actual diff?"]
+            DIFF_CHECK --> FGA_OUT["Output:<br/>• Code changes (oldCode → newCode)<br/>• Confidence<br/>• Evidence & reasoning"]
         end
 
         STEP4 --> CONF_CHECK{Confidence ≥<br/>Min Threshold?}
@@ -119,12 +124,13 @@ flowchart TB
 
         subgraph STEP5["Step 5: Review Agent"]
             RA["review-agent.ts<br/>→ OpenAI Responses API"]
-            RA --> RA_OUT["Output:<br/>• Approved (bool)<br/>• Issues list<br/>• Suggestions"]
+            RA --> RA_CHECKS["Review Checks:<br/>• oldCode matches source file?<br/>• newCode syntactically valid?<br/>• Fix addresses root cause?<br/>• No side effects?<br/>• Reasoning consistent with PR diff?"]
+            RA_CHECKS --> RA_OUT["Output:<br/>• Approved (bool)<br/>• Issues (CRITICAL/WARNING)<br/>• Assessment"]
         end
 
         STEP5 --> APPROVED{Approved?}
         APPROVED -->|Yes| RETURN_FIX
-        APPROVED -->|No| FEEDBACK2["Feedback: Review issues"]
+        APPROVED -->|No| FEEDBACK2["Feedback: Review issues<br/>(fed back to Fix Gen)"]
         FEEDBACK2 --> LOOP_START
     end
 
@@ -136,6 +142,57 @@ flowchart TB
     BEST_FIX -->|No| FALLBACK{Fallback<br/>Enabled?}
     FALLBACK -->|Yes| SINGLE["Fall Back to Single-Shot"]
     FALLBACK -->|No| FAIL["Return Failed"]
+```
+
+## Causal Consistency — PR Diff Cross-Reference (v1.21.0)
+
+Shows how the PR diff is validated against the model's reasoning at every stage.
+
+```mermaid
+flowchart TB
+    subgraph INPUT["Evidence Available"]
+        ERR["Error: #password not found<br/>(timeout in login hook)"]
+        SCREENSHOTS["Screenshots:<br/>Login page with email input"]
+        DIFF["PR Diff:<br/>LessonRenderer.tsx<br/>content-parser.ts<br/>ContentFallback.tsx"]
+    end
+
+    INPUT --> ANALYSIS
+
+    subgraph ANALYSIS["Analysis (openai-client.ts)"]
+        direction TB
+        HYPOTHESIS["Model forms hypothesis:<br/>'#password selector not found'"]
+        CAUSAL_CHECK{"CAUSAL CONSISTENCY CHECK:<br/>Does the diff touch<br/>login/auth code?"}
+        HYPOTHESIS --> CAUSAL_CHECK
+        CAUSAL_CHECK -->|"No — diff only shows<br/>LMS rendering changes"| CORRECT["✅ Correct reasoning:<br/>'Login failure is unrelated to PR.<br/>Pre-existing environment issue<br/>or flaky test.'"]
+        CAUSAL_CHECK -->|"Yes — diff shows<br/>auth changes"| INVESTIGATE["Investigate correlation<br/>between diff and failure"]
+    end
+
+    subgraph BAD_PATH["❌ OLD Behavior (pre-v1.21.0)"]
+        direction TB
+        BAD_THEORY["Model fabricates:<br/>'Login UI changed to passwordless'"]
+        BAD_EVIDENCE["Cherry-picks evidence:<br/>'loginWithEmail endpoint<br/>confirms new flow'"]
+        BAD_FIX["Generates fix:<br/>Rewrite login command for<br/>both auth UIs"]
+        BAD_THEORY --> BAD_EVIDENCE --> BAD_FIX
+    end
+
+    subgraph GOOD_PATH["✅ NEW Behavior (v1.21.0+)"]
+        direction TB
+        GOOD_THEORY["Model cross-references diff:<br/>'No auth files in diff'"]
+        GOOD_CONCLUSION["Concludes:<br/>'Pre-existing env issue.<br/>Login UI not changed by this PR.'"]
+        GOOD_FIX["Fix addresses brittleness:<br/>Add fallback selectors or<br/>improve wait strategy"]
+        GOOD_THEORY --> GOOD_CONCLUSION --> GOOD_FIX
+    end
+
+    CORRECT --> GOOD_PATH
+
+    subgraph REVIEW_GATE["Review Agent Gate"]
+        REVIEW_CHECK{"Does fix reasoning<br/>contradict the diff?"}
+        REVIEW_CHECK -->|"Yes"| REJECT["❌ CRITICAL: Rejected<br/>'Fix claims login UI changed<br/>but diff shows no auth changes'"]
+        REVIEW_CHECK -->|"No"| APPROVE["✅ Approved"]
+    end
+
+    GOOD_FIX --> REVIEW_GATE
+    BAD_FIX -.->|"Now caught by"| REVIEW_GATE
 ```
 
 ## Repository Integration Map
@@ -171,9 +228,14 @@ flowchart LR
     end
 
     subgraph COMMON["adept-common<br/>(Shared Actions)"]
+        DISPATCH["triage-dispatch<br/>GitHub Action"]
+        TRIAGE_WF["triage-failed-tests.yml<br/>Reusable Workflow"]
         NOTIFY["triage-slack-notify<br/>GitHub Action"]
     end
 
+    LEARN -->|"if: failure() uses triage-dispatch@main"| COMMON
+    COMMON -->|"repository_dispatch: triage-failed-test"| LEARN
+    LEARN -->|"all consumer repos use shared triage workflow"| COMMON
     LEARN -->|"uses: adept-at/adept-triage-agent@v1"| TRIAGE
     ANY_REPO -->|"uses: adept-at/adept-triage-agent@v1"| TRIAGE
 
@@ -206,21 +268,22 @@ flowchart LR
         direction TB
         LOGS_RAW["Raw Workflow Logs"]
         SCREENSHOTS_RAW["Screenshots (PNG → base64)"]
-        DIFF_RAW["PR/Branch Diff Patches"]
+        DIFF_RAW["PR/Branch/Commit Diff Patches"]
         ERROR_MSG["Error Messages + Stack Traces"]
+        ARTIFACT_LOGS["Uploaded Test Artifact Logs"]
     end
 
     subgraph AI_LAYER["AI Analysis Layer"]
         direction TB
-        PROMPT["Structured Prompt<br/>error + logs + screenshots + diff"]
+        PROMPT["Structured Prompt<br/>error + logs + screenshots + diff<br/>+ structured summary header"]
         MODEL["gpt-5.3-codex<br/>Responses API<br/>JSON output format<br/>max 16384 tokens"]
-        RESPONSE["Structured JSON Response"]
+        RESPONSE["Structured JSON Response<br/>verdict + reasoning + indicators"]
     end
 
     subgraph OUTPUT_LAYER["Outputs"]
         direction TB
-        VERDICT_OUT["verdict: TEST_ISSUE | PRODUCT_ISSUE | INCONCLUSIVE | PENDING | ERROR"]
-        CONF_OUT["confidence: 0-100"]
+        VERDICT_OUT["verdict: TEST_ISSUE | PRODUCT_ISSUE | INCONCLUSIVE | PENDING | ERROR | NO_FAILURE"]
+        CONF_OUT["confidence: 0-95"]
         REASON_OUT["reasoning: detailed explanation"]
         SUMMARY_OUT["summary: brief for PR comments"]
         JSON_OUT["triage_json: complete analysis"]
@@ -232,4 +295,54 @@ flowchart LR
     INPUTS_LAYER --> COLLECTION
     COLLECTION --> AI_LAYER
     AI_LAYER --> OUTPUT_LAYER
+```
+
+## Sub-Agent Architecture
+
+```mermaid
+flowchart TB
+    subgraph AGENTS["Five Specialized Agents"]
+        direction TB
+
+        subgraph A1["AnalysisAgent"]
+            A1_IN["Input: error, logs, screenshots, PR diff"]
+            A1_WORK["Classifies root cause<br/>SELECTOR_MISMATCH | TIMING_ISSUE<br/>STATE_DEPENDENCY | NETWORK_ISSUE<br/>ELEMENT_VISIBILITY | ENVIRONMENT_ISSUE"]
+            A1_OUT["Output: category, confidence,<br/>selectors, patterns"]
+            A1_IN --> A1_WORK --> A1_OUT
+        end
+
+        subgraph A2["CodeReadingAgent"]
+            A2_IN["Input: test file path, selectors"]
+            A2_WORK["Fetches source via GitHub API<br/>Parses imports & helpers<br/>Finds page objects & commands<br/>(No LLM — deterministic)"]
+            A2_OUT["Output: source file content,<br/>related files, custom commands"]
+            A2_IN --> A2_WORK --> A2_OUT
+        end
+
+        subgraph A3["InvestigationAgent"]
+            A3_IN["Input: analysis + code context"]
+            A3_WORK["Deep investigation<br/>Correlates findings<br/>Identifies fixable selectors"]
+            A3_OUT["Output: findings, isFixable,<br/>selectorsToUpdate, approach"]
+            A3_IN --> A3_WORK --> A3_OUT
+        end
+
+        subgraph A4["FixGenerationAgent"]
+            A4_IN["Input: analysis + investigation<br/>+ source + PR diff + feedback"]
+            A4_WORK["Generates exact code changes<br/>oldCode → newCode<br/>Validates against PR diff"]
+            A4_OUT["Output: CodeChange[],<br/>confidence, evidence"]
+            A4_IN --> A4_WORK --> A4_OUT
+        end
+
+        subgraph A5["ReviewAgent"]
+            A5_IN["Input: proposed fix + analysis<br/>+ source + PR diff"]
+            A5_WORK["Validates fix quality<br/>Checks oldCode matches source<br/>Verifies diff consistency<br/>Flags CRITICAL/WARNING issues"]
+            A5_OUT["Output: approved/rejected,<br/>issues[], assessment"]
+            A5_IN --> A5_WORK --> A5_OUT
+        end
+    end
+
+    A1 -->|analysis| A2
+    A2 -->|code context| A3
+    A3 -->|investigation| A4
+    A4 -->|proposed fix| A5
+    A5 -->|"rejected + feedback"| A4
 ```

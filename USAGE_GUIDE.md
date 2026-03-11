@@ -22,7 +22,7 @@ Best-effort same-workflow analysis is still supported when you target the curren
 We recommend using the major version tag for automatic updates:
 
 - **`@v1`** - Automatically gets backward-compatible updates (recommended)
-- **`@v1.18.1`** - Pin to specific version if needed
+- **`@v1`** - Pin to specific version if needed
 
 ## Quick Start
 
@@ -299,16 +299,36 @@ If you point the action at the current in-progress job, it can still do a best-e
 | `BRANCH`               | No       | -                          | Branch being tested, used for branch diff lookup when no PR number is available                                                                                                                                                                  |
 | `REPOSITORY`           | No       | `${{ github.repository }}` | App/source repository in owner/repo format for PR, branch, or commit diff lookup. Workflow runs and artifacts are still read from the repository where the action executes.                                                                    |
 | `TEST_FRAMEWORKS`      | No       | `cypress`                  | Test framework: "cypress" or "webdriverio"                                                                                                                                                                                                         |
+| `ENABLE_AUTO_FIX` | No | `false` | Enable automatic branch creation with fix |
+| `AUTO_FIX_BASE_BRANCH` | No | `main` | Base branch to create fix branch from |
+| `AUTO_FIX_MIN_CONFIDENCE` | No | `70` | Minimum fix confidence (0-100) to apply auto-fix |
+| `AUTO_FIX_TARGET_REPO` | No | `${{ github.repository }}` | Repository for fix branches (owner/repo format) |
+| `ENABLE_VALIDATION` | No | `false` | Enable validation workflow after fix |
+| `VALIDATION_WORKFLOW` | No | `validate-fix.yml` | Validation workflow file name |
+| `VALIDATION_PREVIEW_URL` | No | - | Preview URL for validation tests |
+| `VALIDATION_SPEC` | No | - | Spec file for validation tests |
+| `ENABLE_AGENTIC_REPAIR` | No | `false` | Enable multi-agent repair pipeline |
 
 ## Outputs
 
 | Output        | Description                      | Example                                                     |
 | ------------- | -------------------------------- | ----------------------------------------------------------- |
-| `verdict`     | Classification of the failure    | `TEST_ISSUE`, `PRODUCT_ISSUE`, `INCONCLUSIVE`, `PENDING`, or `ERROR` |
+| `verdict`     | Classification of the failure    | `TEST_ISSUE`, `PRODUCT_ISSUE`, `NO_FAILURE`, `INCONCLUSIVE`, `PENDING`, or `ERROR` |
 | `confidence`  | Confidence score (0-100)         | `95`                                                        |
 | `reasoning`   | Detailed explanation             | "The test failed due to a timing issue..."                  |
 | `summary`     | Brief summary for notifications  | "🧪 Test Issue: Timing issue with auto-save indicator"      |
 | `triage_json` | Complete triage analysis as JSON | See [Output Format](#output-format)                         |
+| `has_fix_recommendation` | Boolean: fix recommendation generated (TEST_ISSUE only) | - |
+| `fix_recommendation` | Complete fix recommendation as JSON | - |
+| `fix_summary` | Human-readable fix summary | - |
+| `fix_confidence` | Fix recommendation confidence (0-100) | - |
+| `auto_fix_applied` | Whether auto-fix branch was created (true/false) | - |
+| `auto_fix_branch` | Created branch name | - |
+| `auto_fix_commit` | Last commit SHA from auto-fix | - |
+| `auto_fix_files` | JSON array of modified file paths | - |
+| `validation_run_id` | Validation workflow run ID | - |
+| `validation_status` | Validation dispatch status: pending or skipped | - |
+| `validation_url` | URL to validation workflow run | - |
 
 ### Special Verdicts
 

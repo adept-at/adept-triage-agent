@@ -282,9 +282,10 @@ Handles extraction and processing of workflow logs and artifacts.
 |----------|---------|--------|---------|
 | `processWorkflowLogs()` | Main log processing | Octokit, ArtifactFetcher, inputs, repoDetails | `ErrorData \| null` |
 | `findTargetJob()` | Find the failed job | Jobs array, inputs, isCurrentJob | `JobInfo \| null` |
-| `fetchArtifactsParallel()` | Fetch all artifacts concurrently | ArtifactFetcher, runId, jobName, repoDetails, inputs | `[Screenshots, Logs, PRDiff]` |
+| `fetchArtifactsParallel()` | Fetch all artifacts concurrently | ArtifactFetcher, runId, jobName, artifactRepoDetails, diffRepoDetails, inputs | `[Screenshots, Logs, PRDiff]` |
 | `buildErrorContext()` | Combine all context | Job, error, logs, fullLogs, inputs | Combined context string |
 | `capArtifactLogs()` | Truncate large logs | Raw logs | Capped logs string |
+| `fetchDiffWithFallback()` | Try PR diff → branch diff → commit diff | ArtifactFetcher, inputs, repoDetails | `PRDiff \| null` |
 | `buildStructuredSummary()` | Create error summary | `ErrorData` | `StructuredErrorSummary` |
 
 #### Data Flow
@@ -322,7 +323,7 @@ Core analysis engine that uses OpenAI to classify test failures.
 5. **Generic Test Failures** (Priority 1-3) - FAIL, Failed markers
 
 #### Few-Shot Examples
-The analyzer uses 7 curated examples to guide classification:
+The analyzer uses 9 curated examples to guide classification:
 - Intentional test failures (TEST_ISSUE)
 - Server verification errors (PRODUCT_ISSUE)
 - Element visibility timeouts (TEST_ISSUE)
@@ -377,6 +378,8 @@ Fetches and processes workflow artifacts from GitHub.
 | `fetchLogs()` | Fetch job logs | runId, jobId, repoDetails | `string[]` |
 | `fetchTestArtifactLogs()` | Fetch uploaded Cypress or WebDriverIO logs | runId, jobName, repoDetails | string |
 | `fetchPRDiff()` | Fetch PR changes | prNumber, repository | `PRDiff \| null` |
+| `fetchCommitDiff()` | Fetch diff for single commit | commitSha, repository | `PRDiff \| null` |
+| `fetchBranchDiff()` | Fetch diff between branch and base | branch, baseBranch, repository | `PRDiff \| null` |
 | `sortFilesByRelevance()` | Sort files by relevance | PRDiffFile[] | PRDiffFile[] |
 
 #### Screenshot Detection
@@ -462,7 +465,8 @@ interface ApplyResult {
   commitSha?: string;      // Git commit SHA if committed
   branchName?: string;     // Branch name that was created
   validationRunId?: number;
-  validationStatus?: 'pending' | 'skipped';
+  validationStatus?: 'pending' | 'passed' | 'failed' | 'skipped';
+  validationUrl?: string;
 }
 ```
 
@@ -570,7 +574,7 @@ Centralized configuration values.
 ### Core Types
 
 ```typescript
-type Verdict = 'TEST_ISSUE' | 'PRODUCT_ISSUE';
+type Verdict = 'TEST_ISSUE' | 'PRODUCT_ISSUE' | 'INCONCLUSIVE' | 'PENDING' | 'ERROR' | 'NO_FAILURE';
 
 interface ErrorData {
   message: string;
@@ -629,7 +633,7 @@ interface ActionInputs {
 
 | Output | Type | Description |
 |--------|------|-------------|
-| `verdict` | string | `TEST_ISSUE`, `PRODUCT_ISSUE`, `INCONCLUSIVE`, `PENDING`, or `ERROR` |
+| `verdict` | string | `TEST_ISSUE`, `PRODUCT_ISSUE`, `INCONCLUSIVE`, `PENDING`, `ERROR`, or `NO_FAILURE` |
 | `confidence` | string | Confidence percentage (0-95) |
 | `reasoning` | string | Detailed reasoning for the verdict |
 | `summary` | string | Human-readable summary |
@@ -651,8 +655,8 @@ interface ActionInputs {
 ## Error Handling
 
 ### Retry Logic
-- OpenAI API calls retry up to 3 times with exponential backoff
-- Initial delay: 1,000ms, then 2,000ms, then 3,000ms
+- OpenAI API calls retry up to 3 times with linear backoff
+- Initial delay: 1,000ms on first retry, 2,000ms on second retry, then fail
 
 ### Graceful Degradation
 1. **Workflow still running**: Returns `PENDING` verdict
@@ -682,6 +686,16 @@ interface ActionInputs {
     BRANCH: ${{ github.ref_name }}
     COMMIT_SHA: ${{ github.sha }}
 ```
+
+### Consumer Workflow Convention (Shared Actions)
+
+Consumer repos should standardize on shared actions from `adept-at/adept-common`:
+
+- Dispatch on test failure: `adept-at/adept-common/.github/actions/triage-dispatch@main`
+- Reusable triage workflow: `adept-at/adept-common/.github/workflows/triage-failed-tests.yml@main`
+- Slack notification in triage workflow: `adept-at/adept-common/.github/actions/triage-slack-notify@main`
+
+As of March 2026, all four consumer repos (`lib-cypress-canary`, `lib-wdio-8-e2e-ts`, `lib-wdio-8-multi-remote`, `learn-webapp`) use the shared dispatch action and shared reusable triage workflow. `learn-webapp` passes `GITHUB_TOKEN` as `CROSS_REPO_PAT` since its tests and source code are in the same repo.
 
 ---
 
@@ -912,7 +926,7 @@ fix/triage-agent/{sanitized-test-file}-{YYYYMMDD}-{suffix}
 
 Example: `fix/triage-agent/login-spec-cy-ts-20240130-123`
 
-The test file name is sanitized (special characters replaced with hyphens) and truncated to 50 characters to ensure valid git branch names.
+The test file name is sanitized (special characters replaced with hyphens) and truncated to 40 characters to ensure valid git branch names.
 
 ### Commit Message Format
 
@@ -923,11 +937,90 @@ fix(test): {summary - first 50 chars}
 
 Automated fix generated by adept-triage-agent.
 
-Files modified: {list of files}
+File: {filePath}
 Confidence: {confidence}%
-
-{full reasoning}
 ```
+
+---
+
+## Multi-Agent Orchestration Pipeline
+
+When `ENABLE_AGENTIC_REPAIR` is set to `true`, fix generation uses a 5-agent pipeline instead of a single-shot LLM call. The orchestrator is in `src/agents/agent-orchestrator.ts`.
+
+### Agent Pipeline
+
+| Step | Agent | File | LLM? | Purpose |
+|------|-------|------|------|---------|
+| 1 | AnalysisAgent | `src/agents/analysis-agent.ts` | Yes | Classify root cause (SELECTOR_MISMATCH, TIMING_ISSUE, etc.) |
+| 2 | CodeReadingAgent | `src/agents/code-reading-agent.ts` | No | Fetch test source, helpers, and page objects from GitHub |
+| 3 | InvestigationAgent | `src/agents/investigation-agent.ts` | Yes | Deep investigation, identify fixable selectors |
+| 4 | FixGenerationAgent | `src/agents/fix-generation-agent.ts` | Yes | Generate exact oldCode → newCode changes |
+| 5 | ReviewAgent | `src/agents/review-agent.ts` | Yes | Validate fix quality, approve or reject with feedback |
+
+Steps 4 and 5 loop up to 3 times (configurable via `AGENT_CONFIG.MAX_AGENT_ITERATIONS`). If review rejects, feedback is passed back to the fix generator.
+
+### Orchestrator Flow
+
+```
+AgentOrchestrator.orchestrate(context, errorData)
+  → Start timeout timer (120s)
+  → AnalysisAgent.execute() → root cause, confidence, selectors
+  → CodeReadingAgent.execute() → source files
+  → InvestigationAgent.execute() → findings, recommended approach
+  → Loop (max 3 iterations):
+      → FixGenerationAgent.execute() → code changes, confidence
+      → [if confidence < threshold] → retry with feedback
+      → ReviewAgent.execute() → approved/rejected, issues
+      → [if approved] → return fix
+      → [if rejected] → retry with review feedback
+  → Convert to FixRecommendation
+```
+
+### Agent Communication
+
+All agents receive an `AgentContext` (defined in `src/agents/base-agent.ts`):
+- Error message, test file, test name
+- Screenshots (base64), logs, stack trace
+- PR diff (files + patches)
+- Source file content (added by CodeReadingAgent)
+- Framework identifier (cypress/webdriverio)
+
+Agents return `AgentResult<T>` with success/failure, typed output data, execution time, and API call count.
+
+### Fallback Behavior
+
+If the agentic pipeline fails (timeout, all iterations rejected, agent error):
+- Falls back to single-shot repair when `AGENT_CONFIG.FALLBACK_TO_SINGLE_SHOT` is true (default)
+- Returns the best available fix if any iteration produced one above minimum confidence
+
+---
+
+## Causal Consistency (v1.21.0)
+
+### Problem
+
+The model would sometimes fabricate causal theories contradicted by the PR diff. For example: a login failure (`#password` not found) with a PR that only changed LMS rendering code. The model would claim "the login UI was changed to passwordless" — a theory unsupported by the diff — then generate a fix for a non-existent problem.
+
+### Solution
+
+Added explicit **Causal Consistency Rules** to all prompt layers:
+
+| Layer | File | What was added |
+|-------|------|---------------|
+| Main analysis | `src/openai-client.ts` `getSystemPrompt()` | CAUSAL CONSISTENCY RULE — model must validate hypothesis against diff |
+| PR diff section | `src/openai-client.ts` `formatPRDiffSection()` | CAUSAL CONSISTENCY CHECK — explicit wrong/correct reasoning examples |
+| Fix generation | `src/agents/fix-generation-agent.ts` `getSystemPrompt()` | PR DIFF CONSISTENCY — no claiming code changed if diff doesn't show it |
+| Review | `src/agents/review-agent.ts` `getSystemPrompt()` | New CRITICAL criterion — diff-contradiction means rejection |
+
+### Validation
+
+Integration test: `__tests__/integration/causal-consistency.integration.test.ts`
+
+Hits the real model with a login failure + unrelated PR diff and verifies:
+1. `analyzeFailure()` does NOT claim the login UI changed
+2. `AnalysisAgent` identifies failure as unrelated to PR changes
+3. `FixGenerationAgent` does not fabricate a "passwordless login" narrative
+4. `ReviewAgent` rejects a fix whose reasoning contradicts the diff
 
 ---
 
@@ -947,3 +1040,29 @@ Confidence: {confidence}%
 1. Update `buildPrompt()` in `SimplifiedRepairAgent`
 2. Add new error type handling in `extractChangesFromText()`
 3. Update common patterns list in prompt
+
+---
+
+## Example: Tracing a Real Failure
+
+**Scenario:** Button click test fails with `Element [data-testid='submit-button'] not found`
+
+1. **Asset collection** — screenshot shows the UI rendered correctly; logs show element search timeout after 10s; PR diff shows the button component was modified.
+
+2. **Analysis** — the model sees the UI is visible (screenshot), the selector timed out (logs), and the PR changed the button's `data-testid` from `submit-button` to `submit-btn` (diff). Verdict: **TEST_ISSUE** — selector needs updating.
+
+3. **Fix generation:**
+
+```json
+{
+  "confidence": 85,
+  "proposedChanges": [{
+    "file": "cypress/e2e/form.test.js",
+    "oldCode": "cy.get('[data-testid=\"submit-button\"]')",
+    "newCode": "cy.get('[data-testid=\"submit-btn\"]')",
+    "justification": "Update selector to match renamed data-testid in PR"
+  }]
+}
+```
+
+This illustrates the core value: the PR diff provides the "what changed" context that determines whether a failure is a product regression or an outdated test.
