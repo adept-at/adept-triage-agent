@@ -3,7 +3,7 @@
 > **Audience**: Engineering team
 > **Duration**: ~20 minutes
 > **Format**: Screen-share walkthrough with live code navigation
-> **Version**: v1.21.0
+> **Version**: v1.21.2
 
 ---
 
@@ -11,7 +11,7 @@
 
 **What to say:**
 
-> "I'm going to walk you through the Adept Triage Agent — what it does, how the multi-agent orchestration works under the hood, where to find everything in the code, and show you a real improvement we just shipped that catches a class of reasoning bugs. This is v1.21.0 running on GPT-5.3 Codex."
+> "I'm going to walk you through the Adept Triage Agent — what it does, how the multi-agent orchestration works under the hood, where to find everything in the code, and show you a real improvement we just shipped that catches a class of reasoning bugs. This is v1.21.2 running on GPT-5.3 Codex."
 
 **What to show:**
 - Open the GitHub repo: `https://github.com/adept-at/adept-triage-agent`
@@ -293,6 +293,8 @@ Show:
 
 | Version | Date | Highlights |
 |---------|------|------------|
+| v1.21.2 | 2026-03-11 | Shared workflow docs, code-verified accuracy audit, stale workflow cleanup |
+| v1.21.1 | 2026-03-11 | Documentation audit — shared workflow patterns, accuracy fixes |
 | v1.21.0 | 2026-03-10 | Causal consistency — PR diff cross-reference in all agent prompts |
 | v1.20.0 | 2026-03-09 | INCONCLUSIVE verdict for infrastructure/session failures |
 | v1.19.0 | 2026-03-07 | Cross-repo diff fix, NO_FAILURE verdict, validation URL alignment |

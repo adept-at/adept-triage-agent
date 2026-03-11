@@ -149,9 +149,9 @@ Repository roles:
 
 Best-effort same-workflow analysis is still supported when you target the current job, but it has less complete context than the recommended separate-workflow pattern.
 
-### Step 1: Update Your Test Workflow
+### Step 1: Add the Shared Dispatch Action to Your Test Workflow
 
-Add a dispatch trigger when tests fail:
+When a test fails, use the shared dispatch action to trigger triage. This replaces inline `createDispatchEvent` scripts:
 
 ```yaml
 jobs:
@@ -170,97 +170,24 @@ jobs:
             cypress/screenshots/**
             cypress/videos/**
 
-      - name: Trigger triage workflow
+      - name: Trigger triage analysis
         if: failure()
-        uses: actions/github-script@v7
+        uses: adept-at/adept-common/.github/actions/triage-dispatch@main
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
-          script: |
-            await github.rest.repos.createDispatchEvent({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              event_type: 'triage-failed-test',
-              client_payload: {
-                workflow_run_id: context.runId.toString(),
-                job_name: '${{ github.job }}',
-                pr_number: '${{ github.event.pull_request.number || '' }}',
-                branch: '${{ github.head_ref || github.ref_name }}',
-                commit_sha: '${{ github.event.pull_request.head.sha || github.sha }}'
-              }
-            });
+          job-name: ${{ github.job }}
+          pr-number: ${{ github.event.pull_request.number || '' }}
+          commit-sha: ${{ github.event.pull_request.head.sha || github.sha }}
+          branch: ${{ github.head_ref || github.ref_name }}
 ```
 
-### Step 2: Create Triage Workflow
+The shared action handles `workflow_run_id`, `repo_url`, error handling, and payload normalization automatically.
 
-Create `.github/workflows/triage.yml`:
+#### Matrix Jobs
 
-```yaml
-name: Triage Failed Tests
-
-on:
-  repository_dispatch:
-    types: [triage-failed-test]
-
-jobs:
-  analyze:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Wait for workflow completion
-        uses: actions/github-script@v7
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          script: |
-            const workflowRunId = parseInt('${{ github.event.client_payload.workflow_run_id }}');
-
-            // Wait for workflow to complete
-            for (let i = 0; i < 60; i++) {
-              const { data: run } = await github.rest.actions.getWorkflowRun({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                run_id: workflowRunId
-              });
-              
-              if (run.status === 'completed') break;
-              await new Promise(resolve => setTimeout(resolve, 10000));
-            }
-
-      - name: Analyze failure
-        id: triage
-        uses: adept-at/adept-triage-agent@v1
-        with:
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          WORKFLOW_RUN_ID: '${{ github.event.client_payload.workflow_run_id }}'
-          JOB_NAME: '${{ github.event.client_payload.job_name }}'
-          PR_NUMBER: '${{ github.event.client_payload.pr_number }}'
-          BRANCH: '${{ github.event.client_payload.branch }}'
-          COMMIT_SHA: '${{ github.event.client_payload.commit_sha }}'
-
-      - name: Comment on PR (if applicable)
-        if: github.event.client_payload.pr_number
-        uses: actions/github-script@v7
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          script: |
-            const verdict = '${{ steps.triage.outputs.verdict }}';
-            const confidence = '${{ steps.triage.outputs.confidence }}';
-            const summary = '${{ steps.triage.outputs.summary }}';
-
-            const emoji = verdict === 'TEST_ISSUE' ? '🧪' : '🐛';
-
-            github.rest.issues.createComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: ${{ github.event.client_payload.pr_number }},
-              body: `## ${emoji} AI Test Failure Analysis\n\n**Verdict:** ${verdict} (${confidence}% confidence)\n\n${summary}`
-            });
-```
-
-### Matrix Job Example
-
-For parallel test runs using matrix strategy:
+For parallel test runs, pass the matrix value into `job-name` and `spec`:
 
 ```yaml
-# Test workflow
 jobs:
   test:
     strategy:
@@ -270,25 +197,60 @@ jobs:
       - name: Run Cypress Tests
         run: npx cypress run --spec ./cypress/e2e/${{ matrix.containers }}.cy.ts
 
-      - name: Trigger triage on failure
+      - name: Trigger triage analysis
         if: failure()
-        uses: actions/github-script@v7
+        uses: adept-at/adept-common/.github/actions/triage-dispatch@main
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
-          script: |
-            await github.rest.repos.createDispatchEvent({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              event_type: 'triage-failed-test',
-              client_payload: {
-                workflow_run_id: context.runId.toString(),
-                job_name: '${{ github.job }} (${{ matrix.containers }})',
-                spec: '${{ matrix.containers }}'
-              }
-            });
+          job-name: ${{ github.job }} (${{ matrix.containers }})
+          spec: ${{ matrix.containers }}
 ```
 
-The triage workflow will then analyze each failed matrix job individually.
+### Step 2: Add the Shared Triage Workflow
+
+Create `.github/workflows/triage-failed-tests.yml` — a thin wrapper that calls the shared reusable workflow:
+
+```yaml
+name: Triage Failed Tests
+
+on:
+  repository_dispatch:
+    types: [triage-failed-test]
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  triage:
+    uses: adept-at/adept-common/.github/workflows/triage-failed-tests.yml@main
+    with:
+      workflow-run-id: ${{ github.event.client_payload.workflow_run_id }}
+      job-name: ${{ github.event.client_payload.job_name }}
+      spec: ${{ github.event.client_payload.spec }}
+      pr-number: ${{ github.event.client_payload.pr_number }}
+      commit-sha: ${{ github.event.client_payload.commit_sha }}
+      branch: ${{ github.event.client_payload.branch }}
+      repository: ${{ github.event.client_payload.repo_url }}
+      preview-url: ${{ github.event.client_payload.preview_url }}
+      test-frameworks: 'cypress'
+    secrets:
+      CROSS_REPO_PAT: ${{ secrets.CROSS_REPO_PAT }}
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+```
+
+The shared workflow handles input validation, workflow polling, running the triage agent, saving artifacts, and Slack notification. No local logic needed.
+
+For same-repo setups (tests and source in the same repo), you can pass `${{ secrets.GITHUB_TOKEN }}` as `CROSS_REPO_PAT`. A PAT is only required when `REPOSITORY` or `AUTO_FIX_TARGET_REPO` points to a different repo.
+
+### Shared Actions Reference
+
+| Action | Purpose | Used in |
+|--------|---------|---------|
+| `adept-at/adept-common/.github/actions/triage-dispatch@main` | Dispatch `triage-failed-test` event on failure | Test workflows |
+| `adept-at/adept-common/.github/workflows/triage-failed-tests.yml@main` | Reusable triage workflow (validate, wait, analyze, notify) | Triage wrapper |
+| `adept-at/adept-common/.github/actions/triage-slack-notify@main` | Format and send Slack notification | Called by shared triage workflow |
 
 ### Alternative: Using workflow_run Event
 
@@ -313,63 +275,7 @@ jobs:
           WORKFLOW_RUN_ID: ${{ github.event.workflow_run.id }}
 ```
 
-This approach automatically triggers when the specified workflow completes with a failure.
-
-### With Slack Notification
-
-Integrate AI triage results into your Slack notifications in the triage workflow:
-
-```yaml
-# In your triage workflow
-- name: Analyze failure
-  id: triage
-  uses: adept-at/adept-triage-agent@v1 # Automatically gets v1.x.x updates
-  with:
-    OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-    WORKFLOW_RUN_ID: '${{ github.event.client_payload.workflow_run_id }}'
-
-- name: Send Slack notification with triage results
-  run: |
-    VERDICT="${{ steps.triage.outputs.verdict }}"
-    SUMMARY="${{ steps.triage.outputs.summary }}"
-    CONFIDENCE="${{ steps.triage.outputs.confidence }}"
-    JOB_NAME="${{ github.event.client_payload.job_name }}"
-
-    if [[ "$VERDICT" == "PRODUCT_ISSUE" ]]; then
-      COLOR="danger"
-      EMOJI="🚨"
-      PRIORITY="<!channel> URGENT:"
-    else
-      COLOR="warning"
-      EMOJI="🧪"
-      PRIORITY="FYI:"
-    fi
-
-    # Use jq for proper JSON formatting and escaping
-    PAYLOAD=$(jq -n \
-      --arg text "$PRIORITY Test failure in $JOB_NAME" \
-      --arg color "$COLOR" \
-      --arg emoji "$EMOJI" \
-      --arg verdict "$VERDICT" \
-      --arg confidence "$CONFIDENCE%" \
-      --arg summary "$SUMMARY" \
-      '{
-        text: $text,
-        attachments: [{
-          color: $color,
-          fields: [
-            {title: ($emoji + " Verdict"), value: $verdict, short: true},
-            {title: "Confidence", value: $confidence, short: true},
-            {title: "Summary", value: $summary}
-          ]
-        }]
-      }')
-
-    curl -X POST \
-      -H 'Content-type: application/json' \
-      -d "$PAYLOAD" \
-      ${{ secrets.SLACK_WEBHOOK_URL }}
-```
+This approach triggers automatically when the specified workflow completes with a failure, but does not use the shared actions.
 
 ## Inputs
 
@@ -517,7 +423,7 @@ npm run build
 We follow semantic versioning and provide multiple ways to reference this action:
 
 - **`@v1`** - Recommended for production. Automatically updates to the latest v1.x.x release
-- **`@v1`** - Pin to a specific version
+- **`@v1.21.2`** - Pin to a specific version for full reproducibility
 - **`@main`** - Latest development version (use with caution)
 
 Example:
@@ -527,7 +433,7 @@ Example:
 uses: adept-at/adept-triage-agent@v1
 
 # Specific version - no automatic updates
-uses: adept-at/adept-triage-agent@v1
+uses: adept-at/adept-triage-agent@v1.21.2
 ```
 
 ## Development
