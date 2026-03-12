@@ -116,6 +116,7 @@ export interface ActionInputs {
     validationWorkflow?: string;
     validationPreviewUrl?: string;
     validationSpec?: string;
+    validationTestCommand?: string;
     enableAgenticRepair?: boolean;
 }
 export interface PRDiff {

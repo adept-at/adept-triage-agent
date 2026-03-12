@@ -153,6 +153,8 @@ export interface ActionInputs {
   validationPreviewUrl?: string;
   /** Spec file for validation tests (if different from detected) */
   validationSpec?: string;
+  /** Original test command template with {spec} and {url} placeholders */
+  validationTestCommand?: string;
   /** Enable multi-agent repair pipeline for higher quality fixes */
   enableAgenticRepair?: boolean;
 }

@@ -2698,6 +2698,7 @@ function getInputs() {
         validationWorkflow: core.getInput('VALIDATION_WORKFLOW') || 'validate-fix.yml',
         validationPreviewUrl: core.getInput('VALIDATION_PREVIEW_URL') || undefined,
         validationSpec: core.getInput('VALIDATION_SPEC') || undefined,
+        validationTestCommand: core.getInput('VALIDATION_TEST_COMMAND') || undefined,
         enableAgenticRepair: core.getInput('ENABLE_AGENTIC_REPAIR') === 'true',
     };
 }
@@ -2771,6 +2772,7 @@ async function attemptAutoFix(inputs, fixRecommendation, octokit, repoDetails, e
         minConfidence: inputs.autoFixMinConfidence || constants_1.AUTO_FIX.DEFAULT_MIN_CONFIDENCE,
         enableValidation: inputs.enableValidation,
         validationWorkflow: inputs.validationWorkflow,
+        validationTestCommand: inputs.validationTestCommand,
     });
     if (!fixApplier.canApply(fixRecommendation)) {
         core.info('⏭️ Auto-fix skipped: confidence below threshold or no changes proposed');
@@ -2802,6 +2804,7 @@ async function attemptAutoFix(inputs, fixRecommendation, octokit, repoDetails, e
                         spec,
                         previewUrl,
                         triageRunId: github.context.runId.toString(),
+                        testCommand: inputs.validationTestCommand,
                     });
                     if (validationResult) {
                         result.validationStatus = 'pending';
@@ -3909,6 +3912,7 @@ Confidence: ${recommendation.confidence}%`;
                     preview_url: params.previewUrl,
                     triage_run_id: params.triageRunId || '',
                     fix_branch_name: params.branch,
+                    test_command: params.testCommand || '',
                 },
             }), 'triggering validation workflow');
             core.info('Validation workflow triggered successfully');

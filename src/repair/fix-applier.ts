@@ -49,6 +49,8 @@ export interface FixApplierConfig {
   enableValidation?: boolean;
   /** Validation workflow file name (e.g., 'validate-fix.yml') */
   validationWorkflow?: string;
+  /** Original test command template with {spec} and {url} placeholders */
+  validationTestCommand?: string;
 }
 
 /**
@@ -63,6 +65,8 @@ export interface ValidationParams {
   previewUrl: string;
   /** Original triage run ID for context */
   triageRunId?: string;
+  /** Original test command template with {spec} and {url} placeholders */
+  testCommand?: string;
 }
 
 /**
@@ -508,6 +512,7 @@ Confidence: ${recommendation.confidence}%`;
               preview_url: params.previewUrl,
               triage_run_id: params.triageRunId || '',
               fix_branch_name: params.branch,
+              test_command: params.testCommand || '',
             },
           }),
         'triggering validation workflow'

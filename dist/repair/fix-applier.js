@@ -302,6 +302,7 @@ Confidence: ${recommendation.confidence}%`;
                     preview_url: params.previewUrl,
                     triage_run_id: params.triageRunId || '',
                     fix_branch_name: params.branch,
+                    test_command: params.testCommand || '',
                 },
             }), 'triggering validation workflow');
             core.info('Validation workflow triggered successfully');
