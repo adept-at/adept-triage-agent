@@ -163,24 +163,28 @@ Received: undefined
       expect(result!.confidence).toBeGreaterThanOrEqual(50);
       expect(result!.proposedChanges.length).toBeGreaterThan(0);
 
-      const change = result!.proposedChanges[0];
-      console.log(`\nFile: ${change.file}`);
-      console.log(`Line: ${change.line}`);
-      console.log(`oldCode:\n---\n${change.oldCode}\n---`);
-      console.log(`newCode:\n---\n${change.newCode}\n---`);
-      console.log(`Justification: ${change.justification}`);
+      // The model may propose multiple changes (root cause + defensive guard).
+      // Find the change that addresses the sauceGqlHelper null result.
+      for (const c of result!.proposedChanges) {
+        console.log(`\nFile: ${c.file} (line ${c.line})`);
+        console.log(`oldCode:\n---\n${c.oldCode}\n---`);
+        console.log(`newCode:\n---\n${c.newCode}\n---`);
+        console.log(`Justification: ${c.justification}`);
+        if (c.oldCode) {
+          expect(SKILL_LOCK_SOURCE).toContain(c.oldCode);
+        }
+      }
 
-      // 1. oldCode must be verbatim from source
-      expect(change.oldCode).toBeTruthy();
-      expect(SKILL_LOCK_SOURCE).toContain(change.oldCode);
+      const guardChange = result!.proposedChanges.find(
+        (c) =>
+          c.oldCode?.includes('JSON.parse(result)') &&
+          c.oldCode?.includes('expect(upsertResult).toBeTruthy()')
+      );
 
-      // 2. oldCode must include the JSON.parse line (not stop before it)
-      expect(change.oldCode).toContain('JSON.parse(result)');
+      expect(guardChange).toBeDefined();
+      const change = guardChange!;
 
-      // 3. oldCode must include the expect assertion line
-      expect(change.oldCode).toContain('expect(upsertResult).toBeTruthy()');
-
-      // 4. newCode must handle the null case (guard or skip)
+      // newCode must handle the null case (guard or skip)
       const newCodeLower = change.newCode.toLowerCase();
       const hasNullGuard =
         newCodeLower.includes('!result') ||
@@ -190,7 +194,7 @@ Received: undefined
         newCodeLower.includes('if (result)');
       expect(hasNullGuard).toBe(true);
 
-      // 5. newCode must still contain the expect when result IS present
+      // newCode must still contain the expect when result IS present
       expect(change.newCode).toContain('expect');
 
       console.log('\n✅ All assertions passed — fix covers complete scope');

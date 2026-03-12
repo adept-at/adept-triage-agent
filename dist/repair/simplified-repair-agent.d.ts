@@ -15,6 +15,7 @@ export declare class SimplifiedRepairAgent {
     private tryAgenticRepair;
     private singleShotRepair;
     private extractFilePath;
+    private findEnclosingFunction;
     private fetchSourceFile;
     private buildPrompt;
     private getRecommendationFromAI;

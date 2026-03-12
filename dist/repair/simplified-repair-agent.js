@@ -218,6 +218,35 @@ class SimplifiedRepairAgent {
         }
         return null;
     }
+    findEnclosingFunction(lines, lineIndex) {
+        const funcPattern = /^\s*(?:export\s+)?(?:async\s+)?(?:function\s+\w+|(?:const|let|var)\s+\w+\s*=\s*(?:async\s+)?(?:function|\([^)]*\)\s*=>|\w+\s*=>))|^\s*(?:async\s+)?\w+\s*\([^)]*\)\s*\{/;
+        let fnStart = lineIndex;
+        for (let i = lineIndex; i >= 0; i--) {
+            if (funcPattern.test(lines[i])) {
+                fnStart = i;
+                break;
+            }
+        }
+        let braceDepth = 0;
+        let fnEnd = lines.length - 1;
+        let foundOpen = false;
+        for (let i = fnStart; i < lines.length; i++) {
+            for (const ch of lines[i]) {
+                if (ch === '{') {
+                    braceDepth++;
+                    foundOpen = true;
+                }
+                else if (ch === '}') {
+                    braceDepth--;
+                }
+            }
+            if (foundOpen && braceDepth <= 0) {
+                fnEnd = i;
+                break;
+            }
+        }
+        return { fnStart, fnEnd };
+    }
     async fetchSourceFile(filePath) {
         if (!this.sourceFetchContext) {
             return null;
@@ -265,8 +294,9 @@ ${context.errorLine ? `- **Error Line:** ${context.errorLine}` : ''}`;
             const lines = sourceFileContent.split('\n');
             const errorLine = context.errorLine || 0;
             if (errorLine > 0 && errorLine <= lines.length) {
-                const startLine = Math.max(0, errorLine - 40);
-                const endLine = Math.min(lines.length, errorLine + 40);
+                const { fnStart, fnEnd } = this.findEnclosingFunction(lines, errorLine - 1);
+                const startLine = Math.max(0, Math.min(fnStart, errorLine - 40));
+                const endLine = Math.min(lines.length, Math.max(fnEnd + 1, errorLine + 40));
                 const relevantLines = lines.slice(startLine, endLine);
                 const numberedLines = relevantLines
                     .map((line, i) => {
@@ -366,6 +396,25 @@ Based on the error type and message, provide a fix recommendation. Focus on the 
 4. newCode must be a complete, self-contained replacement — the file must be valid after substitution
 5. NEVER fix only the first symptom and leave subsequent lines that will still crash. Walk through the code line by line after your proposed \`oldCode\` ends and ask: "will the next line crash too?" If yes, extend oldCode to include it.
 
+**CRITICAL — ROOT CAUSE TRACING (do NOT just fix the crash site):**
+1. When a value is null/undefined/wrong, trace BACKWARD through the code: WHY is it null? What upstream step failed to produce it?
+2. Example chain: \`expect(result).toBeTruthy()\` fails → result is undefined → \`sauceGqlHelper\` returned null → the GraphQL mutation never fired → the text was never typed into the editor → \`document.execCommand('insertText')\` silently failed. The ROOT CAUSE is execCommand, not the assertion.
+3. Read the ENTIRE function containing the error, not just the crash line. The bug is often 10-30 lines BEFORE the crash.
+4. Ask: "If I only add a null guard, will the test still be TESTING anything meaningful, or am I just silencing a real problem?"
+
+**FIX HIERARCHY — prefer root cause fixes over defensive guards:**
+1. BEST: Fix the root cause (e.g., replace broken \`execCommand\` with native keyboard actions)
+2. GOOD: Fix root cause AND add a defensive guard for flaky infrastructure
+3. ACCEPTABLE: Add a defensive guard when the root cause is external/unfixable (e.g., third-party service timing)
+4. BAD: Only add a null guard that silences the failure without fixing why the value is null
+5. You may propose MULTIPLE changes — one for the root cause and one for the defensive guard. Use separate entries in the "changes" array.
+
+**KNOWN BROWSER AUTOMATION ANTI-PATTERNS (these are likely root causes):**
+- \`document.execCommand('insertText'|'selectAll'|'delete')\` — DEPRECATED, silently fails in modern Chrome/Chromium especially with Lexical, ProseMirror, Draft.js, and other frameworks using \`beforeinput\` events. Replace with native WebDriver keyboard actions: \`element.keys('text')\`, \`browser.keys(['Control', 'a'])\`, \`browser.keys(['Backspace'])\`.
+- \`element.setValue()\` or \`element.clearValue()\` on contenteditable — often bypasses framework event handlers. Prefer \`element.click()\` then \`browser.keys()\`.
+- \`element.innerHTML = ...\` via \`execute()\` — bypasses React/framework state entirely.
+- Hardcoded \`browser.pause()\` instead of \`waitUntil()\` — flaky timing.
+
 **Important:** If PR changes are provided, analyze whether recent code changes may have caused the test failure. Look for:
 - Changed selectors or UI components that the test depends on
 - Modified API endpoints or data structures
@@ -375,7 +424,7 @@ Based on the error type and message, provide a fix recommendation. Focus on the 
 ## Response Format (JSON)
 {
   "confidence": 0-100,
-  "reasoning": "explanation of the issue and fix",
+  "reasoning": "explanation of the issue AND the causal chain traced backward to root cause",
   "changes": [
     {
       "file": "path/to/file",
@@ -386,14 +435,15 @@ Based on the error type and message, provide a fix recommendation. Focus on the 
     }
   ],
   "evidence": ["facts supporting this fix"],
-  "rootCause": "brief description of root cause"
+  "rootCause": "the DEEPEST cause in the causal chain, not just the crash site"
 }
 
 ## Common Patterns to Consider:
 - ELEMENT_NOT_FOUND: Selector likely changed or element removed
 - TIMEOUT: Element may be loading slowly or conditionally rendered
-- ASSERTION_FAILED: Expected value may have changed
+- ASSERTION_FAILED: Expected value may have changed — but ALSO ask WHY the value is wrong. Trace backward.
 - ELEMENT_NOT_VISIBLE: Element may be hidden or overlapped
+- NULL/UNDEFINED RESULT: The producing function failed upstream — trace the data flow backward
 
 Respond with JSON only. If you cannot provide a confident fix, set confidence below 50.`;
     }
@@ -412,15 +462,32 @@ ABSOLUTE RULES — VIOLATION MEANS THE FIX WILL FAIL:
 
 COMPLETE FIX SCOPE — YOUR FIX MUST COVER ALL AFFECTED LINES:
 5. oldCode MUST span from the first affected line to the LAST affected line. Do NOT stop at the first symptom.
-6. When adding a null/undefined guard (if/else), include ALL downstream lines that depend on the guarded variable — not just the immediate next line. Trace the variable: if \`result\` is null-checked, then every subsequent \`JSON.parse(result)\`, \`result.foo\`, or assertion on a value derived from \`result\` must be inside the guard block.
-7. After writing your fix, mentally walk through every line AFTER your oldCode ends and ask: "will this line crash or produce wrong results because of the same root cause?" If yes, extend oldCode and newCode to include it.
-8. A partial fix is WORSE than no fix — it still crashes but now in a different place, wasting CI time.
+6. When adding a null/undefined guard, include ALL downstream lines that depend on the guarded variable.
+7. After writing your fix, walk through every line after oldCode ends. If it will still crash, extend.
+8. A partial fix is WORSE than no fix — it still crashes but now in a different place.
+
+ROOT CAUSE TRACING — DO NOT JUST FIX THE CRASH SITE:
+9. When a value is null/undefined, trace BACKWARD: WHY is it null? What upstream step failed?
+10. Read the ENTIRE function, not just the crash line. The bug is often 10-30 lines BEFORE the crash.
+11. Example: assertion fails on \`result\` → helper returned null → mutation never fired → text never entered editor → \`document.execCommand\` silently failed. The root cause is execCommand, not the assertion.
+12. Ask: "If I only add a null guard, does the test still test anything meaningful?"
+
+FIX HIERARCHY:
+13. BEST: Fix the root cause (e.g., replace broken API with working alternative)
+14. GOOD: Fix root cause AND add defensive guard for flaky infrastructure
+15. ACCEPTABLE: Defensive guard only when root cause is external/unfixable
+16. You may propose MULTIPLE changes in the "changes" array.
+
+KNOWN BROWSER ANTI-PATTERNS (likely root causes — replace, don't guard):
+- \`document.execCommand('insertText'|'selectAll'|'delete')\` — deprecated, silently fails with Lexical/ProseMirror/Draft.js. Replace with WebDriver \`keys()\` or \`browser.keys(['Control','a'])\`.
+- \`element.setValue()\`/\`clearValue()\` on contenteditable — bypasses framework handlers.
+- \`element.innerHTML = ...\` via execute() — bypasses React/framework state.
 
 You MUST respond in strict JSON only with this schema:
 {
   "confidence": number (0-100),
-  "reasoning": string,
-  "rootCause": string,
+  "reasoning": string (include causal chain traced to root cause),
+  "rootCause": string (the DEEPEST cause, not just the crash site),
   "evidence": string[],
   "changes": [
     {
