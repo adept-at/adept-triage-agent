@@ -157,6 +157,10 @@ export interface ActionInputs {
   validationTestCommand?: string;
   /** Enable multi-agent repair pipeline for higher quality fixes */
   enableAgenticRepair?: boolean;
+  /** Product repository (owner/repo) to fetch recent commits from when no PR/branch/commit context is available */
+  productRepo?: string;
+  /** Number of recent product commits to include in diff (default: 5) */
+  productDiffCommits?: number;
 }
 
 export interface PRDiff {

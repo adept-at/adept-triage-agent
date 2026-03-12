@@ -366,10 +366,30 @@ export async function fetchDiffWithFallback(
     }
   }
 
-  // No diff available
-  if (!inputs.prNumber && !inputs.branch && !inputs.commitSha) {
+  // Strategy 4: Recent product repo commits (last resort for production-URL tests)
+  if (inputs.productRepo) {
     core.info(
-      `ℹ️ No PR_NUMBER, BRANCH, or COMMIT_SHA provided, skipping diff fetch`
+      `📋 Fetching recent product diff from ${inputs.productRepo} (last ${inputs.productDiffCommits || 5} commits)...`
+    );
+    try {
+      const diff = await artifactFetcher.fetchRecentProductDiff(
+        inputs.productRepo,
+        inputs.productDiffCommits || 5
+      );
+      logDiffResult(diff, `recent product diff (${inputs.productRepo})`);
+      if (diff) return diff;
+      core.warning(`⚠️ Recent product diff fetch returned null`);
+    } catch (error) {
+      core.warning(
+        `❌ Failed to fetch recent product diff from ${inputs.productRepo}: ${error}`
+      );
+    }
+  }
+
+  // No diff available
+  if (!inputs.prNumber && !inputs.branch && !inputs.commitSha && !inputs.productRepo) {
+    core.info(
+      `ℹ️ No PR_NUMBER, BRANCH, COMMIT_SHA, or PRODUCT_REPO provided, skipping diff fetch`
     );
   } else {
     core.info(

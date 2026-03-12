@@ -2363,6 +2363,75 @@ class ArtifactFetcher {
             return null;
         }
     }
+    async fetchRecentProductDiff(productRepo, commitCount = 5) {
+        try {
+            const [owner, repo] = productRepo.split('/');
+            if (!owner || !repo) {
+                core.warning(`Invalid product repo format: ${productRepo}`);
+                return null;
+            }
+            core.info(`Fetching last ${commitCount} commits from ${productRepo}...`);
+            const commitsResponse = await this.octokit.repos.listCommits({
+                owner,
+                repo,
+                sha: 'main',
+                per_page: commitCount + 1,
+            });
+            const commits = commitsResponse.data;
+            if (commits.length < 2) {
+                core.info('Not enough commits to compare');
+                return null;
+            }
+            const oldestSha = commits[Math.min(commitCount, commits.length - 1)].sha;
+            const newestSha = commits[0].sha;
+            core.info(`Comparing ${oldestSha.substring(0, 7)}...${newestSha.substring(0, 7)} in ${productRepo}`);
+            const compareResponse = await this.octokit.repos.compareCommits({
+                owner,
+                repo,
+                base: oldestSha,
+                head: newestSha,
+            });
+            const comparison = compareResponse.data;
+            const files = (comparison.files || []).map(file => ({
+                filename: file.filename,
+                status: file.status || 'modified',
+                additions: file.additions,
+                deletions: file.deletions,
+                changes: file.changes,
+                patch: file.patch,
+            }));
+            const sortedFiles = this.sortFilesByRelevance(files);
+            const totalAdditions = files.reduce((sum, f) => sum + f.additions, 0);
+            const totalDeletions = files.reduce((sum, f) => sum + f.deletions, 0);
+            const diff = {
+                files: sortedFiles,
+                totalChanges: files.length,
+                additions: totalAdditions,
+                deletions: totalDeletions,
+            };
+            const commitMessages = commits
+                .slice(0, commitCount)
+                .map(c => `  - ${c.sha.substring(0, 7)}: ${c.commit.message.split('\n')[0]}`)
+                .join('\n');
+            core.info(`Recent product commits:\n${commitMessages}`);
+            core.info(`Product diff: ${diff.totalChanges} files changed, +${diff.additions}/-${diff.deletions} lines`);
+            if (sortedFiles.length > 0) {
+                const filesSummary = sortedFiles.slice(0, 10).map(f => `  - ${f.filename} (+${f.additions}/-${f.deletions})`).join('\n');
+                core.info(`Changed files (sorted by relevance):\n${filesSummary}${files.length > 10 ? `\n  ... and ${files.length - 10} more files` : ''}`);
+            }
+            return diff;
+        }
+        catch (error) {
+            const errorWithStatus = error;
+            if (errorWithStatus.status === 404) {
+                core.warning(`Product repo ${productRepo} not found or not accessible with current token`);
+            }
+            else {
+                core.warning(`Failed to fetch recent product diff from ${productRepo}: ${error}`);
+            }
+            return null;
+        }
+    }
     async fetchBranchDiff(branch, baseBranch = 'main', repository) {
         try {
             const { owner, repo } = repository
@@ -2700,6 +2769,8 @@ function getInputs() {
         validationSpec: core.getInput('VALIDATION_SPEC') || undefined,
         validationTestCommand: core.getInput('VALIDATION_TEST_COMMAND') || undefined,
         enableAgenticRepair: core.getInput('ENABLE_AGENTIC_REPAIR') === 'true',
+        productRepo: core.getInput('PRODUCT_REPO') || undefined,
+        productDiffCommits: parseInt(core.getInput('PRODUCT_DIFF_COMMITS') || '5', 10),
     };
 }
 function resolveRepository(inputs) {
@@ -4743,8 +4814,21 @@ async function fetchDiffWithFallback(artifactFetcher, inputs, repoDetails) {
             }
         }
     }
-    if (!inputs.prNumber && !inputs.branch && !inputs.commitSha) {
-        core.info(`ℹ️ No PR_NUMBER, BRANCH, or COMMIT_SHA provided, skipping diff fetch`);
+    if (inputs.productRepo) {
+        core.info(`📋 Fetching recent product diff from ${inputs.productRepo} (last ${inputs.productDiffCommits || 5} commits)...`);
+        try {
+            const diff = await artifactFetcher.fetchRecentProductDiff(inputs.productRepo, inputs.productDiffCommits || 5);
+            logDiffResult(diff, `recent product diff (${inputs.productRepo})`);
+            if (diff)
+                return diff;
+            core.warning(`⚠️ Recent product diff fetch returned null`);
+        }
+        catch (error) {
+            core.warning(`❌ Failed to fetch recent product diff from ${inputs.productRepo}: ${error}`);
+        }
+    }
+    if (!inputs.prNumber && !inputs.branch && !inputs.commitSha && !inputs.productRepo) {
+        core.info(`ℹ️ No PR_NUMBER, BRANCH, COMMIT_SHA, or PRODUCT_REPO provided, skipping diff fetch`);
     }
     else {
         core.info(`ℹ️ All diff fetch strategies exhausted, proceeding without diff`);

@@ -80,6 +80,13 @@ inputs:
     description: 'Enable multi-agent repair pipeline for higher quality fixes (uses more API calls but produces better results)'
     required: false
     default: 'false'
+  PRODUCT_REPO:
+    description: 'Product repository (owner/repo) to fetch recent commits from when no PR/branch/commit diff is available. Enables the triage agent to see what recently shipped to production.'
+    required: false
+  PRODUCT_DIFF_COMMITS:
+    description: 'Number of recent product commits to include in the diff context (default: 5)'
+    required: false
+    default: '5'
 
 outputs:
   verdict:

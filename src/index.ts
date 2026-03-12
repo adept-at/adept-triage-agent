@@ -237,6 +237,9 @@ function getInputs(): ActionInputs {
       core.getInput('VALIDATION_TEST_COMMAND') || undefined,
     // Agentic repair input
     enableAgenticRepair: core.getInput('ENABLE_AGENTIC_REPAIR') === 'true',
+    // Product repo diff inputs
+    productRepo: core.getInput('PRODUCT_REPO') || undefined,
+    productDiffCommits: parseInt(core.getInput('PRODUCT_DIFF_COMMITS') || '5', 10),
   };
 }
 

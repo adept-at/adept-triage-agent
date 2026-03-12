@@ -560,6 +560,96 @@ export class ArtifactFetcher {
    * Fetch diff between a branch and base branch (useful for preview URL runs)
    * This compares the head of the branch against the base branch
    */
+  /**
+   * Fetch a combined diff of the most recent commits on a repo's default branch.
+   * Useful when tests run against production and there is no PR/branch/commit context
+   * — gives the triage agent visibility into what recently shipped.
+   */
+  async fetchRecentProductDiff(
+    productRepo: string,
+    commitCount: number = 5
+  ): Promise<PRDiff | null> {
+    try {
+      const [owner, repo] = productRepo.split('/');
+      if (!owner || !repo) {
+        core.warning(`Invalid product repo format: ${productRepo}`);
+        return null;
+      }
+
+      core.info(`Fetching last ${commitCount} commits from ${productRepo}...`);
+
+      const commitsResponse = await this.octokit.repos.listCommits({
+        owner,
+        repo,
+        sha: 'main',
+        per_page: commitCount + 1,
+      });
+
+      const commits = commitsResponse.data;
+      if (commits.length < 2) {
+        core.info('Not enough commits to compare');
+        return null;
+      }
+
+      const oldestSha = commits[Math.min(commitCount, commits.length - 1)].sha;
+      const newestSha = commits[0].sha;
+
+      core.info(`Comparing ${oldestSha.substring(0, 7)}...${newestSha.substring(0, 7)} in ${productRepo}`);
+
+      const compareResponse = await this.octokit.repos.compareCommits({
+        owner,
+        repo,
+        base: oldestSha,
+        head: newestSha,
+      });
+
+      const comparison = compareResponse.data;
+      const files: PRDiffFile[] = (comparison.files || []).map(file => ({
+        filename: file.filename,
+        status: file.status || 'modified',
+        additions: file.additions,
+        deletions: file.deletions,
+        changes: file.changes,
+        patch: file.patch,
+      }));
+
+      const sortedFiles = this.sortFilesByRelevance(files);
+
+      const totalAdditions = files.reduce((sum, f) => sum + f.additions, 0);
+      const totalDeletions = files.reduce((sum, f) => sum + f.deletions, 0);
+
+      const diff: PRDiff = {
+        files: sortedFiles,
+        totalChanges: files.length,
+        additions: totalAdditions,
+        deletions: totalDeletions,
+      };
+
+      const commitMessages = commits
+        .slice(0, commitCount)
+        .map(c => `  - ${c.sha.substring(0, 7)}: ${c.commit.message.split('\n')[0]}`)
+        .join('\n');
+
+      core.info(`Recent product commits:\n${commitMessages}`);
+      core.info(`Product diff: ${diff.totalChanges} files changed, +${diff.additions}/-${diff.deletions} lines`);
+
+      if (sortedFiles.length > 0) {
+        const filesSummary = sortedFiles.slice(0, 10).map(f => `  - ${f.filename} (+${f.additions}/-${f.deletions})`).join('\n');
+        core.info(`Changed files (sorted by relevance):\n${filesSummary}${files.length > 10 ? `\n  ... and ${files.length - 10} more files` : ''}`);
+      }
+
+      return diff;
+    } catch (error) {
+      const errorWithStatus = error as { status?: number };
+      if (errorWithStatus.status === 404) {
+        core.warning(`Product repo ${productRepo} not found or not accessible with current token`);
+      } else {
+        core.warning(`Failed to fetch recent product diff from ${productRepo}: ${error}`);
+      }
+      return null;
+    }
+  }
+
   async fetchBranchDiff(branch: string, baseBranch: string = 'main', repository?: string): Promise<PRDiff | null> {
     try {
       const { owner, repo } = repository

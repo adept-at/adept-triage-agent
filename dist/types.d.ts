@@ -118,6 +118,8 @@ export interface ActionInputs {
     validationSpec?: string;
     validationTestCommand?: string;
     enableAgenticRepair?: boolean;
+    productRepo?: string;
+    productDiffCommits?: number;
 }
 export interface PRDiff {
     files: PRDiffFile[];

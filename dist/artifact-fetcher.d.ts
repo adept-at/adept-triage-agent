@@ -20,6 +20,7 @@ export declare class ArtifactFetcher {
     private isSourceFile;
     private isConfigFile;
     fetchCommitDiff(commitSha: string, repository?: string): Promise<PRDiff | null>;
+    fetchRecentProductDiff(productRepo: string, commitCount?: number): Promise<PRDiff | null>;
     fetchBranchDiff(branch: string, baseBranch?: string, repository?: string): Promise<PRDiff | null>;
 }
 export {};
