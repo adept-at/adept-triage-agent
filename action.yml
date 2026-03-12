@@ -73,6 +73,9 @@ inputs:
   VALIDATION_SPEC:
     description: 'Spec file for validation tests (if different from detected)'
     required: false
+  VALIDATION_TEST_COMMAND:
+    description: 'Original test command template with {spec} and {url} placeholders. Passed to validate-fix.yml so it runs the test the same way the original workflow did.'
+    required: false
   ENABLE_AGENTIC_REPAIR:
     description: 'Enable multi-agent repair pipeline for higher quality fixes (uses more API calls but produces better results)'
     required: false

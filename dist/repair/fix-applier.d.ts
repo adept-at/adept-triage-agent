@@ -18,12 +18,14 @@ export interface FixApplierConfig {
     minConfidence: number;
     enableValidation?: boolean;
     validationWorkflow?: string;
+    validationTestCommand?: string;
 }
 export interface ValidationParams {
     branch: string;
     spec: string;
     previewUrl: string;
     triageRunId?: string;
+    testCommand?: string;
 }
 export interface FixApplier {
     canApply(recommendation: FixRecommendation): boolean;

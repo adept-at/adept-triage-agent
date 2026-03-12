@@ -233,6 +233,8 @@ function getInputs(): ActionInputs {
       core.getInput('VALIDATION_WORKFLOW') || 'validate-fix.yml',
     validationPreviewUrl: core.getInput('VALIDATION_PREVIEW_URL') || undefined,
     validationSpec: core.getInput('VALIDATION_SPEC') || undefined,
+    validationTestCommand:
+      core.getInput('VALIDATION_TEST_COMMAND') || undefined,
     // Agentic repair input
     enableAgenticRepair: core.getInput('ENABLE_AGENTIC_REPAIR') === 'true',
   };
@@ -351,6 +353,7 @@ async function attemptAutoFix(
       inputs.autoFixMinConfidence || AUTO_FIX.DEFAULT_MIN_CONFIDENCE,
     enableValidation: inputs.enableValidation,
     validationWorkflow: inputs.validationWorkflow,
+    validationTestCommand: inputs.validationTestCommand,
   });
 
   // Check if the fix can be applied (confidence check)
@@ -399,6 +402,7 @@ async function attemptAutoFix(
             spec,
             previewUrl,
             triageRunId: github.context.runId.toString(),
+            testCommand: inputs.validationTestCommand,
           });
 
           if (validationResult) {
