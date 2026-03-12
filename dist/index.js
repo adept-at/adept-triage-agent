@@ -4317,8 +4317,8 @@ ${context.errorLine ? `- **Error Line:** ${context.errorLine}` : ''}`;
             const lines = sourceFileContent.split('\n');
             const errorLine = context.errorLine || 0;
             if (errorLine > 0 && errorLine <= lines.length) {
-                const startLine = Math.max(0, errorLine - 20);
-                const endLine = Math.min(lines.length, errorLine + 20);
+                const startLine = Math.max(0, errorLine - 40);
+                const endLine = Math.min(lines.length, errorLine + 40);
                 const relevantLines = lines.slice(startLine, endLine);
                 const numberedLines = relevantLines
                     .map((line, i) => {
@@ -4333,14 +4333,14 @@ ${numberedLines}
 \`\`\``;
             }
             else {
-                const previewLines = lines.slice(0, 100);
+                const previewLines = lines.slice(0, 150);
                 const numberedLines = previewLines
                     .map((line, i) => `${i + 1}: ${line}`)
                     .join('\n');
-                contextInfo += `\n\n## Source File: ${cleanFilePath} (first 100 lines)
+                contextInfo += `\n\n## Source File: ${cleanFilePath} (first 150 lines)
 \`\`\`javascript
 ${numberedLines}
-${lines.length > 100 ? `\n... (${lines.length - 100} more lines)` : ''}
+${lines.length > 150 ? `\n... (${lines.length - 150} more lines)` : ''}
 \`\`\``;
             }
         }
@@ -4411,6 +4411,13 @@ Based on the error type and message, provide a fix recommendation. Focus on the 
 5. Include enough surrounding lines (3-5) to make the match unique in the file
 6. Preserve all whitespace, quotes, semicolons, variable names, and formatting exactly as shown in the source
 
+**CRITICAL — COMPLETE FIX SCOPE:**
+1. oldCode MUST cover the ENTIRE block of code affected by the fix, from first changed line to last
+2. When adding a null/undefined guard (if/else), include ALL downstream lines that use the guarded variable — not just the first usage. Trace the variable through to the last line that reads or calls it.
+3. If a variable like \`result\` is checked for null, then every subsequent line that calls \`JSON.parse(result)\`, reads \`result.something\`, or asserts on a value derived from \`result\` MUST be inside the guard.
+4. newCode must be a complete, self-contained replacement — the file must be valid after substitution
+5. NEVER fix only the first symptom and leave subsequent lines that will still crash. Walk through the code line by line after your proposed \`oldCode\` ends and ask: "will the next line crash too?" If yes, extend oldCode to include it.
+
 **Important:** If PR changes are provided, analyze whether recent code changes may have caused the test failure. Look for:
 - Changed selectors or UI components that the test depends on
 - Modified API endpoints or data structures
@@ -4454,6 +4461,12 @@ ABSOLUTE RULES — VIOLATION MEANS THE FIX WILL FAIL:
 2. You MUST NOT invent, paraphrase, or reconstruct code. Only quote verbatim from the provided source.
 3. If no source file content is provided, set confidence below 50 and omit oldCode.
 4. oldCode is used for exact string find-and-replace. Any deviation — even whitespace — causes failure.
+
+COMPLETE FIX SCOPE — YOUR FIX MUST COVER ALL AFFECTED LINES:
+5. oldCode MUST span from the first affected line to the LAST affected line. Do NOT stop at the first symptom.
+6. When adding a null/undefined guard (if/else), include ALL downstream lines that depend on the guarded variable — not just the immediate next line. Trace the variable: if \`result\` is null-checked, then every subsequent \`JSON.parse(result)\`, \`result.foo\`, or assertion on a value derived from \`result\` must be inside the guard block.
+7. After writing your fix, mentally walk through every line AFTER your oldCode ends and ask: "will this line crash or produce wrong results because of the same root cause?" If yes, extend oldCode and newCode to include it.
+8. A partial fix is WORSE than no fix — it still crashes but now in a different place, wasting CI time.
 
 You MUST respond in strict JSON only with this schema:
 {
