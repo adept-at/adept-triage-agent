@@ -19,52 +19,14 @@ export class OpenAIClient {
     const systemPrompt = this.getSystemPrompt();
     const userContent = this.buildUserContent(errorData, examples);
     
-    // Debug: Log the actual prompt content
-    if (typeof userContent === 'string') {
-      if (userContent.includes('QUICK ANALYSIS SUMMARY')) {
-        core.info('📊 Structured summary header included in prompt!');
-        const summaryStart = userContent.indexOf('QUICK ANALYSIS SUMMARY');
-        const summarySection = userContent.substring(summaryStart, summaryStart + 500);
-        core.info(`Summary preview:\n${summarySection}...`);
-      } else {
-        core.info('⚠️  Structured summary header NOT found in prompt');
-      }
-    } else {
-      // Multimodal content - check first text part
-      const firstTextPart = userContent.find(p => p.type === 'text');
-      if (firstTextPart && 'text' in firstTextPart) {
-        if (firstTextPart.text.includes('QUICK ANALYSIS SUMMARY')) {
-          core.info('📊 Structured summary header included in prompt!');
-          const summaryStart = firstTextPart.text.indexOf('QUICK ANALYSIS SUMMARY');
-          const summarySection = firstTextPart.text.substring(summaryStart, summaryStart + 500);
-          core.info(`Summary preview:\n${summarySection}...`);
-        } else {
-          core.info('⚠️  Structured summary header NOT found in prompt');
-        }
-      }
-    }
-    
-    // Log what we're sending
-    if (errorData.screenshots && errorData.screenshots.length > 0) {
-      core.info(`📸 Sending multimodal content to ${model}:`);
-      core.info(`  - Text context: ${errorData.logs?.[0]?.length || 0} characters`);
-      core.info(`  - Screenshots: ${errorData.screenshots.length} image(s)`);
-      errorData.screenshots.forEach((screenshot, idx) => {
-        core.info(`    ${idx + 1}. ${screenshot.name} (${screenshot.base64Data ? 'with data' : 'no data'})`);
-      });
+    // Log what we're sending (concise)
+    const screenshotCount = errorData.screenshots?.length || 0;
+    if (screenshotCount > 0) {
+      core.info(`📸 Sending multimodal content to ${model}: ${screenshotCount} screenshot(s)`);
     } else {
       core.info(`📝 Sending text-only content to ${model}`);
     }
-    
-    // Debug: Check if structured summary exists in errorData
-    if (errorData.structuredSummary) {
-      core.info('📊 ErrorData contains structured summary!');
-      core.info(`  - Error Type: ${errorData.structuredSummary.primaryError.type}`);
-      core.info(`  - Test File: ${errorData.structuredSummary.testContext.testFile}`);
-    } else {
-      core.info('⚠️  ErrorData does NOT contain structured summary');
-    }
-    
+
     const input = this.convertToResponsesInput(userContent);
     
     for (let attempt = 1; attempt <= this.maxRetries; attempt++) {

@@ -9,12 +9,15 @@ jest.mock('../src/openai-client');
 describe('SimplifiedRepairAgent', () => {
   let agent: SimplifiedRepairAgent;
   let mockAnalyze: jest.Mock;
+  let mockGenerateWithCustomPrompt: jest.Mock;
 
   beforeEach(() => {
     jest.clearAllMocks();
     mockAnalyze = jest.fn();
+    mockGenerateWithCustomPrompt = jest.fn();
     (OpenAIClient as jest.MockedClass<typeof OpenAIClient>).mockImplementation(() => ({
       analyze: mockAnalyze,
+      generateWithCustomPrompt: mockGenerateWithCustomPrompt,
     } as any));
 
     agent = new SimplifiedRepairAgent('test-api-key');
@@ -168,9 +171,8 @@ describe('SimplifiedRepairAgent', () => {
     };
 
     it('should generate fix recommendation for high confidence response', async () => {
-      mockAnalyze.mockResolvedValue({
-        verdict: 'TEST_ISSUE',
-        reasoning: JSON.stringify({
+      mockGenerateWithCustomPrompt.mockResolvedValue(
+        JSON.stringify({
           confidence: 85,
           reasoning: 'Selector has changed in the application',
           changes: [{
@@ -182,9 +184,8 @@ describe('SimplifiedRepairAgent', () => {
           }],
           evidence: ['Button selector changed in recent commit'],
           rootCause: 'Selector mismatch'
-        }),
-        indicators: []
-      });
+        })
+      );
 
       const result = await agent.generateFixRecommendation(baseContext);
 
@@ -196,17 +197,15 @@ describe('SimplifiedRepairAgent', () => {
     });
 
     it('should return null for low confidence response', async () => {
-      mockAnalyze.mockResolvedValue({
-        verdict: 'TEST_ISSUE',
-        reasoning: JSON.stringify({
+      mockGenerateWithCustomPrompt.mockResolvedValue(
+        JSON.stringify({
           confidence: 30,
           reasoning: 'Not enough information',
           changes: [],
           evidence: [],
           rootCause: 'Unknown'
-        }),
-        indicators: []
-      });
+        })
+      );
 
       const result = await agent.generateFixRecommendation(baseContext);
 
@@ -214,11 +213,9 @@ describe('SimplifiedRepairAgent', () => {
     });
 
     it('should handle non-JSON response gracefully', async () => {
-      mockAnalyze.mockResolvedValue({
-        verdict: 'TEST_ISSUE',
-        reasoning: 'This is a plain text response suggesting to update the selector',
-        indicators: ['Selector not found', 'Element missing']
-      });
+      mockGenerateWithCustomPrompt.mockResolvedValue(
+        'This is a plain text response suggesting to update the selector'
+      );
 
       const result = await agent.generateFixRecommendation(baseContext);
 
@@ -236,11 +233,9 @@ describe('SimplifiedRepairAgent', () => {
         errorSelector: undefined
       };
 
-      mockAnalyze.mockResolvedValue({
-        verdict: 'TEST_ISSUE',
-        reasoning: 'Element is loading slowly',
-        indicators: ['Timeout error']
-      });
+      mockGenerateWithCustomPrompt.mockResolvedValue(
+        'Element is loading slowly, suggest adding wait'
+      );
 
       const result = await agent.generateFixRecommendation(timeoutContext);
 
@@ -249,7 +244,7 @@ describe('SimplifiedRepairAgent', () => {
     });
 
     it('should handle API errors gracefully', async () => {
-      mockAnalyze.mockRejectedValue(new Error('API error'));
+      mockGenerateWithCustomPrompt.mockRejectedValue(new Error('API error'));
 
       const result = await agent.generateFixRecommendation(baseContext);
 
@@ -257,17 +252,15 @@ describe('SimplifiedRepairAgent', () => {
     });
 
     it('should include selector in summary when available', async () => {
-      mockAnalyze.mockResolvedValue({
-        verdict: 'TEST_ISSUE',
-        reasoning: JSON.stringify({
+      mockGenerateWithCustomPrompt.mockResolvedValue(
+        JSON.stringify({
           confidence: 75,
           reasoning: 'Fix needed',
           changes: [],
           evidence: [],
           rootCause: 'Selector issue'
-        }),
-        indicators: []
-      });
+        })
+      );
 
       const result = await agent.generateFixRecommendation(baseContext);
 

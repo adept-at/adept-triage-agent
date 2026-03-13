@@ -17,6 +17,9 @@ import { ArtifactFetcher } from '../artifact-fetcher';
 import { extractErrorFromLogs } from '../simplified-analyzer';
 import { LOG_LIMITS } from '../config/constants';
 
+// Pre-compiled ANSI escape sequence regex (avoids rebuilding per call)
+const ANSI_ESCAPE_REGEX = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, 'g');
+
 interface RepoDetails {
   owner: string;
   repo: string;
@@ -505,10 +508,7 @@ function buildErrorContext(
 export function capArtifactLogs(raw: string): string {
   if (!raw) return '';
   const MAX = LOG_LIMITS.ARTIFACT_SOFT_CAP;
-  // Build the ANSI escape regex at runtime to avoid linter's control-regex warning
-  const esc = String.fromCharCode(27);
-  const ansiPattern = new RegExp(`${esc}\\[[0-9;]*m`, 'g');
-  const clean = raw.replace(ansiPattern, '');
+  const clean = raw.replace(ANSI_ESCAPE_REGEX, '');
   if (clean.length <= MAX) return clean;
 
   // Try to focus around error-like lines
@@ -525,8 +525,10 @@ export function capArtifactLogs(raw: string): string {
   }
   const uniqueFocused = Array.from(new Set(focused));
   const focusedJoined = uniqueFocused.join('\n');
-  if (focusedJoined.length > 1000) {
-    return `${focusedJoined.substring(0, 10000)}\n\n[Artifact logs truncated]`;
+  if (focusedJoined.length > 0) {
+    return focusedJoined.length <= MAX
+      ? focusedJoined
+      : `${focusedJoined.substring(0, MAX)}\n\n[Artifact logs truncated]`;
   }
 
   // Fallback: head and tail
@@ -539,23 +541,17 @@ export function capArtifactLogs(raw: string): string {
  * Build a minimal StructuredErrorSummary from existing ErrorData
  */
 export function buildStructuredSummary(err: ErrorData): StructuredErrorSummary {
-  const hasTimeout = /\btimeout|timed out\b/i.test(err.message || '');
-  const hasAssertion = /assertion|expected\s+.*to/i.test(err.message || '');
-  const hasDom = /element|selector|not found|visible|covered|detached/i.test(
-    err.message || ''
-  );
-  const hasNetwork = /network|fetch|graphql|api|500|404|502|503/i.test(
-    err.message || ''
-  );
-  const hasNullPtr =
-    /cannot read (properties|property) of null|undefined/i.test(
-      err.message || ''
-    );
+  const msg = err.message || '';
+  const hasTimeout = /\btimeout|timed out\b/i.test(msg);
+  const hasAssertion = /assertion|expected\s+.*to/i.test(msg);
+  const hasDom = /element|selector|not found|visible|covered|detached/i.test(msg);
+  const hasNetwork = /network|fetch|graphql|api|500|404|502|503/i.test(msg);
+  const hasNullPtr = /cannot read (properties|property) of null|undefined/i.test(msg);
 
   return {
     primaryError: {
       type: err.failureType || 'Error',
-      message: (err.message || '').slice(0, 500),
+      message: msg.slice(0, 500),
     },
     testContext: {
       testName: err.testName || 'unknown',
@@ -570,11 +566,9 @@ export function buildStructuredSummary(err: ErrorData): StructuredErrorSummary {
       hasAssertionErrors: hasAssertion,
       isMobileTest: false,
       hasLongTimeout: hasTimeout,
-      hasAltTextSelector: /\[alt=/.test(err.message || ''),
-      hasElementExistenceCheck: /expected to find|never found/i.test(
-        err.message || ''
-      ),
-      hasVisibilityIssue: /not visible|covered|hidden/i.test(err.message || ''),
+      hasAltTextSelector: /\[alt=/.test(msg),
+      hasElementExistenceCheck: /expected to find|never found/i.test(msg),
+      hasVisibilityIssue: /not visible|covered|hidden/i.test(msg),
       hasViewportContext: false,
     },
     keyMetrics: {

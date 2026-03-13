@@ -65,16 +65,18 @@ class BaseAgent {
     async executeWithTimeout(input, context) {
         const startTime = Date.now();
         let apiCalls = 0;
+        let timeoutId;
         try {
             core.info(`[${this.agentName}] Starting execution...`);
             const timeoutPromise = new Promise((_, reject) => {
-                setTimeout(() => {
+                timeoutId = setTimeout(() => {
                     reject(new Error(`Agent timed out after ${this.config.timeoutMs}ms`));
                 }, this.config.timeoutMs);
             });
             const taskPromise = this.runAgentTask(input, context);
             apiCalls++;
             const result = await Promise.race([taskPromise, timeoutPromise]);
+            clearTimeout(timeoutId);
             const executionTimeMs = Date.now() - startTime;
             core.info(`[${this.agentName}] Completed in ${executionTimeMs}ms`);
             return {
@@ -85,6 +87,7 @@ class BaseAgent {
             };
         }
         catch (error) {
+            clearTimeout(timeoutId);
             const executionTimeMs = Date.now() - startTime;
             const errorMessage = error instanceof Error ? error.message : String(error);
             core.warning(`[${this.agentName}] Failed: ${errorMessage}`);

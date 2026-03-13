@@ -41,6 +41,7 @@ const core = __importStar(require("@actions/core"));
 const github = __importStar(require("@actions/github"));
 const simplified_analyzer_1 = require("../simplified-analyzer");
 const constants_1 = require("../config/constants");
+const ANSI_ESCAPE_REGEX = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, 'g');
 async function processWorkflowLogs(octokit, artifactFetcher, inputs, repoDetails) {
     const context = github.context;
     const { owner, repo } = context.repo;
@@ -316,9 +317,7 @@ function capArtifactLogs(raw) {
     if (!raw)
         return '';
     const MAX = constants_1.LOG_LIMITS.ARTIFACT_SOFT_CAP;
-    const esc = String.fromCharCode(27);
-    const ansiPattern = new RegExp(`${esc}\\[[0-9;]*m`, 'g');
-    const clean = raw.replace(ansiPattern, '');
+    const clean = raw.replace(ANSI_ESCAPE_REGEX, '');
     if (clean.length <= MAX)
         return clean;
     const lines = clean.split('\n');
@@ -333,23 +332,26 @@ function capArtifactLogs(raw) {
     }
     const uniqueFocused = Array.from(new Set(focused));
     const focusedJoined = uniqueFocused.join('\n');
-    if (focusedJoined.length > 1000) {
-        return `${focusedJoined.substring(0, 10000)}\n\n[Artifact logs truncated]`;
+    if (focusedJoined.length > 0) {
+        return focusedJoined.length <= MAX
+            ? focusedJoined
+            : `${focusedJoined.substring(0, MAX)}\n\n[Artifact logs truncated]`;
     }
     const head = clean.substring(0, Math.floor(MAX / 2));
     const tail = clean.substring(clean.length - Math.floor(MAX / 2));
     return `${head}\n\n[...truncated...]\n\n${tail}`;
 }
 function buildStructuredSummary(err) {
-    const hasTimeout = /\btimeout|timed out\b/i.test(err.message || '');
-    const hasAssertion = /assertion|expected\s+.*to/i.test(err.message || '');
-    const hasDom = /element|selector|not found|visible|covered|detached/i.test(err.message || '');
-    const hasNetwork = /network|fetch|graphql|api|500|404|502|503/i.test(err.message || '');
-    const hasNullPtr = /cannot read (properties|property) of null|undefined/i.test(err.message || '');
+    const msg = err.message || '';
+    const hasTimeout = /\btimeout|timed out\b/i.test(msg);
+    const hasAssertion = /assertion|expected\s+.*to/i.test(msg);
+    const hasDom = /element|selector|not found|visible|covered|detached/i.test(msg);
+    const hasNetwork = /network|fetch|graphql|api|500|404|502|503/i.test(msg);
+    const hasNullPtr = /cannot read (properties|property) of null|undefined/i.test(msg);
     return {
         primaryError: {
             type: err.failureType || 'Error',
-            message: (err.message || '').slice(0, 500),
+            message: msg.slice(0, 500),
         },
         testContext: {
             testName: err.testName || 'unknown',
@@ -364,9 +366,9 @@ function buildStructuredSummary(err) {
             hasAssertionErrors: hasAssertion,
             isMobileTest: false,
             hasLongTimeout: hasTimeout,
-            hasAltTextSelector: /\[alt=/.test(err.message || ''),
-            hasElementExistenceCheck: /expected to find|never found/i.test(err.message || ''),
-            hasVisibilityIssue: /not visible|covered|hidden/i.test(err.message || ''),
+            hasAltTextSelector: /\[alt=/.test(msg),
+            hasElementExistenceCheck: /expected to find|never found/i.test(msg),
+            hasVisibilityIssue: /not visible|covered|hidden/i.test(msg),
             hasViewportContext: false,
         },
         keyMetrics: {

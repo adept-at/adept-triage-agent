@@ -449,10 +449,8 @@ Respond with JSON only. If you cannot provide a confident fix, set confidence be
     }
     async getRecommendationFromAI(prompt, context, fullErrorData) {
         try {
-            const clientAny = this.openaiClient;
-            if (typeof clientAny.generateWithCustomPrompt === 'function') {
-                const frameworkLabel = (0, base_agent_1.getFrameworkLabel)(fullErrorData?.framework);
-                const systemPrompt = `You are a test repair expert. Produce a concrete, review-ready fix plan for a ${frameworkLabel} TEST_ISSUE.
+            const frameworkLabel = (0, base_agent_1.getFrameworkLabel)(fullErrorData?.framework);
+            const systemPrompt = `You are a test repair expert. Produce a concrete, review-ready fix plan for a ${frameworkLabel} TEST_ISSUE.
 
 ABSOLUTE RULES — VIOLATION MEANS THE FIX WILL FAIL:
 1. The "oldCode" field MUST be copied character-for-character from the "Source File" section in the user prompt.
@@ -499,64 +497,42 @@ You MUST respond in strict JSON only with this schema:
     }
   ]
 }`;
-                const userParts = [{ type: 'text', text: prompt }];
-                if (fullErrorData?.screenshots &&
-                    fullErrorData.screenshots.length > 0) {
-                    for (const s of fullErrorData.screenshots) {
-                        if (s.base64Data) {
-                            userParts.push({
-                                type: 'image_url',
-                                image_url: {
-                                    url: `data:image/png;base64,${s.base64Data}`,
-                                    detail: 'high',
-                                },
-                            });
-                            userParts.push({
-                                type: 'text',
-                                text: `Screenshot: ${s.name}${s.timestamp ? ` (at ${s.timestamp})` : ''}`,
-                            });
-                        }
+            const userParts = [{ type: 'text', text: prompt }];
+            if (fullErrorData?.screenshots &&
+                fullErrorData.screenshots.length > 0) {
+                for (const s of fullErrorData.screenshots) {
+                    if (s.base64Data) {
+                        userParts.push({
+                            type: 'image_url',
+                            image_url: {
+                                url: `data:image/png;base64,${s.base64Data}`,
+                                detail: 'high',
+                            },
+                        });
+                        userParts.push({
+                            type: 'text',
+                            text: `Screenshot: ${s.name}${s.timestamp ? ` (at ${s.timestamp})` : ''}`,
+                        });
                     }
                 }
-                const content = await clientAny.generateWithCustomPrompt({
-                    systemPrompt,
-                    userContent: userParts,
-                    responseAsJson: true,
-                    temperature: 0.3,
-                });
-                try {
-                    const recommendation = JSON.parse(content);
-                    return recommendation;
-                }
-                catch (parseErr) {
-                    core.warning(`Repair JSON parse failed, falling back to heuristic extraction: ${parseErr}`);
-                    return {
-                        confidence: 60,
-                        reasoning: content,
-                        changes: this.extractChangesFromText(content, context),
-                        evidence: [],
-                        rootCause: 'Derived from repair response text',
-                    };
-                }
             }
-            const errorData = fullErrorData || {
-                message: prompt,
-                framework: 'cypress',
-                testName: context.testName,
-                fileName: context.testFile,
-            };
-            const triageLike = await clientAny.analyze(errorData, []);
+            const content = await this.openaiClient.generateWithCustomPrompt({
+                systemPrompt,
+                userContent: userParts,
+                responseAsJson: true,
+                temperature: 0.3,
+            });
             try {
-                const recommendation = JSON.parse(triageLike.reasoning);
-                return recommendation;
+                return JSON.parse(content);
             }
-            catch {
+            catch (parseErr) {
+                core.warning(`Repair JSON parse failed, falling back to heuristic extraction: ${parseErr}`);
                 return {
                     confidence: 60,
-                    reasoning: triageLike.reasoning,
-                    changes: this.extractChangesFromText(triageLike.reasoning, context),
-                    evidence: triageLike.indicators || [],
-                    rootCause: 'Error pattern suggests test needs update',
+                    reasoning: content,
+                    changes: this.extractChangesFromText(content, context),
+                    evidence: [],
+                    rootCause: 'Derived from repair response text',
                 };
             }
         }

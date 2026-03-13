@@ -112,12 +112,12 @@ export class ArtifactFetcher {
               const fileName = path.basename(entryName);
               const fileData = entry.getData();
               
-                          screenshots.push({
-              name: fileName,
-              path: entryName,
-              base64Data: fileData.toString('base64'),
-              timestamp: artifact.created_at || undefined
-            });
+              screenshots.push({
+                name: fileName,
+                path: entryName,
+                base64Data: fileData.toString('base64'),
+                timestamp: artifact.created_at || undefined,
+              });
 
               core.info(`Found screenshot: ${fileName}`);
             }
@@ -557,10 +557,6 @@ export class ArtifactFetcher {
   }
 
   /**
-   * Fetch diff between a branch and base branch (useful for preview URL runs)
-   * This compares the head of the branch against the base branch
-   */
-  /**
    * Fetch a combined diff of the most recent commits on a repo's default branch.
    * Useful when tests run against production and there is no PR/branch/commit context
    * — gives the triage agent visibility into what recently shipped.
@@ -650,6 +646,9 @@ export class ArtifactFetcher {
     }
   }
 
+  /**
+   * Fetch diff between a branch and base branch (useful for preview URL runs)
+   */
   async fetchBranchDiff(branch: string, baseBranch: string = 'main', repository?: string): Promise<PRDiff | null> {
     try {
       const { owner, repo } = repository

@@ -66,6 +66,9 @@ const FEW_SHOT_EXAMPLES: FewShotExample[] = [
   }
 ];
 
+// Pre-compiled ANSI escape sequence regex (avoids rebuilding per call)
+const ANSI_ESCAPE_REGEX = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, 'g');
+
 const INFRASTRUCTURE_FAILURE_PATTERNS = [
   // ── Sauce Labs / WebDriver session patterns ──
   {
@@ -190,67 +193,59 @@ export async function analyzeFailure(client: OpenAIClient, errorData: ErrorData)
   }
 }
 
+// Error patterns sorted by priority (highest first) — pre-sorted at module load
+const ERROR_PATTERNS = [
+  // Cypress server verification errors (highest priority - happens before tests can even run)
+  { pattern: /Cypress could not verify that this server is running.*/, framework: 'cypress', priority: 12 },
+  { pattern: /Cypress failed to verify that your server is running.*/, framework: 'cypress', priority: 12 },
+  { pattern: /Please start this server and then run Cypress again.*/, framework: 'cypress', priority: 11 },
+
+  // WDIO / Mocha errors (describe, hooks, spec titles)
+  { pattern: /Error in ["'].*?["']\s*:\s*(.+)/, framework: 'webdriverio', priority: 10 },
+  { pattern: /Error in ["'](?:before all|before each|after all|after each)["'].*?:\s*(.+)/, framework: 'webdriverio', priority: 10 },
+  // WDIO Error in "test name" on its own line (error message follows on next line)
+  { pattern: /\[[\d-]+\]\s*Error in ["'](.+?)["']\s*$/m, framework: 'webdriverio', priority: 11 },
+  // Remote session/provider/browser failures should outrank transient element errors.
+  { pattern: INFRASTRUCTURE_FAILURE_REGEX, framework: 'unknown', priority: 11 },
+  // WDIO FAILED in MultiRemote
+  { pattern: /FAILED in (?:MultiRemote|chrome|firefox|safari)\s*-\s*file:\/\/\/(.+)/, framework: 'webdriverio', priority: 9 },
+
+  // WDIO waitFor timeout (element ("selector") still not visible after N ms)
+  { pattern: /element\s*\([^)]+\)\s+still not (?:visible|displayed|enabled|existing|clickable).+after\s+\d+\s*ms/i, framework: 'webdriverio', priority: 9 },
+  { pattern: /(?:waitForDisplayed|waitForExist|waitForClickable|waitForEnabled).+timeout/i, framework: 'webdriverio', priority: 9 },
+
+  // Selenium / WebDriver errors
+  { pattern: /stale element reference/i, framework: 'webdriverio', priority: 9 },
+  { pattern: /no such element: Unable to locate element/i, framework: 'webdriverio', priority: 9 },
+  { pattern: /element not interactable/i, framework: 'webdriverio', priority: 9 },
+  { pattern: /(WebDriverError|ProtocolError|SauceLabsError):\s*(.+)/, framework: 'webdriverio', priority: 8 },
+
+  // Specific JavaScript errors with property access (high priority)
+  { pattern: /TypeError: Cannot read propert(?:y|ies) .+ of (?:null|undefined).*/, framework: 'javascript', priority: 10 },
+  { pattern: /TypeError: Cannot access .+ of (?:null|undefined).*/, framework: 'javascript', priority: 10 },
+
+  // Cypress-specific errors
+  { pattern: /(AssertionError|CypressError|TimeoutError):\s*(.+)/, framework: 'cypress', priority: 8 },
+  { pattern: /Timed out .+ after \d+ms:\s*(.+)/, framework: 'cypress', priority: 8 },
+  { pattern: /Expected to find .+:\s*(.+)/, framework: 'cypress', priority: 7 },
+
+  // General JavaScript errors
+  { pattern: /(TypeError|ReferenceError|SyntaxError):\s*(.+)/, framework: 'javascript', priority: 6 },
+  { pattern: /Error:\s*(.+)/, framework: 'javascript', priority: 5 },
+
+  // Generic test failures (lower priority)
+  { pattern: /✖\s+(.+)/, framework: 'unknown', priority: 3 },
+  { pattern: /FAIL\s+(.+)/, framework: 'unknown', priority: 2 },
+  { pattern: /Failed:\s*(.+)/, framework: 'unknown', priority: 1 }
+].sort((a, b) => b.priority - a.priority);
+
 /**
  * Simplified error extraction from logs
  */
 export function extractErrorFromLogs(logs: string): ErrorData | null {
-  // Clean ANSI codes - build regex dynamically to avoid linter warning
-  const esc = String.fromCharCode(27);
-  const ansiPattern = new RegExp(`${esc}\\[[0-9;]*m`, 'g');
-  const cleanLogs = logs.replace(ansiPattern, '');
-  
-  // Look for common error patterns - PRIORITIZED ORDER
-  const errorPatterns = [
-    // Cypress server verification errors (highest priority - happens before tests can even run)
-    { pattern: /Cypress could not verify that this server is running.*/, framework: 'cypress', priority: 12 },
-    { pattern: /Cypress failed to verify that your server is running.*/, framework: 'cypress', priority: 12 },
-    { pattern: /Please start this server and then run Cypress again.*/, framework: 'cypress', priority: 11 },
-    
-    // WDIO / Mocha errors (describe, hooks, spec titles)
-    { pattern: /Error in ["'].*?["']\s*:\s*(.+)/, framework: 'webdriverio', priority: 10 },
-    { pattern: /Error in ["'](?:before all|before each|after all|after each)["'].*?:\s*(.+)/, framework: 'webdriverio', priority: 10 },
-    // WDIO Error in "test name" on its own line (error message follows on next line)
-    { pattern: /\[[\d-]+\]\s*Error in ["'](.+?)["']\s*$/m, framework: 'webdriverio', priority: 11 },
-    // Remote session/provider/browser failures should outrank transient element errors.
-    // Framework is set to 'unknown' because the regex covers both WDIO and Cypress patterns;
-    // the actual framework is determined by other matched patterns or the action input.
-    { pattern: INFRASTRUCTURE_FAILURE_REGEX, framework: 'unknown', priority: 11 },
-    // WDIO FAILED in MultiRemote
-    { pattern: /FAILED in (?:MultiRemote|chrome|firefox|safari)\s*-\s*file:\/\/\/(.+)/, framework: 'webdriverio', priority: 9 },
-    
-    // WDIO waitFor timeout (element ("selector") still not visible after N ms)
-    { pattern: /element\s*\([^)]+\)\s+still not (?:visible|displayed|enabled|existing|clickable).+after\s+\d+\s*ms/i, framework: 'webdriverio', priority: 9 },
-    { pattern: /(?:waitForDisplayed|waitForExist|waitForClickable|waitForEnabled).+timeout/i, framework: 'webdriverio', priority: 9 },
-    
-    // Selenium / WebDriver errors
-    { pattern: /stale element reference/i, framework: 'webdriverio', priority: 9 },
-    { pattern: /no such element: Unable to locate element/i, framework: 'webdriverio', priority: 9 },
-    { pattern: /element not interactable/i, framework: 'webdriverio', priority: 9 },
-    { pattern: /(WebDriverError|ProtocolError|SauceLabsError):\s*(.+)/, framework: 'webdriverio', priority: 8 },
-    
-    // Specific JavaScript errors with property access (high priority)
-    { pattern: /TypeError: Cannot read propert(?:y|ies) .+ of (?:null|undefined).*/, framework: 'javascript', priority: 10 },
-    { pattern: /TypeError: Cannot access .+ of (?:null|undefined).*/, framework: 'javascript', priority: 10 },
-    
-    // Cypress-specific errors
-    { pattern: /(AssertionError|CypressError|TimeoutError):\s*(.+)/, framework: 'cypress', priority: 8 },
-    { pattern: /Timed out .+ after \d+ms:\s*(.+)/, framework: 'cypress', priority: 8 },
-    { pattern: /Expected to find .+:\s*(.+)/, framework: 'cypress', priority: 7 },
-    
-    // General JavaScript errors
-    { pattern: /(TypeError|ReferenceError|SyntaxError):\s*(.+)/, framework: 'javascript', priority: 6 },
-    { pattern: /Error:\s*(.+)/, framework: 'javascript', priority: 5 },
-    
-    // Generic test failures (lower priority)
-    { pattern: /✖\s+(.+)/, framework: 'unknown', priority: 3 },
-    { pattern: /FAIL\s+(.+)/, framework: 'unknown', priority: 2 },
-    { pattern: /Failed:\s*(.+)/, framework: 'unknown', priority: 1 }
-  ];
-  
-  // Sort by priority
-  errorPatterns.sort((a, b) => (b.priority || 0) - (a.priority || 0));
+  const cleanLogs = logs.replace(ANSI_ESCAPE_REGEX, '');
 
-  for (const { pattern, framework: patternFramework, priority } of errorPatterns) {
+  for (const { pattern, framework: patternFramework, priority } of ERROR_PATTERNS) {
     const match = cleanLogs.match(pattern);
     if (match) {
       // Skip XHR/network logs that aren't actual errors

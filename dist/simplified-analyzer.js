@@ -91,6 +91,7 @@ const FEW_SHOT_EXAMPLES = [
         reasoning: 'Login page failed to render form fields. The #password selector is correct and stable — when the login page does not render at all, the application deployment is broken (e.g., wrong API endpoint, missing env vars). This is not a test selector issue.'
     }
 ];
+const ANSI_ESCAPE_REGEX = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, 'g');
 const INFRASTRUCTURE_FAILURE_PATTERNS = [
     {
         pattern: /The test session has already finished,? and can't receive further commands/i,
@@ -188,38 +189,35 @@ async function analyzeFailure(client, errorData) {
         throw error;
     }
 }
+const ERROR_PATTERNS = [
+    { pattern: /Cypress could not verify that this server is running.*/, framework: 'cypress', priority: 12 },
+    { pattern: /Cypress failed to verify that your server is running.*/, framework: 'cypress', priority: 12 },
+    { pattern: /Please start this server and then run Cypress again.*/, framework: 'cypress', priority: 11 },
+    { pattern: /Error in ["'].*?["']\s*:\s*(.+)/, framework: 'webdriverio', priority: 10 },
+    { pattern: /Error in ["'](?:before all|before each|after all|after each)["'].*?:\s*(.+)/, framework: 'webdriverio', priority: 10 },
+    { pattern: /\[[\d-]+\]\s*Error in ["'](.+?)["']\s*$/m, framework: 'webdriverio', priority: 11 },
+    { pattern: INFRASTRUCTURE_FAILURE_REGEX, framework: 'unknown', priority: 11 },
+    { pattern: /FAILED in (?:MultiRemote|chrome|firefox|safari)\s*-\s*file:\/\/\/(.+)/, framework: 'webdriverio', priority: 9 },
+    { pattern: /element\s*\([^)]+\)\s+still not (?:visible|displayed|enabled|existing|clickable).+after\s+\d+\s*ms/i, framework: 'webdriverio', priority: 9 },
+    { pattern: /(?:waitForDisplayed|waitForExist|waitForClickable|waitForEnabled).+timeout/i, framework: 'webdriverio', priority: 9 },
+    { pattern: /stale element reference/i, framework: 'webdriverio', priority: 9 },
+    { pattern: /no such element: Unable to locate element/i, framework: 'webdriverio', priority: 9 },
+    { pattern: /element not interactable/i, framework: 'webdriverio', priority: 9 },
+    { pattern: /(WebDriverError|ProtocolError|SauceLabsError):\s*(.+)/, framework: 'webdriverio', priority: 8 },
+    { pattern: /TypeError: Cannot read propert(?:y|ies) .+ of (?:null|undefined).*/, framework: 'javascript', priority: 10 },
+    { pattern: /TypeError: Cannot access .+ of (?:null|undefined).*/, framework: 'javascript', priority: 10 },
+    { pattern: /(AssertionError|CypressError|TimeoutError):\s*(.+)/, framework: 'cypress', priority: 8 },
+    { pattern: /Timed out .+ after \d+ms:\s*(.+)/, framework: 'cypress', priority: 8 },
+    { pattern: /Expected to find .+:\s*(.+)/, framework: 'cypress', priority: 7 },
+    { pattern: /(TypeError|ReferenceError|SyntaxError):\s*(.+)/, framework: 'javascript', priority: 6 },
+    { pattern: /Error:\s*(.+)/, framework: 'javascript', priority: 5 },
+    { pattern: /✖\s+(.+)/, framework: 'unknown', priority: 3 },
+    { pattern: /FAIL\s+(.+)/, framework: 'unknown', priority: 2 },
+    { pattern: /Failed:\s*(.+)/, framework: 'unknown', priority: 1 }
+].sort((a, b) => b.priority - a.priority);
 function extractErrorFromLogs(logs) {
-    const esc = String.fromCharCode(27);
-    const ansiPattern = new RegExp(`${esc}\\[[0-9;]*m`, 'g');
-    const cleanLogs = logs.replace(ansiPattern, '');
-    const errorPatterns = [
-        { pattern: /Cypress could not verify that this server is running.*/, framework: 'cypress', priority: 12 },
-        { pattern: /Cypress failed to verify that your server is running.*/, framework: 'cypress', priority: 12 },
-        { pattern: /Please start this server and then run Cypress again.*/, framework: 'cypress', priority: 11 },
-        { pattern: /Error in ["'].*?["']\s*:\s*(.+)/, framework: 'webdriverio', priority: 10 },
-        { pattern: /Error in ["'](?:before all|before each|after all|after each)["'].*?:\s*(.+)/, framework: 'webdriverio', priority: 10 },
-        { pattern: /\[[\d-]+\]\s*Error in ["'](.+?)["']\s*$/m, framework: 'webdriverio', priority: 11 },
-        { pattern: INFRASTRUCTURE_FAILURE_REGEX, framework: 'unknown', priority: 11 },
-        { pattern: /FAILED in (?:MultiRemote|chrome|firefox|safari)\s*-\s*file:\/\/\/(.+)/, framework: 'webdriverio', priority: 9 },
-        { pattern: /element\s*\([^)]+\)\s+still not (?:visible|displayed|enabled|existing|clickable).+after\s+\d+\s*ms/i, framework: 'webdriverio', priority: 9 },
-        { pattern: /(?:waitForDisplayed|waitForExist|waitForClickable|waitForEnabled).+timeout/i, framework: 'webdriverio', priority: 9 },
-        { pattern: /stale element reference/i, framework: 'webdriverio', priority: 9 },
-        { pattern: /no such element: Unable to locate element/i, framework: 'webdriverio', priority: 9 },
-        { pattern: /element not interactable/i, framework: 'webdriverio', priority: 9 },
-        { pattern: /(WebDriverError|ProtocolError|SauceLabsError):\s*(.+)/, framework: 'webdriverio', priority: 8 },
-        { pattern: /TypeError: Cannot read propert(?:y|ies) .+ of (?:null|undefined).*/, framework: 'javascript', priority: 10 },
-        { pattern: /TypeError: Cannot access .+ of (?:null|undefined).*/, framework: 'javascript', priority: 10 },
-        { pattern: /(AssertionError|CypressError|TimeoutError):\s*(.+)/, framework: 'cypress', priority: 8 },
-        { pattern: /Timed out .+ after \d+ms:\s*(.+)/, framework: 'cypress', priority: 8 },
-        { pattern: /Expected to find .+:\s*(.+)/, framework: 'cypress', priority: 7 },
-        { pattern: /(TypeError|ReferenceError|SyntaxError):\s*(.+)/, framework: 'javascript', priority: 6 },
-        { pattern: /Error:\s*(.+)/, framework: 'javascript', priority: 5 },
-        { pattern: /✖\s+(.+)/, framework: 'unknown', priority: 3 },
-        { pattern: /FAIL\s+(.+)/, framework: 'unknown', priority: 2 },
-        { pattern: /Failed:\s*(.+)/, framework: 'unknown', priority: 1 }
-    ];
-    errorPatterns.sort((a, b) => (b.priority || 0) - (a.priority || 0));
-    for (const { pattern, framework: patternFramework, priority } of errorPatterns) {
+    const cleanLogs = logs.replace(ANSI_ESCAPE_REGEX, '');
+    for (const { pattern, framework: patternFramework, priority } of ERROR_PATTERNS) {
         const match = cleanLogs.match(pattern);
         if (match) {
             const beforeError = cleanLogs.substring(Math.max(0, (match.index || 0) - 100), match.index || 0);

@@ -160,13 +160,14 @@ export abstract class BaseAgent<TInput, TOutput> {
   ): Promise<AgentResult<TOutput>> {
     const startTime = Date.now();
     let apiCalls = 0;
+    let timeoutId: ReturnType<typeof setTimeout> | undefined;
 
     try {
       core.info(`[${this.agentName}] Starting execution...`);
 
-      // Create a timeout promise
+      // Create a timeout promise that can be cleaned up
       const timeoutPromise = new Promise<never>((_, reject) => {
-        setTimeout(() => {
+        timeoutId = setTimeout(() => {
           reject(new Error(`Agent timed out after ${this.config.timeoutMs}ms`));
         }, this.config.timeoutMs);
       });
@@ -177,6 +178,7 @@ export abstract class BaseAgent<TInput, TOutput> {
 
       // Race between task and timeout
       const result = await Promise.race([taskPromise, timeoutPromise]);
+      clearTimeout(timeoutId);
 
       const executionTimeMs = Date.now() - startTime;
       core.info(`[${this.agentName}] Completed in ${executionTimeMs}ms`);
@@ -188,6 +190,7 @@ export abstract class BaseAgent<TInput, TOutput> {
         apiCalls,
       };
     } catch (error) {
+      clearTimeout(timeoutId);
       const executionTimeMs = Date.now() - startTime;
       const errorMessage =
         error instanceof Error ? error.message : String(error);

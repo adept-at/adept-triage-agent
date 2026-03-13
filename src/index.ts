@@ -242,39 +242,38 @@ function getInputs(): ActionInputs {
   };
 }
 
-function resolveRepository(inputs: ActionInputs): {
-  owner: string;
-  repo: string;
-} {
-  if (inputs.repository) {
-    const cleaned = inputs.repository.replace(/\.git$/i, '').trim();
+/**
+ * Parse an "owner/repo" string into parts, falling back to the current GitHub context.
+ */
+function parseRepoString(
+  value: string | undefined,
+  label: string
+): { owner: string; repo: string } {
+  if (value) {
+    const cleaned = value.replace(/\.git$/i, '').trim();
     const parts = cleaned.split('/');
     if (parts.length === 2 && parts[0] && parts[1]) {
       return { owner: parts[0], repo: parts[1] };
     }
     core.warning(
-      `Invalid repository input '${inputs.repository}'. Falling back to current repository context.`
+      `Invalid ${label} '${value}'. Falling back to current repository context.`
     );
   }
   return github.context.repo;
+}
+
+function resolveRepository(inputs: ActionInputs): {
+  owner: string;
+  repo: string;
+} {
+  return parseRepoString(inputs.repository, 'REPOSITORY');
 }
 
 function resolveAutoFixTargetRepo(inputs: ActionInputs): {
   owner: string;
   repo: string;
 } {
-  if (inputs.autoFixTargetRepo) {
-    const cleaned = inputs.autoFixTargetRepo.replace(/\.git$/i, '').trim();
-    const parts = cleaned.split('/');
-    if (parts.length === 2 && parts[0] && parts[1]) {
-      return { owner: parts[0], repo: parts[1] };
-    }
-    core.warning(
-      `Invalid AUTO_FIX_TARGET_REPO '${inputs.autoFixTargetRepo}'. Falling back to current repository.`
-    );
-  }
-  // Default to the repo where the workflow is running (where test code lives)
-  return github.context.repo;
+  return parseRepoString(inputs.autoFixTargetRepo, 'AUTO_FIX_TARGET_REPO');
 }
 
 async function generateFixRecommendation(

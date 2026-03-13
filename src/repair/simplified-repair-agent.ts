@@ -646,34 +646,9 @@ Respond with JSON only. If you cannot provide a confident fix, set confidence be
     fullErrorData?: ErrorData
   ): Promise<AIRecommendation | null> {
     try {
-      const clientAny = this.openaiClient as unknown as {
-        generateWithCustomPrompt?: (args: {
-          systemPrompt: string;
-          userContent:
-            | Array<
-                | { type: 'text'; text: string }
-                | {
-                    type: 'image_url';
-                    image_url: {
-                      url: string;
-                      detail?: 'low' | 'auto' | 'high';
-                    };
-                  }
-              >
-            | string;
-          responseAsJson?: boolean;
-          temperature?: number;
-        }) => Promise<string>;
-        analyze: (
-          errorData: ErrorData,
-          examples: []
-        ) => Promise<{ reasoning: string; indicators?: string[] }>;
-      };
-
-      if (typeof clientAny.generateWithCustomPrompt === 'function') {
-        const frameworkLabel = getFrameworkLabel(fullErrorData?.framework);
-        // Build a repair-specific system prompt that enforces JSON output
-        const systemPrompt = `You are a test repair expert. Produce a concrete, review-ready fix plan for a ${frameworkLabel} TEST_ISSUE.
+      const frameworkLabel = getFrameworkLabel(fullErrorData?.framework);
+      // Build a repair-specific system prompt that enforces JSON output
+      const systemPrompt = `You are a test repair expert. Produce a concrete, review-ready fix plan for a ${frameworkLabel} TEST_ISSUE.
 
 ABSOLUTE RULES — VIOLATION MEANS THE FIX WILL FAIL:
 1. The "oldCode" field MUST be copied character-for-character from the "Source File" section in the user prompt.
@@ -721,81 +696,53 @@ You MUST respond in strict JSON only with this schema:
   ]
 }`;
 
-        // Compose multimodal user content: the textual prompt and any screenshots
-        const userParts: Array<
-          | { type: 'text'; text: string }
-          | {
-              type: 'image_url';
-              image_url: { url: string; detail?: 'low' | 'auto' | 'high' };
-            }
-        > = [{ type: 'text', text: prompt }];
-        if (
-          fullErrorData?.screenshots &&
-          fullErrorData.screenshots.length > 0
-        ) {
-          for (const s of fullErrorData.screenshots) {
-            if (s.base64Data) {
-              userParts.push({
-                type: 'image_url',
-                image_url: {
-                  url: `data:image/png;base64,${s.base64Data}`,
-                  detail: 'high',
-                },
-              });
-              userParts.push({
-                type: 'text',
-                text: `Screenshot: ${s.name}${
-                  s.timestamp ? ` (at ${s.timestamp})` : ''
-                }`,
-              });
-            }
+      // Compose multimodal user content: the textual prompt and any screenshots
+      type ContentPart =
+        | { type: 'text'; text: string }
+        | { type: 'image_url'; image_url: { url: string; detail?: 'low' | 'auto' | 'high' } };
+      const userParts: ContentPart[] = [{ type: 'text', text: prompt }];
+      if (
+        fullErrorData?.screenshots &&
+        fullErrorData.screenshots.length > 0
+      ) {
+        for (const s of fullErrorData.screenshots) {
+          if (s.base64Data) {
+            userParts.push({
+              type: 'image_url',
+              image_url: {
+                url: `data:image/png;base64,${s.base64Data}`,
+                detail: 'high',
+              },
+            });
+            userParts.push({
+              type: 'text',
+              text: `Screenshot: ${s.name}${
+                s.timestamp ? ` (at ${s.timestamp})` : ''
+              }`,
+            });
           }
-        }
-
-        const content = await clientAny.generateWithCustomPrompt({
-          systemPrompt,
-          userContent: userParts,
-          responseAsJson: true,
-          temperature: 0.3,
-        });
-
-        try {
-          const recommendation = JSON.parse(content) as AIRecommendation;
-          return recommendation;
-        } catch (parseErr) {
-          core.warning(
-            `Repair JSON parse failed, falling back to heuristic extraction: ${parseErr}`
-          );
-          return {
-            confidence: 60,
-            reasoning: content,
-            changes: this.extractChangesFromText(content, context),
-            evidence: [],
-            rootCause: 'Derived from repair response text',
-          };
         }
       }
 
-      // Fallback to original triage-oriented analyze if custom method is not available (e.g., in tests)
-      const errorData: ErrorData = fullErrorData || {
-        message: prompt,
-        framework: 'cypress',
-        testName: context.testName,
-        fileName: context.testFile,
-      };
-      const triageLike = await clientAny.analyze(errorData, []);
+      const content = await this.openaiClient.generateWithCustomPrompt({
+        systemPrompt,
+        userContent: userParts,
+        responseAsJson: true,
+        temperature: 0.3,
+      });
+
       try {
-        const recommendation = JSON.parse(
-          triageLike.reasoning
-        ) as AIRecommendation;
-        return recommendation;
-      } catch {
+        return JSON.parse(content) as AIRecommendation;
+      } catch (parseErr) {
+        core.warning(
+          `Repair JSON parse failed, falling back to heuristic extraction: ${parseErr}`
+        );
         return {
           confidence: 60,
-          reasoning: triageLike.reasoning,
-          changes: this.extractChangesFromText(triageLike.reasoning, context),
-          evidence: triageLike.indicators || [],
-          rootCause: 'Error pattern suggests test needs update',
+          reasoning: content,
+          changes: this.extractChangesFromText(content, context),
+          evidence: [],
+          rootCause: 'Derived from repair response text',
         };
       }
     } catch (error) {

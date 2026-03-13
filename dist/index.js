@@ -510,16 +510,18 @@ class BaseAgent {
     async executeWithTimeout(input, context) {
         const startTime = Date.now();
         let apiCalls = 0;
+        let timeoutId;
         try {
             core.info(`[${this.agentName}] Starting execution...`);
             const timeoutPromise = new Promise((_, reject) => {
-                setTimeout(() => {
+                timeoutId = setTimeout(() => {
                     reject(new Error(`Agent timed out after ${this.config.timeoutMs}ms`));
                 }, this.config.timeoutMs);
             });
             const taskPromise = this.runAgentTask(input, context);
             apiCalls++;
             const result = await Promise.race([taskPromise, timeoutPromise]);
+            clearTimeout(timeoutId);
             const executionTimeMs = Date.now() - startTime;
             core.info(`[${this.agentName}] Completed in ${executionTimeMs}ms`);
             return {
@@ -530,6 +532,7 @@ class BaseAgent {
             };
         }
         catch (error) {
+            clearTimeout(timeoutId);
             const executionTimeMs = Date.now() - startTime;
             const errorMessage = error instanceof Error ? error.message : String(error);
             core.warning(`[${this.agentName}] Failed: ${errorMessage}`);
@@ -2014,7 +2017,7 @@ class ArtifactFetcher {
                                 name: fileName,
                                 path: entryName,
                                 base64Data: fileData.toString('base64'),
-                                timestamp: artifact.created_at || undefined
+                                timestamp: artifact.created_at || undefined,
                             });
                             core.info(`Found screenshot: ${fileName}`);
                         }
@@ -2775,27 +2778,22 @@ function getInputs() {
         productDiffCommits: safeParseInt(core.getInput('PRODUCT_DIFF_COMMITS'), 5),
     };
 }
-function resolveRepository(inputs) {
-    if (inputs.repository) {
-        const cleaned = inputs.repository.replace(/\.git$/i, '').trim();
+function parseRepoString(value, label) {
+    if (value) {
+        const cleaned = value.replace(/\.git$/i, '').trim();
         const parts = cleaned.split('/');
         if (parts.length === 2 && parts[0] && parts[1]) {
             return { owner: parts[0], repo: parts[1] };
         }
-        core.warning(`Invalid repository input '${inputs.repository}'. Falling back to current repository context.`);
+        core.warning(`Invalid ${label} '${value}'. Falling back to current repository context.`);
     }
     return github.context.repo;
 }
+function resolveRepository(inputs) {
+    return parseRepoString(inputs.repository, 'REPOSITORY');
+}
 function resolveAutoFixTargetRepo(inputs) {
-    if (inputs.autoFixTargetRepo) {
-        const cleaned = inputs.autoFixTargetRepo.replace(/\.git$/i, '').trim();
-        const parts = cleaned.split('/');
-        if (parts.length === 2 && parts[0] && parts[1]) {
-            return { owner: parts[0], repo: parts[1] };
-        }
-        core.warning(`Invalid AUTO_FIX_TARGET_REPO '${inputs.autoFixTargetRepo}'. Falling back to current repository.`);
-    }
-    return github.context.repo;
+    return parseRepoString(inputs.autoFixTargetRepo, 'AUTO_FIX_TARGET_REPO');
 }
 async function generateFixRecommendation(inputs, repoDetails, errorData, openaiClient, octokit) {
     try {
@@ -3138,49 +3136,12 @@ class OpenAIClient {
         core.info(`🧠 Using ${model} model for analysis (Responses API)`);
         const systemPrompt = this.getSystemPrompt();
         const userContent = this.buildUserContent(errorData, examples);
-        if (typeof userContent === 'string') {
-            if (userContent.includes('QUICK ANALYSIS SUMMARY')) {
-                core.info('📊 Structured summary header included in prompt!');
-                const summaryStart = userContent.indexOf('QUICK ANALYSIS SUMMARY');
-                const summarySection = userContent.substring(summaryStart, summaryStart + 500);
-                core.info(`Summary preview:\n${summarySection}...`);
-            }
-            else {
-                core.info('⚠️  Structured summary header NOT found in prompt');
-            }
-        }
-        else {
-            const firstTextPart = userContent.find(p => p.type === 'text');
-            if (firstTextPart && 'text' in firstTextPart) {
-                if (firstTextPart.text.includes('QUICK ANALYSIS SUMMARY')) {
-                    core.info('📊 Structured summary header included in prompt!');
-                    const summaryStart = firstTextPart.text.indexOf('QUICK ANALYSIS SUMMARY');
-                    const summarySection = firstTextPart.text.substring(summaryStart, summaryStart + 500);
-                    core.info(`Summary preview:\n${summarySection}...`);
-                }
-                else {
-                    core.info('⚠️  Structured summary header NOT found in prompt');
-                }
-            }
-        }
-        if (errorData.screenshots && errorData.screenshots.length > 0) {
-            core.info(`📸 Sending multimodal content to ${model}:`);
-            core.info(`  - Text context: ${errorData.logs?.[0]?.length || 0} characters`);
-            core.info(`  - Screenshots: ${errorData.screenshots.length} image(s)`);
-            errorData.screenshots.forEach((screenshot, idx) => {
-                core.info(`    ${idx + 1}. ${screenshot.name} (${screenshot.base64Data ? 'with data' : 'no data'})`);
-            });
+        const screenshotCount = errorData.screenshots?.length || 0;
+        if (screenshotCount > 0) {
+            core.info(`📸 Sending multimodal content to ${model}: ${screenshotCount} screenshot(s)`);
         }
         else {
             core.info(`📝 Sending text-only content to ${model}`);
-        }
-        if (errorData.structuredSummary) {
-            core.info('📊 ErrorData contains structured summary!');
-            core.info(`  - Error Type: ${errorData.structuredSummary.primaryError.type}`);
-            core.info(`  - Test File: ${errorData.structuredSummary.testContext.testFile}`);
-        }
-        else {
-            core.info('⚠️  ErrorData does NOT contain structured summary');
         }
         const input = this.convertToResponsesInput(userContent);
         for (let attempt = 1; attempt <= this.maxRetries; attempt++) {
@@ -4566,10 +4527,8 @@ Respond with JSON only. If you cannot provide a confident fix, set confidence be
     }
     async getRecommendationFromAI(prompt, context, fullErrorData) {
         try {
-            const clientAny = this.openaiClient;
-            if (typeof clientAny.generateWithCustomPrompt === 'function') {
-                const frameworkLabel = (0, base_agent_1.getFrameworkLabel)(fullErrorData?.framework);
-                const systemPrompt = `You are a test repair expert. Produce a concrete, review-ready fix plan for a ${frameworkLabel} TEST_ISSUE.
+            const frameworkLabel = (0, base_agent_1.getFrameworkLabel)(fullErrorData?.framework);
+            const systemPrompt = `You are a test repair expert. Produce a concrete, review-ready fix plan for a ${frameworkLabel} TEST_ISSUE.
 
 ABSOLUTE RULES — VIOLATION MEANS THE FIX WILL FAIL:
 1. The "oldCode" field MUST be copied character-for-character from the "Source File" section in the user prompt.
@@ -4616,64 +4575,42 @@ You MUST respond in strict JSON only with this schema:
     }
   ]
 }`;
-                const userParts = [{ type: 'text', text: prompt }];
-                if (fullErrorData?.screenshots &&
-                    fullErrorData.screenshots.length > 0) {
-                    for (const s of fullErrorData.screenshots) {
-                        if (s.base64Data) {
-                            userParts.push({
-                                type: 'image_url',
-                                image_url: {
-                                    url: `data:image/png;base64,${s.base64Data}`,
-                                    detail: 'high',
-                                },
-                            });
-                            userParts.push({
-                                type: 'text',
-                                text: `Screenshot: ${s.name}${s.timestamp ? ` (at ${s.timestamp})` : ''}`,
-                            });
-                        }
+            const userParts = [{ type: 'text', text: prompt }];
+            if (fullErrorData?.screenshots &&
+                fullErrorData.screenshots.length > 0) {
+                for (const s of fullErrorData.screenshots) {
+                    if (s.base64Data) {
+                        userParts.push({
+                            type: 'image_url',
+                            image_url: {
+                                url: `data:image/png;base64,${s.base64Data}`,
+                                detail: 'high',
+                            },
+                        });
+                        userParts.push({
+                            type: 'text',
+                            text: `Screenshot: ${s.name}${s.timestamp ? ` (at ${s.timestamp})` : ''}`,
+                        });
                     }
                 }
-                const content = await clientAny.generateWithCustomPrompt({
-                    systemPrompt,
-                    userContent: userParts,
-                    responseAsJson: true,
-                    temperature: 0.3,
-                });
-                try {
-                    const recommendation = JSON.parse(content);
-                    return recommendation;
-                }
-                catch (parseErr) {
-                    core.warning(`Repair JSON parse failed, falling back to heuristic extraction: ${parseErr}`);
-                    return {
-                        confidence: 60,
-                        reasoning: content,
-                        changes: this.extractChangesFromText(content, context),
-                        evidence: [],
-                        rootCause: 'Derived from repair response text',
-                    };
-                }
             }
-            const errorData = fullErrorData || {
-                message: prompt,
-                framework: 'cypress',
-                testName: context.testName,
-                fileName: context.testFile,
-            };
-            const triageLike = await clientAny.analyze(errorData, []);
+            const content = await this.openaiClient.generateWithCustomPrompt({
+                systemPrompt,
+                userContent: userParts,
+                responseAsJson: true,
+                temperature: 0.3,
+            });
             try {
-                const recommendation = JSON.parse(triageLike.reasoning);
-                return recommendation;
+                return JSON.parse(content);
             }
-            catch {
+            catch (parseErr) {
+                core.warning(`Repair JSON parse failed, falling back to heuristic extraction: ${parseErr}`);
                 return {
                     confidence: 60,
-                    reasoning: triageLike.reasoning,
-                    changes: this.extractChangesFromText(triageLike.reasoning, context),
-                    evidence: triageLike.indicators || [],
-                    rootCause: 'Error pattern suggests test needs update',
+                    reasoning: content,
+                    changes: this.extractChangesFromText(content, context),
+                    evidence: [],
+                    rootCause: 'Derived from repair response text',
                 };
             }
         }
@@ -4760,6 +4697,7 @@ const core = __importStar(__nccwpck_require__(7484));
 const github = __importStar(__nccwpck_require__(3228));
 const simplified_analyzer_1 = __nccwpck_require__(78);
 const constants_1 = __nccwpck_require__(8361);
+const ANSI_ESCAPE_REGEX = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, 'g');
 async function processWorkflowLogs(octokit, artifactFetcher, inputs, repoDetails) {
     const context = github.context;
     const { owner, repo } = context.repo;
@@ -5035,9 +4973,7 @@ function capArtifactLogs(raw) {
     if (!raw)
         return '';
     const MAX = constants_1.LOG_LIMITS.ARTIFACT_SOFT_CAP;
-    const esc = String.fromCharCode(27);
-    const ansiPattern = new RegExp(`${esc}\\[[0-9;]*m`, 'g');
-    const clean = raw.replace(ansiPattern, '');
+    const clean = raw.replace(ANSI_ESCAPE_REGEX, '');
     if (clean.length <= MAX)
         return clean;
     const lines = clean.split('\n');
@@ -5052,23 +4988,26 @@ function capArtifactLogs(raw) {
     }
     const uniqueFocused = Array.from(new Set(focused));
     const focusedJoined = uniqueFocused.join('\n');
-    if (focusedJoined.length > 1000) {
-        return `${focusedJoined.substring(0, 10000)}\n\n[Artifact logs truncated]`;
+    if (focusedJoined.length > 0) {
+        return focusedJoined.length <= MAX
+            ? focusedJoined
+            : `${focusedJoined.substring(0, MAX)}\n\n[Artifact logs truncated]`;
     }
     const head = clean.substring(0, Math.floor(MAX / 2));
     const tail = clean.substring(clean.length - Math.floor(MAX / 2));
     return `${head}\n\n[...truncated...]\n\n${tail}`;
 }
 function buildStructuredSummary(err) {
-    const hasTimeout = /\btimeout|timed out\b/i.test(err.message || '');
-    const hasAssertion = /assertion|expected\s+.*to/i.test(err.message || '');
-    const hasDom = /element|selector|not found|visible|covered|detached/i.test(err.message || '');
-    const hasNetwork = /network|fetch|graphql|api|500|404|502|503/i.test(err.message || '');
-    const hasNullPtr = /cannot read (properties|property) of null|undefined/i.test(err.message || '');
+    const msg = err.message || '';
+    const hasTimeout = /\btimeout|timed out\b/i.test(msg);
+    const hasAssertion = /assertion|expected\s+.*to/i.test(msg);
+    const hasDom = /element|selector|not found|visible|covered|detached/i.test(msg);
+    const hasNetwork = /network|fetch|graphql|api|500|404|502|503/i.test(msg);
+    const hasNullPtr = /cannot read (properties|property) of null|undefined/i.test(msg);
     return {
         primaryError: {
             type: err.failureType || 'Error',
-            message: (err.message || '').slice(0, 500),
+            message: msg.slice(0, 500),
         },
         testContext: {
             testName: err.testName || 'unknown',
@@ -5083,9 +5022,9 @@ function buildStructuredSummary(err) {
             hasAssertionErrors: hasAssertion,
             isMobileTest: false,
             hasLongTimeout: hasTimeout,
-            hasAltTextSelector: /\[alt=/.test(err.message || ''),
-            hasElementExistenceCheck: /expected to find|never found/i.test(err.message || ''),
-            hasVisibilityIssue: /not visible|covered|hidden/i.test(err.message || ''),
+            hasAltTextSelector: /\[alt=/.test(msg),
+            hasElementExistenceCheck: /expected to find|never found/i.test(msg),
+            hasVisibilityIssue: /not visible|covered|hidden/i.test(msg),
             hasViewportContext: false,
         },
         keyMetrics: {
@@ -5195,6 +5134,7 @@ const FEW_SHOT_EXAMPLES = [
         reasoning: 'Login page failed to render form fields. The #password selector is correct and stable — when the login page does not render at all, the application deployment is broken (e.g., wrong API endpoint, missing env vars). This is not a test selector issue.'
     }
 ];
+const ANSI_ESCAPE_REGEX = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, 'g');
 const INFRASTRUCTURE_FAILURE_PATTERNS = [
     {
         pattern: /The test session has already finished,? and can't receive further commands/i,
@@ -5292,38 +5232,35 @@ async function analyzeFailure(client, errorData) {
         throw error;
     }
 }
+const ERROR_PATTERNS = [
+    { pattern: /Cypress could not verify that this server is running.*/, framework: 'cypress', priority: 12 },
+    { pattern: /Cypress failed to verify that your server is running.*/, framework: 'cypress', priority: 12 },
+    { pattern: /Please start this server and then run Cypress again.*/, framework: 'cypress', priority: 11 },
+    { pattern: /Error in ["'].*?["']\s*:\s*(.+)/, framework: 'webdriverio', priority: 10 },
+    { pattern: /Error in ["'](?:before all|before each|after all|after each)["'].*?:\s*(.+)/, framework: 'webdriverio', priority: 10 },
+    { pattern: /\[[\d-]+\]\s*Error in ["'](.+?)["']\s*$/m, framework: 'webdriverio', priority: 11 },
+    { pattern: INFRASTRUCTURE_FAILURE_REGEX, framework: 'unknown', priority: 11 },
+    { pattern: /FAILED in (?:MultiRemote|chrome|firefox|safari)\s*-\s*file:\/\/\/(.+)/, framework: 'webdriverio', priority: 9 },
+    { pattern: /element\s*\([^)]+\)\s+still not (?:visible|displayed|enabled|existing|clickable).+after\s+\d+\s*ms/i, framework: 'webdriverio', priority: 9 },
+    { pattern: /(?:waitForDisplayed|waitForExist|waitForClickable|waitForEnabled).+timeout/i, framework: 'webdriverio', priority: 9 },
+    { pattern: /stale element reference/i, framework: 'webdriverio', priority: 9 },
+    { pattern: /no such element: Unable to locate element/i, framework: 'webdriverio', priority: 9 },
+    { pattern: /element not interactable/i, framework: 'webdriverio', priority: 9 },
+    { pattern: /(WebDriverError|ProtocolError|SauceLabsError):\s*(.+)/, framework: 'webdriverio', priority: 8 },
+    { pattern: /TypeError: Cannot read propert(?:y|ies) .+ of (?:null|undefined).*/, framework: 'javascript', priority: 10 },
+    { pattern: /TypeError: Cannot access .+ of (?:null|undefined).*/, framework: 'javascript', priority: 10 },
+    { pattern: /(AssertionError|CypressError|TimeoutError):\s*(.+)/, framework: 'cypress', priority: 8 },
+    { pattern: /Timed out .+ after \d+ms:\s*(.+)/, framework: 'cypress', priority: 8 },
+    { pattern: /Expected to find .+:\s*(.+)/, framework: 'cypress', priority: 7 },
+    { pattern: /(TypeError|ReferenceError|SyntaxError):\s*(.+)/, framework: 'javascript', priority: 6 },
+    { pattern: /Error:\s*(.+)/, framework: 'javascript', priority: 5 },
+    { pattern: /✖\s+(.+)/, framework: 'unknown', priority: 3 },
+    { pattern: /FAIL\s+(.+)/, framework: 'unknown', priority: 2 },
+    { pattern: /Failed:\s*(.+)/, framework: 'unknown', priority: 1 }
+].sort((a, b) => b.priority - a.priority);
 function extractErrorFromLogs(logs) {
-    const esc = String.fromCharCode(27);
-    const ansiPattern = new RegExp(`${esc}\\[[0-9;]*m`, 'g');
-    const cleanLogs = logs.replace(ansiPattern, '');
-    const errorPatterns = [
-        { pattern: /Cypress could not verify that this server is running.*/, framework: 'cypress', priority: 12 },
-        { pattern: /Cypress failed to verify that your server is running.*/, framework: 'cypress', priority: 12 },
-        { pattern: /Please start this server and then run Cypress again.*/, framework: 'cypress', priority: 11 },
-        { pattern: /Error in ["'].*?["']\s*:\s*(.+)/, framework: 'webdriverio', priority: 10 },
-        { pattern: /Error in ["'](?:before all|before each|after all|after each)["'].*?:\s*(.+)/, framework: 'webdriverio', priority: 10 },
-        { pattern: /\[[\d-]+\]\s*Error in ["'](.+?)["']\s*$/m, framework: 'webdriverio', priority: 11 },
-        { pattern: INFRASTRUCTURE_FAILURE_REGEX, framework: 'unknown', priority: 11 },
-        { pattern: /FAILED in (?:MultiRemote|chrome|firefox|safari)\s*-\s*file:\/\/\/(.+)/, framework: 'webdriverio', priority: 9 },
-        { pattern: /element\s*\([^)]+\)\s+still not (?:visible|displayed|enabled|existing|clickable).+after\s+\d+\s*ms/i, framework: 'webdriverio', priority: 9 },
-        { pattern: /(?:waitForDisplayed|waitForExist|waitForClickable|waitForEnabled).+timeout/i, framework: 'webdriverio', priority: 9 },
-        { pattern: /stale element reference/i, framework: 'webdriverio', priority: 9 },
-        { pattern: /no such element: Unable to locate element/i, framework: 'webdriverio', priority: 9 },
-        { pattern: /element not interactable/i, framework: 'webdriverio', priority: 9 },
-        { pattern: /(WebDriverError|ProtocolError|SauceLabsError):\s*(.+)/, framework: 'webdriverio', priority: 8 },
-        { pattern: /TypeError: Cannot read propert(?:y|ies) .+ of (?:null|undefined).*/, framework: 'javascript', priority: 10 },
-        { pattern: /TypeError: Cannot access .+ of (?:null|undefined).*/, framework: 'javascript', priority: 10 },
-        { pattern: /(AssertionError|CypressError|TimeoutError):\s*(.+)/, framework: 'cypress', priority: 8 },
-        { pattern: /Timed out .+ after \d+ms:\s*(.+)/, framework: 'cypress', priority: 8 },
-        { pattern: /Expected to find .+:\s*(.+)/, framework: 'cypress', priority: 7 },
-        { pattern: /(TypeError|ReferenceError|SyntaxError):\s*(.+)/, framework: 'javascript', priority: 6 },
-        { pattern: /Error:\s*(.+)/, framework: 'javascript', priority: 5 },
-        { pattern: /✖\s+(.+)/, framework: 'unknown', priority: 3 },
-        { pattern: /FAIL\s+(.+)/, framework: 'unknown', priority: 2 },
-        { pattern: /Failed:\s*(.+)/, framework: 'unknown', priority: 1 }
-    ];
-    errorPatterns.sort((a, b) => (b.priority || 0) - (a.priority || 0));
-    for (const { pattern, framework: patternFramework, priority } of errorPatterns) {
+    const cleanLogs = logs.replace(ANSI_ESCAPE_REGEX, '');
+    for (const { pattern, framework: patternFramework, priority } of ERROR_PATTERNS) {
         const match = cleanLogs.match(pattern);
         if (match) {
             const beforeError = cleanLogs.substring(Math.max(0, (match.index || 0) - 100), match.index || 0);

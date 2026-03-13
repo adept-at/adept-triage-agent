@@ -115,7 +115,7 @@ class ArtifactFetcher {
                                 name: fileName,
                                 path: entryName,
                                 base64Data: fileData.toString('base64'),
-                                timestamp: artifact.created_at || undefined
+                                timestamp: artifact.created_at || undefined,
                             });
                             core.info(`Found screenshot: ${fileName}`);
                         }
