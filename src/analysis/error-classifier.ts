@@ -158,10 +158,9 @@ export function extractSelector(error: string): string | undefined {
 
   // Check priority patterns first
   for (const pattern of priorityPatterns) {
-    const matches = Array.from(error.matchAll(pattern));
-    if (matches.length > 0) {
-      const match = matches[0];
-      // Return the full matched selector
+    pattern.lastIndex = 0;
+    const match = pattern.exec(error);
+    if (match) {
       return match[0];
     }
   }
@@ -176,9 +175,9 @@ export function extractSelector(error: string): string | undefined {
   ];
 
   for (const pattern of htmlPatterns) {
-    const matches = Array.from(error.matchAll(pattern));
-    if (matches.length > 0) {
-      const match = matches[0];
+    pattern.lastIndex = 0;
+    const match = pattern.exec(error);
+    if (match) {
       if (pattern.source.includes('data-testid')) {
         return `[data-testid="${match[2]}"]`;
       } else if (pattern.source.includes('data-test')) {
@@ -201,9 +200,9 @@ export function extractSelector(error: string): string | undefined {
   ];
 
   for (const pattern of specialHtmlPatterns) {
-    const matches = Array.from(error.matchAll(pattern));
-    if (matches.length > 0) {
-      const match = matches[0];
+    pattern.lastIndex = 0;
+    const match = pattern.exec(error);
+    if (match) {
       if (pattern.source.includes('<input#')) {
         return '#' + match[1];
       } else if (pattern.source.includes('class=')) {
@@ -226,9 +225,9 @@ export function extractSelector(error: string): string | undefined {
   ];
 
   for (const pattern of cssPatterns) {
-    const matches = Array.from(error.matchAll(pattern));
-    if (matches.length > 0) {
-      const match = matches[0];
+    pattern.lastIndex = 0;
+    const match = pattern.exec(error);
+    if (match) {
       // For complex selectors, return the full match
       if (pattern.source.includes('>') || pattern.source.includes('\\s+')) {
         return match[0];

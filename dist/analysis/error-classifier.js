@@ -90,9 +90,9 @@ function extractSelector(error) {
         /\[([a-zA-Z-]+)=["']([^"']+)["']\]/g
     ];
     for (const pattern of priorityPatterns) {
-        const matches = Array.from(error.matchAll(pattern));
-        if (matches.length > 0) {
-            const match = matches[0];
+        pattern.lastIndex = 0;
+        const match = pattern.exec(error);
+        if (match) {
             return match[0];
         }
     }
@@ -104,9 +104,9 @@ function extractSelector(error) {
         /<input[^>]*#([a-zA-Z0-9_-]+)[^>]*>/g
     ];
     for (const pattern of htmlPatterns) {
-        const matches = Array.from(error.matchAll(pattern));
-        if (matches.length > 0) {
-            const match = matches[0];
+        pattern.lastIndex = 0;
+        const match = pattern.exec(error);
+        if (match) {
             if (pattern.source.includes('data-testid')) {
                 return `[data-testid="${match[2]}"]`;
             }
@@ -130,9 +130,9 @@ function extractSelector(error) {
         /<div\s+class=["']([^"']+)["']>/g
     ];
     for (const pattern of specialHtmlPatterns) {
-        const matches = Array.from(error.matchAll(pattern));
-        if (matches.length > 0) {
-            const match = matches[0];
+        pattern.lastIndex = 0;
+        const match = pattern.exec(error);
+        if (match) {
             if (pattern.source.includes('<input#')) {
                 return '#' + match[1];
             }
@@ -148,9 +148,9 @@ function extractSelector(error) {
         /#([a-zA-Z][a-zA-Z0-9_-]*)/g
     ];
     for (const pattern of cssPatterns) {
-        const matches = Array.from(error.matchAll(pattern));
-        if (matches.length > 0) {
-            const match = matches[0];
+        pattern.lastIndex = 0;
+        const match = pattern.exec(error);
+        if (match) {
             if (pattern.source.includes('>') || pattern.source.includes('\\s+')) {
                 return match[0];
             }

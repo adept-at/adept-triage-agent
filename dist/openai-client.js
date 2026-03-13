@@ -115,14 +115,6 @@ class OpenAIClient {
                 type: 'text',
                 text: this.buildPrompt(errorData, examples)
             });
-            content.push({
-                type: 'text',
-                text: `\n📸 IMPORTANT: ${errorData.screenshots.length} screenshot(s) attached. Please carefully analyze each screenshot for:
-- Any visible error messages, alerts, or error dialogs
-- Application state at the time of failure
-- Missing or broken UI elements
-- Any visual indicators of what went wrong\n`
-            });
             for (const screenshot of errorData.screenshots) {
                 if (screenshot.base64Data) {
                     content.push({
@@ -204,7 +196,7 @@ When analyzing screenshots (if provided):
 - Notice any validation errors, form submission failures, or API error responses shown in the UI
 - Check if the application failed to load or render properly (PRODUCT_ISSUE)
 - Look for visual bugs, layout issues, or incorrect rendering
-- CRITICAL: If the screenshot shows a login page WITHOUT a password field, username field, or login form, the app failed to render — this is a PRODUCT_ISSUE, not a selector problem
+- IMPORTANT: If the screenshot shows a login page WITHOUT a password field, username field, or login form, the app failed to render — this is a PRODUCT_ISSUE, not a selector problem
 - If the screenshot shows an error page, blank page, or unexpected page instead of the expected page, this is a PRODUCT_ISSUE
 
 Screenshots often contain crucial error information that logs might miss. If an error is visible in a screenshot, it should be a key factor in your analysis.
@@ -215,7 +207,7 @@ COMMON MISCLASSIFICATION PATTERNS TO AVOID:
 - GraphQL/API errors during tests often indicate real product issues, not test problems
 - "Element not found" can be either - check if UI actually rendered correctly in screenshots
 
-CRITICAL — SHARED PRECONDITION FAILURES:
+IMPORTANT — SHARED PRECONDITION FAILURES:
 When tests fail during login, authentication, or other shared setup steps (e.g., "Expected to find element: #password" in a shared commands.js or login helper):
 - This is almost NEVER a TEST_ISSUE. The login helper works for every other PR — it's a shared, stable dependency.
 - If the login page fails to render its form fields, the APPLICATION is broken, not the test.
@@ -249,7 +241,7 @@ Your root cause explanation MUST be consistent with the PR diff evidence. Before
 6. When the diff is unrelated to the failure area, say so explicitly in your reasoning
 
 When determining a PRODUCT_ISSUE and PR changes are available:
-- CRITICALLY IMPORTANT: Identify specific files and line numbers from the PR diff that likely contain the bug
+- IMPORTANT: Identify specific files and line numbers from the PR diff that likely contain the bug
 - Correlate error stack traces with changed code locations
 - Match error messages and symptoms to specific code changes in the diff
 - Suggest which modified functions, methods, or components should be investigated
@@ -429,17 +421,14 @@ Changed Files Summary:
         if (prDiff.files.length > maxFiles) {
             section += `\n... and ${prDiff.files.length - maxFiles} more files`;
         }
-        section += `\n\nCRITICAL: When analyzing test failures with PR changes:
+        section += `\n\nRULE: When analyzing test failures with PR changes:
 1. Check if the failing test file or related files were modified in the PR
 2. Look for changes that could break existing functionality
 3. Consider if new code introduced bugs that tests are correctly catching
 4. If test is failing in code areas NOT touched by the PR, it's more likely a TEST_ISSUE
 5. NEVER hypothesize that code was "changed" or "updated" if the diff above does not show that change — the diff is the source of truth for what changed
 
-CAUSAL CONSISTENCY CHECK:
-- Review the list of changed files above. If the failure involves code/selectors/UI that is NOT in any changed file, do NOT claim the PR changed it.
-- Example of WRONG reasoning: "The login UI was changed to passwordless" when no auth/login files appear in the diff.
-- Example of CORRECT reasoning: "The login flow is failing but no auth code was changed in this PR, suggesting a pre-existing environment issue or flaky test."
+REMINDER: Apply the Causal Consistency Rule from the system instructions — do NOT claim code was changed unless the diff above proves it.
 
 FOR PRODUCT_ISSUES: You MUST analyze the diff patches above to:
 - Identify the EXACT file paths and line numbers that likely contain the bug

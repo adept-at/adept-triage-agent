@@ -10,6 +10,7 @@ import { SimplifiedRepairAgent } from './repair/simplified-repair-agent';
 import { processWorkflowLogs } from './services/log-processor';
 import { createFixApplier, ApplyResult } from './repair/fix-applier';
 import { AUTO_FIX } from './config/constants';
+import { parseRepoString } from './utils/repo-utils';
 
 async function run(): Promise<void> {
   try {
@@ -242,25 +243,7 @@ function getInputs(): ActionInputs {
   };
 }
 
-/**
- * Parse an "owner/repo" string into parts, falling back to the current GitHub context.
- */
-function parseRepoString(
-  value: string | undefined,
-  label: string
-): { owner: string; repo: string } {
-  if (value) {
-    const cleaned = value.replace(/\.git$/i, '').trim();
-    const parts = cleaned.split('/');
-    if (parts.length === 2 && parts[0] && parts[1]) {
-      return { owner: parts[0], repo: parts[1] };
-    }
-    core.warning(
-      `Invalid ${label} '${value}'. Falling back to current repository context.`
-    );
-  }
-  return github.context.repo;
-}
+// parseRepoString imported from ./utils/repo-utils
 
 function resolveRepository(inputs: ActionInputs): {
   owner: string;
@@ -452,7 +435,7 @@ function setInconclusiveOutput(
       confidenceThreshold: inputs.confidenceThreshold,
       hasScreenshots:
         (errorData.screenshots && errorData.screenshots.length > 0) || false,
-      logSize: errorData.logs?.join('').length || 0,
+      logSize: errorData.logs?.reduce((sum, l) => sum + l.length, 0) ?? 0,
     },
   };
   core.setOutput('verdict', 'INCONCLUSIVE');
@@ -529,7 +512,7 @@ function setSuccessOutput(
       analyzedAt: new Date().toISOString(),
       hasScreenshots:
         (errorData.screenshots && errorData.screenshots.length > 0) || false,
-      logSize: errorData.logs?.join('').length || 0,
+      logSize: errorData.logs?.reduce((sum, l) => sum + l.length, 0) ?? 0,
       hasFixRecommendation: !!result.fixRecommendation,
       autoFixApplied: autoFixResult?.success || false,
     },

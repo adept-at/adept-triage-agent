@@ -39,6 +39,7 @@ const core = __importStar(require("@actions/core"));
 const summary_generator_1 = require("./analysis/summary-generator");
 const error_classifier_1 = require("./analysis/error-classifier");
 const constants_1 = require("./config/constants");
+const text_utils_1 = require("./utils/text-utils");
 const FEW_SHOT_EXAMPLES = [
     {
         error: 'Intentional failure for triage agent testing',
@@ -49,11 +50,6 @@ const FEW_SHOT_EXAMPLES = [
         error: 'WebDriverError: The test session has already finished, and can\'t receive further commands',
         verdict: 'INCONCLUSIVE',
         reasoning: 'The remote browser session terminated unexpectedly, so there is not enough evidence to blame either the test or the product.'
-    },
-    {
-        error: 'We detected that the Chromium Renderer process just crashed.',
-        verdict: 'INCONCLUSIVE',
-        reasoning: 'The browser renderer crashed during execution. This is an infrastructure failure, not a test or product defect.'
     },
     {
         error: 'Cypress could not verify that this server is running: https://example.vercel.app',
@@ -76,22 +72,11 @@ const FEW_SHOT_EXAMPLES = [
         reasoning: 'Null pointer error in production component code indicates product bug.'
     },
     {
-        error: 'Error: connect ECONNREFUSED 127.0.0.1:5432',
-        verdict: 'PRODUCT_ISSUE',
-        reasoning: 'Database connection refused indicates product infrastructure issue.'
-    },
-    {
-        error: 'Error: Network request failed with status 500: Internal Server Error',
-        verdict: 'PRODUCT_ISSUE',
-        reasoning: 'HTTP 500 errors indicate server-side failures in the application.'
-    },
-    {
         error: 'Timed out retrying after 15000ms: Expected to find element: #password, but never found it (from cypress/support/commands.js:232)',
         verdict: 'PRODUCT_ISSUE',
         reasoning: 'Login page failed to render form fields. The #password selector is correct and stable — when the login page does not render at all, the application deployment is broken (e.g., wrong API endpoint, missing env vars). This is not a test selector issue.'
     }
 ];
-const ANSI_ESCAPE_REGEX = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, 'g');
 const INFRASTRUCTURE_FAILURE_PATTERNS = [
     {
         pattern: /The test session has already finished,? and can't receive further commands/i,
@@ -216,7 +201,7 @@ const ERROR_PATTERNS = [
     { pattern: /Failed:\s*(.+)/, framework: 'unknown', priority: 1 }
 ].sort((a, b) => b.priority - a.priority);
 function extractErrorFromLogs(logs) {
-    const cleanLogs = logs.replace(ANSI_ESCAPE_REGEX, '');
+    const cleanLogs = logs.replace(text_utils_1.ANSI_ESCAPE_REGEX, '');
     for (const { pattern, framework: patternFramework, priority } of ERROR_PATTERNS) {
         const match = cleanLogs.match(pattern);
         if (match) {

@@ -5,6 +5,8 @@ import { Screenshot } from './types';
 import AdmZip from 'adm-zip';
 import * as path from 'path';
 import { PRDiff, PRDiffFile } from './types';
+import { SHORT_SHA_LENGTH } from './config/constants';
+import { parseRepoString } from './utils/repo-utils';
 
 interface RepoDetails {
   owner: string;
@@ -170,7 +172,7 @@ export class ArtifactFetcher {
         job_id: jobId
       });
 
-      const logContent = logsResponse.data as unknown as string;
+      const logContent = String(logsResponse.data);
       
       // Extract relevant error context from logs
       const lines = logContent.split('\n');
@@ -362,9 +364,7 @@ export class ArtifactFetcher {
 
   async fetchPRDiff(prNumber: string, repository?: string): Promise<PRDiff | null> {
     try {
-      const { owner, repo } = repository 
-        ? { owner: repository.split('/')[0], repo: repository.split('/')[1] }
-        : github.context.repo;
+      const { owner, repo } = parseRepoString(repository, 'fetchPRDiff');
 
       core.info(`Fetching PR diff for PR #${prNumber} in ${owner}/${repo}`);
 
@@ -509,11 +509,9 @@ export class ArtifactFetcher {
    */
   async fetchCommitDiff(commitSha: string, repository?: string): Promise<PRDiff | null> {
     try {
-      const { owner, repo } = repository
-        ? { owner: repository.split('/')[0], repo: repository.split('/')[1] }
-        : github.context.repo;
+      const { owner, repo } = parseRepoString(repository, 'fetchCommitDiff');
 
-      core.info(`Fetching commit diff for ${commitSha.substring(0, 7)} in ${owner}/${repo}`);
+      core.info(`Fetching commit diff for ${commitSha.substring(0, SHORT_SHA_LENGTH)} in ${owner}/${repo}`);
 
       // Get the commit details
       const commitResponse = await this.octokit.repos.getCommit({
@@ -542,7 +540,7 @@ export class ArtifactFetcher {
         deletions: commit.stats?.deletions || 0
       };
 
-      core.info(`Commit ${commitSha.substring(0, 7)} has ${diff.totalChanges} changed files with +${diff.additions}/-${diff.deletions} lines`);
+      core.info(`Commit ${commitSha.substring(0, SHORT_SHA_LENGTH)} has ${diff.totalChanges} changed files with +${diff.additions}/-${diff.deletions} lines`);
 
       if (sortedFiles.length > 0) {
         const filesSummary = sortedFiles.slice(0, 10).map(f => `  - ${f.filename} (+${f.additions}/-${f.deletions})`).join('\n');
@@ -590,7 +588,7 @@ export class ArtifactFetcher {
       const oldestSha = commits[Math.min(commitCount, commits.length - 1)].sha;
       const newestSha = commits[0].sha;
 
-      core.info(`Comparing ${oldestSha.substring(0, 7)}...${newestSha.substring(0, 7)} in ${productRepo}`);
+      core.info(`Comparing ${oldestSha.substring(0, SHORT_SHA_LENGTH)}...${newestSha.substring(0, SHORT_SHA_LENGTH)} in ${productRepo}`);
 
       const compareResponse = await this.octokit.repos.compareCommits({
         owner,
@@ -623,7 +621,7 @@ export class ArtifactFetcher {
 
       const commitMessages = commits
         .slice(0, commitCount)
-        .map(c => `  - ${c.sha.substring(0, 7)}: ${c.commit.message.split('\n')[0]}`)
+        .map(c => `  - ${c.sha.substring(0, SHORT_SHA_LENGTH)}: ${c.commit.message.split('\n')[0]}`)
         .join('\n');
 
       core.info(`Recent product commits:\n${commitMessages}`);
@@ -651,9 +649,7 @@ export class ArtifactFetcher {
    */
   async fetchBranchDiff(branch: string, baseBranch: string = 'main', repository?: string): Promise<PRDiff | null> {
     try {
-      const { owner, repo } = repository
-        ? { owner: repository.split('/')[0], repo: repository.split('/')[1] }
-        : github.context.repo;
+      const { owner, repo } = parseRepoString(repository, 'fetchBranchDiff');
 
       core.info(`Fetching branch diff: ${baseBranch}...${branch} in ${owner}/${repo}`);
 

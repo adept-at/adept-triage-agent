@@ -1706,9 +1706,9 @@ function extractSelector(error) {
         /\[([a-zA-Z-]+)=["']([^"']+)["']\]/g
     ];
     for (const pattern of priorityPatterns) {
-        const matches = Array.from(error.matchAll(pattern));
-        if (matches.length > 0) {
-            const match = matches[0];
+        pattern.lastIndex = 0;
+        const match = pattern.exec(error);
+        if (match) {
             return match[0];
         }
     }
@@ -1720,9 +1720,9 @@ function extractSelector(error) {
         /<input[^>]*#([a-zA-Z0-9_-]+)[^>]*>/g
     ];
     for (const pattern of htmlPatterns) {
-        const matches = Array.from(error.matchAll(pattern));
-        if (matches.length > 0) {
-            const match = matches[0];
+        pattern.lastIndex = 0;
+        const match = pattern.exec(error);
+        if (match) {
             if (pattern.source.includes('data-testid')) {
                 return `[data-testid="${match[2]}"]`;
             }
@@ -1746,9 +1746,9 @@ function extractSelector(error) {
         /<div\s+class=["']([^"']+)["']>/g
     ];
     for (const pattern of specialHtmlPatterns) {
-        const matches = Array.from(error.matchAll(pattern));
-        if (matches.length > 0) {
-            const match = matches[0];
+        pattern.lastIndex = 0;
+        const match = pattern.exec(error);
+        if (match) {
             if (pattern.source.includes('<input#')) {
                 return '#' + match[1];
             }
@@ -1764,9 +1764,9 @@ function extractSelector(error) {
         /#([a-zA-Z][a-zA-Z0-9_-]*)/g
     ];
     for (const pattern of cssPatterns) {
-        const matches = Array.from(error.matchAll(pattern));
-        if (matches.length > 0) {
-            const match = matches[0];
+        pattern.lastIndex = 0;
+        const match = pattern.exec(error);
+        if (match) {
             if (pattern.source.includes('>') || pattern.source.includes('\\s+')) {
                 return match[0];
             }
@@ -1943,6 +1943,8 @@ const core = __importStar(__nccwpck_require__(7484));
 const github = __importStar(__nccwpck_require__(3228));
 const adm_zip_1 = __importDefault(__nccwpck_require__(1316));
 const path = __importStar(__nccwpck_require__(6928));
+const constants_1 = __nccwpck_require__(8361);
+const repo_utils_1 = __nccwpck_require__(4843);
 function toBuffer(data) {
     if (Buffer.isBuffer(data)) {
         return data;
@@ -2062,7 +2064,7 @@ class ArtifactFetcher {
                 repo,
                 job_id: jobId
             });
-            const logContent = logsResponse.data;
+            const logContent = String(logsResponse.data);
             const lines = logContent.split('\n');
             const errorContext = this.extractErrorContext(lines);
             if (errorContext.length > 0) {
@@ -2210,9 +2212,7 @@ class ArtifactFetcher {
     }
     async fetchPRDiff(prNumber, repository) {
         try {
-            const { owner, repo } = repository
-                ? { owner: repository.split('/')[0], repo: repository.split('/')[1] }
-                : github.context.repo;
+            const { owner, repo } = (0, repo_utils_1.parseRepoString)(repository, 'fetchPRDiff');
             core.info(`Fetching PR diff for PR #${prNumber} in ${owner}/${repo}`);
             const prResponse = await this.octokit.pulls.get({
                 owner,
@@ -2332,10 +2332,8 @@ class ArtifactFetcher {
     }
     async fetchCommitDiff(commitSha, repository) {
         try {
-            const { owner, repo } = repository
-                ? { owner: repository.split('/')[0], repo: repository.split('/')[1] }
-                : github.context.repo;
-            core.info(`Fetching commit diff for ${commitSha.substring(0, 7)} in ${owner}/${repo}`);
+            const { owner, repo } = (0, repo_utils_1.parseRepoString)(repository, 'fetchCommitDiff');
+            core.info(`Fetching commit diff for ${commitSha.substring(0, constants_1.SHORT_SHA_LENGTH)} in ${owner}/${repo}`);
             const commitResponse = await this.octokit.repos.getCommit({
                 owner,
                 repo,
@@ -2357,7 +2355,7 @@ class ArtifactFetcher {
                 additions: commit.stats?.additions || 0,
                 deletions: commit.stats?.deletions || 0
             };
-            core.info(`Commit ${commitSha.substring(0, 7)} has ${diff.totalChanges} changed files with +${diff.additions}/-${diff.deletions} lines`);
+            core.info(`Commit ${commitSha.substring(0, constants_1.SHORT_SHA_LENGTH)} has ${diff.totalChanges} changed files with +${diff.additions}/-${diff.deletions} lines`);
             if (sortedFiles.length > 0) {
                 const filesSummary = sortedFiles.slice(0, 10).map(f => `  - ${f.filename} (+${f.additions}/-${f.deletions})`).join('\n');
                 core.info(`Changed files (sorted by relevance):\n${filesSummary}${files.length > 10 ? `\n  ... and ${files.length - 10} more files` : ''}`);
@@ -2390,7 +2388,7 @@ class ArtifactFetcher {
             }
             const oldestSha = commits[Math.min(commitCount, commits.length - 1)].sha;
             const newestSha = commits[0].sha;
-            core.info(`Comparing ${oldestSha.substring(0, 7)}...${newestSha.substring(0, 7)} in ${productRepo}`);
+            core.info(`Comparing ${oldestSha.substring(0, constants_1.SHORT_SHA_LENGTH)}...${newestSha.substring(0, constants_1.SHORT_SHA_LENGTH)} in ${productRepo}`);
             const compareResponse = await this.octokit.repos.compareCommits({
                 owner,
                 repo,
@@ -2417,7 +2415,7 @@ class ArtifactFetcher {
             };
             const commitMessages = commits
                 .slice(0, commitCount)
-                .map(c => `  - ${c.sha.substring(0, 7)}: ${c.commit.message.split('\n')[0]}`)
+                .map(c => `  - ${c.sha.substring(0, constants_1.SHORT_SHA_LENGTH)}: ${c.commit.message.split('\n')[0]}`)
                 .join('\n');
             core.info(`Recent product commits:\n${commitMessages}`);
             core.info(`Product diff: ${diff.totalChanges} files changed, +${diff.additions}/-${diff.deletions} lines`);
@@ -2440,9 +2438,7 @@ class ArtifactFetcher {
     }
     async fetchBranchDiff(branch, baseBranch = 'main', repository) {
         try {
-            const { owner, repo } = repository
-                ? { owner: repository.split('/')[0], repo: repository.split('/')[1] }
-                : github.context.repo;
+            const { owner, repo } = (0, repo_utils_1.parseRepoString)(repository, 'fetchBranchDiff');
             core.info(`Fetching branch diff: ${baseBranch}...${branch} in ${owner}/${repo}`);
             const compareResponse = await this.octokit.repos.compareCommits({
                 owner,
@@ -2499,7 +2495,7 @@ exports.ArtifactFetcher = ArtifactFetcher;
 "use strict";
 
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.AGENT_CONFIG = exports.AUTO_FIX = exports.TEST_ISSUE_CATEGORIES = exports.ERROR_TYPES = exports.FORMATTING = exports.ARTIFACTS = exports.OPENAI = exports.CONFIDENCE = exports.LOG_LIMITS = void 0;
+exports.AGENT_CONFIG = exports.AUTO_FIX = exports.TEST_ISSUE_CATEGORIES = exports.ERROR_TYPES = exports.FORMATTING = exports.ARTIFACTS = exports.SHORT_SHA_LENGTH = exports.OPENAI = exports.CONFIDENCE = exports.LOG_LIMITS = void 0;
 exports.LOG_LIMITS = {
     GITHUB_MAX_SIZE: 50_000,
     ARTIFACT_SOFT_CAP: 20_000,
@@ -2528,6 +2524,7 @@ exports.OPENAI = {
     MAX_RETRIES: 3,
     RETRY_DELAY_MS: 1000,
 };
+exports.SHORT_SHA_LENGTH = 7;
 exports.ARTIFACTS = {
     MAX_PR_DIFF_FILES: 30,
     MAX_PATCH_LINES: 20,
@@ -2629,6 +2626,7 @@ const simplified_repair_agent_1 = __nccwpck_require__(9247);
 const log_processor_1 = __nccwpck_require__(5833);
 const fix_applier_1 = __nccwpck_require__(2134);
 const constants_1 = __nccwpck_require__(8361);
+const repo_utils_1 = __nccwpck_require__(4843);
 async function run() {
     try {
         const inputs = getInputs();
@@ -2778,22 +2776,11 @@ function getInputs() {
         productDiffCommits: safeParseInt(core.getInput('PRODUCT_DIFF_COMMITS'), 5),
     };
 }
-function parseRepoString(value, label) {
-    if (value) {
-        const cleaned = value.replace(/\.git$/i, '').trim();
-        const parts = cleaned.split('/');
-        if (parts.length === 2 && parts[0] && parts[1]) {
-            return { owner: parts[0], repo: parts[1] };
-        }
-        core.warning(`Invalid ${label} '${value}'. Falling back to current repository context.`);
-    }
-    return github.context.repo;
-}
 function resolveRepository(inputs) {
-    return parseRepoString(inputs.repository, 'REPOSITORY');
+    return (0, repo_utils_1.parseRepoString)(inputs.repository, 'REPOSITORY');
 }
 function resolveAutoFixTargetRepo(inputs) {
-    return parseRepoString(inputs.autoFixTargetRepo, 'AUTO_FIX_TARGET_REPO');
+    return (0, repo_utils_1.parseRepoString)(inputs.autoFixTargetRepo, 'AUTO_FIX_TARGET_REPO');
 }
 async function generateFixRecommendation(inputs, repoDetails, errorData, openaiClient, octokit) {
     try {
@@ -2916,7 +2903,7 @@ function setInconclusiveOutput(result, inputs, errorData) {
             analyzedAt: new Date().toISOString(),
             confidenceThreshold: inputs.confidenceThreshold,
             hasScreenshots: (errorData.screenshots && errorData.screenshots.length > 0) || false,
-            logSize: errorData.logs?.join('').length || 0,
+            logSize: errorData.logs?.reduce((sum, l) => sum + l.length, 0) ?? 0,
         },
     };
     core.setOutput('verdict', 'INCONCLUSIVE');
@@ -2971,7 +2958,7 @@ function setSuccessOutput(result, errorData, autoFixResult) {
         metadata: {
             analyzedAt: new Date().toISOString(),
             hasScreenshots: (errorData.screenshots && errorData.screenshots.length > 0) || false,
-            logSize: errorData.logs?.join('').length || 0,
+            logSize: errorData.logs?.reduce((sum, l) => sum + l.length, 0) ?? 0,
             hasFixRecommendation: !!result.fixRecommendation,
             autoFixApplied: autoFixResult?.success || false,
         },
@@ -3199,14 +3186,6 @@ class OpenAIClient {
                 type: 'text',
                 text: this.buildPrompt(errorData, examples)
             });
-            content.push({
-                type: 'text',
-                text: `\n📸 IMPORTANT: ${errorData.screenshots.length} screenshot(s) attached. Please carefully analyze each screenshot for:
-- Any visible error messages, alerts, or error dialogs
-- Application state at the time of failure
-- Missing or broken UI elements
-- Any visual indicators of what went wrong\n`
-            });
             for (const screenshot of errorData.screenshots) {
                 if (screenshot.base64Data) {
                     content.push({
@@ -3288,7 +3267,7 @@ When analyzing screenshots (if provided):
 - Notice any validation errors, form submission failures, or API error responses shown in the UI
 - Check if the application failed to load or render properly (PRODUCT_ISSUE)
 - Look for visual bugs, layout issues, or incorrect rendering
-- CRITICAL: If the screenshot shows a login page WITHOUT a password field, username field, or login form, the app failed to render — this is a PRODUCT_ISSUE, not a selector problem
+- IMPORTANT: If the screenshot shows a login page WITHOUT a password field, username field, or login form, the app failed to render — this is a PRODUCT_ISSUE, not a selector problem
 - If the screenshot shows an error page, blank page, or unexpected page instead of the expected page, this is a PRODUCT_ISSUE
 
 Screenshots often contain crucial error information that logs might miss. If an error is visible in a screenshot, it should be a key factor in your analysis.
@@ -3299,7 +3278,7 @@ COMMON MISCLASSIFICATION PATTERNS TO AVOID:
 - GraphQL/API errors during tests often indicate real product issues, not test problems
 - "Element not found" can be either - check if UI actually rendered correctly in screenshots
 
-CRITICAL — SHARED PRECONDITION FAILURES:
+IMPORTANT — SHARED PRECONDITION FAILURES:
 When tests fail during login, authentication, or other shared setup steps (e.g., "Expected to find element: #password" in a shared commands.js or login helper):
 - This is almost NEVER a TEST_ISSUE. The login helper works for every other PR — it's a shared, stable dependency.
 - If the login page fails to render its form fields, the APPLICATION is broken, not the test.
@@ -3333,7 +3312,7 @@ Your root cause explanation MUST be consistent with the PR diff evidence. Before
 6. When the diff is unrelated to the failure area, say so explicitly in your reasoning
 
 When determining a PRODUCT_ISSUE and PR changes are available:
-- CRITICALLY IMPORTANT: Identify specific files and line numbers from the PR diff that likely contain the bug
+- IMPORTANT: Identify specific files and line numbers from the PR diff that likely contain the bug
 - Correlate error stack traces with changed code locations
 - Match error messages and symptoms to specific code changes in the diff
 - Suggest which modified functions, methods, or components should be investigated
@@ -3513,17 +3492,14 @@ Changed Files Summary:
         if (prDiff.files.length > maxFiles) {
             section += `\n... and ${prDiff.files.length - maxFiles} more files`;
         }
-        section += `\n\nCRITICAL: When analyzing test failures with PR changes:
+        section += `\n\nRULE: When analyzing test failures with PR changes:
 1. Check if the failing test file or related files were modified in the PR
 2. Look for changes that could break existing functionality
 3. Consider if new code introduced bugs that tests are correctly catching
 4. If test is failing in code areas NOT touched by the PR, it's more likely a TEST_ISSUE
 5. NEVER hypothesize that code was "changed" or "updated" if the diff above does not show that change — the diff is the source of truth for what changed
 
-CAUSAL CONSISTENCY CHECK:
-- Review the list of changed files above. If the failure involves code/selectors/UI that is NOT in any changed file, do NOT claim the PR changed it.
-- Example of WRONG reasoning: "The login UI was changed to passwordless" when no auth/login files appear in the diff.
-- Example of CORRECT reasoning: "The login flow is failing but no auth code was changed in this PR, suggesting a pre-existing environment issue or flaky test."
+REMINDER: Apply the Causal Consistency Rule from the system instructions — do NOT claim code was changed unless the diff above proves it.
 
 FOR PRODUCT_ISSUES: You MUST analyze the diff patches above to:
 - Identify the EXACT file paths and line numbers that likely contain the bug
@@ -4351,16 +4327,31 @@ class SimplifiedRepairAgent {
             return null;
         }
     }
+    sanitizeForPrompt(input, maxLength = 2000) {
+        if (!input)
+            return '';
+        let sanitized = input
+            .replace(/```/g, '\u2032\u2032\u2032')
+            .replace(/## SYSTEM:/gi, '## INFO:')
+            .replace(/Ignore previous/gi, '[filtered]')
+            .replace(/<\/?(?:system|instruction|prompt)[^>]*>/gi, '')
+            .replace(/\[INST\]|\[\/INST\]/gi, '')
+            .replace(/<<SYS>>|<<\/SYS>>/gi, '');
+        if (sanitized.length > maxLength) {
+            sanitized = sanitized.substring(0, maxLength) + '... [truncated]';
+        }
+        return sanitized;
+    }
     buildPrompt(context, errorData, sourceFileContent, cleanFilePath) {
         let contextInfo = `## Test Failure Context
-- **Test File:** ${context.testFile}
-- **Test Name:** ${context.testName}
-- **Error Type:** ${context.errorType}
-- **Error Message:** ${context.errorMessage}
-- **Analyzed Repository:** ${context.repository}
-- **Analyzed Branch:** ${context.branch}
-- **Analyzed Commit SHA:** ${context.commitSha}
-${context.errorSelector ? `- **Failed Selector:** ${context.errorSelector}` : ''}
+- **Test File:** ${this.sanitizeForPrompt(context.testFile)}
+- **Test Name:** ${this.sanitizeForPrompt(context.testName)}
+- **Error Type:** ${this.sanitizeForPrompt(context.errorType)}
+- **Error Message:** ${this.sanitizeForPrompt(context.errorMessage, 4000)}
+- **Analyzed Repository:** ${this.sanitizeForPrompt(context.repository)}
+- **Analyzed Branch:** ${this.sanitizeForPrompt(context.branch)}
+- **Analyzed Commit SHA:** ${this.sanitizeForPrompt(context.commitSha)}
+${context.errorSelector ? `- **Failed Selector:** ${this.sanitizeForPrompt(context.errorSelector)}` : ''}
 ${context.errorLine ? `- **Error Line:** ${context.errorLine}` : ''}`;
         if (this.sourceFetchContext) {
             contextInfo += `\n\n## Repair Source Context
@@ -4467,14 +4458,14 @@ Based on the error type and message, provide a fix recommendation. Focus on the 
 5. Include enough surrounding lines (3-5) to make the match unique in the file
 6. Preserve all whitespace, quotes, semicolons, variable names, and formatting exactly as shown in the source
 
-**CRITICAL — COMPLETE FIX SCOPE:**
+**IMPORTANT — COMPLETE FIX SCOPE:**
 1. oldCode MUST cover the ENTIRE block of code affected by the fix, from first changed line to last
 2. When adding a null/undefined guard (if/else), include ALL downstream lines that use the guarded variable — not just the first usage. Trace the variable through to the last line that reads or calls it.
 3. If a variable like \`result\` is checked for null, then every subsequent line that calls \`JSON.parse(result)\`, reads \`result.something\`, or asserts on a value derived from \`result\` MUST be inside the guard.
 4. newCode must be a complete, self-contained replacement — the file must be valid after substitution
 5. NEVER fix only the first symptom and leave subsequent lines that will still crash. Walk through the code line by line after your proposed \`oldCode\` ends and ask: "will the next line crash too?" If yes, extend oldCode to include it.
 
-**CRITICAL — ROOT CAUSE TRACING (do NOT just fix the crash site):**
+**IMPORTANT — ROOT CAUSE TRACING (do NOT just fix the crash site):**
 1. When a value is null/undefined/wrong, trace BACKWARD through the code: WHY is it null? What upstream step failed to produce it?
 2. Example chain: \`expect(result).toBeTruthy()\` fails → result is undefined → \`sauceGqlHelper\` returned null → the GraphQL mutation never fired → the text was never typed into the editor → \`document.execCommand('insertText')\` silently failed. The ROOT CAUSE is execCommand, not the assertion.
 3. Read the ENTIRE function containing the error, not just the crash line. The bug is often 10-30 lines BEFORE the crash.
@@ -4697,7 +4688,7 @@ const core = __importStar(__nccwpck_require__(7484));
 const github = __importStar(__nccwpck_require__(3228));
 const simplified_analyzer_1 = __nccwpck_require__(78);
 const constants_1 = __nccwpck_require__(8361);
-const ANSI_ESCAPE_REGEX = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, 'g');
+const text_utils_1 = __nccwpck_require__(1744);
 async function processWorkflowLogs(octokit, artifactFetcher, inputs, repoDetails) {
     const context = github.context;
     const { owner, repo } = context.repo;
@@ -4751,7 +4742,7 @@ async function processWorkflowLogs(octokit, artifactFetcher, inputs, repoDetails
             repo,
             job_id: failedJob.id,
         });
-        fullLogs = logsResponse.data;
+        fullLogs = String(logsResponse.data);
         core.info(`Downloaded ${fullLogs.length} characters of logs for error extraction`);
         extractedError = (0, simplified_analyzer_1.extractErrorFromLogs)(fullLogs);
         if (inputs.prNumber && extractedError) {
@@ -4884,13 +4875,13 @@ async function fetchDiffWithFallback(artifactFetcher, inputs, repoDetails) {
     if (inputs.commitSha) {
         const isMainBranch = !inputs.branch || mainBranches.includes(inputs.branch.toLowerCase());
         if (isMainBranch) {
-            core.info(`📋 Fetching commit diff for ${inputs.commitSha.substring(0, 7)} (production deploy mode)...`);
+            core.info(`📋 Fetching commit diff for ${inputs.commitSha.substring(0, constants_1.SHORT_SHA_LENGTH)} (production deploy mode)...`);
             try {
                 const diff = await artifactFetcher.fetchCommitDiff(inputs.commitSha, repository);
                 logDiffResult(diff, 'commit diff');
                 if (diff)
                     return diff;
-                core.warning(`⚠️ Commit diff fetch returned null for ${inputs.commitSha.substring(0, 7)}`);
+                core.warning(`⚠️ Commit diff fetch returned null for ${inputs.commitSha.substring(0, constants_1.SHORT_SHA_LENGTH)}`);
             }
             catch (error) {
                 core.warning(`❌ Failed to fetch commit diff: ${error}`);
@@ -4973,21 +4964,23 @@ function capArtifactLogs(raw) {
     if (!raw)
         return '';
     const MAX = constants_1.LOG_LIMITS.ARTIFACT_SOFT_CAP;
-    const clean = raw.replace(ANSI_ESCAPE_REGEX, '');
+    const clean = raw.replace(text_utils_1.ANSI_ESCAPE_REGEX, '');
     if (clean.length <= MAX)
         return clean;
     const lines = clean.split('\n');
     const errorRegex = /(error|failed|failure|exception|assertion|expected|timeout|cypress error|stale element|not interactable|no such element|still not (?:visible|displayed|clickable))/i;
-    const focused = [];
+    const focusedIndices = new Set();
     for (let i = 0; i < lines.length; i++) {
         if (errorRegex.test(lines[i])) {
             const start = Math.max(0, i - 10);
             const end = Math.min(lines.length, i + 10);
-            focused.push(...lines.slice(start, end));
+            for (let j = start; j < end; j++) {
+                focusedIndices.add(j);
+            }
         }
     }
-    const uniqueFocused = Array.from(new Set(focused));
-    const focusedJoined = uniqueFocused.join('\n');
+    const focused = Array.from(focusedIndices).sort((a, b) => a - b).map(i => lines[i]);
+    const focusedJoined = focused.join('\n');
     if (focusedJoined.length > 0) {
         return focusedJoined.length <= MAX
             ? focusedJoined
@@ -5029,7 +5022,7 @@ function buildStructuredSummary(err) {
         },
         keyMetrics: {
             hasScreenshots: !!(err.screenshots && err.screenshots.length > 0),
-            logSize: err.logs?.join('').length || 0,
+            logSize: err.logs?.reduce((sum, l) => sum + l.length, 0) ?? 0,
         },
     };
 }
@@ -5082,6 +5075,7 @@ const core = __importStar(__nccwpck_require__(7484));
 const summary_generator_1 = __nccwpck_require__(8220);
 const error_classifier_1 = __nccwpck_require__(3914);
 const constants_1 = __nccwpck_require__(8361);
+const text_utils_1 = __nccwpck_require__(1744);
 const FEW_SHOT_EXAMPLES = [
     {
         error: 'Intentional failure for triage agent testing',
@@ -5092,11 +5086,6 @@ const FEW_SHOT_EXAMPLES = [
         error: 'WebDriverError: The test session has already finished, and can\'t receive further commands',
         verdict: 'INCONCLUSIVE',
         reasoning: 'The remote browser session terminated unexpectedly, so there is not enough evidence to blame either the test or the product.'
-    },
-    {
-        error: 'We detected that the Chromium Renderer process just crashed.',
-        verdict: 'INCONCLUSIVE',
-        reasoning: 'The browser renderer crashed during execution. This is an infrastructure failure, not a test or product defect.'
     },
     {
         error: 'Cypress could not verify that this server is running: https://example.vercel.app',
@@ -5119,22 +5108,11 @@ const FEW_SHOT_EXAMPLES = [
         reasoning: 'Null pointer error in production component code indicates product bug.'
     },
     {
-        error: 'Error: connect ECONNREFUSED 127.0.0.1:5432',
-        verdict: 'PRODUCT_ISSUE',
-        reasoning: 'Database connection refused indicates product infrastructure issue.'
-    },
-    {
-        error: 'Error: Network request failed with status 500: Internal Server Error',
-        verdict: 'PRODUCT_ISSUE',
-        reasoning: 'HTTP 500 errors indicate server-side failures in the application.'
-    },
-    {
         error: 'Timed out retrying after 15000ms: Expected to find element: #password, but never found it (from cypress/support/commands.js:232)',
         verdict: 'PRODUCT_ISSUE',
         reasoning: 'Login page failed to render form fields. The #password selector is correct and stable — when the login page does not render at all, the application deployment is broken (e.g., wrong API endpoint, missing env vars). This is not a test selector issue.'
     }
 ];
-const ANSI_ESCAPE_REGEX = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, 'g');
 const INFRASTRUCTURE_FAILURE_PATTERNS = [
     {
         pattern: /The test session has already finished,? and can't receive further commands/i,
@@ -5259,7 +5237,7 @@ const ERROR_PATTERNS = [
     { pattern: /Failed:\s*(.+)/, framework: 'unknown', priority: 1 }
 ].sort((a, b) => b.priority - a.priority);
 function extractErrorFromLogs(logs) {
-    const cleanLogs = logs.replace(ANSI_ESCAPE_REGEX, '');
+    const cleanLogs = logs.replace(text_utils_1.ANSI_ESCAPE_REGEX, '');
     for (const { pattern, framework: patternFramework, priority } of ERROR_PATTERNS) {
         const match = cleanLogs.match(pattern);
         if (match) {
@@ -5419,6 +5397,63 @@ function detectInfrastructureFailure(errorData) {
 
 /***/ }),
 
+/***/ 4843:
+/***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
+
+"use strict";
+
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.parseRepoString = parseRepoString;
+const core = __importStar(__nccwpck_require__(7484));
+const github = __importStar(__nccwpck_require__(3228));
+function parseRepoString(value, label) {
+    if (value) {
+        const cleaned = value.replace(/\.git$/i, '').trim();
+        const parts = cleaned.split('/');
+        if (parts.length === 2 && parts[0] && parts[1]) {
+            return { owner: parts[0], repo: parts[1] };
+        }
+        core.warning(`Invalid ${label} '${value}'. Falling back to current repository context.`);
+    }
+    return github.context.repo;
+}
+//# sourceMappingURL=repo-utils.js.map
+
+/***/ }),
+
 /***/ 4112:
 /***/ ((__unused_webpack_module, exports) => {
 
@@ -5468,6 +5503,18 @@ function createBriefSummary(verdict, confidence, fullSummary, testName) {
     return truncateForSlack(brief, 500);
 }
 //# sourceMappingURL=slack-formatter.js.map
+
+/***/ }),
+
+/***/ 1744:
+/***/ ((__unused_webpack_module, exports) => {
+
+"use strict";
+
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.ANSI_ESCAPE_REGEX = void 0;
+exports.ANSI_ESCAPE_REGEX = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, 'g');
+//# sourceMappingURL=text-utils.js.map
 
 /***/ }),
 

@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.AGENT_CONFIG = exports.AUTO_FIX = exports.TEST_ISSUE_CATEGORIES = exports.ERROR_TYPES = exports.FORMATTING = exports.ARTIFACTS = exports.OPENAI = exports.CONFIDENCE = exports.LOG_LIMITS = void 0;
+exports.AGENT_CONFIG = exports.AUTO_FIX = exports.TEST_ISSUE_CATEGORIES = exports.ERROR_TYPES = exports.FORMATTING = exports.ARTIFACTS = exports.SHORT_SHA_LENGTH = exports.OPENAI = exports.CONFIDENCE = exports.LOG_LIMITS = void 0;
 exports.LOG_LIMITS = {
     GITHUB_MAX_SIZE: 50_000,
     ARTIFACT_SOFT_CAP: 20_000,
@@ -29,6 +29,7 @@ exports.OPENAI = {
     MAX_RETRIES: 3,
     RETRY_DELAY_MS: 1000,
 };
+exports.SHORT_SHA_LENGTH = 7;
 exports.ARTIFACTS = {
     MAX_PR_DIFF_FILES: 30,
     MAX_PATCH_LINES: 20,

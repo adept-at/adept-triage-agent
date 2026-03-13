@@ -8,7 +8,7 @@ yarn-error.log*
 # TypeScript
 # dist/ - commented out for GitHub Actions
 *.tsbuildinfo
-
+.claude/
 # Testing
 coverage/
 .nyc_output/

@@ -26,6 +26,7 @@ export declare const OPENAI: {
     readonly MAX_RETRIES: 3;
     readonly RETRY_DELAY_MS: 1000;
 };
+export declare const SHORT_SHA_LENGTH = 7;
 export declare const ARTIFACTS: {
     readonly MAX_PR_DIFF_FILES: 30;
     readonly MAX_PATCH_LINES: 20;

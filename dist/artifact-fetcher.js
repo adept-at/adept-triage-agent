@@ -41,6 +41,8 @@ const core = __importStar(require("@actions/core"));
 const github = __importStar(require("@actions/github"));
 const adm_zip_1 = __importDefault(require("adm-zip"));
 const path = __importStar(require("path"));
+const constants_1 = require("./config/constants");
+const repo_utils_1 = require("./utils/repo-utils");
 function toBuffer(data) {
     if (Buffer.isBuffer(data)) {
         return data;
@@ -160,7 +162,7 @@ class ArtifactFetcher {
                 repo,
                 job_id: jobId
             });
-            const logContent = logsResponse.data;
+            const logContent = String(logsResponse.data);
             const lines = logContent.split('\n');
             const errorContext = this.extractErrorContext(lines);
             if (errorContext.length > 0) {
@@ -308,9 +310,7 @@ class ArtifactFetcher {
     }
     async fetchPRDiff(prNumber, repository) {
         try {
-            const { owner, repo } = repository
-                ? { owner: repository.split('/')[0], repo: repository.split('/')[1] }
-                : github.context.repo;
+            const { owner, repo } = (0, repo_utils_1.parseRepoString)(repository, 'fetchPRDiff');
             core.info(`Fetching PR diff for PR #${prNumber} in ${owner}/${repo}`);
             const prResponse = await this.octokit.pulls.get({
                 owner,
@@ -430,10 +430,8 @@ class ArtifactFetcher {
     }
     async fetchCommitDiff(commitSha, repository) {
         try {
-            const { owner, repo } = repository
-                ? { owner: repository.split('/')[0], repo: repository.split('/')[1] }
-                : github.context.repo;
-            core.info(`Fetching commit diff for ${commitSha.substring(0, 7)} in ${owner}/${repo}`);
+            const { owner, repo } = (0, repo_utils_1.parseRepoString)(repository, 'fetchCommitDiff');
+            core.info(`Fetching commit diff for ${commitSha.substring(0, constants_1.SHORT_SHA_LENGTH)} in ${owner}/${repo}`);
             const commitResponse = await this.octokit.repos.getCommit({
                 owner,
                 repo,
@@ -455,7 +453,7 @@ class ArtifactFetcher {
                 additions: commit.stats?.additions || 0,
                 deletions: commit.stats?.deletions || 0
             };
-            core.info(`Commit ${commitSha.substring(0, 7)} has ${diff.totalChanges} changed files with +${diff.additions}/-${diff.deletions} lines`);
+            core.info(`Commit ${commitSha.substring(0, constants_1.SHORT_SHA_LENGTH)} has ${diff.totalChanges} changed files with +${diff.additions}/-${diff.deletions} lines`);
             if (sortedFiles.length > 0) {
                 const filesSummary = sortedFiles.slice(0, 10).map(f => `  - ${f.filename} (+${f.additions}/-${f.deletions})`).join('\n');
                 core.info(`Changed files (sorted by relevance):\n${filesSummary}${files.length > 10 ? `\n  ... and ${files.length - 10} more files` : ''}`);
@@ -488,7 +486,7 @@ class ArtifactFetcher {
             }
             const oldestSha = commits[Math.min(commitCount, commits.length - 1)].sha;
             const newestSha = commits[0].sha;
-            core.info(`Comparing ${oldestSha.substring(0, 7)}...${newestSha.substring(0, 7)} in ${productRepo}`);
+            core.info(`Comparing ${oldestSha.substring(0, constants_1.SHORT_SHA_LENGTH)}...${newestSha.substring(0, constants_1.SHORT_SHA_LENGTH)} in ${productRepo}`);
             const compareResponse = await this.octokit.repos.compareCommits({
                 owner,
                 repo,
@@ -515,7 +513,7 @@ class ArtifactFetcher {
             };
             const commitMessages = commits
                 .slice(0, commitCount)
-                .map(c => `  - ${c.sha.substring(0, 7)}: ${c.commit.message.split('\n')[0]}`)
+                .map(c => `  - ${c.sha.substring(0, constants_1.SHORT_SHA_LENGTH)}: ${c.commit.message.split('\n')[0]}`)
                 .join('\n');
             core.info(`Recent product commits:\n${commitMessages}`);
             core.info(`Product diff: ${diff.totalChanges} files changed, +${diff.additions}/-${diff.deletions} lines`);
@@ -538,9 +536,7 @@ class ArtifactFetcher {
     }
     async fetchBranchDiff(branch, baseBranch = 'main', repository) {
         try {
-            const { owner, repo } = repository
-                ? { owner: repository.split('/')[0], repo: repository.split('/')[1] }
-                : github.context.repo;
+            const { owner, repo } = (0, repo_utils_1.parseRepoString)(repository, 'fetchBranchDiff');
             core.info(`Fetching branch diff: ${baseBranch}...${branch} in ${owner}/${repo}`);
             const compareResponse = await this.octokit.repos.compareCommits({
                 owner,

@@ -4,6 +4,7 @@ import * as core from '@actions/core';
 import { generateAnalysisSummary } from './analysis/summary-generator';
 import { categorizeTestIssue, extractTestIssueEvidence } from './analysis/error-classifier';
 import { CONFIDENCE, LOG_LIMITS } from './config/constants';
+import { ANSI_ESCAPE_REGEX } from './utils/text-utils';
 
 /**
  * Simplified analyzer that focuses on core functionality
@@ -23,11 +24,6 @@ const FEW_SHOT_EXAMPLES: FewShotExample[] = [
     error: 'WebDriverError: The test session has already finished, and can\'t receive further commands',
     verdict: 'INCONCLUSIVE',
     reasoning: 'The remote browser session terminated unexpectedly, so there is not enough evidence to blame either the test or the product.'
-  },
-  {
-    error: 'We detected that the Chromium Renderer process just crashed.',
-    verdict: 'INCONCLUSIVE',
-    reasoning: 'The browser renderer crashed during execution. This is an infrastructure failure, not a test or product defect.'
   },
   {
     error: 'Cypress could not verify that this server is running: https://example.vercel.app',
@@ -50,24 +46,11 @@ const FEW_SHOT_EXAMPLES: FewShotExample[] = [
     reasoning: 'Null pointer error in production component code indicates product bug.'
   },
   {
-    error: 'Error: connect ECONNREFUSED 127.0.0.1:5432',
-    verdict: 'PRODUCT_ISSUE',
-    reasoning: 'Database connection refused indicates product infrastructure issue.'
-  },
-  {
-    error: 'Error: Network request failed with status 500: Internal Server Error',
-    verdict: 'PRODUCT_ISSUE',
-    reasoning: 'HTTP 500 errors indicate server-side failures in the application.'
-  },
-  {
     error: 'Timed out retrying after 15000ms: Expected to find element: #password, but never found it (from cypress/support/commands.js:232)',
     verdict: 'PRODUCT_ISSUE',
     reasoning: 'Login page failed to render form fields. The #password selector is correct and stable — when the login page does not render at all, the application deployment is broken (e.g., wrong API endpoint, missing env vars). This is not a test selector issue.'
   }
 ];
-
-// Pre-compiled ANSI escape sequence regex (avoids rebuilding per call)
-const ANSI_ESCAPE_REGEX = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, 'g');
 
 const INFRASTRUCTURE_FAILURE_PATTERNS = [
   // ── Sauce Labs / WebDriver session patterns ──

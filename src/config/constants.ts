@@ -58,6 +58,9 @@ export const OPENAI = {
   RETRY_DELAY_MS: 1000,
 } as const;
 
+/** Short SHA display length */
+export const SHORT_SHA_LENGTH = 7;
+
 /** Artifact and file processing limits */
 export const ARTIFACTS = {
   /** Maximum files to show from PR diff */

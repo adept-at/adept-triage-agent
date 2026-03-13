@@ -409,6 +409,24 @@ export class SimplifiedRepairAgent {
   }
 
   /**
+   * Strips prompt-injection patterns and caps length for safe prompt interpolation
+   */
+  private sanitizeForPrompt(input: string, maxLength: number = 2000): string {
+    if (!input) return '';
+    let sanitized = input
+      .replace(/```/g, '\u2032\u2032\u2032')
+      .replace(/## SYSTEM:/gi, '## INFO:')
+      .replace(/Ignore previous/gi, '[filtered]')
+      .replace(/<\/?(?:system|instruction|prompt)[^>]*>/gi, '')
+      .replace(/\[INST\]|\[\/INST\]/gi, '')
+      .replace(/<<SYS>>|<<\/SYS>>/gi, '');
+    if (sanitized.length > maxLength) {
+      sanitized = sanitized.substring(0, maxLength) + '... [truncated]';
+    }
+    return sanitized;
+  }
+
+  /**
    * Builds the prompt for OpenAI to generate fix recommendation
    */
   private buildPrompt(
@@ -418,15 +436,15 @@ export class SimplifiedRepairAgent {
     cleanFilePath?: string | null
   ): string {
     let contextInfo = `## Test Failure Context
-- **Test File:** ${context.testFile}
-- **Test Name:** ${context.testName}
-- **Error Type:** ${context.errorType}
-- **Error Message:** ${context.errorMessage}
-- **Analyzed Repository:** ${context.repository}
-- **Analyzed Branch:** ${context.branch}
-- **Analyzed Commit SHA:** ${context.commitSha}
+- **Test File:** ${this.sanitizeForPrompt(context.testFile)}
+- **Test Name:** ${this.sanitizeForPrompt(context.testName)}
+- **Error Type:** ${this.sanitizeForPrompt(context.errorType)}
+- **Error Message:** ${this.sanitizeForPrompt(context.errorMessage, 4000)}
+- **Analyzed Repository:** ${this.sanitizeForPrompt(context.repository)}
+- **Analyzed Branch:** ${this.sanitizeForPrompt(context.branch)}
+- **Analyzed Commit SHA:** ${this.sanitizeForPrompt(context.commitSha)}
 ${
-  context.errorSelector ? `- **Failed Selector:** ${context.errorSelector}` : ''
+  context.errorSelector ? `- **Failed Selector:** ${this.sanitizeForPrompt(context.errorSelector)}` : ''
 }
 ${context.errorLine ? `- **Error Line:** ${context.errorLine}` : ''}`;
 
@@ -578,14 +596,14 @@ Based on the error type and message, provide a fix recommendation. Focus on the 
 5. Include enough surrounding lines (3-5) to make the match unique in the file
 6. Preserve all whitespace, quotes, semicolons, variable names, and formatting exactly as shown in the source
 
-**CRITICAL — COMPLETE FIX SCOPE:**
+**IMPORTANT — COMPLETE FIX SCOPE:**
 1. oldCode MUST cover the ENTIRE block of code affected by the fix, from first changed line to last
 2. When adding a null/undefined guard (if/else), include ALL downstream lines that use the guarded variable — not just the first usage. Trace the variable through to the last line that reads or calls it.
 3. If a variable like \`result\` is checked for null, then every subsequent line that calls \`JSON.parse(result)\`, reads \`result.something\`, or asserts on a value derived from \`result\` MUST be inside the guard.
 4. newCode must be a complete, self-contained replacement — the file must be valid after substitution
 5. NEVER fix only the first symptom and leave subsequent lines that will still crash. Walk through the code line by line after your proposed \`oldCode\` ends and ask: "will the next line crash too?" If yes, extend oldCode to include it.
 
-**CRITICAL — ROOT CAUSE TRACING (do NOT just fix the crash site):**
+**IMPORTANT — ROOT CAUSE TRACING (do NOT just fix the crash site):**
 1. When a value is null/undefined/wrong, trace BACKWARD through the code: WHY is it null? What upstream step failed to produce it?
 2. Example chain: \`expect(result).toBeTruthy()\` fails → result is undefined → \`sauceGqlHelper\` returned null → the GraphQL mutation never fired → the text was never typed into the editor → \`document.execCommand('insertText')\` silently failed. The ROOT CAUSE is execCommand, not the assertion.
 3. Read the ENTIRE function containing the error, not just the crash line. The bug is often 10-30 lines BEFORE the crash.

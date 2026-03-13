@@ -15,10 +15,8 @@ import {
 } from '../types';
 import { ArtifactFetcher } from '../artifact-fetcher';
 import { extractErrorFromLogs } from '../simplified-analyzer';
-import { LOG_LIMITS } from '../config/constants';
-
-// Pre-compiled ANSI escape sequence regex (avoids rebuilding per call)
-const ANSI_ESCAPE_REGEX = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, 'g');
+import { LOG_LIMITS, SHORT_SHA_LENGTH } from '../config/constants';
+import { ANSI_ESCAPE_REGEX } from '../utils/text-utils';
 
 interface RepoDetails {
   owner: string;
@@ -128,7 +126,7 @@ export async function processWorkflowLogs(
       repo,
       job_id: failedJob.id,
     });
-    fullLogs = logsResponse.data as unknown as string;
+    fullLogs = String(logsResponse.data);
     core.info(
       `Downloaded ${fullLogs.length} characters of logs for error extraction`
     );
@@ -347,7 +345,7 @@ export async function fetchDiffWithFallback(
       core.info(
         `📋 Fetching commit diff for ${inputs.commitSha.substring(
           0,
-          7
+          SHORT_SHA_LENGTH
         )} (production deploy mode)...`
       );
       try {
@@ -360,7 +358,7 @@ export async function fetchDiffWithFallback(
         core.warning(
           `⚠️ Commit diff fetch returned null for ${inputs.commitSha.substring(
             0,
-            7
+            SHORT_SHA_LENGTH
           )}`
         );
       } catch (error) {
@@ -515,16 +513,18 @@ export function capArtifactLogs(raw: string): string {
   const lines = clean.split('\n');
   const errorRegex =
     /(error|failed|failure|exception|assertion|expected|timeout|cypress error|stale element|not interactable|no such element|still not (?:visible|displayed|clickable))/i;
-  const focused: string[] = [];
+  const focusedIndices = new Set<number>();
   for (let i = 0; i < lines.length; i++) {
     if (errorRegex.test(lines[i])) {
       const start = Math.max(0, i - 10);
       const end = Math.min(lines.length, i + 10);
-      focused.push(...lines.slice(start, end));
+      for (let j = start; j < end; j++) {
+        focusedIndices.add(j);
+      }
     }
   }
-  const uniqueFocused = Array.from(new Set(focused));
-  const focusedJoined = uniqueFocused.join('\n');
+  const focused = Array.from(focusedIndices).sort((a, b) => a - b).map(i => lines[i]);
+  const focusedJoined = focused.join('\n');
   if (focusedJoined.length > 0) {
     return focusedJoined.length <= MAX
       ? focusedJoined
@@ -573,7 +573,7 @@ export function buildStructuredSummary(err: ErrorData): StructuredErrorSummary {
     },
     keyMetrics: {
       hasScreenshots: !!(err.screenshots && err.screenshots.length > 0),
-      logSize: err.logs?.join('').length || 0,
+      logSize: err.logs?.reduce((sum, l) => sum + l.length, 0) ?? 0,
     },
   } as StructuredErrorSummary;
 }

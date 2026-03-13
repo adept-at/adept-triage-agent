@@ -41,7 +41,7 @@ const core = __importStar(require("@actions/core"));
 const github = __importStar(require("@actions/github"));
 const simplified_analyzer_1 = require("../simplified-analyzer");
 const constants_1 = require("../config/constants");
-const ANSI_ESCAPE_REGEX = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, 'g');
+const text_utils_1 = require("../utils/text-utils");
 async function processWorkflowLogs(octokit, artifactFetcher, inputs, repoDetails) {
     const context = github.context;
     const { owner, repo } = context.repo;
@@ -95,7 +95,7 @@ async function processWorkflowLogs(octokit, artifactFetcher, inputs, repoDetails
             repo,
             job_id: failedJob.id,
         });
-        fullLogs = logsResponse.data;
+        fullLogs = String(logsResponse.data);
         core.info(`Downloaded ${fullLogs.length} characters of logs for error extraction`);
         extractedError = (0, simplified_analyzer_1.extractErrorFromLogs)(fullLogs);
         if (inputs.prNumber && extractedError) {
@@ -228,13 +228,13 @@ async function fetchDiffWithFallback(artifactFetcher, inputs, repoDetails) {
     if (inputs.commitSha) {
         const isMainBranch = !inputs.branch || mainBranches.includes(inputs.branch.toLowerCase());
         if (isMainBranch) {
-            core.info(`📋 Fetching commit diff for ${inputs.commitSha.substring(0, 7)} (production deploy mode)...`);
+            core.info(`📋 Fetching commit diff for ${inputs.commitSha.substring(0, constants_1.SHORT_SHA_LENGTH)} (production deploy mode)...`);
             try {
                 const diff = await artifactFetcher.fetchCommitDiff(inputs.commitSha, repository);
                 logDiffResult(diff, 'commit diff');
                 if (diff)
                     return diff;
-                core.warning(`⚠️ Commit diff fetch returned null for ${inputs.commitSha.substring(0, 7)}`);
+                core.warning(`⚠️ Commit diff fetch returned null for ${inputs.commitSha.substring(0, constants_1.SHORT_SHA_LENGTH)}`);
             }
             catch (error) {
                 core.warning(`❌ Failed to fetch commit diff: ${error}`);
@@ -317,21 +317,23 @@ function capArtifactLogs(raw) {
     if (!raw)
         return '';
     const MAX = constants_1.LOG_LIMITS.ARTIFACT_SOFT_CAP;
-    const clean = raw.replace(ANSI_ESCAPE_REGEX, '');
+    const clean = raw.replace(text_utils_1.ANSI_ESCAPE_REGEX, '');
     if (clean.length <= MAX)
         return clean;
     const lines = clean.split('\n');
     const errorRegex = /(error|failed|failure|exception|assertion|expected|timeout|cypress error|stale element|not interactable|no such element|still not (?:visible|displayed|clickable))/i;
-    const focused = [];
+    const focusedIndices = new Set();
     for (let i = 0; i < lines.length; i++) {
         if (errorRegex.test(lines[i])) {
             const start = Math.max(0, i - 10);
             const end = Math.min(lines.length, i + 10);
-            focused.push(...lines.slice(start, end));
+            for (let j = start; j < end; j++) {
+                focusedIndices.add(j);
+            }
         }
     }
-    const uniqueFocused = Array.from(new Set(focused));
-    const focusedJoined = uniqueFocused.join('\n');
+    const focused = Array.from(focusedIndices).sort((a, b) => a - b).map(i => lines[i]);
+    const focusedJoined = focused.join('\n');
     if (focusedJoined.length > 0) {
         return focusedJoined.length <= MAX
             ? focusedJoined
@@ -373,7 +375,7 @@ function buildStructuredSummary(err) {
         },
         keyMetrics: {
             hasScreenshots: !!(err.screenshots && err.screenshots.length > 0),
-            logSize: err.logs?.join('').length || 0,
+            logSize: err.logs?.reduce((sum, l) => sum + l.length, 0) ?? 0,
         },
     };
 }
