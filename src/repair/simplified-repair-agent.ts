@@ -226,6 +226,7 @@ export class SimplifiedRepairAgent {
 
     // Validate oldCode against actual source before accepting the recommendation
     if (sourceFileContent && recommendation.changes) {
+      const validChanges: typeof recommendation.changes = [];
       for (const change of recommendation.changes) {
         if (change.oldCode && !sourceFileContent.includes(change.oldCode)) {
           core.warning(
@@ -234,17 +235,15 @@ export class SimplifiedRepairAgent {
           core.warning(
             '   The model hallucinated code instead of using the actual source. Rejecting this change.'
           );
-          change.oldCode = '';
-          change.newCode = '';
+          // Skip hallucinated changes entirely — do not mutate them
+          continue;
         }
+        validChanges.push(change);
       }
 
-      const validChanges = recommendation.changes.filter(
-        (c) => c.oldCode && c.newCode
-      );
       if (validChanges.length === 0) {
         core.warning(
-          '❌ All proposed changes had hallucinated oldCode — no valid fix to apply'
+          '❌ All proposed changes had hallucinated oldCode — rejecting recommendation'
         );
         return null;
       }

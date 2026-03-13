@@ -75,14 +75,16 @@ class AgentOrchestrator {
         const agentResults = {};
         let iterations = 0;
         core.info('🤖 Starting agentic repair pipeline...');
+        let timeoutId;
         try {
             const timeoutPromise = new Promise((_, reject) => {
-                setTimeout(() => {
+                timeoutId = setTimeout(() => {
                     reject(new Error(`Orchestration timed out after ${this.config.totalTimeoutMs}ms`));
                 }, this.config.totalTimeoutMs);
             });
             const pipelinePromise = this.runPipeline(context, errorData, agentResults);
             const result = await Promise.race([pipelinePromise, timeoutPromise]);
+            clearTimeout(timeoutId);
             iterations = result.iterations;
             const totalTimeMs = Date.now() - startTime;
             if (result.fix) {
@@ -117,6 +119,7 @@ class AgentOrchestrator {
             };
         }
         catch (error) {
+            clearTimeout(timeoutId);
             const totalTimeMs = Date.now() - startTime;
             const errorMessage = error instanceof Error ? error.message : String(error);
             core.error(`Orchestration failed: ${errorMessage}`);
@@ -2752,15 +2755,14 @@ function getInputs() {
         errorMessage: core.getInput('ERROR_MESSAGE'),
         workflowRunId: core.getInput('WORKFLOW_RUN_ID'),
         jobName: core.getInput('JOB_NAME'),
-        confidenceThreshold: parseInt(core.getInput('CONFIDENCE_THRESHOLD') || '70', 10),
+        confidenceThreshold: safeParseInt(core.getInput('CONFIDENCE_THRESHOLD'), 70),
         prNumber: core.getInput('PR_NUMBER'),
         commitSha: core.getInput('COMMIT_SHA'),
         repository: repositoryInput ? repositoryInput.trim() : undefined,
         testFrameworks: core.getInput('TEST_FRAMEWORKS'),
         enableAutoFix: core.getInput('ENABLE_AUTO_FIX') === 'true',
         autoFixBaseBranch: core.getInput('AUTO_FIX_BASE_BRANCH') || 'main',
-        autoFixMinConfidence: parseInt(core.getInput('AUTO_FIX_MIN_CONFIDENCE') ||
-            String(constants_1.AUTO_FIX.DEFAULT_MIN_CONFIDENCE), 10),
+        autoFixMinConfidence: safeParseInt(core.getInput('AUTO_FIX_MIN_CONFIDENCE'), constants_1.AUTO_FIX.DEFAULT_MIN_CONFIDENCE),
         autoFixTargetRepo: core.getInput('AUTO_FIX_TARGET_REPO') || undefined,
         branch: core.getInput('BRANCH') || undefined,
         enableValidation: core.getInput('ENABLE_VALIDATION') === 'true',
@@ -2770,7 +2772,7 @@ function getInputs() {
         validationTestCommand: core.getInput('VALIDATION_TEST_COMMAND') || undefined,
         enableAgenticRepair: core.getInput('ENABLE_AGENTIC_REPAIR') === 'true',
         productRepo: core.getInput('PRODUCT_REPO') || undefined,
-        productDiffCommits: parseInt(core.getInput('PRODUCT_DIFF_COMMITS') || '5', 10),
+        productDiffCommits: safeParseInt(core.getInput('PRODUCT_DIFF_COMMITS'), 5),
     };
 }
 function resolveRepository(inputs) {
@@ -3062,8 +3064,17 @@ function setSuccessOutput(result, errorData, autoFixResult) {
         }
     }
 }
+function safeParseInt(value, defaultValue) {
+    if (!value || value.trim() === '')
+        return defaultValue;
+    const parsed = parseInt(value, 10);
+    return isNaN(parsed) ? defaultValue : parsed;
+}
 if (require.main === require.cache[eval('__filename')]) {
-    run();
+    run().catch((error) => {
+        const message = error instanceof Error ? error.message : String(error);
+        core.setFailed(`Fatal unhandled error: ${message}`);
+    });
 }
 //# sourceMappingURL=index.js.map
 
@@ -3859,6 +3870,9 @@ class GitHubFixApplier {
                     throw error;
                 }
             }
+            const totalChanges = recommendation.proposedChanges.length;
+            const pendingChanges = [];
+            const validationErrors = [];
             for (const change of recommendation.proposedChanges) {
                 const filePath = change.file;
                 try {
@@ -3870,46 +3884,97 @@ class GitHubFixApplier {
                     }), `getting file content for ${filePath}`);
                     if (Array.isArray(fileResponse.data) ||
                         fileResponse.data.type !== 'file') {
-                        core.warning(`${filePath} is not a file, skipping`);
+                        validationErrors.push(`${filePath} is not a file`);
                         continue;
                     }
                     const currentContent = Buffer.from(fileResponse.data.content, 'base64').toString('utf-8');
                     const fileSha = fileResponse.data.sha;
                     if (change.oldCode && change.newCode) {
-                        const newContent = currentContent.replace(change.oldCode, change.newCode);
-                        if (newContent === currentContent) {
-                            core.warning(`Could not find old code to replace in ${filePath}`);
+                        const matchIndex = currentContent.indexOf(change.oldCode);
+                        if (matchIndex === -1) {
+                            validationErrors.push(`Could not find old code to replace in ${filePath}`);
                             continue;
                         }
-                        const commitMessage = `fix(test): ${change.justification.slice(0, 50)}
-
-Automated fix generated by adept-triage-agent.
-
-File: ${filePath}
-Confidence: ${recommendation.confidence}%`;
-                        const updateResponse = await withRetry(() => octokit.repos.createOrUpdateFileContents({
-                            owner,
-                            repo,
-                            path: filePath,
-                            message: commitMessage,
-                            content: Buffer.from(newContent).toString('base64'),
-                            sha: fileSha,
-                            branch: branchName,
-                        }), `committing changes to ${filePath}`);
-                        const commitSha = updateResponse.data?.commit?.sha;
-                        if (commitSha) {
-                            lastCommitSha = commitSha;
+                        const secondMatch = currentContent.indexOf(change.oldCode, matchIndex + 1);
+                        if (secondMatch !== -1) {
+                            core.warning(`Pattern appears multiple times in ${filePath}. Replacing first occurrence at index ${matchIndex}. ` +
+                                `Consider providing more surrounding context to uniquely identify the target.`);
                         }
-                        else {
-                            core.warning(`No commit SHA returned for ${filePath}, using previous value`);
-                        }
-                        modifiedFiles.push(filePath);
-                        core.info(`Modified: ${filePath}`);
+                        const newContent = currentContent.slice(0, matchIndex) +
+                            change.newCode +
+                            currentContent.slice(matchIndex + change.oldCode.length);
+                        pendingChanges.push({
+                            filePath,
+                            newContent,
+                            fileSha,
+                            justification: change.justification,
+                        });
                     }
                 }
                 catch (fileError) {
-                    const errorMsg = getErrorMessage(fileError, `modifying ${filePath}`);
-                    core.warning(errorMsg);
+                    const errorMsg = getErrorMessage(fileError, `validating ${filePath}`);
+                    validationErrors.push(errorMsg);
+                }
+            }
+            if (pendingChanges.length === 0) {
+                for (const err of validationErrors) {
+                    core.warning(err);
+                }
+                await this.cleanupBranch(branchName, 'no valid changes after validation');
+                return {
+                    success: false,
+                    modifiedFiles: [],
+                    error: `No files could be modified. Validation errors: ${validationErrors.join('; ')}`,
+                };
+            }
+            if (totalChanges > 1 && validationErrors.length > 0) {
+                core.warning(`${validationErrors.length} of ${totalChanges} changes failed validation — aborting to avoid incomplete fix`);
+                for (const err of validationErrors) {
+                    core.warning(`  - ${err}`);
+                }
+                await this.cleanupBranch(branchName, 'partial validation failure');
+                return {
+                    success: false,
+                    modifiedFiles: [],
+                    error: `Partial fix rejected: ${validationErrors.length} of ${totalChanges} changes failed validation`,
+                };
+            }
+            for (const pending of pendingChanges) {
+                try {
+                    const commitMessage = `fix(test): ${pending.justification.slice(0, 50)}
+
+Automated fix generated by adept-triage-agent.
+
+File: ${pending.filePath}
+Confidence: ${recommendation.confidence}%`;
+                    const updateResponse = await withRetry(() => octokit.repos.createOrUpdateFileContents({
+                        owner,
+                        repo,
+                        path: pending.filePath,
+                        message: commitMessage,
+                        content: Buffer.from(pending.newContent).toString('base64'),
+                        sha: pending.fileSha,
+                        branch: branchName,
+                    }), `committing changes to ${pending.filePath}`);
+                    const commitSha = updateResponse.data?.commit?.sha;
+                    if (commitSha) {
+                        lastCommitSha = commitSha;
+                    }
+                    else {
+                        core.warning(`No commit SHA returned for ${pending.filePath}, using previous value`);
+                    }
+                    modifiedFiles.push(pending.filePath);
+                    core.info(`Modified: ${pending.filePath}`);
+                }
+                catch (commitError) {
+                    const errorMsg = getErrorMessage(commitError, `committing ${pending.filePath}`);
+                    core.error(errorMsg);
+                    await this.cleanupBranch(branchName, `commit failed for ${pending.filePath}`);
+                    return {
+                        success: false,
+                        modifiedFiles,
+                        error: `Fix aborted mid-commit: ${errorMsg}. Branch cleaned up.`,
+                    };
                 }
             }
             if (modifiedFiles.length === 0) {
@@ -4204,17 +4269,17 @@ class SimplifiedRepairAgent {
             return null;
         }
         if (sourceFileContent && recommendation.changes) {
+            const validChanges = [];
             for (const change of recommendation.changes) {
                 if (change.oldCode && !sourceFileContent.includes(change.oldCode)) {
                     core.warning(`⚠️ Model proposed oldCode that does not exist in source file: "${change.oldCode.substring(0, 80)}..."`);
                     core.warning('   The model hallucinated code instead of using the actual source. Rejecting this change.');
-                    change.oldCode = '';
-                    change.newCode = '';
+                    continue;
                 }
+                validChanges.push(change);
             }
-            const validChanges = recommendation.changes.filter((c) => c.oldCode && c.newCode);
             if (validChanges.length === 0) {
-                core.warning('❌ All proposed changes had hallucinated oldCode — no valid fix to apply');
+                core.warning('❌ All proposed changes had hallucinated oldCode — rejecting recommendation');
                 return null;
             }
             recommendation.changes = validChanges;

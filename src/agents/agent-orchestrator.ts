@@ -114,10 +114,12 @@ export class AgentOrchestrator {
 
     core.info('🤖 Starting agentic repair pipeline...');
 
+    let timeoutId: ReturnType<typeof setTimeout> | undefined;
+
     try {
-      // Create timeout promise
-      const timeoutPromise = new Promise<never>((_, reject) => {
-        setTimeout(() => {
+      // Create timeout promise that cleans up after itself
+      const timeoutPromise = new Promise<{ fix?: FixRecommendation; error?: string; iterations: number }>((_, reject) => {
+        timeoutId = setTimeout(() => {
           reject(
             new Error(
               `Orchestration timed out after ${this.config.totalTimeoutMs}ms`
@@ -134,6 +136,7 @@ export class AgentOrchestrator {
       );
 
       const result = await Promise.race([pipelinePromise, timeoutPromise]);
+      clearTimeout(timeoutId);
       iterations = result.iterations;
 
       const totalTimeMs = Date.now() - startTime;
@@ -175,6 +178,7 @@ export class AgentOrchestrator {
         agentResults,
       };
     } catch (error) {
+      clearTimeout(timeoutId);
       const totalTimeMs = Date.now() - startTime;
       const errorMessage =
         error instanceof Error ? error.message : String(error);

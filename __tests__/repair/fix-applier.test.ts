@@ -334,10 +334,8 @@ describe('fix-applier', () => {
 
       expect(result.success).toBe(false);
       expect(result.modifiedFiles).toHaveLength(0);
-      expect(result.error).toBe('No files were successfully modified');
-      expect(mockCore.warning).toHaveBeenCalledWith(
-        expect.stringContaining('modifying cypress/e2e/missing.cy.ts')
-      );
+      expect(result.error).toContain('Validation errors');
+      expect(result.error).toContain('validating cypress/e2e/missing.cy.ts');
 
       // Verify cleanup was attempted
       expect(mockOctokit.git.deleteRef).toHaveBeenCalled();
@@ -373,10 +371,7 @@ describe('fix-applier', () => {
 
       expect(result.success).toBe(false);
       expect(result.modifiedFiles).toHaveLength(0);
-      expect(result.error).toBe('No files were successfully modified');
-      expect(mockCore.warning).toHaveBeenCalledWith(
-        'Could not find old code to replace in cypress/e2e/test.cy.ts'
-      );
+      expect(result.error).toContain('Could not find old code to replace in cypress/e2e/test.cy.ts');
     });
 
     it('should clean up branch on failure during API operations', async () => {
@@ -412,13 +407,13 @@ describe('fix-applier', () => {
       const result = await applier.applyFix(recommendation);
 
       expect(result.success).toBe(false);
-      // Per-file failures result in "No files were successfully modified"
-      expect(result.error).toBe('No files were successfully modified');
-      expect(mockCore.warning).toHaveBeenCalledWith(
-        expect.stringContaining('modifying cypress/e2e/test.cy.ts')
+      // Commit-phase failures now abort and clean up
+      expect(result.error).toContain('Fix aborted mid-commit');
+      expect(mockCore.error).toHaveBeenCalledWith(
+        expect.stringContaining('committing cypress/e2e/test.cy.ts')
       );
 
-      // Verify cleanup was attempted (branch deleted since no files were modified)
+      // Verify cleanup was attempted (branch deleted on commit failure)
       expect(mockOctokit.git.deleteRef).toHaveBeenCalled();
     });
 
@@ -509,14 +504,12 @@ describe('fix-applier', () => {
 
       const result = await applier.applyFix(recommendation);
 
-      expect(result).toEqual<ApplyResult>({
-        success: false,
-        modifiedFiles: [],
-        error: 'No files were successfully modified',
-      });
+      expect(result.success).toBe(false);
+      expect(result.modifiedFiles).toEqual([]);
+      expect(result.error).toContain('Could not find old code to replace in test.ts');
     });
 
-    it('should handle partial success (some files modified, some failed)', async () => {
+    it('should abort multi-file fix when some changes fail validation', async () => {
       const recommendation: FixRecommendation = {
         confidence: 85,
         summary: 'Multiple file fix',
@@ -559,12 +552,79 @@ describe('fix-applier', () => {
 
       const result = await applier.applyFix(recommendation);
 
-      // Should succeed with partial modifications
-      expect(result.success).toBe(true);
-      expect(result.modifiedFiles).toEqual(['success.ts']);
+      // Multi-file fix should abort entirely when some changes fail validation
+      expect(result.success).toBe(false);
+      expect(result.modifiedFiles).toEqual([]);
+      expect(result.error).toContain('Partial fix rejected');
       expect(mockCore.warning).toHaveBeenCalledWith(
-        expect.stringContaining('modifying missing.ts')
+        expect.stringContaining('aborting to avoid incomplete fix')
       );
+      // Branch should be cleaned up
+      expect(mockOctokit.git.deleteRef).toHaveBeenCalled();
+    });
+
+    it('should clean up on commit failure during multi-file fix', async () => {
+      const recommendation: FixRecommendation = {
+        confidence: 85,
+        summary: 'Multi-file fix',
+        proposedChanges: [
+          {
+            file: 'file1.ts',
+            line: 10,
+            oldCode: 'oldCode1',
+            newCode: 'newCode1',
+            justification: 'fix file 1',
+          },
+          {
+            file: 'file2.ts',
+            line: 20,
+            oldCode: 'oldCode2',
+            newCode: 'newCode2',
+            justification: 'fix file 2',
+          },
+        ],
+        evidence: [],
+        reasoning: 'reasoning',
+      };
+
+      // Both files validate successfully
+      mockOctokit.repos.getContent.mockImplementation(async ({ path }) => {
+        if (path === 'file1.ts') {
+          return {
+            data: {
+              type: 'file',
+              content: Buffer.from('const x = oldCode1;').toString('base64'),
+              sha: 'sha1',
+            },
+          };
+        }
+        if (path === 'file2.ts') {
+          return {
+            data: {
+              type: 'file',
+              content: Buffer.from('const y = oldCode2;').toString('base64'),
+              sha: 'sha2',
+            },
+          };
+        }
+        throw new Error('Unknown file');
+      });
+
+      // First commit succeeds, second fails
+      mockOctokit.repos.createOrUpdateFileContents
+        .mockResolvedValueOnce({
+          data: { commit: { sha: 'commit-sha-1' } },
+        })
+        .mockRejectedValueOnce(new Error('Server error'));
+
+      const result = await applier.applyFix(recommendation);
+
+      // Should fail and clean up
+      expect(result.success).toBe(false);
+      expect(result.error).toContain('Fix aborted mid-commit');
+      expect(result.modifiedFiles).toEqual(['file1.ts']); // First file was committed before failure
+      // Branch should be cleaned up to avoid partial state
+      expect(mockOctokit.git.deleteRef).toHaveBeenCalled();
     });
 
     it('should skip changes without oldCode or newCode', async () => {
@@ -595,7 +655,7 @@ describe('fix-applier', () => {
       const result = await applier.applyFix(recommendation);
 
       expect(result.success).toBe(false);
-      expect(result.error).toBe('No files were successfully modified');
+      expect(result.error).toContain('No files could be modified');
     });
 
     it('should use configured base branch for API calls', async () => {
@@ -692,8 +752,7 @@ describe('fix-applier', () => {
       const result = await applier.applyFix(recommendation);
 
       expect(result.success).toBe(false);
-      expect(result.error).toBe('No files were successfully modified');
-      expect(mockCore.warning).toHaveBeenCalledWith('some/directory is not a file, skipping');
+      expect(result.error).toContain('some/directory is not a file');
     });
 
     it('should retry with unique branch name when branch already exists', async () => {

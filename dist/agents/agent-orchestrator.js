@@ -68,14 +68,16 @@ class AgentOrchestrator {
         const agentResults = {};
         let iterations = 0;
         core.info('🤖 Starting agentic repair pipeline...');
+        let timeoutId;
         try {
             const timeoutPromise = new Promise((_, reject) => {
-                setTimeout(() => {
+                timeoutId = setTimeout(() => {
                     reject(new Error(`Orchestration timed out after ${this.config.totalTimeoutMs}ms`));
                 }, this.config.totalTimeoutMs);
             });
             const pipelinePromise = this.runPipeline(context, errorData, agentResults);
             const result = await Promise.race([pipelinePromise, timeoutPromise]);
+            clearTimeout(timeoutId);
             iterations = result.iterations;
             const totalTimeMs = Date.now() - startTime;
             if (result.fix) {
@@ -110,6 +112,7 @@ class AgentOrchestrator {
             };
         }
         catch (error) {
+            clearTimeout(timeoutId);
             const totalTimeMs = Date.now() - startTime;
             const errorMessage = error instanceof Error ? error.message : String(error);
             core.error(`Orchestration failed: ${errorMessage}`);

@@ -210,9 +210,9 @@ function getInputs(): ActionInputs {
     errorMessage: core.getInput('ERROR_MESSAGE'),
     workflowRunId: core.getInput('WORKFLOW_RUN_ID'),
     jobName: core.getInput('JOB_NAME'),
-    confidenceThreshold: parseInt(
-      core.getInput('CONFIDENCE_THRESHOLD') || '70',
-      10
+    confidenceThreshold: safeParseInt(
+      core.getInput('CONFIDENCE_THRESHOLD'),
+      70
     ),
     prNumber: core.getInput('PR_NUMBER'),
     commitSha: core.getInput('COMMIT_SHA'),
@@ -220,10 +220,9 @@ function getInputs(): ActionInputs {
     testFrameworks: core.getInput('TEST_FRAMEWORKS'),
     enableAutoFix: core.getInput('ENABLE_AUTO_FIX') === 'true',
     autoFixBaseBranch: core.getInput('AUTO_FIX_BASE_BRANCH') || 'main',
-    autoFixMinConfidence: parseInt(
-      core.getInput('AUTO_FIX_MIN_CONFIDENCE') ||
-        String(AUTO_FIX.DEFAULT_MIN_CONFIDENCE),
-      10
+    autoFixMinConfidence: safeParseInt(
+      core.getInput('AUTO_FIX_MIN_CONFIDENCE'),
+      AUTO_FIX.DEFAULT_MIN_CONFIDENCE
     ),
     autoFixTargetRepo: core.getInput('AUTO_FIX_TARGET_REPO') || undefined,
     branch: core.getInput('BRANCH') || undefined,
@@ -239,7 +238,7 @@ function getInputs(): ActionInputs {
     enableAgenticRepair: core.getInput('ENABLE_AGENTIC_REPAIR') === 'true',
     // Product repo diff inputs
     productRepo: core.getInput('PRODUCT_REPO') || undefined,
-    productDiffCommits: parseInt(core.getInput('PRODUCT_DIFF_COMMITS') || '5', 10),
+    productDiffCommits: safeParseInt(core.getInput('PRODUCT_DIFF_COMMITS'), 5),
   };
 }
 
@@ -673,7 +672,20 @@ function setSuccessOutput(
 // Export for testing
 export { run };
 
+/**
+ * Safely parse an integer with a fallback default.
+ * Returns the default when the input is empty, undefined, or not a valid integer.
+ */
+function safeParseInt(value: string | undefined, defaultValue: number): number {
+  if (!value || value.trim() === '') return defaultValue;
+  const parsed = parseInt(value, 10);
+  return isNaN(parsed) ? defaultValue : parsed;
+}
+
 // Run the action if this is the main module
 if (require.main === module) {
-  run();
+  run().catch((error) => {
+    const message = error instanceof Error ? error.message : String(error);
+    core.setFailed(`Fatal unhandled error: ${message}`);
+  });
 }

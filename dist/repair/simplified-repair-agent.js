@@ -152,17 +152,17 @@ class SimplifiedRepairAgent {
             return null;
         }
         if (sourceFileContent && recommendation.changes) {
+            const validChanges = [];
             for (const change of recommendation.changes) {
                 if (change.oldCode && !sourceFileContent.includes(change.oldCode)) {
                     core.warning(`⚠️ Model proposed oldCode that does not exist in source file: "${change.oldCode.substring(0, 80)}..."`);
                     core.warning('   The model hallucinated code instead of using the actual source. Rejecting this change.');
-                    change.oldCode = '';
-                    change.newCode = '';
+                    continue;
                 }
+                validChanges.push(change);
             }
-            const validChanges = recommendation.changes.filter((c) => c.oldCode && c.newCode);
             if (validChanges.length === 0) {
-                core.warning('❌ All proposed changes had hallucinated oldCode — no valid fix to apply');
+                core.warning('❌ All proposed changes had hallucinated oldCode — rejecting recommendation');
                 return null;
             }
             recommendation.changes = validChanges;
