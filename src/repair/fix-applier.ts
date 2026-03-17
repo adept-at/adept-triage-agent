@@ -460,54 +460,39 @@ export class GitHubFixApplier implements FixApplier {
 
       core.info('Validation workflow triggered successfully');
 
-      // Wait a moment for the workflow run to be created
-      await sleep(2000);
+      const dispatchedAt = new Date();
+      const maxPollAttempts = 10;
+      const pollInterval = 3000;
 
-      // Try to find the workflow run ID
-      const runs = await withRetry(
-        () =>
-          octokit.actions.listWorkflowRuns({
-            owner,
-            repo,
-            workflow_id: workflowFile,
-            branch: 'main',
-            per_page: 5,
-            status: 'queued',
-          }),
-        'listing workflow runs'
-      );
+      for (let attempt = 1; attempt <= maxPollAttempts; attempt++) {
+        await sleep(attempt === 1 ? 5000 : pollInterval);
+        core.info(`Searching for validation run (attempt ${attempt}/${maxPollAttempts})...`);
 
-      // Find the most recent run (should be the one we just triggered)
-      if (runs.data.workflow_runs.length > 0) {
-        const latestRun = runs.data.workflow_runs[0];
-        core.info(`Validation workflow run ID: ${latestRun.id}`);
-        core.info(`Validation workflow URL: ${latestRun.html_url}`);
-        return { runId: latestRun.id, url: latestRun.html_url };
-      }
+        const runs = await withRetry(
+          () =>
+            octokit.actions.listWorkflowRuns({
+              owner,
+              repo,
+              workflow_id: workflowFile,
+              per_page: 10,
+            }),
+          'listing workflow runs'
+        );
 
-      // If no queued runs, check in_progress
-      const inProgressRuns = await withRetry(
-        () =>
-          octokit.actions.listWorkflowRuns({
-            owner,
-            repo,
-            workflow_id: workflowFile,
-            branch: 'main',
-            per_page: 5,
-            status: 'in_progress',
-          }),
-        'listing in_progress workflow runs'
-      );
+        const match = runs.data.workflow_runs.find((run) => {
+          const createdAt = new Date(run.created_at);
+          return createdAt >= new Date(dispatchedAt.getTime() - 30_000);
+        });
 
-      if (inProgressRuns.data.workflow_runs.length > 0) {
-        const latestRun = inProgressRuns.data.workflow_runs[0];
-        core.info(`Validation workflow run ID: ${latestRun.id}`);
-        core.info(`Validation workflow URL: ${latestRun.html_url}`);
-        return { runId: latestRun.id, url: latestRun.html_url };
+        if (match) {
+          core.info(`Validation workflow run ID: ${match.id}`);
+          core.info(`Validation workflow URL: ${match.html_url}`);
+          return { runId: match.id, url: match.html_url };
+        }
       }
 
       core.warning(
-        'Validation workflow was triggered, but the run ID is not available yet'
+        `Validation workflow was triggered, but could not find run after ${maxPollAttempts} attempts`
       );
       return {};
     } catch (error) {
