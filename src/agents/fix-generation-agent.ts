@@ -11,6 +11,7 @@ import {
   getFrameworkLabel,
 } from './base-agent';
 import { OpenAIClient } from '../openai-client';
+import { DEFAULT_PRODUCT_REPO } from '../config/constants';
 import { AnalysisOutput } from './analysis-agent';
 import { InvestigationOutput } from './investigation-agent';
 
@@ -295,12 +296,11 @@ When PR changes are provided, your fix reasoning MUST be consistent with the dif
       );
     }
 
-    // Add PR diff so the fix can account for what actually changed
     if (context.prDiff && context.prDiff.files.length > 0) {
       parts.push(
         '',
-        '### Recent PR Changes',
-        'These files were changed in the PR. IMPORTANT: Only these files were modified. If the failure involves code NOT listed here, do NOT claim it was changed by the PR — treat it as a pre-existing or environmental issue.'
+        `### Recent Changes in Product Repo (${DEFAULT_PRODUCT_REPO})`,
+        `These files were changed in ${DEFAULT_PRODUCT_REPO}. They are READ-ONLY context — you may NOT propose changes to them. Only modify test files.`
       );
       for (const file of context.prDiff.files.slice(0, 5)) {
         parts.push(`\n**${file.filename}** (${file.status})`);

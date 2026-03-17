@@ -123,10 +123,31 @@ export const AUTO_FIX = {
   BRANCH_PREFIX: 'fix/triage-agent/',
 } as const;
 
+/** Cursor Cloud Agent validation configuration */
+export const CURSOR_CLOUD = {
+  API_BASE_URL: 'https://api.cursor.com',
+  /** How often to poll for agent completion (ms) */
+  POLL_INTERVAL_MS: 10_000,
+  /** Maximum time to wait for agent to finish (5 minutes) */
+  VALIDATION_TIMEOUT_MS: 300_000,
+  /** Delay before first poll to let the agent initialize */
+  INITIAL_DELAY_MS: 15_000,
+  /** Maximum poll attempts before giving up */
+  MAX_POLL_ATTEMPTS: 30,
+  /** Agent statuses that indicate completion */
+  TERMINAL_STATUSES: ['FINISHED', 'ERROR'] as readonly string[],
+} as const;
+
 /** Agentic repair system configuration */
+/** The product repository. All browser-test repos target learn-webapp. */
+export const DEFAULT_PRODUCT_REPO = 'adept-at/learn-webapp';
+
+/** Production URL for learn-webapp. Used as the default preview URL for validation. */
+export const DEFAULT_PRODUCT_URL = 'https://learn.adept.at';
+
 export const AGENT_CONFIG = {
-  /** Enable multi-agent repair approach */
-  ENABLE_AGENTIC_REPAIR: process.env.ENABLE_AGENTIC_REPAIR === 'true' || false,
+  /** Enable multi-agent repair approach (default: true) */
+  ENABLE_AGENTIC_REPAIR: process.env.ENABLE_AGENTIC_REPAIR !== 'false',
   /** Maximum iterations for the fix generation/review loop */
   MAX_AGENT_ITERATIONS: 3,
   /** Total timeout for the entire agent orchestration (2 minutes) */
@@ -141,4 +162,16 @@ export const AGENT_CONFIG = {
   AGENT_MAX_TOKENS: 4000,
   /** Whether to fall back to single-shot if agentic fails */
   FALLBACK_TO_SINGLE_SHOT: true,
+} as const;
+
+/** Iterative fix-validate loop configuration */
+export const FIX_VALIDATE_LOOP = {
+  /** Maximum fix-validate iterations before giving up */
+  MAX_ITERATIONS: 3,
+  /** How often to poll for validation workflow completion (ms) */
+  POLL_INTERVAL_MS: 15_000,
+  /** Maximum time to wait for a single validation run (ms) — 10 minutes */
+  POLL_TIMEOUT_MS: 600_000,
+  /** Delay before first poll to let the workflow initialize */
+  INITIAL_POLL_DELAY_MS: 20_000,
 } as const;

@@ -273,6 +273,7 @@ function createOrchestrator(openaiClient, config, sourceFetchContext) {
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.AnalysisAgent = void 0;
 const base_agent_1 = __nccwpck_require__(6575);
+const constants_1 = __nccwpck_require__(8361);
 class AnalysisAgent extends base_agent_1.BaseAgent {
     constructor(openaiClient, config) {
         super(openaiClient, 'AnalysisAgent', config);
@@ -375,7 +376,7 @@ You MUST respond with a JSON object matching this schema:
             parts.push('', '### Relevant Logs', '```', logsText, '```');
         }
         if (context.prDiff && context.prDiff.files.length > 0) {
-            parts.push('', '### Recent Changes (PR Diff)');
+            parts.push('', `### Recent Changes in ${constants_1.DEFAULT_PRODUCT_REPO}`);
             for (const file of context.prDiff.files.slice(0, 5)) {
                 parts.push(`- **${file.filename}** (${file.status})`);
                 if (file.patch) {
@@ -1012,6 +1013,7 @@ exports.CodeReadingAgent = CodeReadingAgent;
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.FixGenerationAgent = void 0;
 const base_agent_1 = __nccwpck_require__(6575);
+const constants_1 = __nccwpck_require__(8361);
 class FixGenerationAgent extends base_agent_1.BaseAgent {
     constructor(openaiClient, config) {
         super(openaiClient, 'FixGenerationAgent', {
@@ -1196,7 +1198,7 @@ When PR changes are provided, your fix reasoning MUST be consistent with the dif
             parts.push('', '### Test File Content', '```javascript', context.sourceFileContent, '```');
         }
         if (context.prDiff && context.prDiff.files.length > 0) {
-            parts.push('', '### Recent PR Changes', 'These files were changed in the PR. IMPORTANT: Only these files were modified. If the failure involves code NOT listed here, do NOT claim it was changed by the PR — treat it as a pre-existing or environmental issue.');
+            parts.push('', `### Recent Changes in Product Repo (${constants_1.DEFAULT_PRODUCT_REPO})`, `These files were changed in ${constants_1.DEFAULT_PRODUCT_REPO}. They are READ-ONLY context — you may NOT propose changes to them. Only modify test files.`);
             for (const file of context.prDiff.files.slice(0, 5)) {
                 parts.push(`\n**${file.filename}** (${file.status})`);
                 if (file.patch) {
@@ -2495,7 +2497,7 @@ exports.ArtifactFetcher = ArtifactFetcher;
 "use strict";
 
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.AGENT_CONFIG = exports.AUTO_FIX = exports.TEST_ISSUE_CATEGORIES = exports.ERROR_TYPES = exports.FORMATTING = exports.ARTIFACTS = exports.SHORT_SHA_LENGTH = exports.OPENAI = exports.CONFIDENCE = exports.LOG_LIMITS = void 0;
+exports.FIX_VALIDATE_LOOP = exports.AGENT_CONFIG = exports.DEFAULT_PRODUCT_URL = exports.DEFAULT_PRODUCT_REPO = exports.CURSOR_CLOUD = exports.AUTO_FIX = exports.TEST_ISSUE_CATEGORIES = exports.ERROR_TYPES = exports.FORMATTING = exports.ARTIFACTS = exports.SHORT_SHA_LENGTH = exports.OPENAI = exports.CONFIDENCE = exports.LOG_LIMITS = void 0;
 exports.LOG_LIMITS = {
     GITHUB_MAX_SIZE: 50_000,
     ARTIFACT_SOFT_CAP: 20_000,
@@ -2561,8 +2563,18 @@ exports.AUTO_FIX = {
     DEFAULT_MIN_CONFIDENCE: 70,
     BRANCH_PREFIX: 'fix/triage-agent/',
 };
+exports.CURSOR_CLOUD = {
+    API_BASE_URL: 'https://api.cursor.com',
+    POLL_INTERVAL_MS: 10_000,
+    VALIDATION_TIMEOUT_MS: 300_000,
+    INITIAL_DELAY_MS: 15_000,
+    MAX_POLL_ATTEMPTS: 30,
+    TERMINAL_STATUSES: ['FINISHED', 'ERROR'],
+};
+exports.DEFAULT_PRODUCT_REPO = 'adept-at/learn-webapp';
+exports.DEFAULT_PRODUCT_URL = 'https://learn.adept.at';
 exports.AGENT_CONFIG = {
-    ENABLE_AGENTIC_REPAIR: process.env.ENABLE_AGENTIC_REPAIR === 'true' || false,
+    ENABLE_AGENTIC_REPAIR: process.env.ENABLE_AGENTIC_REPAIR !== 'false',
     MAX_AGENT_ITERATIONS: 3,
     AGENT_TIMEOUT_MS: 120_000,
     INDIVIDUAL_AGENT_TIMEOUT_MS: 60_000,
@@ -2570,6 +2582,12 @@ exports.AGENT_CONFIG = {
     AGENT_TEMPERATURE: 0.3,
     AGENT_MAX_TOKENS: 4000,
     FALLBACK_TO_SINGLE_SHOT: true,
+};
+exports.FIX_VALIDATE_LOOP = {
+    MAX_ITERATIONS: 3,
+    POLL_INTERVAL_MS: 15_000,
+    POLL_TIMEOUT_MS: 600_000,
+    INITIAL_POLL_DELAY_MS: 20_000,
 };
 //# sourceMappingURL=constants.js.map
 
@@ -2614,6 +2632,7 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.fixFingerprint = fixFingerprint;
 exports.run = run;
 const core = __importStar(__nccwpck_require__(7484));
 const github = __importStar(__nccwpck_require__(3228));
@@ -2627,6 +2646,7 @@ const log_processor_1 = __nccwpck_require__(5833);
 const fix_applier_1 = __nccwpck_require__(2134);
 const constants_1 = __nccwpck_require__(8361);
 const repo_utils_1 = __nccwpck_require__(4843);
+const cursor_cloud_validator_1 = __nccwpck_require__(1697);
 async function run() {
     try {
         const inputs = getInputs();
@@ -2721,13 +2741,21 @@ async function run() {
         }
         let fixRecommendation = null;
         let autoFixResult = null;
-        fixRecommendation = await generateFixRecommendation(inputs, repoDetails, errorData, openaiClient, octokit);
-        if (fixRecommendation) {
-            result.fixRecommendation = fixRecommendation;
-            if (inputs.enableAutoFix) {
+        if (inputs.enableAutoFix && inputs.enableValidation) {
+            const autoFixTargetRepo = resolveAutoFixTargetRepo(inputs);
+            const loopResult = await iterativeFixValidateLoop(inputs, repoDetails, autoFixTargetRepo, errorData, openaiClient, octokit);
+            fixRecommendation = loopResult.fixRecommendation;
+            autoFixResult = loopResult.autoFixResult;
+        }
+        else {
+            fixRecommendation = await generateFixRecommendation(inputs, repoDetails, errorData, openaiClient, octokit);
+            if (fixRecommendation && inputs.enableAutoFix) {
                 const autoFixTargetRepo = resolveAutoFixTargetRepo(inputs);
                 autoFixResult = await attemptAutoFix(inputs, fixRecommendation, octokit, autoFixTargetRepo, errorData);
             }
+        }
+        if (fixRecommendation) {
+            result.fixRecommendation = fixRecommendation;
         }
         setSuccessOutput(result, errorData, autoFixResult);
     }
@@ -2772,8 +2800,12 @@ function getInputs() {
         validationSpec: core.getInput('VALIDATION_SPEC') || undefined,
         validationTestCommand: core.getInput('VALIDATION_TEST_COMMAND') || undefined,
         enableAgenticRepair: core.getInput('ENABLE_AGENTIC_REPAIR') === 'true',
-        productRepo: core.getInput('PRODUCT_REPO') || undefined,
+        productRepo: core.getInput('PRODUCT_REPO') || constants_1.DEFAULT_PRODUCT_REPO,
         productDiffCommits: safeParseInt(core.getInput('PRODUCT_DIFF_COMMITS'), 5),
+        enableCursorValidation: core.getInput('ENABLE_CURSOR_VALIDATION') === 'true',
+        cursorApiKey: core.getInput('CURSOR_API_KEY') || undefined,
+        cursorValidationMode: core.getInput('CURSOR_VALIDATION_MODE') || 'poll',
+        cursorValidationTimeout: safeParseInt(core.getInput('CURSOR_VALIDATION_TIMEOUT'), constants_1.CURSOR_CLOUD.VALIDATION_TIMEOUT_MS),
     };
 }
 function resolveRepository(inputs) {
@@ -2782,9 +2814,12 @@ function resolveRepository(inputs) {
 function resolveAutoFixTargetRepo(inputs) {
     return (0, repo_utils_1.parseRepoString)(inputs.autoFixTargetRepo, 'AUTO_FIX_TARGET_REPO');
 }
-async function generateFixRecommendation(inputs, repoDetails, errorData, openaiClient, octokit) {
+async function generateFixRecommendation(inputs, repoDetails, errorData, openaiClient, octokit, previousAttempt) {
     try {
-        core.info('\n🔧 Attempting to generate fix recommendation...');
+        const iterLabel = previousAttempt
+            ? ` (iteration ${previousAttempt.iteration + 1})`
+            : '';
+        core.info(`\n🔧 Attempting to generate fix recommendation${iterLabel}...`);
         const repairContext = (0, repair_context_1.buildRepairContext)({
             testFile: errorData.fileName || 'unknown',
             testName: errorData.testName || 'unknown',
@@ -2806,7 +2841,7 @@ async function generateFixRecommendation(inputs, repoDetails, errorData, openaiC
         }, {
             enableAgenticRepair: inputs.enableAgenticRepair,
         });
-        const recommendation = await repairAgent.generateFixRecommendation(repairContext, errorData);
+        const recommendation = await repairAgent.generateFixRecommendation(repairContext, errorData, previousAttempt);
         if (recommendation) {
             core.info(`✅ Fix recommendation generated with ${recommendation.confidence}% confidence`);
         }
@@ -2819,6 +2854,107 @@ async function generateFixRecommendation(inputs, repoDetails, errorData, openaiC
         core.warning(`Failed to generate fix recommendation: ${error}`);
         return null;
     }
+}
+async function iterativeFixValidateLoop(inputs, repoDetails, autoFixTargetRepo, errorData, openaiClient, octokit) {
+    const maxIterations = constants_1.FIX_VALIDATE_LOOP.MAX_ITERATIONS;
+    let fixRecommendation = null;
+    let autoFixResult = null;
+    let previousAttempt;
+    const failedFixFingerprints = new Set();
+    const fixApplier = (0, fix_applier_1.createFixApplier)({
+        octokit,
+        owner: autoFixTargetRepo.owner,
+        repo: autoFixTargetRepo.repo,
+        baseBranch: inputs.autoFixBaseBranch || 'main',
+        minConfidence: inputs.autoFixMinConfidence || constants_1.AUTO_FIX.DEFAULT_MIN_CONFIDENCE,
+        enableValidation: inputs.enableValidation,
+        validationWorkflow: inputs.validationWorkflow,
+        validationTestCommand: inputs.validationTestCommand,
+    });
+    for (let iteration = 0; iteration < maxIterations; iteration++) {
+        core.info(`\n${'='.repeat(60)}\n🔄 Fix-Validate iteration ${iteration + 1}/${maxIterations}\n${'='.repeat(60)}`);
+        fixRecommendation = await generateFixRecommendation(inputs, repoDetails, errorData, openaiClient, octokit, previousAttempt);
+        if (!fixRecommendation) {
+            core.warning(`Iteration ${iteration + 1}: could not generate fix recommendation`);
+            break;
+        }
+        if (!fixApplier.canApply(fixRecommendation)) {
+            core.info(`Iteration ${iteration + 1}: fix rejected — confidence below threshold or no changes proposed`);
+            break;
+        }
+        const fingerprint = fixFingerprint(fixRecommendation);
+        if (failedFixFingerprints.has(fingerprint)) {
+            core.warning(`Iteration ${iteration + 1}: repair agent proposed a fix identical to a previous failed attempt. Stopping.`);
+            break;
+        }
+        core.info(`Iteration ${iteration + 1}: fix passed quality gates (confidence: ${fixRecommendation.confidence}%, changes: ${fixRecommendation.proposedChanges.length})`);
+        if (iteration === 0) {
+            autoFixResult = await fixApplier.applyFix(fixRecommendation);
+        }
+        else if (autoFixResult?.branchName) {
+            autoFixResult = await fixApplier.reapplyFix(fixRecommendation, autoFixResult.branchName);
+        }
+        if (!autoFixResult?.success || !autoFixResult.branchName) {
+            core.warning(`Iteration ${iteration + 1}: failed to apply fix — ${autoFixResult?.error}`);
+            break;
+        }
+        core.info(`✅ Fix applied to branch: ${autoFixResult.branchName}`);
+        const spec = inputs.validationSpec ||
+            errorData.fileName ||
+            fixRecommendation.proposedChanges[0]?.file;
+        const previewUrl = inputs.validationPreviewUrl || constants_1.DEFAULT_PRODUCT_URL;
+        if (!spec) {
+            core.warning('No spec file identified for validation');
+            autoFixResult.validationStatus = 'skipped';
+            break;
+        }
+        const validationTrigger = await fixApplier.triggerValidation({
+            branch: autoFixResult.branchName,
+            spec,
+            previewUrl,
+            triageRunId: github.context.runId.toString(),
+            testCommand: inputs.validationTestCommand,
+        });
+        if (!validationTrigger?.runId) {
+            core.warning('Could not get validation run ID — cannot poll for results');
+            autoFixResult.validationStatus = 'pending';
+            if (validationTrigger?.url)
+                autoFixResult.validationUrl = validationTrigger.url;
+            break;
+        }
+        autoFixResult.validationRunId = validationTrigger.runId;
+        autoFixResult.validationUrl = validationTrigger.url;
+        core.info(`\n🧪 Waiting for validation run ${validationTrigger.runId}...`);
+        const outcome = await fixApplier.waitForValidation(validationTrigger.runId);
+        if (outcome.passed) {
+            core.info(`\n✅ Validation PASSED on iteration ${iteration + 1}! PR will be created by validate-fix workflow.`);
+            autoFixResult.validationStatus = 'passed';
+            autoFixResult.validationUrl = outcome.url || autoFixResult.validationUrl;
+            return { fixRecommendation, autoFixResult };
+        }
+        core.warning(`\n❌ Validation FAILED on iteration ${iteration + 1} (conclusion: ${outcome.conclusion})`);
+        autoFixResult.validationStatus = 'failed';
+        failedFixFingerprints.add(fingerprint);
+        if (iteration < maxIterations - 1) {
+            core.info('Feeding failure logs back into repair agent for next attempt...');
+            previousAttempt = {
+                iteration: iteration + 1,
+                previousFix: fixRecommendation,
+                validationLogs: outcome.logs || 'No logs available',
+            };
+        }
+        else {
+            core.warning(`\n🛑 All ${maxIterations} fix attempts exhausted. Giving up.`);
+        }
+    }
+    return { fixRecommendation, autoFixResult };
+}
+function fixFingerprint(fix) {
+    const normalize = (s) => s.replace(/\s+/g, ' ').trim();
+    return fix.proposedChanges
+        .map((c) => `${c.file}::${normalize(c.oldCode)}::${normalize(c.newCode)}`)
+        .sort()
+        .join('\n');
 }
 async function attemptAutoFix(inputs, fixRecommendation, octokit, repoDetails, errorData) {
     core.info('\n🤖 Auto-fix is enabled, attempting to apply fix...');
@@ -2848,7 +2984,7 @@ async function attemptAutoFix(inputs, fixRecommendation, octokit, repoDetails, e
                 const spec = inputs.validationSpec ||
                     errorData?.fileName ||
                     fixRecommendation.proposedChanges[0]?.file;
-                const previewUrl = inputs.validationPreviewUrl || 'https://learn.adept.at';
+                const previewUrl = inputs.validationPreviewUrl || constants_1.DEFAULT_PRODUCT_URL;
                 if (!inputs.validationPreviewUrl) {
                     core.info(`No preview URL provided, falling back to production: ${previewUrl}`);
                 }
@@ -2881,6 +3017,16 @@ async function attemptAutoFix(inputs, fixRecommendation, octokit, repoDetails, e
                     }
                 }
             }
+            else if (inputs.enableCursorValidation && result.branchName) {
+                core.info('\n🤖 Triggering Cursor cloud agent validation...');
+                try {
+                    await triggerCursorValidation(inputs, result, fixRecommendation, repoDetails, errorData);
+                }
+                catch (cursorError) {
+                    core.warning(`Cursor cloud agent validation error: ${cursorError}`);
+                    result.validationStatus = 'skipped';
+                }
+            }
         }
         else {
             core.warning(`❌ Auto-fix failed: ${result.error}`);
@@ -2891,6 +3037,62 @@ async function attemptAutoFix(inputs, fixRecommendation, octokit, repoDetails, e
         core.warning(`Auto-fix error: ${error}`);
         return null;
     }
+}
+async function triggerCursorValidation(inputs, result, fixRecommendation, repoDetails, errorData) {
+    if (!inputs.cursorApiKey) {
+        core.warning('CURSOR_API_KEY is required for Cursor cloud agent validation');
+        result.validationStatus = 'skipped';
+        return;
+    }
+    const spec = inputs.validationSpec ||
+        errorData?.fileName ||
+        fixRecommendation.proposedChanges[0]?.file;
+    const previewUrl = inputs.validationPreviewUrl || constants_1.DEFAULT_PRODUCT_URL;
+    if (!spec) {
+        core.warning('No spec file identified for Cursor validation, skipping');
+        result.validationStatus = 'skipped';
+        return;
+    }
+    const repositoryUrl = `https://github.com/${repoDetails.owner}/${repoDetails.repo}`;
+    const validationParams = {
+        repositoryUrl,
+        branch: result.branchName,
+        spec,
+        previewUrl,
+        framework: inputs.testFrameworks,
+        testCommand: inputs.validationTestCommand,
+        triageRunId: inputs.workflowRunId,
+    };
+    const validator = new cursor_cloud_validator_1.CursorCloudValidator(inputs.cursorApiKey);
+    const mode = inputs.cursorValidationMode || 'poll';
+    const timeout = inputs.cursorValidationTimeout;
+    core.info(`\n🤖 Launching Cursor cloud agent validation (mode: ${mode})`);
+    const cursorResult = await validator.validate(validationParams, mode, timeout);
+    result.validationUrl = cursorResult.agentUrl;
+    if (cursorResult.status === 'FINISHED') {
+        if (cursorResult.testPassed === true) {
+            result.validationStatus = 'passed';
+            core.info('✅ Cursor cloud agent: tests PASSED');
+        }
+        else if (cursorResult.testPassed === false) {
+            result.validationStatus = 'failed';
+            core.warning('❌ Cursor cloud agent: tests FAILED');
+        }
+        else {
+            result.validationStatus = 'pending';
+            core.info('❓ Cursor cloud agent finished but result could not be determined');
+        }
+    }
+    else if (cursorResult.status === 'ERROR') {
+        result.validationStatus = 'failed';
+        core.warning('❌ Cursor cloud agent encountered an error');
+    }
+    else {
+        result.validationStatus = 'pending';
+    }
+    core.info(`  Agent ID: ${cursorResult.agentId}`);
+    core.info(`  Agent URL: ${cursorResult.agentUrl}`);
+    core.info(`  Summary: ${cursorResult.summary}`);
 }
 function setInconclusiveOutput(result, inputs, errorData) {
     const inconclusiveTriageJson = {
@@ -3744,9 +3946,7 @@ class GitHubFixApplier {
         return true;
     }
     async applyFix(recommendation) {
-        const modifiedFiles = [];
         let branchName = '';
-        let lastCommitSha = '';
         const { octokit, owner, repo, baseBranch } = this.config;
         core.info(`Target repository: ${owner}/${repo}`);
         core.info(`Base branch: ${baseBranch}`);
@@ -3807,131 +4007,16 @@ class GitHubFixApplier {
                     throw error;
                 }
             }
-            const totalChanges = recommendation.proposedChanges.length;
-            const pendingChanges = [];
-            const validationErrors = [];
-            for (const change of recommendation.proposedChanges) {
-                const filePath = change.file;
-                try {
-                    const fileResponse = await withRetry(() => octokit.repos.getContent({
-                        owner,
-                        repo,
-                        path: filePath,
-                        ref: branchName,
-                    }), `getting file content for ${filePath}`);
-                    if (Array.isArray(fileResponse.data) ||
-                        fileResponse.data.type !== 'file') {
-                        validationErrors.push(`${filePath} is not a file`);
-                        continue;
-                    }
-                    const currentContent = Buffer.from(fileResponse.data.content, 'base64').toString('utf-8');
-                    const fileSha = fileResponse.data.sha;
-                    if (change.oldCode && change.newCode) {
-                        const matchIndex = currentContent.indexOf(change.oldCode);
-                        if (matchIndex === -1) {
-                            validationErrors.push(`Could not find old code to replace in ${filePath}`);
-                            continue;
-                        }
-                        const secondMatch = currentContent.indexOf(change.oldCode, matchIndex + 1);
-                        if (secondMatch !== -1) {
-                            core.warning(`Pattern appears multiple times in ${filePath}. Replacing first occurrence at index ${matchIndex}. ` +
-                                `Consider providing more surrounding context to uniquely identify the target.`);
-                        }
-                        const newContent = currentContent.slice(0, matchIndex) +
-                            change.newCode +
-                            currentContent.slice(matchIndex + change.oldCode.length);
-                        pendingChanges.push({
-                            filePath,
-                            newContent,
-                            fileSha,
-                            justification: change.justification,
-                        });
-                    }
-                }
-                catch (fileError) {
-                    const errorMsg = getErrorMessage(fileError, `validating ${filePath}`);
-                    validationErrors.push(errorMsg);
-                }
-            }
-            if (pendingChanges.length === 0) {
-                for (const err of validationErrors) {
-                    core.warning(err);
-                }
-                await this.cleanupBranch(branchName, 'no valid changes after validation');
-                return {
-                    success: false,
-                    modifiedFiles: [],
-                    error: `No files could be modified. Validation errors: ${validationErrors.join('; ')}`,
-                };
-            }
-            if (totalChanges > 1 && validationErrors.length > 0) {
-                core.warning(`${validationErrors.length} of ${totalChanges} changes failed validation — aborting to avoid incomplete fix`);
-                for (const err of validationErrors) {
-                    core.warning(`  - ${err}`);
-                }
-                await this.cleanupBranch(branchName, 'partial validation failure');
-                return {
-                    success: false,
-                    modifiedFiles: [],
-                    error: `Partial fix rejected: ${validationErrors.length} of ${totalChanges} changes failed validation`,
-                };
-            }
-            for (const pending of pendingChanges) {
-                try {
-                    const commitMessage = `fix(test): ${pending.justification.slice(0, 50)}
-
-Automated fix generated by adept-triage-agent.
-
-File: ${pending.filePath}
-Confidence: ${recommendation.confidence}%`;
-                    const updateResponse = await withRetry(() => octokit.repos.createOrUpdateFileContents({
-                        owner,
-                        repo,
-                        path: pending.filePath,
-                        message: commitMessage,
-                        content: Buffer.from(pending.newContent).toString('base64'),
-                        sha: pending.fileSha,
-                        branch: branchName,
-                    }), `committing changes to ${pending.filePath}`);
-                    const commitSha = updateResponse.data?.commit?.sha;
-                    if (commitSha) {
-                        lastCommitSha = commitSha;
-                    }
-                    else {
-                        core.warning(`No commit SHA returned for ${pending.filePath}, using previous value`);
-                    }
-                    modifiedFiles.push(pending.filePath);
-                    core.info(`Modified: ${pending.filePath}`);
-                }
-                catch (commitError) {
-                    const errorMsg = getErrorMessage(commitError, `committing ${pending.filePath}`);
-                    core.error(errorMsg);
-                    await this.cleanupBranch(branchName, `commit failed for ${pending.filePath}`);
-                    return {
-                        success: false,
-                        modifiedFiles,
-                        error: `Fix aborted mid-commit: ${errorMsg}. Branch cleaned up.`,
-                    };
-                }
-            }
-            if (modifiedFiles.length === 0) {
-                await this.cleanupBranch(branchName, 'no files modified');
-                return {
-                    success: false,
-                    modifiedFiles: [],
-                    error: 'No files were successfully modified',
-                };
+            const commitResult = await this.commitChanges(recommendation, branchName);
+            if (!commitResult.success) {
+                await this.cleanupBranch(branchName, commitResult.error || 'commit failed');
+                return commitResult;
             }
             core.info(`Successfully created fix branch: ${branchName}`);
-            if (lastCommitSha) {
-                core.info(`Commit SHA: ${lastCommitSha}`);
+            if (commitResult.commitSha) {
+                core.info(`Commit SHA: ${commitResult.commitSha}`);
             }
-            return {
-                success: true,
-                modifiedFiles,
-                commitSha: lastCommitSha || undefined,
-                branchName,
-            };
+            return commitResult;
         }
         catch (error) {
             const errorMessage = getErrorMessage(error, 'applying fix');
@@ -3941,7 +4026,7 @@ Confidence: ${recommendation.confidence}%`;
             }
             return {
                 success: false,
-                modifiedFiles,
+                modifiedFiles: [],
                 error: errorMessage,
             };
         }
@@ -4026,6 +4111,224 @@ Confidence: ${recommendation.confidence}%`;
             core.error(errorMsg);
             return null;
         }
+    }
+    async reapplyFix(recommendation, branchName) {
+        const { octokit, owner, repo, baseBranch } = this.config;
+        try {
+            const baseBranchRef = await withRetry(() => octokit.git.getRef({ owner, repo, ref: `heads/${baseBranch}` }), `getting base branch '${baseBranch}'`);
+            const baseSha = baseBranchRef.data.object.sha;
+            await withRetry(() => octokit.git.updateRef({
+                owner,
+                repo,
+                ref: `heads/${branchName}`,
+                sha: baseSha,
+                force: true,
+            }), `resetting branch ${branchName} to base`);
+            core.info(`Reset branch ${branchName} to base SHA ${baseSha.slice(0, 7)}`);
+            return await this.commitChanges(recommendation, branchName);
+        }
+        catch (error) {
+            const errorMessage = getErrorMessage(error, 'reapplying fix');
+            core.error(`Failed to reapply fix: ${errorMessage}`);
+            return { success: false, modifiedFiles: [], error: errorMessage };
+        }
+    }
+    async waitForValidation(runId) {
+        const { octokit, owner, repo } = this.config;
+        const { POLL_INTERVAL_MS, POLL_TIMEOUT_MS, INITIAL_POLL_DELAY_MS, } = constants_1.FIX_VALIDATE_LOOP;
+        core.info(`Waiting for validation run ${runId} to complete...`);
+        await sleep(INITIAL_POLL_DELAY_MS);
+        const deadline = Date.now() + POLL_TIMEOUT_MS;
+        while (Date.now() < deadline) {
+            try {
+                const run = await octokit.actions.getWorkflowRun({
+                    owner,
+                    repo,
+                    run_id: runId,
+                });
+                const { status, conclusion, html_url } = run.data;
+                core.info(`  Validation run ${runId}: status=${status}, conclusion=${conclusion ?? 'n/a'}`);
+                if (status === 'completed') {
+                    const passed = conclusion === 'success';
+                    let logs;
+                    if (!passed) {
+                        logs = await this.getValidationFailureLogs(runId);
+                    }
+                    return { passed, conclusion: conclusion || 'unknown', logs, runId, url: html_url };
+                }
+            }
+            catch (error) {
+                core.warning(`Error polling validation run ${runId}: ${error}`);
+            }
+            await sleep(POLL_INTERVAL_MS);
+        }
+        return {
+            passed: false,
+            conclusion: 'timeout',
+            logs: `Validation run ${runId} did not complete within ${POLL_TIMEOUT_MS / 1000}s`,
+            runId,
+        };
+    }
+    async getValidationFailureLogs(runId) {
+        const { octokit, owner, repo } = this.config;
+        try {
+            const jobs = await withRetry(() => octokit.actions.listJobsForWorkflowRun({
+                owner,
+                repo,
+                run_id: runId,
+                filter: 'latest',
+            }), `listing jobs for validation run ${runId}`);
+            const failedJob = jobs.data.jobs.find((j) => j.conclusion === 'failure') ||
+                jobs.data.jobs[0];
+            if (!failedJob)
+                return 'No job found in validation run';
+            const logsResponse = await withRetry(() => octokit.actions.downloadJobLogsForWorkflowRun({
+                owner,
+                repo,
+                job_id: failedJob.id,
+            }), `downloading logs for validation job ${failedJob.id}`);
+            const rawLogs = typeof logsResponse.data === 'string'
+                ? logsResponse.data
+                : String(logsResponse.data);
+            const maxLen = 20_000;
+            if (rawLogs.length > maxLen) {
+                return rawLogs.slice(-maxLen);
+            }
+            return rawLogs;
+        }
+        catch (error) {
+            core.warning(`Failed to fetch validation logs for run ${runId}: ${error}`);
+            return `Could not fetch validation logs: ${error}`;
+        }
+    }
+    async commitChanges(recommendation, branchName) {
+        const { octokit, owner, repo } = this.config;
+        const modifiedFiles = [];
+        let lastCommitSha = '';
+        const totalChanges = recommendation.proposedChanges.length;
+        const pendingChanges = [];
+        const validationErrors = [];
+        for (const change of recommendation.proposedChanges) {
+            const filePath = change.file;
+            try {
+                const fileResponse = await withRetry(() => octokit.repos.getContent({
+                    owner,
+                    repo,
+                    path: filePath,
+                    ref: branchName,
+                }), `getting file content for ${filePath}`);
+                if (Array.isArray(fileResponse.data) ||
+                    fileResponse.data.type !== 'file') {
+                    validationErrors.push(`${filePath} is not a file`);
+                    continue;
+                }
+                const currentContent = Buffer.from(fileResponse.data.content, 'base64').toString('utf-8');
+                const fileSha = fileResponse.data.sha;
+                if (change.oldCode && change.newCode) {
+                    const matchIndex = currentContent.indexOf(change.oldCode);
+                    if (matchIndex === -1) {
+                        validationErrors.push(`Could not find old code to replace in ${filePath}`);
+                        continue;
+                    }
+                    const secondMatch = currentContent.indexOf(change.oldCode, matchIndex + 1);
+                    if (secondMatch !== -1) {
+                        validationErrors.push(`oldCode matches multiple locations in ${filePath} — ambiguous replacement rejected`);
+                        continue;
+                    }
+                    const newContent = currentContent.slice(0, matchIndex) +
+                        change.newCode +
+                        currentContent.slice(matchIndex + change.oldCode.length);
+                    pendingChanges.push({
+                        filePath,
+                        newContent,
+                        fileSha,
+                        justification: change.justification,
+                    });
+                }
+            }
+            catch (fileError) {
+                validationErrors.push(getErrorMessage(fileError, `validating ${filePath}`));
+            }
+        }
+        if (pendingChanges.length === 0) {
+            for (const err of validationErrors)
+                core.warning(err);
+            return {
+                success: false,
+                modifiedFiles: [],
+                error: `No files could be modified. Validation errors: ${validationErrors.join('; ')}`,
+            };
+        }
+        if (totalChanges > 1 && validationErrors.length > 0) {
+            core.warning(`${validationErrors.length} of ${totalChanges} changes failed validation — aborting to avoid incomplete fix`);
+            for (const err of validationErrors) {
+                core.warning(`  - ${err}`);
+            }
+            return {
+                success: false,
+                modifiedFiles: [],
+                error: `Partial fix rejected: ${validationErrors.length} of ${totalChanges} changes failed validation`,
+            };
+        }
+        try {
+            const branchRef = await withRetry(() => octokit.git.getRef({ owner, repo, ref: `heads/${branchName}` }), `getting ref for ${branchName}`);
+            const baseSha = branchRef.data.object.sha;
+            const treeItems = [];
+            for (const pending of pendingChanges) {
+                treeItems.push({
+                    path: pending.filePath,
+                    mode: '100644',
+                    type: 'blob',
+                    content: pending.newContent,
+                });
+                modifiedFiles.push(pending.filePath);
+            }
+            const fileList = pendingChanges.map((p) => p.filePath).join(', ');
+            const justification = pendingChanges[0].justification.slice(0, 50);
+            const commitMessage = `fix(test): ${justification}
+
+Automated fix generated by adept-triage-agent.
+
+Files: ${fileList}
+Confidence: ${recommendation.confidence}%`;
+            const tree = await withRetry(() => octokit.git.createTree({
+                owner,
+                repo,
+                base_tree: baseSha,
+                tree: treeItems,
+            }), 'creating tree for atomic commit');
+            const commit = await withRetry(() => octokit.git.createCommit({
+                owner,
+                repo,
+                message: commitMessage,
+                tree: tree.data.sha,
+                parents: [baseSha],
+            }), 'creating commit');
+            await withRetry(() => octokit.git.updateRef({
+                owner,
+                repo,
+                ref: `heads/${branchName}`,
+                sha: commit.data.sha,
+            }), `updating ref heads/${branchName}`);
+            lastCommitSha = commit.data.sha;
+            for (const f of modifiedFiles)
+                core.info(`Modified: ${f}`);
+        }
+        catch (commitError) {
+            const errorMsg = getErrorMessage(commitError, 'atomic commit');
+            core.error(errorMsg);
+            return {
+                success: false,
+                modifiedFiles: [],
+                error: `Atomic commit failed: ${errorMsg}`,
+            };
+        }
+        return {
+            success: true,
+            modifiedFiles,
+            commitSha: lastCommitSha || undefined,
+            branchName,
+        };
     }
 }
 exports.GitHubFixApplier = GitHubFixApplier;
@@ -4126,32 +4429,39 @@ class SimplifiedRepairAgent {
             });
         }
     }
-    async generateFixRecommendation(repairContext, errorData) {
+    async generateFixRecommendation(repairContext, errorData, previousAttempt) {
         try {
             core.info('🔧 Generating fix recommendation...');
             if (this.config.enableAgenticRepair && this.orchestrator) {
                 core.info('🤖 Attempting agentic repair...');
-                const agenticResult = await this.tryAgenticRepair(repairContext, errorData);
+                const agenticResult = await this.tryAgenticRepair(repairContext, errorData, previousAttempt);
                 if (agenticResult) {
                     core.info(`✅ Agentic repair succeeded with ${agenticResult.confidence}% confidence`);
                     return agenticResult;
                 }
                 core.info('🔄 Agentic repair did not produce a fix, falling back to single-shot...');
             }
-            return await this.singleShotRepair(repairContext, errorData);
+            return await this.singleShotRepair(repairContext, errorData, previousAttempt);
         }
         catch (error) {
             core.warning(`Failed to generate fix recommendation: ${error}`);
             return null;
         }
     }
-    async tryAgenticRepair(repairContext, errorData) {
+    async tryAgenticRepair(repairContext, errorData, previousAttempt) {
         if (!this.orchestrator) {
             return null;
         }
         try {
+            let enrichedErrorMessage = repairContext.errorMessage;
+            if (previousAttempt) {
+                const prevChanges = previousAttempt.previousFix.proposedChanges
+                    .map((c) => `File: ${c.file}\nOld:\n${c.oldCode}\nNew:\n${c.newCode}`)
+                    .join('\n---\n');
+                enrichedErrorMessage += `\n\n## PREVIOUS FIX ATTEMPT (iteration ${previousAttempt.iteration}) — FAILED VALIDATION\n\nThe following fix was applied and the test was re-run, but it still failed.\n\n### Previous Fix:\n${prevChanges}\n\n### Validation Failure Logs:\n${previousAttempt.validationLogs.slice(0, 8000)}\n\nYou MUST try a DIFFERENT approach. Do NOT repeat the same fix.`;
+            }
             const agentContext = (0, agents_1.createAgentContext)({
-                errorMessage: repairContext.errorMessage,
+                errorMessage: enrichedErrorMessage,
                 testFile: repairContext.testFile,
                 testName: repairContext.testName,
                 errorType: repairContext.errorType,
@@ -4184,7 +4494,7 @@ class SimplifiedRepairAgent {
             return null;
         }
     }
-    async singleShotRepair(repairContext, errorData) {
+    async singleShotRepair(repairContext, errorData, previousAttempt) {
         let sourceFileContent = null;
         const cleanFilePath = this.extractFilePath(repairContext.testFile);
         if (this.sourceFetchContext && cleanFilePath) {
@@ -4193,7 +4503,7 @@ class SimplifiedRepairAgent {
                 core.info(`  ✅ Fetched source file: ${cleanFilePath} (${sourceFileContent.length} chars)`);
             }
         }
-        const prompt = this.buildPrompt(repairContext, errorData, sourceFileContent, cleanFilePath);
+        const prompt = this.buildPrompt(repairContext, errorData, sourceFileContent, cleanFilePath, previousAttempt);
         if (process.env.DEBUG_FIX_RECOMMENDATION) {
             const promptFile = `fix-prompt-${Date.now()}.md`;
             fs.writeFileSync(promptFile, prompt);
@@ -4205,18 +4515,44 @@ class SimplifiedRepairAgent {
             core.info('Cannot generate confident fix recommendation');
             return null;
         }
-        if (sourceFileContent && recommendation.changes) {
+        if (this.sourceFetchContext && recommendation.changes) {
+            const fileCache = new Map();
+            if (cleanFilePath && sourceFileContent) {
+                fileCache.set(cleanFilePath, sourceFileContent);
+            }
             const validChanges = [];
             for (const change of recommendation.changes) {
-                if (change.oldCode && !sourceFileContent.includes(change.oldCode)) {
-                    core.warning(`⚠️ Model proposed oldCode that does not exist in source file: "${change.oldCode.substring(0, 80)}..."`);
-                    core.warning('   The model hallucinated code instead of using the actual source. Rejecting this change.');
+                if (!change.oldCode) {
+                    validChanges.push(change);
+                    continue;
+                }
+                const changePath = this.extractFilePath(change.file);
+                if (!changePath) {
+                    core.warning(`⚠️ Could not resolve file path for change target "${change.file}" — rejecting change`);
+                    continue;
+                }
+                if (!fileCache.has(changePath)) {
+                    fileCache.set(changePath, await this.fetchSourceFile(changePath));
+                }
+                const fileContent = fileCache.get(changePath);
+                if (!fileContent) {
+                    core.warning(`⚠️ Could not fetch source for "${changePath}" — rejecting change (cannot verify oldCode)`);
+                    continue;
+                }
+                if (!fileContent.includes(change.oldCode)) {
+                    core.warning(`⚠️ oldCode does not exist in ${changePath}: "${change.oldCode.substring(0, 80)}..." — rejecting (hallucinated)`);
+                    continue;
+                }
+                const firstIdx = fileContent.indexOf(change.oldCode);
+                const secondIdx = fileContent.indexOf(change.oldCode, firstIdx + 1);
+                if (secondIdx !== -1) {
+                    core.warning(`⚠️ oldCode matches multiple locations in ${changePath} — rejecting (ambiguous replacement)`);
                     continue;
                 }
                 validChanges.push(change);
             }
             if (validChanges.length === 0) {
-                core.warning('❌ All proposed changes had hallucinated oldCode — rejecting recommendation');
+                core.warning('❌ All proposed changes failed source validation — rejecting recommendation');
                 return null;
             }
             recommendation.changes = validChanges;
@@ -4342,7 +4678,7 @@ class SimplifiedRepairAgent {
         }
         return sanitized;
     }
-    buildPrompt(context, errorData, sourceFileContent, cleanFilePath) {
+    buildPrompt(context, errorData, sourceFileContent, cleanFilePath, previousAttempt) {
         let contextInfo = `## Test Failure Context
 - **Test File:** ${this.sanitizeForPrompt(context.testFile)}
 - **Test Name:** ${this.sanitizeForPrompt(context.testName)}
@@ -4353,10 +4689,12 @@ class SimplifiedRepairAgent {
 - **Analyzed Commit SHA:** ${this.sanitizeForPrompt(context.commitSha)}
 ${context.errorSelector ? `- **Failed Selector:** ${this.sanitizeForPrompt(context.errorSelector)}` : ''}
 ${context.errorLine ? `- **Error Line:** ${context.errorLine}` : ''}`;
+        contextInfo += `\n- **Product Under Test:** ${constants_1.DEFAULT_PRODUCT_REPO}`;
         if (this.sourceFetchContext) {
             contextInfo += `\n\n## Repair Source Context
-- **Source Repository:** ${this.sourceFetchContext.owner}/${this.sourceFetchContext.repo}
-- **Source Branch:** ${this.sourceFetchContext.branch}`;
+- **Test Repository:** ${this.sourceFetchContext.owner}/${this.sourceFetchContext.repo}
+- **Source Branch:** ${this.sourceFetchContext.branch}
+- **Note:** You may ONLY propose changes to files in the test repository. Product source files (from ${constants_1.DEFAULT_PRODUCT_REPO}) are provided for context only.`;
         }
         if (sourceFileContent && cleanFilePath) {
             core.info('  ✅ Including actual source file content in prompt');
@@ -4419,7 +4757,7 @@ ${lines.length > 150 ? `\n... (${lines.length - 150} more lines)` : ''}
             }
             if (errorData.prDiff) {
                 core.info(`  ✅ Including PR diff (${errorData.prDiff.totalChanges} files changed)`);
-                contextInfo += `\n\n## Pull Request Changes\n`;
+                contextInfo += `\n\n## Recent Changes in Product Repo (${constants_1.DEFAULT_PRODUCT_REPO})\nThese are READ-ONLY context from the product. Only modify test files.\n`;
                 contextInfo += `- **Total Files Changed:** ${errorData.prDiff.totalChanges}\n`;
                 contextInfo += `- **Lines Added:** ${errorData.prDiff.additions}\n`;
                 contextInfo += `- **Lines Deleted:** ${errorData.prDiff.deletions}\n`;
@@ -4442,6 +4780,24 @@ ${lines.length > 150 ? `\n... (${lines.length - 150} more lines)` : ''}
         }
         else {
             core.info('⚠️  No ErrorData provided - using minimal context');
+        }
+        if (previousAttempt) {
+            const prevChanges = previousAttempt.previousFix.proposedChanges
+                .map((c) => `File: ${c.file}\noldCode:\n\`\`\`\n${c.oldCode}\n\`\`\`\nnewCode:\n\`\`\`\n${c.newCode}\n\`\`\``)
+                .join('\n---\n');
+            contextInfo += `\n\n## PREVIOUS FIX ATTEMPT #${previousAttempt.iteration} — FAILED VALIDATION
+
+The following fix was applied to a branch and the test was re-run on Sauce Labs, but it **still failed**.
+
+### Previous Fix That Was Tried:
+${prevChanges}
+
+### Validation Failure Logs (tail):
+\`\`\`
+${previousAttempt.validationLogs.slice(0, 6000)}
+\`\`\`
+
+**CRITICAL: You MUST try a DIFFERENT approach.** Analyze WHY the previous fix failed and address the root cause. Do NOT repeat the same change.`;
         }
         return `You are a test repair expert. Analyze this test failure and provide a fix recommendation.
 
@@ -4638,6 +4994,338 @@ You MUST respond in strict JSON only with this schema:
 }
 exports.SimplifiedRepairAgent = SimplifiedRepairAgent;
 //# sourceMappingURL=simplified-repair-agent.js.map
+
+/***/ }),
+
+/***/ 1697:
+/***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
+
+"use strict";
+
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.CursorCloudValidator = void 0;
+const core = __importStar(__nccwpck_require__(7484));
+const constants_1 = __nccwpck_require__(8361);
+const cursor_prompt_builder_1 = __nccwpck_require__(6071);
+function sleep(ms) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+}
+class CursorCloudValidator {
+    apiKey;
+    baseUrl;
+    constructor(apiKey, baseUrl) {
+        this.apiKey = apiKey;
+        this.baseUrl = baseUrl || constants_1.CURSOR_CLOUD.API_BASE_URL;
+    }
+    async validate(params, mode = 'poll', timeoutMs) {
+        const agentId = await this.launchAgent(params);
+        if (mode === 'async') {
+            core.info(`Cursor cloud agent launched in async mode: ${this.agentUrl(agentId)}`);
+            return {
+                agentId,
+                status: 'CREATING',
+                testPassed: null,
+                summary: 'Cursor cloud agent launched. Results will be available asynchronously.',
+                agentUrl: this.agentUrl(agentId),
+            };
+        }
+        const finalStatus = await this.pollForCompletion(agentId, timeoutMs || constants_1.CURSOR_CLOUD.VALIDATION_TIMEOUT_MS);
+        return this.buildResult(agentId, finalStatus);
+    }
+    async launchAgent(params) {
+        const prompt = (0, cursor_prompt_builder_1.buildValidationPrompt)(params);
+        core.info(`Launching Cursor cloud agent for ${params.repositoryUrl}`);
+        core.info(`  Branch: ${params.branch}`);
+        core.info(`  Spec: ${params.spec}`);
+        const body = {
+            prompt: { text: prompt },
+            source: {
+                repository: params.repositoryUrl,
+                ref: params.branch,
+            },
+            target: {
+                autoCreatePr: false,
+            },
+        };
+        const response = await this.request('POST', '/v0/agents', body);
+        core.info(`Cursor cloud agent created: ${response.id}`);
+        core.info(`  URL: ${this.agentUrl(response.id)}`);
+        return response.id;
+    }
+    async pollForCompletion(agentId, timeoutMs) {
+        core.info(`Waiting for Cursor cloud agent ${agentId} to complete...`);
+        await sleep(constants_1.CURSOR_CLOUD.INITIAL_DELAY_MS);
+        const deadline = Date.now() + timeoutMs;
+        let attempts = 0;
+        while (Date.now() < deadline && attempts < constants_1.CURSOR_CLOUD.MAX_POLL_ATTEMPTS) {
+            attempts++;
+            const agent = await this.getAgentStatus(agentId);
+            core.info(`  Poll ${attempts}: status=${agent.status} (${Math.round((deadline - Date.now()) / 1000)}s remaining)`);
+            if (constants_1.CURSOR_CLOUD.TERMINAL_STATUSES.includes(agent.status)) {
+                core.info(`Cursor cloud agent reached terminal status: ${agent.status}`);
+                return agent.status;
+            }
+            await sleep(constants_1.CURSOR_CLOUD.POLL_INTERVAL_MS);
+        }
+        core.warning(`Cursor cloud agent ${agentId} did not complete within ${timeoutMs}ms`);
+        return 'TIMEOUT';
+    }
+    async buildResult(agentId, finalStatus) {
+        const result = {
+            agentId,
+            status: finalStatus,
+            testPassed: null,
+            summary: '',
+            agentUrl: this.agentUrl(agentId),
+        };
+        try {
+            const agent = await this.getAgentStatus(agentId);
+            result.summary = agent.summary || '';
+            result.branchName = agent.target?.branchName;
+            result.prUrl = agent.target?.prUrl;
+        }
+        catch (err) {
+            core.debug(`Failed to fetch final agent status: ${err}`);
+        }
+        if (finalStatus === 'FINISHED' || finalStatus === 'ERROR') {
+            try {
+                const conversation = await this.getConversation(agentId);
+                result.conversation = conversation.messages;
+                result.testPassed = this.inferTestResult(conversation.messages);
+            }
+            catch (err) {
+                core.debug(`Failed to fetch agent conversation: ${err}`);
+            }
+            try {
+                const artifacts = await this.getArtifacts(agentId);
+                result.artifacts = artifacts.artifacts;
+            }
+            catch (err) {
+                core.debug(`Failed to fetch agent artifacts: ${err}`);
+            }
+        }
+        if (!result.summary) {
+            result.summary = this.generateFallbackSummary(result);
+        }
+        return result;
+    }
+    inferTestResult(messages) {
+        const assistantMessages = messages.filter((m) => m.type === 'assistant_message');
+        if (assistantMessages.length === 0)
+            return null;
+        const lastMessage = assistantMessages[assistantMessages.length - 1].text.toLowerCase();
+        const passSignals = [
+            'test passed',
+            'tests passed',
+            'all passing',
+            'all tests pass',
+            'validation passed',
+            'successfully passed',
+            'test run passed',
+            'specs passed',
+            'suite passed',
+        ];
+        const failSignals = [
+            'test failed',
+            'tests failed',
+            'validation failed',
+            'test run failed',
+            'specs failed',
+            'suite failed',
+            'failure detected',
+            'assertion error',
+            'did not pass',
+        ];
+        const hasPass = passSignals.some((s) => lastMessage.includes(s));
+        const hasFail = failSignals.some((s) => lastMessage.includes(s));
+        if (hasPass && !hasFail)
+            return true;
+        if (hasFail && !hasPass)
+            return false;
+        return null;
+    }
+    generateFallbackSummary(result) {
+        switch (result.status) {
+            case 'FINISHED':
+                if (result.testPassed === true)
+                    return 'Cursor cloud agent: tests passed';
+                if (result.testPassed === false)
+                    return 'Cursor cloud agent: tests failed';
+                return 'Cursor cloud agent finished but test result could not be determined';
+            case 'ERROR':
+                return 'Cursor cloud agent encountered an error during validation';
+            case 'TIMEOUT':
+                return 'Cursor cloud agent validation timed out';
+            default:
+                return `Cursor cloud agent status: ${result.status}`;
+        }
+    }
+    async getAgentStatus(agentId) {
+        return this.request('GET', `/v0/agents/${agentId}`);
+    }
+    async getConversation(agentId) {
+        return this.request('GET', `/v0/agents/${agentId}/conversation`);
+    }
+    async getArtifacts(agentId) {
+        return this.request('GET', `/v0/agents/${agentId}/artifacts`);
+    }
+    agentUrl(agentId) {
+        return `https://cursor.com/agents?id=${agentId}`;
+    }
+    async request(method, path, body) {
+        const url = `${this.baseUrl}${path}`;
+        const authHeader = `Basic ${Buffer.from(`${this.apiKey}:`).toString('base64')}`;
+        const options = {
+            method,
+            headers: {
+                Authorization: authHeader,
+                'Content-Type': 'application/json',
+            },
+        };
+        if (body) {
+            options.body = JSON.stringify(body);
+        }
+        const response = await fetch(url, options);
+        if (!response.ok) {
+            const text = await response.text().catch(() => '');
+            throw new Error(`Cursor API ${method} ${path} failed: ${response.status} ${response.statusText}${text ? ` — ${text}` : ''}`);
+        }
+        return response.json();
+    }
+}
+exports.CursorCloudValidator = CursorCloudValidator;
+//# sourceMappingURL=cursor-cloud-validator.js.map
+
+/***/ }),
+
+/***/ 6071:
+/***/ ((__unused_webpack_module, exports) => {
+
+"use strict";
+
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.buildValidationPrompt = buildValidationPrompt;
+function buildValidationPrompt(params) {
+    const framework = params.framework || detectFramework(params.spec);
+    const testCommand = params.testCommand || defaultTestCommand(framework, params);
+    return `You are validating a test fix created by the adept-triage-agent.
+
+## Your Task
+
+Run the failing test spec against the fix branch and report whether it passes or fails.
+
+## Context
+
+- **Repository:** ${params.repositoryUrl}
+- **Branch:** ${params.branch}
+- **Spec file:** ${params.spec}
+- **Target URL:** ${params.previewUrl}
+- **Framework:** ${framework}
+${params.triageRunId ? `- **Triage Run ID:** ${params.triageRunId}` : ''}
+
+## Steps
+
+1. The repository has already been checked out at the correct branch. Verify you are on branch \`${params.branch}\`.
+
+2. Install dependencies:
+   \`\`\`bash
+   npm ci
+   \`\`\`
+
+3. Run the test:
+   \`\`\`bash
+   ${testCommand}
+   \`\`\`
+
+4. After the test completes, analyze the output carefully.
+
+## Reporting
+
+Conclude your response with one of these exact phrases:
+
+- **"VALIDATION RESULT: TEST PASSED"** — if the spec passes
+- **"VALIDATION RESULT: TEST FAILED"** — if the spec fails
+- **"VALIDATION RESULT: INCONCLUSIVE"** — if you cannot determine the result
+
+Then provide:
+- The full test output (stdout/stderr)
+- If the test failed, explain *why* it failed and whether the fix was on the right track
+- Any screenshots or artifacts that help explain the result
+
+## Important Notes
+
+${frameworkNotes(framework)}
+- Do NOT modify any test files. You are only validating, not fixing.
+- If dependencies fail to install, report that as INCONCLUSIVE with the error details.
+- If the test command itself is malformed, report INCONCLUSIVE.
+`;
+}
+function detectFramework(spec) {
+    if (spec.includes('.cy.') || spec.includes('cypress/'))
+        return 'cypress';
+    if (spec.includes('wdio') || spec.includes('test/specs/'))
+        return 'webdriverio';
+    return 'unknown';
+}
+function defaultTestCommand(framework, params) {
+    switch (framework) {
+        case 'webdriverio':
+            return `npx wdio wdio.conf.ts --spec ${params.spec} -u ${params.previewUrl} -t local`;
+        case 'cypress':
+            return `CYPRESS_BASE_URL=${params.previewUrl} npx cypress run --spec ${params.spec} --browser chrome`;
+        default:
+            return params.testCommand || `npm test -- --spec ${params.spec}`;
+    }
+}
+function frameworkNotes(framework) {
+    switch (framework) {
+        case 'webdriverio':
+            return `- This is a WebdriverIO project. Tests may use multi-remote mode (multiple browser instances).
+- Run with \`-t local\` to use local Chrome. Do NOT use Sauce Labs (\`-t sauce\`) for validation.
+- Some specs use Chromedriver on port 9515 — only run one spec at a time.
+- If you see Chromedriver port conflicts, kill existing chromedriver processes first.`;
+        case 'cypress':
+            return `- This is a Cypress project. Set CYPRESS_BASE_URL to the target URL.
+- Use \`--browser chrome\` for consistency.
+- Check for any required environment variables in cypress.config.ts.`;
+        default:
+            return `- Test framework not auto-detected. Follow the project's README or AGENTS.md for run instructions.`;
+    }
+}
+//# sourceMappingURL=cursor-prompt-builder.js.map
 
 /***/ }),
 
@@ -4888,25 +5576,18 @@ async function fetchDiffWithFallback(artifactFetcher, inputs, repoDetails) {
             }
         }
     }
-    if (inputs.productRepo) {
-        core.info(`📋 Fetching recent product diff from ${inputs.productRepo} (last ${inputs.productDiffCommits || 5} commits)...`);
-        try {
-            const diff = await artifactFetcher.fetchRecentProductDiff(inputs.productRepo, inputs.productDiffCommits || 5);
-            logDiffResult(diff, `recent product diff (${inputs.productRepo})`);
-            if (diff)
-                return diff;
-            core.warning(`⚠️ Recent product diff fetch returned null`);
-        }
-        catch (error) {
-            core.warning(`❌ Failed to fetch recent product diff from ${inputs.productRepo}: ${error}`);
-        }
+    core.info(`📋 Fetching recent product diff from ${inputs.productRepo} (last ${inputs.productDiffCommits || 5} commits)...`);
+    try {
+        const diff = await artifactFetcher.fetchRecentProductDiff(inputs.productRepo, inputs.productDiffCommits || 5);
+        logDiffResult(diff, `recent product diff (${inputs.productRepo})`);
+        if (diff)
+            return diff;
+        core.warning(`⚠️ Recent product diff fetch returned null`);
     }
-    if (!inputs.prNumber && !inputs.branch && !inputs.commitSha && !inputs.productRepo) {
-        core.info(`ℹ️ No PR_NUMBER, BRANCH, COMMIT_SHA, or PRODUCT_REPO provided, skipping diff fetch`);
+    catch (error) {
+        core.warning(`❌ Failed to fetch recent product diff from ${inputs.productRepo}: ${error}`);
     }
-    else {
-        core.info(`ℹ️ All diff fetch strategies exhausted, proceeding without diff`);
-    }
+    core.info('ℹ️ All diff fetch strategies exhausted, proceeding without diff');
     return null;
 }
 async function fetchArtifactsParallel(artifactFetcher, runId, jobName, artifactRepoDetails, diffRepoDetails, inputs) {

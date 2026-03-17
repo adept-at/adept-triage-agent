@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.AGENT_CONFIG = exports.AUTO_FIX = exports.TEST_ISSUE_CATEGORIES = exports.ERROR_TYPES = exports.FORMATTING = exports.ARTIFACTS = exports.SHORT_SHA_LENGTH = exports.OPENAI = exports.CONFIDENCE = exports.LOG_LIMITS = void 0;
+exports.FIX_VALIDATE_LOOP = exports.AGENT_CONFIG = exports.DEFAULT_PRODUCT_URL = exports.DEFAULT_PRODUCT_REPO = exports.CURSOR_CLOUD = exports.AUTO_FIX = exports.TEST_ISSUE_CATEGORIES = exports.ERROR_TYPES = exports.FORMATTING = exports.ARTIFACTS = exports.SHORT_SHA_LENGTH = exports.OPENAI = exports.CONFIDENCE = exports.LOG_LIMITS = void 0;
 exports.LOG_LIMITS = {
     GITHUB_MAX_SIZE: 50_000,
     ARTIFACT_SOFT_CAP: 20_000,
@@ -66,8 +66,18 @@ exports.AUTO_FIX = {
     DEFAULT_MIN_CONFIDENCE: 70,
     BRANCH_PREFIX: 'fix/triage-agent/',
 };
+exports.CURSOR_CLOUD = {
+    API_BASE_URL: 'https://api.cursor.com',
+    POLL_INTERVAL_MS: 10_000,
+    VALIDATION_TIMEOUT_MS: 300_000,
+    INITIAL_DELAY_MS: 15_000,
+    MAX_POLL_ATTEMPTS: 30,
+    TERMINAL_STATUSES: ['FINISHED', 'ERROR'],
+};
+exports.DEFAULT_PRODUCT_REPO = 'adept-at/learn-webapp';
+exports.DEFAULT_PRODUCT_URL = 'https://learn.adept.at';
 exports.AGENT_CONFIG = {
-    ENABLE_AGENTIC_REPAIR: process.env.ENABLE_AGENTIC_REPAIR === 'true' || false,
+    ENABLE_AGENTIC_REPAIR: process.env.ENABLE_AGENTIC_REPAIR !== 'false',
     MAX_AGENT_ITERATIONS: 3,
     AGENT_TIMEOUT_MS: 120_000,
     INDIVIDUAL_AGENT_TIMEOUT_MS: 60_000,
@@ -75,5 +85,11 @@ exports.AGENT_CONFIG = {
     AGENT_TEMPERATURE: 0.3,
     AGENT_MAX_TOKENS: 4000,
     FALLBACK_TO_SINGLE_SHOT: true,
+};
+exports.FIX_VALIDATE_LOOP = {
+    MAX_ITERATIONS: 3,
+    POLL_INTERVAL_MS: 15_000,
+    POLL_TIMEOUT_MS: 600_000,
+    INITIAL_POLL_DELAY_MS: 20_000,
 };
 //# sourceMappingURL=constants.js.map

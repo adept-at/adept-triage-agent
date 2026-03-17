@@ -2,6 +2,7 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.AnalysisAgent = void 0;
 const base_agent_1 = require("./base-agent");
+const constants_1 = require("../config/constants");
 class AnalysisAgent extends base_agent_1.BaseAgent {
     constructor(openaiClient, config) {
         super(openaiClient, 'AnalysisAgent', config);
@@ -104,7 +105,7 @@ You MUST respond with a JSON object matching this schema:
             parts.push('', '### Relevant Logs', '```', logsText, '```');
         }
         if (context.prDiff && context.prDiff.files.length > 0) {
-            parts.push('', '### Recent Changes (PR Diff)');
+            parts.push('', `### Recent Changes in ${constants_1.DEFAULT_PRODUCT_REPO}`);
             for (const file of context.prDiff.files.slice(0, 5)) {
                 parts.push(`- **${file.filename}** (${file.status})`);
                 if (file.patch) {

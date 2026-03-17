@@ -19,10 +19,12 @@ describe('fix-applier', () => {
       getRef: jest.Mock;
       createRef: jest.Mock;
       deleteRef: jest.Mock;
+      createTree: jest.Mock;
+      createCommit: jest.Mock;
+      updateRef: jest.Mock;
     };
     repos: {
       getContent: jest.Mock;
-      createOrUpdateFileContents: jest.Mock;
     };
   };
 
@@ -45,10 +47,12 @@ describe('fix-applier', () => {
         getRef: jest.fn(),
         createRef: jest.fn(),
         deleteRef: jest.fn(),
+        createTree: jest.fn(),
+        createCommit: jest.fn(),
+        updateRef: jest.fn(),
       },
       repos: {
         getContent: jest.fn(),
-        createOrUpdateFileContents: jest.fn(),
       },
     };
 
@@ -60,6 +64,13 @@ describe('fix-applier', () => {
       data: { ref: 'refs/heads/fix/triage-agent/test-20240315-000' },
     });
     mockOctokit.git.deleteRef.mockResolvedValue({});
+    mockOctokit.git.createTree.mockResolvedValue({
+      data: { sha: 'tree-sha-123' },
+    });
+    mockOctokit.git.createCommit.mockResolvedValue({
+      data: { sha: 'atomic-commit-sha' },
+    });
+    mockOctokit.git.updateRef.mockResolvedValue({});
   });
 
   describe('GitHubFixApplier.canApply()', () => {
@@ -234,18 +245,11 @@ describe('fix-applier', () => {
         },
       });
 
-      // Mock file update
-      mockOctokit.repos.createOrUpdateFileContents.mockResolvedValue({
-        data: {
-          commit: { sha: 'new-commit-sha-456' },
-        },
-      });
-
       const result = await applier.applyFix(recommendation);
 
       expect(result.success).toBe(true);
       expect(result.modifiedFiles).toContain('cypress/e2e/test.cy.ts');
-      expect(result.commitSha).toBe('new-commit-sha-456');
+      expect(result.commitSha).toBe('atomic-commit-sha');
       // Branch name now includes milliseconds suffix
       expect(result.branchName).toMatch(/^fix\/triage-agent\/cypress-e2e-test-cy-ts-\d{8}-\d{3}$/);
       expect(result.error).toBeUndefined();
@@ -271,15 +275,26 @@ describe('fix-applier', () => {
         ref: expect.stringMatching(/^fix\/triage-agent\//),
       });
 
-      expect(mockOctokit.repos.createOrUpdateFileContents).toHaveBeenCalledWith({
-        owner: 'test-owner',
-        repo: 'test-repo',
-        path: 'cypress/e2e/test.cy.ts',
-        message: expect.stringContaining('fix(test):'),
-        content: expect.any(String),
-        sha: 'file-sha-123',
-        branch: expect.stringMatching(/^fix\/triage-agent\//),
-      });
+      expect(mockOctokit.git.createTree).toHaveBeenCalledWith(
+        expect.objectContaining({
+          owner: 'test-owner',
+          repo: 'test-repo',
+          tree: expect.arrayContaining([
+            expect.objectContaining({
+              path: 'cypress/e2e/test.cy.ts',
+              mode: '100644',
+              type: 'blob',
+            }),
+          ]),
+        })
+      );
+      expect(mockOctokit.git.createCommit).toHaveBeenCalledWith(
+        expect.objectContaining({
+          owner: 'test-owner',
+          repo: 'test-repo',
+          message: expect.stringContaining('fix(test):'),
+        })
+      );
     });
 
     it('should log target repository and base branch', async () => {
@@ -299,9 +314,6 @@ describe('fix-applier', () => {
           content: Buffer.from('const x = old;').toString('base64'),
           sha: 'sha1',
         },
-      });
-      mockOctokit.repos.createOrUpdateFileContents.mockResolvedValue({
-        data: { commit: { sha: 'sha' } },
       });
 
       await applier.applyFix(recommendation);
@@ -399,18 +411,17 @@ describe('fix-applier', () => {
         },
       });
 
-      // Simulate commit failure
-      mockOctokit.repos.createOrUpdateFileContents.mockRejectedValue(
+      // Simulate atomic commit failure
+      mockOctokit.git.createTree.mockRejectedValue(
         new Error('Permission denied')
       );
 
       const result = await applier.applyFix(recommendation);
 
       expect(result.success).toBe(false);
-      // Commit-phase failures now abort and clean up
-      expect(result.error).toContain('Fix aborted mid-commit');
+      expect(result.error).toContain('Atomic commit failed');
       expect(mockCore.error).toHaveBeenCalledWith(
-        expect.stringContaining('committing cypress/e2e/test.cy.ts')
+        expect.stringContaining('Permission denied')
       );
 
       // Verify cleanup was attempted (branch deleted on commit failure)
@@ -463,18 +474,27 @@ describe('fix-applier', () => {
         throw new Error('Unknown file');
       });
 
-      mockOctokit.repos.createOrUpdateFileContents.mockResolvedValue({
-        data: { commit: { sha: 'final-commit-sha' } },
-      });
-
       const result = await applier.applyFix(recommendation);
 
       expect(result).toEqual<ApplyResult>({
         success: true,
         modifiedFiles: ['file1.ts', 'file2.ts'],
-        commitSha: 'final-commit-sha',
+        commitSha: 'atomic-commit-sha',
         branchName: expect.stringMatching(/^fix\/triage-agent\/file1-ts-\d{8}-\d{3}$/),
       });
+
+      // Verify atomic: one tree + one commit, never per-file commits
+      expect(mockOctokit.git.createTree).toHaveBeenCalledTimes(1);
+      expect(mockOctokit.git.createCommit).toHaveBeenCalledTimes(1);
+      expect(mockOctokit.git.createTree).toHaveBeenCalledWith(
+        expect.objectContaining({
+          base_tree: 'base-sha-123',
+          tree: expect.arrayContaining([
+            expect.objectContaining({ path: 'file1.ts', mode: '100644', type: 'blob' }),
+            expect.objectContaining({ path: 'file2.ts', mode: '100644', type: 'blob' }),
+          ]),
+        })
+      );
     });
 
     it('should return correct ApplyResult structure on failure', async () => {
@@ -546,10 +566,6 @@ describe('fix-applier', () => {
         throw new Error('File not found');
       });
 
-      mockOctokit.repos.createOrUpdateFileContents.mockResolvedValue({
-        data: { commit: { sha: 'commitsha' } },
-      });
-
       const result = await applier.applyFix(recommendation);
 
       // Multi-file fix should abort entirely when some changes fail validation
@@ -563,7 +579,7 @@ describe('fix-applier', () => {
       expect(mockOctokit.git.deleteRef).toHaveBeenCalled();
     });
 
-    it('should clean up on commit failure during multi-file fix', async () => {
+    it('should clean up on atomic commit failure during multi-file fix', async () => {
       const recommendation: FixRecommendation = {
         confidence: 85,
         summary: 'Multi-file fix',
@@ -587,7 +603,6 @@ describe('fix-applier', () => {
         reasoning: 'reasoning',
       };
 
-      // Both files validate successfully
       mockOctokit.repos.getContent.mockImplementation(async ({ path }) => {
         if (path === 'file1.ts') {
           return {
@@ -610,20 +625,14 @@ describe('fix-applier', () => {
         throw new Error('Unknown file');
       });
 
-      // First commit succeeds, second fails
-      mockOctokit.repos.createOrUpdateFileContents
-        .mockResolvedValueOnce({
-          data: { commit: { sha: 'commit-sha-1' } },
-        })
-        .mockRejectedValueOnce(new Error('Server error'));
+      // Atomic commit fails at createTree
+      mockOctokit.git.createTree.mockRejectedValueOnce(new Error('Server error'));
 
       const result = await applier.applyFix(recommendation);
 
-      // Should fail and clean up
       expect(result.success).toBe(false);
-      expect(result.error).toContain('Fix aborted mid-commit');
-      expect(result.modifiedFiles).toEqual(['file1.ts']); // First file was committed before failure
-      // Branch should be cleaned up to avoid partial state
+      expect(result.error).toContain('Atomic commit failed');
+      expect(result.modifiedFiles).toEqual([]);
       expect(mockOctokit.git.deleteRef).toHaveBeenCalled();
     });
 
@@ -685,10 +694,6 @@ describe('fix-applier', () => {
           content: Buffer.from('const x = old;').toString('base64'),
           sha: 'sha1',
         },
-      });
-
-      mockOctokit.repos.createOrUpdateFileContents.mockResolvedValue({
-        data: { commit: { sha: 'sha' } },
       });
 
       await customApplier.applyFix(recommendation);
@@ -785,10 +790,6 @@ describe('fix-applier', () => {
         },
       });
 
-      mockOctokit.repos.createOrUpdateFileContents.mockResolvedValue({
-        data: { commit: { sha: 'sha' } },
-      });
-
       const result = await applier.applyFix(recommendation);
 
       expect(result.success).toBe(true);
@@ -798,7 +799,7 @@ describe('fix-applier', () => {
       );
     });
 
-    it('should handle missing commit SHA in response', async () => {
+    it('should succeed with atomic commit SHA', async () => {
       const recommendation: FixRecommendation = {
         confidence: 85,
         summary: 'Fix',
@@ -823,18 +824,154 @@ describe('fix-applier', () => {
         },
       });
 
-      // Response without commit SHA
-      mockOctokit.repos.createOrUpdateFileContents.mockResolvedValue({
-        data: { content: { sha: 'content-sha' } },
+      const result = await applier.applyFix(recommendation);
+
+      expect(result.success).toBe(true);
+      expect(result.commitSha).toBe('atomic-commit-sha');
+      expect(mockOctokit.git.createTree).toHaveBeenCalled();
+      expect(mockOctokit.git.createCommit).toHaveBeenCalled();
+      expect(mockOctokit.git.updateRef).toHaveBeenCalled();
+    });
+
+    it('should hard-reject when oldCode matches multiple locations in a file', async () => {
+      const recommendation: FixRecommendation = {
+        confidence: 85,
+        summary: 'Fix',
+        proposedChanges: [
+          {
+            file: 'test.ts',
+            line: 1,
+            oldCode: 'doSomething()',
+            newCode: 'doSomethingElse()',
+            justification: 'reason',
+          },
+        ],
+        evidence: [],
+        reasoning: 'reasoning',
+      };
+
+      mockOctokit.repos.getContent.mockResolvedValue({
+        data: {
+          type: 'file',
+          content: Buffer.from('doSomething();\nconst y = doSomething();').toString('base64'),
+          sha: 'sha1',
+        },
       });
 
       const result = await applier.applyFix(recommendation);
 
-      expect(result.success).toBe(true);
-      expect(result.commitSha).toBeUndefined();
-      expect(mockCore.warning).toHaveBeenCalledWith(
-        expect.stringContaining('No commit SHA returned')
-      );
+      expect(result.success).toBe(false);
+      expect(result.error).toContain('ambiguous replacement rejected');
+    });
+
+    it('should abort multi-file fix when one file has ambiguous oldCode', async () => {
+      const recommendation: FixRecommendation = {
+        confidence: 85,
+        summary: 'Multi-file fix',
+        proposedChanges: [
+          {
+            file: 'good.ts',
+            line: 1,
+            oldCode: 'uniqueCode',
+            newCode: 'fixedCode',
+            justification: 'valid fix',
+          },
+          {
+            file: 'bad.ts',
+            line: 1,
+            oldCode: 'duplicated',
+            newCode: 'fixed',
+            justification: 'ambiguous fix',
+          },
+        ],
+        evidence: [],
+        reasoning: 'reasoning',
+      };
+
+      mockOctokit.repos.getContent.mockImplementation(async ({ path }) => {
+        if (path === 'good.ts') {
+          return {
+            data: {
+              type: 'file',
+              content: Buffer.from('const x = uniqueCode;').toString('base64'),
+              sha: 'sha1',
+            },
+          };
+        }
+        if (path === 'bad.ts') {
+          return {
+            data: {
+              type: 'file',
+              content: Buffer.from('duplicated; duplicated;').toString('base64'),
+              sha: 'sha2',
+            },
+          };
+        }
+        throw new Error('Unknown file');
+      });
+
+      const result = await applier.applyFix(recommendation);
+
+      expect(result.success).toBe(false);
+      expect(result.error).toContain('Partial fix rejected');
+    });
+
+    it('should clean up on createCommit failure', async () => {
+      const recommendation: FixRecommendation = {
+        confidence: 85,
+        summary: 'Fix',
+        proposedChanges: [
+          { file: 'test.ts', line: 1, oldCode: 'old', newCode: 'new', justification: 'r' },
+        ],
+        evidence: [],
+        reasoning: 'reasoning',
+      };
+
+      mockOctokit.repos.getContent.mockResolvedValue({
+        data: {
+          type: 'file',
+          content: Buffer.from('const x = old;').toString('base64'),
+          sha: 'sha1',
+        },
+      });
+
+      mockOctokit.git.createCommit.mockRejectedValueOnce(new Error('Commit creation failed'));
+
+      const result = await applier.applyFix(recommendation);
+
+      expect(result.success).toBe(false);
+      expect(result.error).toContain('Atomic commit failed');
+      expect(result.modifiedFiles).toEqual([]);
+      expect(mockOctokit.git.deleteRef).toHaveBeenCalled();
+    });
+
+    it('should clean up on updateRef failure', async () => {
+      const recommendation: FixRecommendation = {
+        confidence: 85,
+        summary: 'Fix',
+        proposedChanges: [
+          { file: 'test.ts', line: 1, oldCode: 'old', newCode: 'new', justification: 'r' },
+        ],
+        evidence: [],
+        reasoning: 'reasoning',
+      };
+
+      mockOctokit.repos.getContent.mockResolvedValue({
+        data: {
+          type: 'file',
+          content: Buffer.from('const x = old;').toString('base64'),
+          sha: 'sha1',
+        },
+      });
+
+      mockOctokit.git.updateRef.mockRejectedValueOnce(new Error('Ref update failed'));
+
+      const result = await applier.applyFix(recommendation);
+
+      expect(result.success).toBe(false);
+      expect(result.error).toContain('Atomic commit failed');
+      expect(result.modifiedFiles).toEqual([]);
+      expect(mockOctokit.git.deleteRef).toHaveBeenCalled();
     });
 
     it('should handle rate limiting with retry', async () => {
@@ -864,10 +1001,6 @@ describe('fix-applier', () => {
             sha: 'sha1',
           },
         });
-
-      mockOctokit.repos.createOrUpdateFileContents.mockResolvedValue({
-        data: { commit: { sha: 'sha' } },
-      });
 
       const result = await applier.applyFix(recommendation);
 

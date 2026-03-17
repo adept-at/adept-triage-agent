@@ -118,8 +118,12 @@ export interface ActionInputs {
     validationSpec?: string;
     validationTestCommand?: string;
     enableAgenticRepair?: boolean;
-    productRepo?: string;
+    productRepo: string;
     productDiffCommits?: number;
+    enableCursorValidation?: boolean;
+    cursorApiKey?: string;
+    cursorValidationMode?: 'poll' | 'async';
+    cursorValidationTimeout?: number;
 }
 export interface PRDiff {
     files: PRDiffFile[];
@@ -177,5 +181,26 @@ export interface StructuredErrorSummary {
         hasScreenshots: boolean;
         logSize: number;
     };
+}
+export interface CursorValidationResult {
+    agentId: string;
+    status: 'FINISHED' | 'ERROR' | 'TIMEOUT' | 'CREATING' | 'RUNNING';
+    testPassed: boolean | null;
+    summary: string;
+    conversation?: CursorAgentMessage[];
+    agentUrl?: string;
+    branchName?: string;
+    prUrl?: string;
+    artifacts?: CursorAgentArtifact[];
+}
+export interface CursorAgentMessage {
+    id: string;
+    type: 'user_message' | 'assistant_message';
+    text: string;
+}
+export interface CursorAgentArtifact {
+    absolutePath: string;
+    sizeBytes: number;
+    updatedAt: string;
 }
 //# sourceMappingURL=types.d.ts.map

@@ -27,13 +27,23 @@ export interface ValidationParams {
     triageRunId?: string;
     testCommand?: string;
 }
+export interface ValidationOutcome {
+    passed: boolean;
+    conclusion: string;
+    logs?: string;
+    runId: number;
+    url?: string;
+}
 export interface FixApplier {
     canApply(recommendation: FixRecommendation): boolean;
     applyFix(recommendation: FixRecommendation): Promise<ApplyResult>;
+    reapplyFix(recommendation: FixRecommendation, branchName: string): Promise<ApplyResult>;
     triggerValidation(params: ValidationParams): Promise<{
         runId?: number;
         url?: string;
     } | null>;
+    waitForValidation(runId: number): Promise<ValidationOutcome>;
+    getValidationFailureLogs(runId: number): Promise<string>;
 }
 export declare class GitHubFixApplier implements FixApplier {
     private config;
@@ -45,6 +55,10 @@ export declare class GitHubFixApplier implements FixApplier {
         runId?: number;
         url?: string;
     } | null>;
+    reapplyFix(recommendation: FixRecommendation, branchName: string): Promise<ApplyResult>;
+    waitForValidation(runId: number): Promise<ValidationOutcome>;
+    getValidationFailureLogs(runId: number): Promise<string>;
+    private commitChanges;
 }
 export declare function createFixApplier(config: FixApplierConfig): FixApplier;
 export declare function generateFixBranchName(testFile: string, timestamp?: Date, forceUnique?: boolean): string;

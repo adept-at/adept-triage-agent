@@ -81,12 +81,28 @@ inputs:
     required: false
     default: 'false'
   PRODUCT_REPO:
-    description: 'Product repository (owner/repo) to fetch recent commits from when no PR/branch/commit diff is available. Enables the triage agent to see what recently shipped to production.'
+    description: 'Product repository (owner/repo). All browser-test repos target the same frontend. Used for fetching recent product commits and PR diffs.'
     required: false
+    default: 'adept-at/learn-webapp'
   PRODUCT_DIFF_COMMITS:
     description: 'Number of recent product commits to include in the diff context (default: 5)'
     required: false
     default: '5'
+  ENABLE_CURSOR_VALIDATION:
+    description: 'Use Cursor Cloud Agent for fix validation instead of GitHub Actions workflow_dispatch. Mutually exclusive with ENABLE_VALIDATION.'
+    required: false
+    default: 'false'
+  CURSOR_API_KEY:
+    description: 'Cursor API key for cloud agent access. Required when ENABLE_CURSOR_VALIDATION is true.'
+    required: false
+  CURSOR_VALIDATION_MODE:
+    description: 'Cursor validation mode: "poll" waits for the agent to finish and returns results, "async" launches the agent and returns immediately.'
+    required: false
+    default: 'poll'
+  CURSOR_VALIDATION_TIMEOUT:
+    description: 'Timeout in milliseconds for Cursor cloud agent validation when using poll mode (default: 300000 = 5 minutes)'
+    required: false
+    default: '300000'
 
 outputs:
   verdict:
@@ -121,6 +137,12 @@ outputs:
     description: 'Validation dispatch status reported by this action: pending or skipped'
   validation_url:
     description: 'URL to the validation workflow run (when discovered or returned by GitHub)'
+  cursor_agent_id:
+    description: 'Cursor cloud agent ID (when Cursor validation is used)'
+  cursor_agent_url:
+    description: 'URL to view the Cursor cloud agent run'
+  cursor_validation_summary:
+    description: 'Summary from the Cursor cloud agent validation'
 
 runs:
   using: 'node20'

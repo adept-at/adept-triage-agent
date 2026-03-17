@@ -65,6 +65,16 @@ export declare const AUTO_FIX: {
     readonly DEFAULT_MIN_CONFIDENCE: 70;
     readonly BRANCH_PREFIX: "fix/triage-agent/";
 };
+export declare const CURSOR_CLOUD: {
+    readonly API_BASE_URL: "https://api.cursor.com";
+    readonly POLL_INTERVAL_MS: 10000;
+    readonly VALIDATION_TIMEOUT_MS: 300000;
+    readonly INITIAL_DELAY_MS: 15000;
+    readonly MAX_POLL_ATTEMPTS: 30;
+    readonly TERMINAL_STATUSES: readonly string[];
+};
+export declare const DEFAULT_PRODUCT_REPO = "adept-at/learn-webapp";
+export declare const DEFAULT_PRODUCT_URL = "https://learn.adept.at";
 export declare const AGENT_CONFIG: {
     readonly ENABLE_AGENTIC_REPAIR: boolean;
     readonly MAX_AGENT_ITERATIONS: 3;
@@ -74,5 +84,11 @@ export declare const AGENT_CONFIG: {
     readonly AGENT_TEMPERATURE: 0.3;
     readonly AGENT_MAX_TOKENS: 4000;
     readonly FALLBACK_TO_SINGLE_SHOT: true;
+};
+export declare const FIX_VALIDATE_LOOP: {
+    readonly MAX_ITERATIONS: 3;
+    readonly POLL_INTERVAL_MS: 15000;
+    readonly POLL_TIMEOUT_MS: 600000;
+    readonly INITIAL_POLL_DELAY_MS: 20000;
 };
 //# sourceMappingURL=constants.d.ts.map
