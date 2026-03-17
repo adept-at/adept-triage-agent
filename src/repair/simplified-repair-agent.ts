@@ -181,6 +181,13 @@ export class SimplifiedRepairAgent {
         core.info(
           `🤖 Agentic approach: ${result.approach}, iterations: ${result.iterations}, time: ${result.totalTimeMs}ms`
         );
+        for (const change of result.fix.proposedChanges) {
+          const cleaned = this.extractFilePath(change.file);
+          if (cleaned && cleaned !== change.file) {
+            core.info(`  📂 Normalized path: "${change.file}" → "${cleaned}"`);
+            change.file = cleaned;
+          }
+        }
         return result.fix;
       }
 
