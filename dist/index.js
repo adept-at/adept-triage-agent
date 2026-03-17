@@ -4515,11 +4515,15 @@ class SimplifiedRepairAgent {
             }
             const validChanges = [];
             for (const change of recommendation.changes) {
+                const changePath = this.extractFilePath(change.file);
+                if (changePath && changePath !== change.file) {
+                    core.info(`  📂 Normalized path: "${change.file}" → "${changePath}"`);
+                    change.file = changePath;
+                }
                 if (!change.oldCode) {
                     validChanges.push(change);
                     continue;
                 }
-                const changePath = this.extractFilePath(change.file);
                 if (!changePath) {
                     core.warning(`⚠️ Could not resolve file path for change target "${change.file}" — rejecting change`);
                     continue;
@@ -4554,7 +4558,7 @@ class SimplifiedRepairAgent {
             confidence: recommendation.confidence,
             summary: this.generateSummary(recommendation, repairContext),
             proposedChanges: (recommendation.changes || []).map((change) => ({
-                file: change.file,
+                file: this.extractFilePath(change.file) || change.file,
                 line: change.line || 0,
                 oldCode: change.oldCode || '',
                 newCode: change.newCode || '',
