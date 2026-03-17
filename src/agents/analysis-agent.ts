@@ -11,6 +11,7 @@ import {
   getFrameworkLabel,
 } from './base-agent';
 import { OpenAIClient } from '../openai-client';
+import { DEFAULT_PRODUCT_REPO } from '../config/constants';
 
 /**
  * Root cause categories
@@ -197,7 +198,7 @@ You MUST respond with a JSON object matching this schema:
     }
 
     if (context.prDiff && context.prDiff.files.length > 0) {
-      parts.push('', '### Recent Changes (PR Diff)');
+      parts.push('', `### Recent Changes in ${DEFAULT_PRODUCT_REPO}`);
       for (const file of context.prDiff.files.slice(0, 5)) {
         parts.push(`- **${file.filename}** (${file.status})`);
         if (file.patch) {

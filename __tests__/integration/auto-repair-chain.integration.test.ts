@@ -45,10 +45,12 @@ describe('Auto-repair chain integration', () => {
         getRef: jest.fn().mockResolvedValue({ data: { object: { sha: 'base-sha' } } }),
         createRef: jest.fn(),
         deleteRef: jest.fn(),
+        createTree: jest.fn(),
+        createCommit: jest.fn(),
+        updateRef: jest.fn(),
       },
       repos: {
         getContent: jest.fn(),
-        createOrUpdateFileContents: jest.fn(),
       },
       actions: {},
     } as unknown as Octokit;
@@ -70,7 +72,7 @@ describe('Auto-repair chain integration', () => {
     expect(mockOctokit.git.createRef).not.toHaveBeenCalled();
   });
 
-  it('should create branch and commit when confidence meets threshold', async () => {
+  it('should create branch and commit atomically when confidence meets threshold', async () => {
     const mockOctokit = {
       git: {
         getRef: jest.fn().mockResolvedValue({ data: { object: { sha: 'base-sha' } } }),
@@ -78,6 +80,9 @@ describe('Auto-repair chain integration', () => {
           data: { ref: 'refs/heads/fix/triage-agent/login-20240315-120000' },
         }),
         deleteRef: jest.fn().mockResolvedValue({}),
+        createTree: jest.fn().mockResolvedValue({ data: { sha: 'tree-sha' } }),
+        createCommit: jest.fn().mockResolvedValue({ data: { sha: 'atomic-commit-sha' } }),
+        updateRef: jest.fn().mockResolvedValue({}),
       },
       repos: {
         getContent: jest.fn().mockResolvedValue({
@@ -86,9 +91,6 @@ describe('Auto-repair chain integration', () => {
             content: Buffer.from("cy.get('[data-testid=\"submit\"]').click();").toString('base64'),
             sha: 'file-sha-123',
           },
-        }),
-        createOrUpdateFileContents: jest.fn().mockResolvedValue({
-          data: { commit: { sha: 'new-commit-sha' } },
         }),
       },
       actions: {},
@@ -106,19 +108,21 @@ describe('Auto-repair chain integration', () => {
     const result = await applier.applyFix(baseRecommendation);
     expect(result.success).toBe(true);
     expect(result.branchName).toBeDefined();
-    expect(result.commitSha).toBe('new-commit-sha');
+    expect(result.commitSha).toBe('atomic-commit-sha');
     expect(mockOctokit.git.createRef).toHaveBeenCalledWith(
       expect.objectContaining({
         ref: expect.stringMatching(/^refs\/heads\/fix\/triage-agent\//),
         sha: 'base-sha',
       })
     );
-    expect(mockOctokit.repos.createOrUpdateFileContents).toHaveBeenCalledWith(
+    expect(mockOctokit.git.createTree).toHaveBeenCalledWith(
       expect.objectContaining({
-        content: expect.any(String),
-        path: 'cypress/e2e/login.cy.ts',
+        tree: expect.arrayContaining([
+          expect.objectContaining({ path: 'cypress/e2e/login.cy.ts' }),
+        ]),
       })
     );
+    expect(mockOctokit.git.createCommit).toHaveBeenCalledTimes(1);
   });
 
   it('should call createWorkflowDispatch with correct inputs when validation enabled', async () => {
@@ -134,6 +138,9 @@ describe('Auto-repair chain integration', () => {
           data: { ref: 'refs/heads/fix/triage-agent/login-20240315-120000' },
         }),
         deleteRef: jest.fn().mockResolvedValue({}),
+        createTree: jest.fn().mockResolvedValue({ data: { sha: 'tree-sha' } }),
+        createCommit: jest.fn().mockResolvedValue({ data: { sha: 'atomic-commit-sha' } }),
+        updateRef: jest.fn().mockResolvedValue({}),
       },
       repos: {
         getContent: jest.fn().mockResolvedValue({
@@ -142,9 +149,6 @@ describe('Auto-repair chain integration', () => {
             content: Buffer.from("cy.get('[data-testid=\"submit\"]').click();").toString('base64'),
             sha: 'file-sha-123',
           },
-        }),
-        createOrUpdateFileContents: jest.fn().mockResolvedValue({
-          data: { commit: { sha: 'new-commit-sha' } },
         }),
       },
       actions: {

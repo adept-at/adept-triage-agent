@@ -157,10 +157,18 @@ export interface ActionInputs {
   validationTestCommand?: string;
   /** Enable multi-agent repair pipeline for higher quality fixes */
   enableAgenticRepair?: boolean;
-  /** Product repository (owner/repo) to fetch recent commits from when no PR/branch/commit context is available */
-  productRepo?: string;
+  /** Product repository (owner/repo). All browser-test repos target learn-webapp. */
+  productRepo: string;
   /** Number of recent product commits to include in diff (default: 5) */
   productDiffCommits?: number;
+  /** Enable Cursor Cloud Agent validation instead of GitHub Actions workflow_dispatch */
+  enableCursorValidation?: boolean;
+  /** Cursor API key for cloud agent access */
+  cursorApiKey?: string;
+  /** Cursor validation mode: 'poll' waits for results, 'async' fires and forgets */
+  cursorValidationMode?: 'poll' | 'async';
+  /** Timeout in ms for Cursor cloud agent validation (default: 300000) */
+  cursorValidationTimeout?: number;
 }
 
 export interface PRDiff {
@@ -221,4 +229,40 @@ export interface StructuredErrorSummary {
     hasScreenshots: boolean;
     logSize: number;
   };
+}
+
+/**
+ * Result from Cursor Cloud Agent validation
+ */
+export interface CursorValidationResult {
+  /** Cursor cloud agent ID */
+  agentId: string;
+  /** Final status of the agent run */
+  status: 'FINISHED' | 'ERROR' | 'TIMEOUT' | 'CREATING' | 'RUNNING';
+  /** Whether the test passed according to agent analysis */
+  testPassed: boolean | null;
+  /** Agent's summary of what happened */
+  summary: string;
+  /** Full conversation messages from the agent */
+  conversation?: CursorAgentMessage[];
+  /** URL to view the agent run */
+  agentUrl?: string;
+  /** Branch the agent pushed to (if any) */
+  branchName?: string;
+  /** PR URL created by the agent (if any) */
+  prUrl?: string;
+  /** Artifacts generated (screenshots, logs) */
+  artifacts?: CursorAgentArtifact[];
+}
+
+export interface CursorAgentMessage {
+  id: string;
+  type: 'user_message' | 'assistant_message';
+  text: string;
+}
+
+export interface CursorAgentArtifact {
+  absolutePath: string;
+  sizeBytes: number;
+  updatedAt: string;
 }

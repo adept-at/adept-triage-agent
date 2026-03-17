@@ -8,9 +8,10 @@ import { ActionInputs, FixRecommendation } from './types';
 import { buildRepairContext } from './repair-context';
 import { SimplifiedRepairAgent } from './repair/simplified-repair-agent';
 import { processWorkflowLogs } from './services/log-processor';
-import { createFixApplier, ApplyResult } from './repair/fix-applier';
-import { AUTO_FIX } from './config/constants';
+import { createFixApplier, ApplyResult, ValidationOutcome } from './repair/fix-applier';
+import { AUTO_FIX, CURSOR_CLOUD, FIX_VALIDATE_LOOP, DEFAULT_PRODUCT_REPO, DEFAULT_PRODUCT_URL } from './config/constants';
 import { parseRepoString } from './utils/repo-utils';
+import { CursorCloudValidator, CursorValidationParams } from './services/cursor-cloud-validator';
 
 async function run(): Promise<void> {
   try {
@@ -158,19 +159,29 @@ async function run(): Promise<void> {
     let fixRecommendation: FixRecommendation | null = null;
     let autoFixResult: ApplyResult | null = null;
 
-    fixRecommendation = await generateFixRecommendation(
-      inputs,
-      repoDetails,
-      errorData,
-      openaiClient,
-      octokit
-    );
-    if (fixRecommendation) {
-      result.fixRecommendation = fixRecommendation;
-
-      // Attempt auto-fix if enabled
-      if (inputs.enableAutoFix) {
-        // Use separate target repo for auto-fix (test code may live in different repo than logs)
+    if (inputs.enableAutoFix && inputs.enableValidation) {
+      // Iterative fix-validate loop: generate fix, validate, retry on failure
+      const autoFixTargetRepo = resolveAutoFixTargetRepo(inputs);
+      const loopResult = await iterativeFixValidateLoop(
+        inputs,
+        repoDetails,
+        autoFixTargetRepo,
+        errorData,
+        openaiClient,
+        octokit
+      );
+      fixRecommendation = loopResult.fixRecommendation;
+      autoFixResult = loopResult.autoFixResult;
+    } else {
+      // Original single-attempt flow (no validation loop)
+      fixRecommendation = await generateFixRecommendation(
+        inputs,
+        repoDetails,
+        errorData,
+        openaiClient,
+        octokit
+      );
+      if (fixRecommendation && inputs.enableAutoFix) {
         const autoFixTargetRepo = resolveAutoFixTargetRepo(inputs);
         autoFixResult = await attemptAutoFix(
           inputs,
@@ -180,6 +191,10 @@ async function run(): Promise<void> {
           errorData
         );
       }
+    }
+
+    if (fixRecommendation) {
+      result.fixRecommendation = fixRecommendation;
     }
 
     // Set successful outputs
@@ -238,8 +253,18 @@ function getInputs(): ActionInputs {
     // Agentic repair input
     enableAgenticRepair: core.getInput('ENABLE_AGENTIC_REPAIR') === 'true',
     // Product repo diff inputs
-    productRepo: core.getInput('PRODUCT_REPO') || undefined,
+    productRepo: core.getInput('PRODUCT_REPO') || DEFAULT_PRODUCT_REPO,
     productDiffCommits: safeParseInt(core.getInput('PRODUCT_DIFF_COMMITS'), 5),
+    // Cursor Cloud Agent validation inputs
+    enableCursorValidation:
+      core.getInput('ENABLE_CURSOR_VALIDATION') === 'true',
+    cursorApiKey: core.getInput('CURSOR_API_KEY') || undefined,
+    cursorValidationMode:
+      (core.getInput('CURSOR_VALIDATION_MODE') as 'poll' | 'async') || 'poll',
+    cursorValidationTimeout: safeParseInt(
+      core.getInput('CURSOR_VALIDATION_TIMEOUT'),
+      CURSOR_CLOUD.VALIDATION_TIMEOUT_MS
+    ),
   };
 }
 
@@ -264,10 +289,18 @@ async function generateFixRecommendation(
   repoDetails: { owner: string; repo: string },
   errorData: { message: string; testName?: string; fileName?: string },
   openaiClient: OpenAIClient,
-  octokit: Octokit
+  octokit: Octokit,
+  previousAttempt?: {
+    iteration: number;
+    previousFix: FixRecommendation;
+    validationLogs: string;
+  }
 ): Promise<FixRecommendation | null> {
   try {
-    core.info('\n🔧 Attempting to generate fix recommendation...');
+    const iterLabel = previousAttempt
+      ? ` (iteration ${previousAttempt.iteration + 1})`
+      : '';
+    core.info(`\n🔧 Attempting to generate fix recommendation${iterLabel}...`);
 
     const repairContext = buildRepairContext({
       testFile: errorData.fileName || 'unknown',
@@ -302,7 +335,8 @@ async function generateFixRecommendation(
     );
     const recommendation = await repairAgent.generateFixRecommendation(
       repairContext,
-      errorData as import('./types').ErrorData
+      errorData as import('./types').ErrorData,
+      previousAttempt
     );
 
     if (recommendation) {
@@ -317,6 +351,184 @@ async function generateFixRecommendation(
     core.warning(`Failed to generate fix recommendation: ${error}`);
     return null;
   }
+}
+
+/**
+ * Iterative fix-validate loop.
+ * Generates a fix, applies it, triggers validation, waits for result.
+ * If validation fails, feeds the failure logs back into the repair agent
+ * and tries again — up to FIX_VALIDATE_LOOP.MAX_ITERATIONS times.
+ */
+async function iterativeFixValidateLoop(
+  inputs: ActionInputs,
+  repoDetails: { owner: string; repo: string },
+  autoFixTargetRepo: { owner: string; repo: string },
+  errorData: { message: string; testName?: string; fileName?: string },
+  openaiClient: OpenAIClient,
+  octokit: Octokit
+): Promise<{
+  fixRecommendation: FixRecommendation | null;
+  autoFixResult: ApplyResult | null;
+}> {
+  const maxIterations = FIX_VALIDATE_LOOP.MAX_ITERATIONS;
+  let fixRecommendation: FixRecommendation | null = null;
+  let autoFixResult: ApplyResult | null = null;
+  let previousAttempt:
+    | { iteration: number; previousFix: FixRecommendation; validationLogs: string }
+    | undefined;
+  const failedFixFingerprints = new Set<string>();
+
+  const fixApplier = createFixApplier({
+    octokit,
+    owner: autoFixTargetRepo.owner,
+    repo: autoFixTargetRepo.repo,
+    baseBranch: inputs.autoFixBaseBranch || 'main',
+    minConfidence:
+      inputs.autoFixMinConfidence || AUTO_FIX.DEFAULT_MIN_CONFIDENCE,
+    enableValidation: inputs.enableValidation,
+    validationWorkflow: inputs.validationWorkflow,
+    validationTestCommand: inputs.validationTestCommand,
+  });
+
+  for (let iteration = 0; iteration < maxIterations; iteration++) {
+    core.info(
+      `\n${'='.repeat(60)}\n🔄 Fix-Validate iteration ${iteration + 1}/${maxIterations}\n${'='.repeat(60)}`
+    );
+
+    // 1. Generate fix (with feedback from previous attempt if any)
+    fixRecommendation = await generateFixRecommendation(
+      inputs,
+      repoDetails,
+      errorData,
+      openaiClient,
+      octokit,
+      previousAttempt
+    );
+
+    if (!fixRecommendation) {
+      core.warning(`Iteration ${iteration + 1}: could not generate fix recommendation`);
+      break;
+    }
+
+    // Quality gate: confidence + has changes
+    if (!fixApplier.canApply(fixRecommendation)) {
+      core.info(
+        `Iteration ${iteration + 1}: fix rejected — confidence below threshold or no changes proposed`
+      );
+      break;
+    }
+
+    // Quality gate (iterations 2+): reject if this fix duplicates ANY prior failed attempt
+    const fingerprint = fixFingerprint(fixRecommendation);
+    if (failedFixFingerprints.has(fingerprint)) {
+      core.warning(
+        `Iteration ${iteration + 1}: repair agent proposed a fix identical to a previous failed attempt. Stopping.`
+      );
+      break;
+    }
+
+    core.info(
+      `Iteration ${iteration + 1}: fix passed quality gates (confidence: ${fixRecommendation.confidence}%, changes: ${fixRecommendation.proposedChanges.length})`
+    );
+
+    // 2. Apply fix (create branch on first iteration, reset + reapply on subsequent)
+    if (iteration === 0) {
+      autoFixResult = await fixApplier.applyFix(fixRecommendation);
+    } else if (autoFixResult?.branchName) {
+      autoFixResult = await fixApplier.reapplyFix(
+        fixRecommendation,
+        autoFixResult.branchName
+      );
+    }
+
+    if (!autoFixResult?.success || !autoFixResult.branchName) {
+      core.warning(`Iteration ${iteration + 1}: failed to apply fix — ${autoFixResult?.error}`);
+      break;
+    }
+
+    core.info(`✅ Fix applied to branch: ${autoFixResult.branchName}`);
+
+    // 3. Trigger validation
+    const spec =
+      inputs.validationSpec ||
+      (errorData as { fileName?: string }).fileName ||
+      fixRecommendation.proposedChanges[0]?.file;
+    const previewUrl =
+      inputs.validationPreviewUrl || DEFAULT_PRODUCT_URL;
+
+    if (!spec) {
+      core.warning('No spec file identified for validation');
+      autoFixResult.validationStatus = 'skipped';
+      break;
+    }
+
+    const validationTrigger = await fixApplier.triggerValidation({
+      branch: autoFixResult.branchName,
+      spec,
+      previewUrl,
+      triageRunId: github.context.runId.toString(),
+      testCommand: inputs.validationTestCommand,
+    });
+
+    if (!validationTrigger?.runId) {
+      core.warning('Could not get validation run ID — cannot poll for results');
+      autoFixResult.validationStatus = 'pending';
+      if (validationTrigger?.url) autoFixResult.validationUrl = validationTrigger.url;
+      break;
+    }
+
+    autoFixResult.validationRunId = validationTrigger.runId;
+    autoFixResult.validationUrl = validationTrigger.url;
+
+    // 4. Wait for validation to complete
+    core.info(`\n🧪 Waiting for validation run ${validationTrigger.runId}...`);
+    const outcome: ValidationOutcome = await fixApplier.waitForValidation(
+      validationTrigger.runId
+    );
+
+    if (outcome.passed) {
+      core.info(
+        `\n✅ Validation PASSED on iteration ${iteration + 1}! PR will be created by validate-fix workflow.`
+      );
+      autoFixResult.validationStatus = 'passed';
+      autoFixResult.validationUrl = outcome.url || autoFixResult.validationUrl;
+      return { fixRecommendation, autoFixResult };
+    }
+
+    // 5. Validation failed — record fingerprint and prepare feedback for next iteration
+    core.warning(
+      `\n❌ Validation FAILED on iteration ${iteration + 1} (conclusion: ${outcome.conclusion})`
+    );
+    autoFixResult.validationStatus = 'failed';
+    failedFixFingerprints.add(fingerprint);
+
+    if (iteration < maxIterations - 1) {
+      core.info('Feeding failure logs back into repair agent for next attempt...');
+      previousAttempt = {
+        iteration: iteration + 1,
+        previousFix: fixRecommendation,
+        validationLogs: outcome.logs || 'No logs available',
+      };
+    } else {
+      core.warning(
+        `\n🛑 All ${maxIterations} fix attempts exhausted. Giving up.`
+      );
+    }
+  }
+
+  return { fixRecommendation, autoFixResult };
+}
+
+/**
+ * Produces a stable fingerprint for a fix so we can detect duplicates across
+ * any number of prior attempts (not just the immediately previous one).
+ */
+export function fixFingerprint(fix: FixRecommendation): string {
+  const normalize = (s: string) => s.replace(/\s+/g, ' ').trim();
+  return fix.proposedChanges
+    .map((c) => `${c.file}::${normalize(c.oldCode)}::${normalize(c.newCode)}`)
+    .sort()
+    .join('\n');
 }
 
 async function attemptAutoFix(
@@ -367,7 +579,7 @@ async function attemptAutoFix(
           errorData?.fileName ||
           fixRecommendation.proposedChanges[0]?.file;
         const previewUrl =
-          inputs.validationPreviewUrl || 'https://learn.adept.at';
+          inputs.validationPreviewUrl || DEFAULT_PRODUCT_URL;
 
         if (!inputs.validationPreviewUrl) {
           core.info(
@@ -407,6 +619,20 @@ async function attemptAutoFix(
             result.validationStatus = 'skipped';
           }
         }
+      } else if (inputs.enableCursorValidation && result.branchName) {
+        core.info('\n🤖 Triggering Cursor cloud agent validation...');
+        try {
+          await triggerCursorValidation(
+            inputs,
+            result,
+            fixRecommendation,
+            repoDetails,
+            errorData
+          );
+        } catch (cursorError) {
+          core.warning(`Cursor cloud agent validation error: ${cursorError}`);
+          result.validationStatus = 'skipped';
+        }
       }
     } else {
       core.warning(`❌ Auto-fix failed: ${result.error}`);
@@ -417,6 +643,95 @@ async function attemptAutoFix(
     core.warning(`Auto-fix error: ${error}`);
     return null;
   }
+}
+
+/**
+ * Trigger Cursor Cloud Agent validation as an alternative to
+ * the GitHub Actions workflow_dispatch validation.
+ *
+ * This is called from attemptAutoFix when ENABLE_CURSOR_VALIDATION=true.
+ * It does not modify any existing validation logic — the firing workflow
+ * chooses which path to use via the input parameter.
+ */
+async function triggerCursorValidation(
+  inputs: ActionInputs,
+  result: ApplyResult,
+  fixRecommendation: FixRecommendation,
+  repoDetails: { owner: string; repo: string },
+  errorData?: { fileName?: string }
+): Promise<void> {
+  if (!inputs.cursorApiKey) {
+    core.warning(
+      'CURSOR_API_KEY is required for Cursor cloud agent validation'
+    );
+    result.validationStatus = 'skipped';
+    return;
+  }
+
+  const spec =
+    inputs.validationSpec ||
+    errorData?.fileName ||
+    fixRecommendation.proposedChanges[0]?.file;
+  const previewUrl =
+    inputs.validationPreviewUrl || DEFAULT_PRODUCT_URL;
+
+  if (!spec) {
+    core.warning(
+      'No spec file identified for Cursor validation, skipping'
+    );
+    result.validationStatus = 'skipped';
+    return;
+  }
+
+  const repositoryUrl = `https://github.com/${repoDetails.owner}/${repoDetails.repo}`;
+
+  const validationParams: CursorValidationParams = {
+    repositoryUrl,
+    branch: result.branchName!,
+    spec,
+    previewUrl,
+    framework: inputs.testFrameworks,
+    testCommand: inputs.validationTestCommand,
+    triageRunId: inputs.workflowRunId,
+  };
+
+  const validator = new CursorCloudValidator(inputs.cursorApiKey);
+  const mode = inputs.cursorValidationMode || 'poll';
+  const timeout = inputs.cursorValidationTimeout;
+
+  core.info(`\n🤖 Launching Cursor cloud agent validation (mode: ${mode})`);
+
+  const cursorResult = await validator.validate(
+    validationParams,
+    mode,
+    timeout
+  );
+
+  result.validationUrl = cursorResult.agentUrl;
+
+  if (cursorResult.status === 'FINISHED') {
+    if (cursorResult.testPassed === true) {
+      result.validationStatus = 'passed';
+      core.info('✅ Cursor cloud agent: tests PASSED');
+    } else if (cursorResult.testPassed === false) {
+      result.validationStatus = 'failed';
+      core.warning('❌ Cursor cloud agent: tests FAILED');
+    } else {
+      result.validationStatus = 'pending';
+      core.info(
+        '❓ Cursor cloud agent finished but result could not be determined'
+      );
+    }
+  } else if (cursorResult.status === 'ERROR') {
+    result.validationStatus = 'failed';
+    core.warning('❌ Cursor cloud agent encountered an error');
+  } else {
+    result.validationStatus = 'pending';
+  }
+
+  core.info(`  Agent ID: ${cursorResult.agentId}`);
+  core.info(`  Agent URL: ${cursorResult.agentUrl}`);
+  core.info(`  Summary: ${cursorResult.summary}`);
 }
 
 function setInconclusiveOutput(

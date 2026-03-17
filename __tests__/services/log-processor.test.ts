@@ -279,6 +279,7 @@ describe('log-processor', () => {
       githubToken: 'token',
       openaiApiKey: 'api-key',
       confidenceThreshold: 70,
+      productRepo: 'adept-at/learn-webapp',
     };
 
     describe('PR diff strategy (highest priority)', () => {
@@ -470,15 +471,21 @@ describe('log-processor', () => {
     });
 
     describe('No diff available', () => {
-      it('should return null when no inputs provided', async () => {
+      it('should fall back to product repo when no PR/branch/commit inputs provided', async () => {
+        mockArtifactFetcher.fetchRecentProductDiff.mockResolvedValue(null);
+
         const result = await fetchDiffWithFallback(mockArtifactFetcher, baseInputs);
 
         expect(result).toBeNull();
         expect(mockArtifactFetcher.fetchPRDiff).not.toHaveBeenCalled();
         expect(mockArtifactFetcher.fetchBranchDiff).not.toHaveBeenCalled();
         expect(mockArtifactFetcher.fetchCommitDiff).not.toHaveBeenCalled();
+        expect(mockArtifactFetcher.fetchRecentProductDiff).toHaveBeenCalledWith(
+          'adept-at/learn-webapp',
+          5
+        );
         expect(mockCore.info).toHaveBeenCalledWith(
-          'ℹ️ No PR_NUMBER, BRANCH, COMMIT_SHA, or PRODUCT_REPO provided, skipping diff fetch'
+          'ℹ️ All diff fetch strategies exhausted, proceeding without diff'
         );
       });
 

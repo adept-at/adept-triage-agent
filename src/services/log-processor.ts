@@ -141,6 +141,8 @@ export async function processWorkflowLogs(
     core.warning(`Failed to download job logs: ${error}`);
   }
 
+  
+
   // Fetch artifacts in parallel
   // Note: Screenshots and artifact logs live in the test repo (context.repo),
   // while PR diffs come from the app repo (inputs.repository)
@@ -367,36 +369,25 @@ export async function fetchDiffWithFallback(
     }
   }
 
-  // Strategy 4: Recent product repo commits (last resort for production-URL tests)
-  if (inputs.productRepo) {
-    core.info(
-      `📋 Fetching recent product diff from ${inputs.productRepo} (last ${inputs.productDiffCommits || 5} commits)...`
+  // Strategy 4: Recent product repo commits (last resort)
+  core.info(
+    `📋 Fetching recent product diff from ${inputs.productRepo} (last ${inputs.productDiffCommits || 5} commits)...`
+  );
+  try {
+    const diff = await artifactFetcher.fetchRecentProductDiff(
+      inputs.productRepo,
+      inputs.productDiffCommits || 5
     );
-    try {
-      const diff = await artifactFetcher.fetchRecentProductDiff(
-        inputs.productRepo,
-        inputs.productDiffCommits || 5
-      );
-      logDiffResult(diff, `recent product diff (${inputs.productRepo})`);
-      if (diff) return diff;
-      core.warning(`⚠️ Recent product diff fetch returned null`);
-    } catch (error) {
-      core.warning(
-        `❌ Failed to fetch recent product diff from ${inputs.productRepo}: ${error}`
-      );
-    }
+    logDiffResult(diff, `recent product diff (${inputs.productRepo})`);
+    if (diff) return diff;
+    core.warning(`⚠️ Recent product diff fetch returned null`);
+  } catch (error) {
+    core.warning(
+      `❌ Failed to fetch recent product diff from ${inputs.productRepo}: ${error}`
+    );
   }
 
-  // No diff available
-  if (!inputs.prNumber && !inputs.branch && !inputs.commitSha && !inputs.productRepo) {
-    core.info(
-      `ℹ️ No PR_NUMBER, BRANCH, COMMIT_SHA, or PRODUCT_REPO provided, skipping diff fetch`
-    );
-  } else {
-    core.info(
-      `ℹ️ All diff fetch strategies exhausted, proceeding without diff`
-    );
-  }
+  core.info('ℹ️ All diff fetch strategies exhausted, proceeding without diff');
   return null;
 }
 

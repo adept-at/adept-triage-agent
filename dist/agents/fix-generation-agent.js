@@ -2,6 +2,7 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.FixGenerationAgent = void 0;
 const base_agent_1 = require("./base-agent");
+const constants_1 = require("../config/constants");
 class FixGenerationAgent extends base_agent_1.BaseAgent {
     constructor(openaiClient, config) {
         super(openaiClient, 'FixGenerationAgent', {
@@ -186,7 +187,7 @@ When PR changes are provided, your fix reasoning MUST be consistent with the dif
             parts.push('', '### Test File Content', '```javascript', context.sourceFileContent, '```');
         }
         if (context.prDiff && context.prDiff.files.length > 0) {
-            parts.push('', '### Recent PR Changes', 'These files were changed in the PR. IMPORTANT: Only these files were modified. If the failure involves code NOT listed here, do NOT claim it was changed by the PR — treat it as a pre-existing or environmental issue.');
+            parts.push('', `### Recent Changes in Product Repo (${constants_1.DEFAULT_PRODUCT_REPO})`, `These files were changed in ${constants_1.DEFAULT_PRODUCT_REPO}. They are READ-ONLY context — you may NOT propose changes to them. Only modify test files.`);
             for (const file of context.prDiff.files.slice(0, 5)) {
                 parts.push(`\n**${file.filename}** (${file.status})`);
                 if (file.patch) {

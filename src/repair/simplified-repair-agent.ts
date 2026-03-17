@@ -3,7 +3,7 @@ import * as fs from 'fs';
 import { OpenAIClient } from '../openai-client';
 import { RepairContext, ErrorData, FixRecommendation, SourceFetchContext, AIRecommendation, AIChange } from '../types';
 import { generateFixSummary } from '../analysis/summary-generator';
-import { CONFIDENCE, AGENT_CONFIG } from '../config/constants';
+import { CONFIDENCE, AGENT_CONFIG, DEFAULT_PRODUCT_REPO } from '../config/constants';
 import {
   AgentOrchestrator,
   createOrchestrator,
@@ -80,10 +80,17 @@ export class SimplifiedRepairAgent {
    *
    * If agentic repair is enabled, will attempt multi-agent approach first,
    * then fall back to single-shot if needed.
+   *
+   * @param previousAttempt - Optional feedback from a prior fix-validate iteration
    */
   async generateFixRecommendation(
     repairContext: RepairContext,
-    errorData?: ErrorData
+    errorData?: ErrorData,
+    previousAttempt?: {
+      iteration: number;
+      previousFix: FixRecommendation;
+      validationLogs: string;
+    }
   ): Promise<FixRecommendation | null> {
     try {
       core.info('🔧 Generating fix recommendation...');
@@ -93,7 +100,8 @@ export class SimplifiedRepairAgent {
         core.info('🤖 Attempting agentic repair...');
         const agenticResult = await this.tryAgenticRepair(
           repairContext,
-          errorData
+          errorData,
+          previousAttempt
         );
 
         if (agenticResult) {
@@ -109,7 +117,7 @@ export class SimplifiedRepairAgent {
       }
 
       // Single-shot repair (original logic)
-      return await this.singleShotRepair(repairContext, errorData);
+      return await this.singleShotRepair(repairContext, errorData, previousAttempt);
     } catch (error) {
       core.warning(`Failed to generate fix recommendation: ${error}`);
       return null;
@@ -121,7 +129,12 @@ export class SimplifiedRepairAgent {
    */
   private async tryAgenticRepair(
     repairContext: RepairContext,
-    errorData?: ErrorData
+    errorData?: ErrorData,
+    previousAttempt?: {
+      iteration: number;
+      previousFix: FixRecommendation;
+      validationLogs: string;
+    }
   ): Promise<FixRecommendation | null> {
     if (!this.orchestrator) {
       return null;
@@ -129,8 +142,16 @@ export class SimplifiedRepairAgent {
 
     try {
       // Build agent context from repair context
+      let enrichedErrorMessage = repairContext.errorMessage;
+      if (previousAttempt) {
+        const prevChanges = previousAttempt.previousFix.proposedChanges
+          .map((c) => `File: ${c.file}\nOld:\n${c.oldCode}\nNew:\n${c.newCode}`)
+          .join('\n---\n');
+        enrichedErrorMessage += `\n\n## PREVIOUS FIX ATTEMPT (iteration ${previousAttempt.iteration}) — FAILED VALIDATION\n\nThe following fix was applied and the test was re-run, but it still failed.\n\n### Previous Fix:\n${prevChanges}\n\n### Validation Failure Logs:\n${previousAttempt.validationLogs.slice(0, 8000)}\n\nYou MUST try a DIFFERENT approach. Do NOT repeat the same fix.`;
+      }
+
       const agentContext = createAgentContext({
-        errorMessage: repairContext.errorMessage,
+        errorMessage: enrichedErrorMessage,
         testFile: repairContext.testFile,
         testName: repairContext.testName,
         errorType: repairContext.errorType,
@@ -179,7 +200,12 @@ export class SimplifiedRepairAgent {
    */
   private async singleShotRepair(
     repairContext: RepairContext,
-    errorData?: ErrorData
+    errorData?: ErrorData,
+    previousAttempt?: {
+      iteration: number;
+      previousFix: FixRecommendation;
+      validationLogs: string;
+    }
   ): Promise<FixRecommendation | null> {
     // Try to fetch the actual source file content
     let sourceFileContent: string | null = null;
@@ -199,7 +225,8 @@ export class SimplifiedRepairAgent {
       repairContext,
       errorData,
       sourceFileContent,
-      cleanFilePath
+      cleanFilePath,
+      previousAttempt
     );
 
     // Save prompt for debugging (optional)
@@ -224,26 +251,63 @@ export class SimplifiedRepairAgent {
       return null;
     }
 
-    // Validate oldCode against actual source before accepting the recommendation
-    if (sourceFileContent && recommendation.changes) {
+    // Validate oldCode against actual source for EACH change's target file.
+    // Cache fetched files so multi-change fixes targeting the same file are cheap.
+    if (this.sourceFetchContext && recommendation.changes) {
+      const fileCache = new Map<string, string | null>();
+      if (cleanFilePath && sourceFileContent) {
+        fileCache.set(cleanFilePath, sourceFileContent);
+      }
+
       const validChanges: typeof recommendation.changes = [];
       for (const change of recommendation.changes) {
-        if (change.oldCode && !sourceFileContent.includes(change.oldCode)) {
-          core.warning(
-            `⚠️ Model proposed oldCode that does not exist in source file: "${change.oldCode.substring(0, 80)}..."`
-          );
-          core.warning(
-            '   The model hallucinated code instead of using the actual source. Rejecting this change.'
-          );
-          // Skip hallucinated changes entirely — do not mutate them
+        if (!change.oldCode) {
+          validChanges.push(change);
           continue;
         }
+
+        const changePath = this.extractFilePath(change.file);
+        if (!changePath) {
+          core.warning(
+            `⚠️ Could not resolve file path for change target "${change.file}" — rejecting change`
+          );
+          continue;
+        }
+
+        if (!fileCache.has(changePath)) {
+          fileCache.set(changePath, await this.fetchSourceFile(changePath));
+        }
+        const fileContent = fileCache.get(changePath);
+
+        if (!fileContent) {
+          core.warning(
+            `⚠️ Could not fetch source for "${changePath}" — rejecting change (cannot verify oldCode)`
+          );
+          continue;
+        }
+
+        if (!fileContent.includes(change.oldCode)) {
+          core.warning(
+            `⚠️ oldCode does not exist in ${changePath}: "${change.oldCode.substring(0, 80)}..." — rejecting (hallucinated)`
+          );
+          continue;
+        }
+
+        const firstIdx = fileContent.indexOf(change.oldCode);
+        const secondIdx = fileContent.indexOf(change.oldCode, firstIdx + 1);
+        if (secondIdx !== -1) {
+          core.warning(
+            `⚠️ oldCode matches multiple locations in ${changePath} — rejecting (ambiguous replacement)`
+          );
+          continue;
+        }
+
         validChanges.push(change);
       }
 
       if (validChanges.length === 0) {
         core.warning(
-          '❌ All proposed changes had hallucinated oldCode — rejecting recommendation'
+          '❌ All proposed changes failed source validation — rejecting recommendation'
         );
         return null;
       }
@@ -433,7 +497,12 @@ export class SimplifiedRepairAgent {
     context: RepairContext,
     errorData?: ErrorData,
     sourceFileContent?: string | null,
-    cleanFilePath?: string | null
+    cleanFilePath?: string | null,
+    previousAttempt?: {
+      iteration: number;
+      previousFix: FixRecommendation;
+      validationLogs: string;
+    }
   ): string {
     let contextInfo = `## Test Failure Context
 - **Test File:** ${this.sanitizeForPrompt(context.testFile)}
@@ -448,10 +517,13 @@ ${
 }
 ${context.errorLine ? `- **Error Line:** ${context.errorLine}` : ''}`;
 
+    contextInfo += `\n- **Product Under Test:** ${DEFAULT_PRODUCT_REPO}`;
+
     if (this.sourceFetchContext) {
       contextInfo += `\n\n## Repair Source Context
-- **Source Repository:** ${this.sourceFetchContext.owner}/${this.sourceFetchContext.repo}
-- **Source Branch:** ${this.sourceFetchContext.branch}`;
+- **Test Repository:** ${this.sourceFetchContext.owner}/${this.sourceFetchContext.repo}
+- **Source Branch:** ${this.sourceFetchContext.branch}
+- **Note:** You may ONLY propose changes to files in the test repository. Product source files (from ${DEFAULT_PRODUCT_REPO}) are provided for context only.`;
     }
 
     // Add the actual source file content if we fetched it
@@ -545,7 +617,7 @@ ${lines.length > 150 ? `\n... (${lines.length - 150} more lines)` : ''}
         core.info(
           `  ✅ Including PR diff (${errorData.prDiff.totalChanges} files changed)`
         );
-        contextInfo += `\n\n## Pull Request Changes\n`;
+        contextInfo += `\n\n## Recent Changes in Product Repo (${DEFAULT_PRODUCT_REPO})\nThese are READ-ONLY context from the product. Only modify test files.\n`;
         contextInfo += `- **Total Files Changed:** ${errorData.prDiff.totalChanges}\n`;
         contextInfo += `- **Lines Added:** ${errorData.prDiff.additions}\n`;
         contextInfo += `- **Lines Deleted:** ${errorData.prDiff.deletions}\n`;
@@ -579,6 +651,29 @@ ${lines.length > 150 ? `\n... (${lines.length - 150} more lines)` : ''}
       }
     } else {
       core.info('⚠️  No ErrorData provided - using minimal context');
+    }
+
+    if (previousAttempt) {
+      const prevChanges = previousAttempt.previousFix.proposedChanges
+        .map(
+          (c) =>
+            `File: ${c.file}\noldCode:\n\`\`\`\n${c.oldCode}\n\`\`\`\nnewCode:\n\`\`\`\n${c.newCode}\n\`\`\``
+        )
+        .join('\n---\n');
+
+      contextInfo += `\n\n## PREVIOUS FIX ATTEMPT #${previousAttempt.iteration} — FAILED VALIDATION
+
+The following fix was applied to a branch and the test was re-run on Sauce Labs, but it **still failed**.
+
+### Previous Fix That Was Tried:
+${prevChanges}
+
+### Validation Failure Logs (tail):
+\`\`\`
+${previousAttempt.validationLogs.slice(0, 6000)}
+\`\`\`
+
+**CRITICAL: You MUST try a DIFFERENT approach.** Analyze WHY the previous fix failed and address the root cause. Do NOT repeat the same change.`;
     }
 
     return `You are a test repair expert. Analyze this test failure and provide a fix recommendation.

@@ -11,7 +11,11 @@ export declare class SimplifiedRepairAgent {
     private config;
     private orchestrator?;
     constructor(openaiClientOrApiKey: OpenAIClient | string, sourceFetchContext?: SourceFetchContext, config?: RepairAgentConfig);
-    generateFixRecommendation(repairContext: RepairContext, errorData?: ErrorData): Promise<FixRecommendation | null>;
+    generateFixRecommendation(repairContext: RepairContext, errorData?: ErrorData, previousAttempt?: {
+        iteration: number;
+        previousFix: FixRecommendation;
+        validationLogs: string;
+    }): Promise<FixRecommendation | null>;
     private tryAgenticRepair;
     private singleShotRepair;
     private extractFilePath;

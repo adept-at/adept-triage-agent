@@ -95,6 +95,307 @@ describe('SimplifiedRepairAgent', () => {
       expect(result).toBeNull();
     });
 
+    it('should validate each change against its own target file', async () => {
+      const componentContent = `export const Button = () => {
+  return <button data-testid="submit-btn">Submit</button>;
+};`;
+
+      const mockGenerateWithCustomPrompt = jest.fn().mockResolvedValue(
+        JSON.stringify({
+          confidence: 85,
+          reasoning: 'Update selector in test and component',
+          changes: [
+            {
+              file: 'cypress/e2e/test.cy.ts',
+              line: 3,
+              oldCode: `cy.get('[data-testid="submit-btn"]').click();`,
+              newCode: `cy.get('[data-testid="submit-button"]').click();`,
+              justification: 'Update test selector',
+            },
+            {
+              file: 'src/components/Button.tsx',
+              line: 2,
+              oldCode: `return <button data-testid="submit-btn">Submit</button>;`,
+              newCode: `return <button data-testid="submit-button">Submit</button>;`,
+              justification: 'Update component testid',
+            },
+          ],
+          evidence: ['Selector standardization'],
+          rootCause: 'Inconsistent testids',
+        })
+      );
+
+      const mockGetContent = jest.fn().mockImplementation(({ path }: { path: string }) => {
+        if (path === 'cypress/e2e/test.cy.ts') {
+          return Promise.resolve({
+            data: { type: 'file', content: Buffer.from(sourceFileContent).toString('base64'), sha: 'sha1' },
+          });
+        }
+        if (path === 'src/components/Button.tsx') {
+          return Promise.resolve({
+            data: { type: 'file', content: Buffer.from(componentContent).toString('base64'), sha: 'sha2' },
+          });
+        }
+        throw new Error('Not found');
+      });
+
+      const mockOctokit = { repos: { getContent: mockGetContent } } as unknown as Octokit;
+
+      (OpenAIClient as jest.MockedClass<typeof OpenAIClient>).mockImplementation(
+        () => ({ analyze: mockAnalyze, generateWithCustomPrompt: mockGenerateWithCustomPrompt }) as any
+      );
+
+      const agentWithSource = new SimplifiedRepairAgent(
+        new OpenAIClient('key'),
+        { octokit: mockOctokit, owner: 'test', repo: 'repo', branch: 'main' }
+      );
+
+      const result = await agentWithSource.generateFixRecommendation(baseContext);
+
+      expect(result).not.toBeNull();
+      expect(result?.proposedChanges).toHaveLength(2);
+      expect(result?.proposedChanges[0].file).toBe('cypress/e2e/test.cy.ts');
+      expect(result?.proposedChanges[1].file).toBe('src/components/Button.tsx');
+    });
+
+    it('should reject changes targeting files that cannot be fetched', async () => {
+      const mockGenerateWithCustomPrompt = jest.fn().mockResolvedValue(
+        JSON.stringify({
+          confidence: 85,
+          reasoning: 'Fix in unfetchable file',
+          changes: [
+            {
+              file: 'src/utils/missing-file.ts',
+              line: 10,
+              oldCode: 'const x = 1;',
+              newCode: 'const x = 2;',
+              justification: 'Update value',
+            },
+          ],
+          evidence: ['Value wrong'],
+          rootCause: 'Wrong value',
+        })
+      );
+
+      const mockOctokit = {
+        repos: {
+          getContent: jest.fn().mockImplementation(({ path }: { path: string }) => {
+            if (path === 'cypress/e2e/test.cy.ts') {
+              return Promise.resolve({
+                data: { type: 'file', content: Buffer.from(sourceFileContent).toString('base64'), sha: 'sha1' },
+              });
+            }
+            throw new Error('Not Found');
+          }),
+        },
+      } as unknown as Octokit;
+
+      (OpenAIClient as jest.MockedClass<typeof OpenAIClient>).mockImplementation(
+        () => ({ analyze: mockAnalyze, generateWithCustomPrompt: mockGenerateWithCustomPrompt }) as any
+      );
+
+      const agentWithSource = new SimplifiedRepairAgent(
+        new OpenAIClient('key'),
+        { octokit: mockOctokit, owner: 'test', repo: 'repo', branch: 'main' }
+      );
+
+      const result = await agentWithSource.generateFixRecommendation(baseContext);
+
+      expect(result).toBeNull();
+    });
+
+    it('should reject changes where oldCode matches multiple locations (ambiguous)', async () => {
+      const sourceWithDuplicates = `describe('test', () => {
+  it('first test', () => {
+    cy.get('[data-testid="submit-btn"]').click();
+  });
+  it('second test', () => {
+    cy.get('[data-testid="submit-btn"]').click();
+  });
+});`;
+
+      const mockGenerateWithCustomPrompt = jest.fn().mockResolvedValue(
+        JSON.stringify({
+          confidence: 85,
+          reasoning: 'Update selector',
+          changes: [
+            {
+              file: 'cypress/e2e/test.cy.ts',
+              line: 3,
+              oldCode: `cy.get('[data-testid="submit-btn"]').click();`,
+              newCode: `cy.get('[data-testid="submit-button"]').click();`,
+              justification: 'Update selector',
+            },
+          ],
+          evidence: ['Selector changed'],
+          rootCause: 'Selector mismatch',
+        })
+      );
+
+      const mockOctokit = {
+        repos: {
+          getContent: jest.fn().mockResolvedValue({
+            data: { type: 'file', content: Buffer.from(sourceWithDuplicates).toString('base64'), sha: 'sha1' },
+          }),
+        },
+      } as unknown as Octokit;
+
+      (OpenAIClient as jest.MockedClass<typeof OpenAIClient>).mockImplementation(
+        () => ({ analyze: mockAnalyze, generateWithCustomPrompt: mockGenerateWithCustomPrompt }) as any
+      );
+
+      const agentWithSource = new SimplifiedRepairAgent(
+        new OpenAIClient('key'),
+        { octokit: mockOctokit, owner: 'test', repo: 'repo', branch: 'main' }
+      );
+
+      const result = await agentWithSource.generateFixRecommendation(baseContext);
+
+      expect(result).toBeNull();
+    });
+
+    it('should keep valid changes and reject invalid ones across multiple files', async () => {
+      const helperContent = `export function setupTest() {
+  return { timeout: 5000 };
+}`;
+
+      const mockGenerateWithCustomPrompt = jest.fn().mockResolvedValue(
+        JSON.stringify({
+          confidence: 85,
+          reasoning: 'Multi-file fix',
+          changes: [
+            {
+              file: 'cypress/e2e/test.cy.ts',
+              line: 3,
+              oldCode: `cy.get('[data-testid="submit-btn"]').click();`,
+              newCode: `cy.get('[data-testid="submit-button"]').click();`,
+              justification: 'Valid — oldCode exists in test file',
+            },
+            {
+              file: 'src/utils/gone.ts',
+              line: 1,
+              oldCode: 'const gone = true;',
+              newCode: 'const gone = false;',
+              justification: 'Invalid — file cannot be fetched',
+            },
+            {
+              file: 'cypress/support/helpers.ts',
+              line: 1,
+              oldCode: 'return { timeout: 5000 };',
+              newCode: 'return { timeout: 10000 };',
+              justification: 'Valid — oldCode exists in helper',
+            },
+          ],
+          evidence: ['Multiple issues'],
+          rootCause: 'Several problems',
+        })
+      );
+
+      const mockOctokit = {
+        repos: {
+          getContent: jest.fn().mockImplementation(({ path }: { path: string }) => {
+            if (path === 'cypress/e2e/test.cy.ts') {
+              return Promise.resolve({
+                data: { type: 'file', content: Buffer.from(sourceFileContent).toString('base64'), sha: 'sha1' },
+              });
+            }
+            if (path === 'cypress/support/helpers.ts') {
+              return Promise.resolve({
+                data: { type: 'file', content: Buffer.from(helperContent).toString('base64'), sha: 'sha2' },
+              });
+            }
+            throw new Error('Not Found');
+          }),
+        },
+      } as unknown as Octokit;
+
+      (OpenAIClient as jest.MockedClass<typeof OpenAIClient>).mockImplementation(
+        () => ({ analyze: mockAnalyze, generateWithCustomPrompt: mockGenerateWithCustomPrompt }) as any
+      );
+
+      const agentWithSource = new SimplifiedRepairAgent(
+        new OpenAIClient('key'),
+        { octokit: mockOctokit, owner: 'test', repo: 'repo', branch: 'main' }
+      );
+
+      const result = await agentWithSource.generateFixRecommendation(baseContext);
+
+      expect(result).not.toBeNull();
+      expect(result?.proposedChanges).toHaveLength(2);
+      expect(result?.proposedChanges[0].file).toBe('cypress/e2e/test.cy.ts');
+      expect(result?.proposedChanges[1].file).toBe('cypress/support/helpers.ts');
+    });
+
+    it('should fetch each target file only once when multiple changes target it', async () => {
+      const helperContent = `export function helperA() {
+  return 'a';
+}
+
+export function helperB() {
+  return 'b';
+}`;
+
+      const mockGenerateWithCustomPrompt = jest.fn().mockResolvedValue(
+        JSON.stringify({
+          confidence: 85,
+          reasoning: 'Two changes in same helper file',
+          changes: [
+            {
+              file: 'cypress/support/helpers.ts',
+              line: 2,
+              oldCode: `return 'a';`,
+              newCode: `return 'alpha';`,
+              justification: 'Update return value',
+            },
+            {
+              file: 'cypress/support/helpers.ts',
+              line: 6,
+              oldCode: `return 'b';`,
+              newCode: `return 'beta';`,
+              justification: 'Update return value',
+            },
+          ],
+          evidence: ['Return values changed'],
+          rootCause: 'Outdated values',
+        })
+      );
+
+      const mockGetContent = jest.fn().mockImplementation(({ path }: { path: string }) => {
+        if (path === 'cypress/e2e/test.cy.ts') {
+          return Promise.resolve({
+            data: { type: 'file', content: Buffer.from(sourceFileContent).toString('base64'), sha: 'sha1' },
+          });
+        }
+        if (path === 'cypress/support/helpers.ts') {
+          return Promise.resolve({
+            data: { type: 'file', content: Buffer.from(helperContent).toString('base64'), sha: 'sha2' },
+          });
+        }
+        throw new Error('Not Found');
+      });
+
+      const mockOctokit = { repos: { getContent: mockGetContent } } as unknown as Octokit;
+
+      (OpenAIClient as jest.MockedClass<typeof OpenAIClient>).mockImplementation(
+        () => ({ analyze: mockAnalyze, generateWithCustomPrompt: mockGenerateWithCustomPrompt }) as any
+      );
+
+      const agentWithSource = new SimplifiedRepairAgent(
+        new OpenAIClient('key'),
+        { octokit: mockOctokit, owner: 'test', repo: 'repo', branch: 'main' }
+      );
+
+      const result = await agentWithSource.generateFixRecommendation(baseContext);
+
+      expect(result).not.toBeNull();
+      expect(result?.proposedChanges).toHaveLength(2);
+
+      const helperFetches = mockGetContent.mock.calls.filter(
+        (call: any[]) => call[0].path === 'cypress/support/helpers.ts'
+      );
+      expect(helperFetches).toHaveLength(1);
+    });
+
     it('should keep valid changes and discard hallucinated ones', async () => {
       const mockGenerateWithCustomPrompt = jest.fn().mockResolvedValue(
         JSON.stringify({
