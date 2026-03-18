@@ -387,19 +387,77 @@ class GitHubFixApplier {
                 const currentContent = Buffer.from(fileResponse.data.content, 'base64').toString('utf-8');
                 const fileSha = fileResponse.data.sha;
                 if (change.oldCode && change.newCode) {
-                    const matchIndex = currentContent.indexOf(change.oldCode);
+                    let matchIndex = currentContent.indexOf(change.oldCode);
+                    let effectiveOldCode = change.oldCode;
                     if (matchIndex === -1) {
-                        validationErrors.push(`Could not find old code to replace in ${filePath}`);
-                        continue;
+                        core.info(`Exact match failed for ${filePath}, trying fuzzy strategies...`);
+                        const stripped = change.oldCode
+                            .split('\n')
+                            .map((line) => line.replace(/^\s*\d+:\s?/, ''))
+                            .join('\n');
+                        if (stripped !== change.oldCode) {
+                            matchIndex = currentContent.indexOf(stripped);
+                            if (matchIndex !== -1) {
+                                effectiveOldCode = stripped;
+                                core.info(`  ✅ Matched after stripping line number prefixes`);
+                            }
+                        }
+                        if (matchIndex === -1) {
+                            const normalizedOld = change.oldCode
+                                .split('\n')
+                                .map((l) => l.trimEnd())
+                                .join('\n');
+                            const normalizedContent = currentContent
+                                .split('\n')
+                                .map((l) => l.trimEnd())
+                                .join('\n');
+                            const normIdx = normalizedContent.indexOf(normalizedOld);
+                            if (normIdx !== -1) {
+                                const linesBefore = normalizedContent.slice(0, normIdx).split('\n').length - 1;
+                                const linesInOld = normalizedOld.split('\n').length;
+                                const actualLines = currentContent.split('\n');
+                                effectiveOldCode = actualLines.slice(linesBefore, linesBefore + linesInOld).join('\n');
+                                matchIndex = currentContent.indexOf(effectiveOldCode);
+                                if (matchIndex !== -1) {
+                                    core.info(`  ✅ Matched after trailing whitespace normalization`);
+                                }
+                            }
+                        }
+                        if (matchIndex === -1 && change.line > 0) {
+                            const contentLines = currentContent.split('\n');
+                            const oldLineCount = change.oldCode.split('\n').length;
+                            const start = Math.max(0, change.line - 3);
+                            const end = Math.min(contentLines.length, change.line + oldLineCount + 2);
+                            for (let s = start; s <= Math.min(start + 5, end - oldLineCount); s++) {
+                                const candidate = contentLines.slice(s, s + oldLineCount).join('\n');
+                                const similarity = computeLineSimilarity(change.oldCode, candidate);
+                                if (similarity >= 0.5) {
+                                    const candidateIdx = currentContent.indexOf(candidate);
+                                    if (candidateIdx !== -1) {
+                                        const secondIdx = currentContent.indexOf(candidate, candidateIdx + 1);
+                                        if (secondIdx === -1) {
+                                            matchIndex = candidateIdx;
+                                            effectiveOldCode = candidate;
+                                            core.info(`  ✅ Matched via line-range similarity (${(similarity * 100).toFixed(0)}%) at line ${s + 1}`);
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        if (matchIndex === -1) {
+                            validationErrors.push(`Could not find old code to replace in ${filePath}`);
+                            continue;
+                        }
                     }
-                    const secondMatch = currentContent.indexOf(change.oldCode, matchIndex + 1);
+                    const secondMatch = currentContent.indexOf(effectiveOldCode, matchIndex + 1);
                     if (secondMatch !== -1) {
                         validationErrors.push(`oldCode matches multiple locations in ${filePath} — ambiguous replacement rejected`);
                         continue;
                     }
                     const newContent = currentContent.slice(0, matchIndex) +
                         change.newCode +
-                        currentContent.slice(matchIndex + change.oldCode.length);
+                        currentContent.slice(matchIndex + effectiveOldCode.length);
                     pendingChanges.push({
                         filePath,
                         newContent,
@@ -508,5 +566,27 @@ function generateFixBranchName(testFile, timestamp = new Date(), forceUnique = f
         ? `-${timestamp.getTime().toString(36)}`
         : `-${timestamp.getMilliseconds().toString().padStart(3, '0')}`;
     return `${constants_1.AUTO_FIX.BRANCH_PREFIX}${sanitizedFile}-${dateStr}${uniqueSuffix}`;
+}
+function computeLineSimilarity(a, b) {
+    const aLines = a.split('\n').map((l) => l.trim()).filter(Boolean);
+    const bLines = b.split('\n').map((l) => l.trim()).filter(Boolean);
+    if (aLines.length === 0 || bLines.length === 0)
+        return 0;
+    let matched = 0;
+    for (const aLine of aLines) {
+        const aTokens = aLine.split(/\s+/).filter((t) => t.length > 2);
+        if (aTokens.length === 0) {
+            matched++;
+            continue;
+        }
+        for (const bLine of bLines) {
+            const hitCount = aTokens.filter((t) => bLine.includes(t)).length;
+            if (hitCount >= aTokens.length * 0.6) {
+                matched++;
+                break;
+            }
+        }
+    }
+    return matched / aLines.length;
 }
 //# sourceMappingURL=fix-applier.js.map

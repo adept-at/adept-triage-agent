@@ -147,7 +147,9 @@ class AgentOrchestrator {
         }, context);
         agentResults.codeReading = codeReadingResult;
         if (codeReadingResult.success && codeReadingResult.data) {
-            context.sourceFileContent = codeReadingResult.data.testFileContent;
+            const rawContent = codeReadingResult.data.testFileContent;
+            context.sourceFileContent = addLineNumbers(rawContent);
+            context._rawSourceFileContent = rawContent;
             context.relatedFiles = new Map(codeReadingResult.data.relatedFiles.map((f) => [f.path, f.content]));
             core.info(`   Fetched ${codeReadingResult.data.relatedFiles.length + 1} files`);
         }
@@ -188,6 +190,21 @@ class AgentOrchestrator {
                 core.warning(`Fix confidence (${lastFix.confidence}%) below threshold (${this.config.minConfidence}%)`);
                 reviewFeedback = `Confidence too low (${lastFix.confidence}%). Please improve the fix.`;
                 continue;
+            }
+            const rawSource = context._rawSourceFileContent;
+            if (rawSource) {
+                const correctionResult = autoCorrectOldCode(lastFix.changes, rawSource, context);
+                if (correctionResult.correctedCount > 0) {
+                    core.info(`   🔧 Auto-corrected oldCode for ${correctionResult.correctedCount} change(s)`);
+                }
+                if (correctionResult.droppedCount > 0) {
+                    core.warning(`   ⚠️ Dropped ${correctionResult.droppedCount} change(s) — could not match source`);
+                }
+                lastFix.changes = correctionResult.changes;
+                if (lastFix.changes.length === 0) {
+                    reviewFeedback = 'All proposed changes had oldCode that could not be matched to the source file. Please copy oldCode EXACTLY from the numbered source lines provided.';
+                    continue;
+                }
             }
             if (this.config.requireReview) {
                 core.info('✅ Step 5: Running Review Agent...');
@@ -251,6 +268,162 @@ class AgentOrchestrator {
     }
 }
 exports.AgentOrchestrator = AgentOrchestrator;
+function addLineNumbers(source) {
+    if (!source)
+        return source;
+    const lines = source.split('\n');
+    return lines.map((line, i) => `${String(i + 1).padStart(4)}: ${line}`).join('\n');
+}
+function autoCorrectOldCode(changes, rawSource, _context) {
+    const sourceLines = rawSource.split('\n');
+    const validChanges = [];
+    let correctedCount = 0;
+    let droppedCount = 0;
+    for (const change of changes) {
+        if (!change.oldCode) {
+            validChanges.push(change);
+            continue;
+        }
+        if (rawSource.includes(change.oldCode)) {
+            const firstIdx = rawSource.indexOf(change.oldCode);
+            const secondIdx = rawSource.indexOf(change.oldCode, firstIdx + 1);
+            if (secondIdx === -1) {
+                validChanges.push(change);
+                continue;
+            }
+        }
+        core.info(`   🔍 oldCode not found verbatim, attempting auto-correction for ${change.file}:${change.line}`);
+        const strippedOldCode = change.oldCode
+            .split('\n')
+            .map((line) => line.replace(/^\s*\d+:\s?/, ''))
+            .join('\n');
+        if (strippedOldCode !== change.oldCode && rawSource.includes(strippedOldCode)) {
+            const firstIdx = rawSource.indexOf(strippedOldCode);
+            const secondIdx = rawSource.indexOf(strippedOldCode, firstIdx + 1);
+            if (secondIdx === -1) {
+                core.info(`   ✅ Corrected by stripping line number prefixes`);
+                change.oldCode = strippedOldCode;
+                validChanges.push(change);
+                correctedCount++;
+                continue;
+            }
+        }
+        const normalizedOld = normalizeWhitespace(change.oldCode);
+        const normalizedSource = normalizeWhitespace(rawSource);
+        const normIdx = normalizedSource.indexOf(normalizedOld);
+        if (normIdx !== -1) {
+            const extracted = extractMatchingRegion(rawSource, change.oldCode);
+            if (extracted) {
+                core.info(`   ✅ Corrected via whitespace-normalized matching`);
+                change.oldCode = extracted;
+                validChanges.push(change);
+                correctedCount++;
+                continue;
+            }
+        }
+        if (change.line > 0) {
+            const oldCodeLineCount = change.oldCode.split('\n').length;
+            const startLine = Math.max(0, change.line - 3);
+            const endLine = Math.min(sourceLines.length, change.line + oldCodeLineCount + 2);
+            const regionLines = sourceLines.slice(startLine, endLine);
+            const region = regionLines.join('\n');
+            const keySignatures = extractKeySignatures(change.oldCode);
+            if (keySignatures.length > 0) {
+                const matchedRegion = findRegionBySignatures(sourceLines, keySignatures, change.line, oldCodeLineCount);
+                if (matchedRegion) {
+                    const secondIdx = rawSource.indexOf(matchedRegion, rawSource.indexOf(matchedRegion) + 1);
+                    if (secondIdx === -1) {
+                        core.info(`   ✅ Corrected via line-range + signature matching (around line ${change.line})`);
+                        change.oldCode = matchedRegion;
+                        validChanges.push(change);
+                        correctedCount++;
+                        continue;
+                    }
+                }
+            }
+            const keywordsInOld = change.oldCode.match(/\b(?:throw|if|const|return|await|expect|assert)\b.*?[;)}\]]/g) || [];
+            const keywordsInRegion = region.match(/\b(?:throw|if|const|return|await|expect|assert)\b.*?[;)}\]]/g) || [];
+            const overlap = keywordsInOld.filter((kw) => keywordsInRegion.some((rk) => normalizeWhitespace(rk).includes(normalizeWhitespace(kw).slice(0, 30))));
+            if (overlap.length > 0 && overlap.length >= keywordsInOld.length * 0.5) {
+                const secondIdx = rawSource.indexOf(region, rawSource.indexOf(region) + 1);
+                if (secondIdx === -1) {
+                    core.info(`   ✅ Corrected via line-range extraction (lines ${startLine + 1}-${endLine})`);
+                    change.oldCode = region;
+                    validChanges.push(change);
+                    correctedCount++;
+                    continue;
+                }
+            }
+        }
+        core.warning(`   ❌ Could not auto-correct oldCode for ${change.file}:${change.line} — dropping change`);
+        droppedCount++;
+    }
+    return { changes: validChanges, correctedCount, droppedCount };
+}
+function normalizeWhitespace(s) {
+    return s.replace(/\s+/g, ' ').trim();
+}
+function extractMatchingRegion(rawSource, approxOldCode) {
+    const sourceLines = rawSource.split('\n');
+    const oldLines = approxOldCode.split('\n').map((l) => normalizeWhitespace(l)).filter(Boolean);
+    if (oldLines.length === 0)
+        return null;
+    for (let i = 0; i < sourceLines.length; i++) {
+        if (normalizeWhitespace(sourceLines[i]).includes(oldLines[0])) {
+            let matched = true;
+            for (let j = 1; j < oldLines.length && i + j < sourceLines.length; j++) {
+                if (!normalizeWhitespace(sourceLines[i + j]).includes(oldLines[j])) {
+                    matched = false;
+                    break;
+                }
+            }
+            if (matched) {
+                const region = sourceLines.slice(i, i + oldLines.length).join('\n');
+                if (rawSource.indexOf(region) !== -1) {
+                    return region;
+                }
+            }
+        }
+    }
+    return null;
+}
+function extractKeySignatures(code) {
+    const sigs = [];
+    for (const line of code.split('\n')) {
+        const trimmed = line.trim();
+        if (trimmed.length > 15 && /[a-zA-Z]/.test(trimmed)) {
+            const sig = trimmed.replace(/\s+/g, ' ');
+            sigs.push(sig);
+        }
+    }
+    return sigs;
+}
+function findRegionBySignatures(sourceLines, signatures, targetLine, expectedLength) {
+    const searchStart = Math.max(0, targetLine - 10);
+    const searchEnd = Math.min(sourceLines.length, targetLine + expectedLength + 10);
+    let bestStart = -1;
+    let bestScore = 0;
+    for (let i = searchStart; i < searchEnd; i++) {
+        let score = 0;
+        for (let j = 0; j < signatures.length && i + j < sourceLines.length; j++) {
+            const sourceLine = sourceLines[i + j].trim().replace(/\s+/g, ' ');
+            const sig = signatures[j];
+            const sigTokens = sig.split(/\s+/).filter((t) => t.length > 2);
+            const matchedTokens = sigTokens.filter((t) => sourceLine.includes(t));
+            if (matchedTokens.length >= sigTokens.length * 0.6) {
+                score++;
+            }
+        }
+        if (score > bestScore) {
+            bestScore = score;
+            bestStart = i;
+        }
+    }
+    if (bestStart >= 0 && bestScore >= signatures.length * 0.5) {
+        return sourceLines.slice(bestStart, bestStart + expectedLength).join('\n');
+    }
+    return null;
+}
 function createOrchestrator(openaiClient, config, sourceFetchContext) {
     return new AgentOrchestrator(openaiClient, config, sourceFetchContext);
 }

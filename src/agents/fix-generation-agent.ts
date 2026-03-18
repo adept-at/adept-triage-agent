@@ -223,10 +223,14 @@ You MUST respond with a JSON object matching this schema:
   "alternatives": ["<other approaches that could work>"]
 }
 
-## CRITICAL
+## CRITICAL — oldCode MATCHING
 
 - The "oldCode" field is used for find-and-replace. It MUST match EXACTLY.
+- The test file content is provided with LINE NUMBERS (e.g., "  42: const x = 1;"). When copying oldCode, STRIP the line number prefixes — only include the actual code content.
 - Include enough context in "oldCode" to uniquely identify the location (usually 3-5 lines).
+- Reference the line numbers to locate code precisely, then copy the code portion VERBATIM (without the line number prefix).
+- Example: if the source shows "  42:     const tolerance = Math.min(timer * 0.2, 0.75);", the oldCode should be "    const tolerance = Math.min(timer * 0.2, 0.75);" (preserving the indentation but NOT the line number).
+- DO NOT invent, paraphrase, or reconstruct code from memory. Only copy from the provided source.
 - Test your understanding of the code before generating the fix.
 
 ## PR DIFF CONSISTENCY (VERY IMPORTANT)
