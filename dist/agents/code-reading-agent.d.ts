@@ -32,6 +32,8 @@ export declare class CodeReadingAgent extends BaseAgent<CodeReadingInput, CodeRe
     protected getSystemPrompt(): string;
     protected buildUserPrompt(_input: CodeReadingInput, _context: AgentContext): string;
     protected parseResponse(_response: string): CodeReadingOutput | null;
+    private cleanFilePath;
+    private extractFilePathsFromError;
     private fetchFile;
     private extractImports;
     private extractHelperCalls;

@@ -158,6 +158,10 @@ class AgentOrchestrator {
             context.sourceFileContent = addLineNumbers(rawContent);
             context._rawSourceFileContent = rawContent;
             context.relatedFiles = new Map(codeReadingResult.data.relatedFiles.map((f) => [f.path, f.content]));
+            core.info(`   Test file: ${rawContent.length} chars`);
+            for (const f of codeReadingResult.data.relatedFiles) {
+                core.info(`   Related: ${f.path} (${f.content.length} chars) — ${f.relevance}`);
+            }
             core.info(`   Fetched ${codeReadingResult.data.relatedFiles.length + 1} files`);
         }
         core.info('🔍 Step 3: Running Investigation Agent...');
@@ -843,10 +847,43 @@ class CodeReadingAgent extends base_agent_1.BaseAgent {
         let apiCalls = 0;
         try {
             this.log('Starting code reading...');
+            const cleanTestFile = this.cleanFilePath(input.testFile);
+            this.log(`Test file: ${cleanTestFile} (raw: ${input.testFile})`);
             let testFileContent = context.sourceFileContent || '';
-            if (!testFileContent && this.sourceFetchContext) {
-                testFileContent = await this.fetchFile(input.testFile);
+            if (!testFileContent && this.sourceFetchContext && cleanTestFile) {
+                testFileContent = await this.fetchFile(cleanTestFile);
                 apiCalls++;
+            }
+            if (!testFileContent) {
+                this.log('Could not fetch test file, continuing with error-referenced files...', 'warning');
+            }
+            const relatedFiles = [];
+            const customCommands = [];
+            const pageObjects = [];
+            const errorFiles = this.extractFilePathsFromError(context.errorMessage);
+            const fetchedPaths = new Set();
+            if (cleanTestFile)
+                fetchedPaths.add(cleanTestFile);
+            for (const errorFile of errorFiles) {
+                if (fetchedPaths.has(errorFile))
+                    continue;
+                fetchedPaths.add(errorFile);
+                const content = await this.fetchFile(errorFile);
+                apiCalls++;
+                if (content) {
+                    if (!testFileContent) {
+                        testFileContent = content;
+                        this.log(`Using error-referenced file as primary: ${errorFile}`);
+                    }
+                    else {
+                        relatedFiles.push({
+                            path: errorFile,
+                            content,
+                            relevance: 'File referenced in error stack trace',
+                        });
+                        this.log(`Fetched error-referenced file: ${errorFile} (${content.length} chars)`);
+                    }
+                }
             }
             if (!testFileContent) {
                 return {
@@ -856,14 +893,14 @@ class CodeReadingAgent extends base_agent_1.BaseAgent {
                     apiCalls,
                 };
             }
-            const relatedFiles = [];
-            const customCommands = [];
-            const pageObjects = [];
             const imports = this.extractImports(testFileContent);
             const helperCalls = this.extractHelperCalls(testFileContent);
             const pageObjectRefs = this.extractPageObjectReferences(testFileContent);
-            const supportFiles = await this.findAndFetchSupportFiles(input.testFile, imports, helperCalls);
+            const supportFiles = await this.findAndFetchSupportFiles(cleanTestFile || input.testFile, imports, helperCalls);
             for (const [path, content] of supportFiles) {
+                if (fetchedPaths.has(path))
+                    continue;
+                fetchedPaths.add(path);
                 relatedFiles.push({
                     path,
                     content,
@@ -874,8 +911,9 @@ class CodeReadingAgent extends base_agent_1.BaseAgent {
                 customCommands.push(...commands);
             }
             for (const pageObjRef of pageObjectRefs) {
-                const pageObjFile = await this.findPageObjectFile(pageObjRef, input.testFile);
-                if (pageObjFile) {
+                const pageObjFile = await this.findPageObjectFile(pageObjRef, cleanTestFile || input.testFile);
+                if (pageObjFile && !fetchedPaths.has(pageObjFile)) {
+                    fetchedPaths.add(pageObjFile);
                     const content = await this.fetchFile(pageObjFile);
                     apiCalls++;
                     if (content) {
@@ -894,10 +932,13 @@ class CodeReadingAgent extends base_agent_1.BaseAgent {
             }
             if (input.errorSelectors && context.prDiff) {
                 for (const file of context.prDiff.files) {
+                    if (fetchedPaths.has(file.filename))
+                        continue;
                     if (this.isRelevantFile(file.filename, input.errorSelectors)) {
                         const content = await this.fetchFile(file.filename);
                         apiCalls++;
                         if (content) {
+                            fetchedPaths.add(file.filename);
                             relatedFiles.push({
                                 path: file.filename,
                                 content: content.slice(0, 5000),
@@ -907,6 +948,7 @@ class CodeReadingAgent extends base_agent_1.BaseAgent {
                     }
                 }
             }
+            this.log(`Fetched ${relatedFiles.length + 1} file(s) total`);
             const summary = this.buildSummary(testFileContent, relatedFiles, customCommands, pageObjects);
             return {
                 success: true,
@@ -940,6 +982,45 @@ class CodeReadingAgent extends base_agent_1.BaseAgent {
     }
     parseResponse(_response) {
         return null;
+    }
+    cleanFilePath(rawPath) {
+        if (!rawPath)
+            return rawPath;
+        const webpackMatch = rawPath.match(/webpack:\/\/[^/]+\/\.\/(.+)/);
+        if (webpackMatch)
+            return webpackMatch[1];
+        const fileMatch = rawPath.match(/file:\/\/(.+)/);
+        if (fileMatch)
+            return fileMatch[1];
+        const ciRunnerMatch = rawPath.match(/\/(?:home\/runner\/work|github\/workspace)\/[^/]+\/[^/]+\/(.+)/);
+        if (ciRunnerMatch)
+            return ciRunnerMatch[1];
+        const projectDirMatch = rawPath.match(/.*\/((?:test|spec|tests|specs|cypress|src|lib|e2e)\/.+)/);
+        if (projectDirMatch)
+            return projectDirMatch[1];
+        return rawPath.replace(/:\d+(?::\d+)?$/, '');
+    }
+    extractFilePathsFromError(errorMessage) {
+        if (!errorMessage)
+            return [];
+        const paths = [];
+        const seen = new Set();
+        const patterns = [
+            /at\s+\S+\s+\(([^)]+\.[tj]sx?):?\d*/g,
+            /(?:\/home\/runner\/work|\/github\/workspace)\/[^/]+\/[^/]+\/([\w./-]+\.[tj]sx?):\d+/g,
+            /((?:test|spec|tests|specs|cypress|src|lib|e2e)\/[\w./-]+\.[tj]sx?):\d+/g,
+        ];
+        for (const pattern of patterns) {
+            let match;
+            while ((match = pattern.exec(errorMessage)) !== null) {
+                const cleaned = this.cleanFilePath(match[1] || match[0]);
+                if (cleaned && !seen.has(cleaned)) {
+                    seen.add(cleaned);
+                    paths.push(cleaned);
+                }
+            }
+        }
+        return paths;
     }
     async fetchFile(path) {
         if (!this.sourceFetchContext) {

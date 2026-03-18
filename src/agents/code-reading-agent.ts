@@ -82,12 +82,48 @@ export class CodeReadingAgent extends BaseAgent<
 
     try {
       this.log('Starting code reading...');
+      const cleanTestFile = this.cleanFilePath(input.testFile);
+      this.log(`Test file: ${cleanTestFile} (raw: ${input.testFile})`);
 
       // Fetch the test file
       let testFileContent = context.sourceFileContent || '';
-      if (!testFileContent && this.sourceFetchContext) {
-        testFileContent = await this.fetchFile(input.testFile);
+      if (!testFileContent && this.sourceFetchContext && cleanTestFile) {
+        testFileContent = await this.fetchFile(cleanTestFile);
         apiCalls++;
+      }
+
+      if (!testFileContent) {
+        this.log('Could not fetch test file, continuing with error-referenced files...', 'warning');
+      }
+
+      // Find related files
+      const relatedFiles: CodeReadingOutput['relatedFiles'] = [];
+      const customCommands: CodeReadingOutput['customCommands'] = [];
+      const pageObjects: CodeReadingOutput['pageObjects'] = [];
+
+      // Extract file paths from error message/stack trace and fetch them
+      const errorFiles = this.extractFilePathsFromError(context.errorMessage);
+      const fetchedPaths = new Set<string>();
+      if (cleanTestFile) fetchedPaths.add(cleanTestFile);
+
+      for (const errorFile of errorFiles) {
+        if (fetchedPaths.has(errorFile)) continue;
+        fetchedPaths.add(errorFile);
+        const content = await this.fetchFile(errorFile);
+        apiCalls++;
+        if (content) {
+          if (!testFileContent) {
+            testFileContent = content;
+            this.log(`Using error-referenced file as primary: ${errorFile}`);
+          } else {
+            relatedFiles.push({
+              path: errorFile,
+              content,
+              relevance: 'File referenced in error stack trace',
+            });
+            this.log(`Fetched error-referenced file: ${errorFile} (${content.length} chars)`);
+          }
+        }
       }
 
       if (!testFileContent) {
@@ -99,11 +135,6 @@ export class CodeReadingAgent extends BaseAgent<
         };
       }
 
-      // Find related files
-      const relatedFiles: CodeReadingOutput['relatedFiles'] = [];
-      const customCommands: CodeReadingOutput['customCommands'] = [];
-      const pageObjects: CodeReadingOutput['pageObjects'] = [];
-
       // Parse the test file to find imports and helpers
       const imports = this.extractImports(testFileContent);
       const helperCalls = this.extractHelperCalls(testFileContent);
@@ -111,11 +142,13 @@ export class CodeReadingAgent extends BaseAgent<
 
       // Fetch helper/support files
       const supportFiles = await this.findAndFetchSupportFiles(
-        input.testFile,
+        cleanTestFile || input.testFile,
         imports,
         helperCalls
       );
       for (const [path, content] of supportFiles) {
+        if (fetchedPaths.has(path)) continue;
+        fetchedPaths.add(path);
         relatedFiles.push({
           path,
           content,
@@ -132,9 +165,10 @@ export class CodeReadingAgent extends BaseAgent<
       for (const pageObjRef of pageObjectRefs) {
         const pageObjFile = await this.findPageObjectFile(
           pageObjRef,
-          input.testFile
+          cleanTestFile || input.testFile
         );
-        if (pageObjFile) {
+        if (pageObjFile && !fetchedPaths.has(pageObjFile)) {
+          fetchedPaths.add(pageObjFile);
           const content = await this.fetchFile(pageObjFile);
           apiCalls++;
           if (content) {
@@ -155,14 +189,15 @@ export class CodeReadingAgent extends BaseAgent<
       // Look for files related to error selectors in PR diff
       if (input.errorSelectors && context.prDiff) {
         for (const file of context.prDiff.files) {
-          // Check if the file might contain relevant selectors
+          if (fetchedPaths.has(file.filename)) continue;
           if (this.isRelevantFile(file.filename, input.errorSelectors)) {
             const content = await this.fetchFile(file.filename);
             apiCalls++;
             if (content) {
+              fetchedPaths.add(file.filename);
               relatedFiles.push({
                 path: file.filename,
-                content: content.slice(0, 5000), // Limit size
+                content: content.slice(0, 5000),
                 relevance:
                   'File from PR diff that may contain relevant selectors',
               });
@@ -170,6 +205,8 @@ export class CodeReadingAgent extends BaseAgent<
           }
         }
       }
+
+      this.log(`Fetched ${relatedFiles.length + 1} file(s) total`);
 
       // Build summary
       const summary = this.buildSummary(
@@ -227,6 +264,65 @@ export class CodeReadingAgent extends BaseAgent<
    */
   protected parseResponse(_response: string): CodeReadingOutput | null {
     return null;
+  }
+
+  /**
+   * Clean a file path by stripping CI runner prefixes, webpack://, etc.
+   */
+  private cleanFilePath(rawPath: string): string {
+    if (!rawPath) return rawPath;
+
+    // Handle webpack:// URLs
+    const webpackMatch = rawPath.match(/webpack:\/\/[^/]+\/\.\/(.+)/);
+    if (webpackMatch) return webpackMatch[1];
+
+    // Handle file:// URLs
+    const fileMatch = rawPath.match(/file:\/\/(.+)/);
+    if (fileMatch) return fileMatch[1];
+
+    // Handle CI runner absolute paths
+    const ciRunnerMatch = rawPath.match(
+      /\/(?:home\/runner\/work|github\/workspace)\/[^/]+\/[^/]+\/(.+)/
+    );
+    if (ciRunnerMatch) return ciRunnerMatch[1];
+
+    // Handle any absolute path containing typical project dirs
+    const projectDirMatch = rawPath.match(
+      /.*\/((?:test|spec|tests|specs|cypress|src|lib|e2e)\/.+)/
+    );
+    if (projectDirMatch) return projectDirMatch[1];
+
+    // Strip line:column suffixes
+    return rawPath.replace(/:\d+(?::\d+)?$/, '');
+  }
+
+  /**
+   * Extract file paths from error messages and stack traces
+   */
+  private extractFilePathsFromError(errorMessage: string): string[] {
+    if (!errorMessage) return [];
+    const paths: string[] = [];
+    const seen = new Set<string>();
+
+    // Match patterns like "at foo (path/to/file.ts:123:45)" or "path/to/file.ts:123"
+    const patterns = [
+      /at\s+\S+\s+\(([^)]+\.[tj]sx?):?\d*/g,
+      /(?:\/home\/runner\/work|\/github\/workspace)\/[^/]+\/[^/]+\/([\w./-]+\.[tj]sx?):\d+/g,
+      /((?:test|spec|tests|specs|cypress|src|lib|e2e)\/[\w./-]+\.[tj]sx?):\d+/g,
+    ];
+
+    for (const pattern of patterns) {
+      let match;
+      while ((match = pattern.exec(errorMessage)) !== null) {
+        const cleaned = this.cleanFilePath(match[1] || match[0]);
+        if (cleaned && !seen.has(cleaned)) {
+          seen.add(cleaned);
+          paths.push(cleaned);
+        }
+      }
+    }
+
+    return paths;
   }
 
   /**

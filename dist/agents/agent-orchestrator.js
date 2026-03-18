@@ -151,6 +151,10 @@ class AgentOrchestrator {
             context.sourceFileContent = addLineNumbers(rawContent);
             context._rawSourceFileContent = rawContent;
             context.relatedFiles = new Map(codeReadingResult.data.relatedFiles.map((f) => [f.path, f.content]));
+            core.info(`   Test file: ${rawContent.length} chars`);
+            for (const f of codeReadingResult.data.relatedFiles) {
+                core.info(`   Related: ${f.path} (${f.content.length} chars) — ${f.relevance}`);
+            }
             core.info(`   Fetched ${codeReadingResult.data.relatedFiles.length + 1} files`);
         }
         core.info('🔍 Step 3: Running Investigation Agent...');
