@@ -306,15 +306,39 @@ When PR changes are provided, your fix reasoning MUST be consistent with the dif
       for (const [filePath, content] of context.relatedFiles) {
         if (!content) continue;
         const lines = content.split('\n');
-        const numbered = lines
-          .map((line, i) => `${String(i + 1).padStart(4)}: ${line}`)
-          .join('\n');
+        const MAX_RELATED_LINES = 150;
+
+        let displayLines: string[];
+        let rangeNote = '';
+        if (lines.length > MAX_RELATED_LINES) {
+          // For large files, extract the relevant section around the error location
+          const errorLineInFile = this.findErrorLineInFile(context.errorMessage, filePath, content);
+          if (errorLineInFile > 0) {
+            const enclosing = this.findEnclosingFunction(lines, errorLineInFile - 1);
+            const start = Math.max(0, Math.min(enclosing.fnStart, errorLineInFile - 30));
+            const end = Math.min(lines.length, Math.max(enclosing.fnEnd + 1, errorLineInFile + 30));
+            displayLines = lines.slice(start, end).map(
+              (line, i) => `${String(start + i + 1).padStart(4)}: ${line}`
+            );
+            rangeNote = ` — showing lines ${start + 1}-${end} of ${lines.length} (around error at line ${errorLineInFile})`;
+          } else {
+            // No error line found — show first and last sections
+            const headLines = lines.slice(0, 30).map((line, i) => `${String(i + 1).padStart(4)}: ${line}`);
+            const tailStart = Math.max(30, lines.length - 60);
+            const tailLines = lines.slice(tailStart).map((line, i) => `${String(tailStart + i + 1).padStart(4)}: ${line}`);
+            displayLines = [...headLines, '    ...', `    ... (${lines.length - 90} lines omitted) ...`, '    ...', ...tailLines];
+            rangeNote = ` — showing first 30 and last 60 of ${lines.length} lines`;
+          }
+        } else {
+          displayLines = lines.map((line, i) => `${String(i + 1).padStart(4)}: ${line}`);
+        }
+
         parts.push(
           '',
-          `#### ${filePath} (${lines.length} lines)`,
+          `#### ${filePath} (${lines.length} lines${rangeNote})`,
           '⚠️ When proposing changes to this file, copy oldCode VERBATIM from the numbered lines below (strip the line number prefix).',
           '```javascript',
-          numbered,
+          displayLines.join('\n'),
           '```'
         );
       }
@@ -358,6 +382,46 @@ When PR changes are provided, your fix reasoning MUST be consistent with the dif
     );
 
     return parts.filter(Boolean).join('\n');
+  }
+
+  /**
+   * Try to find which line in a related file corresponds to the error
+   */
+  private findErrorLineInFile(errorMessage: string, filePath: string, _content: string): number {
+    const basename = filePath.split('/').pop() || '';
+    // Look for patterns like "file.ts:448" or "file.ts:448:5"
+    const linePatterns = [
+      new RegExp(`${basename.replace('.', '\\.')}:(\\d+)`),
+      new RegExp(`${filePath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}:(\\d+)`),
+    ];
+    for (const pat of linePatterns) {
+      const match = errorMessage.match(pat);
+      if (match) return parseInt(match[1], 10);
+    }
+    return 0;
+  }
+
+  /**
+   * Find the enclosing function boundaries around a line index
+   */
+  private findEnclosingFunction(lines: string[], lineIndex: number): { fnStart: number; fnEnd: number } {
+    const funcPattern =
+      /^\s*(?:export\s+)?(?:public\s+)?(?:private\s+)?(?:protected\s+)?(?:async\s+)?(?:function\s+\w+|(?:const|let|var)\s+\w+\s*=\s*(?:async\s+)?(?:function|\([^)]*\)\s*=>|\w+\s*=>))|^\s*(?:public\s+)?(?:private\s+)?(?:protected\s+)?(?:async\s+)?\w+\s*\([^)]*\)\s*(?::\s*\w+[^{]*)?\s*\{/;
+    let fnStart = lineIndex;
+    for (let i = lineIndex; i >= 0; i--) {
+      if (funcPattern.test(lines[i])) { fnStart = i; break; }
+    }
+    let braceDepth = 0;
+    let fnEnd = lines.length - 1;
+    let foundOpen = false;
+    for (let i = fnStart; i < lines.length; i++) {
+      for (const ch of lines[i]) {
+        if (ch === '{') { braceDepth++; foundOpen = true; }
+        else if (ch === '}') { braceDepth--; }
+      }
+      if (foundOpen && braceDepth <= 0) { fnEnd = i; break; }
+    }
+    return { fnStart, fnEnd };
   }
 
   /**

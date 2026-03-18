@@ -29,6 +29,8 @@ export declare class FixGenerationAgent extends BaseAgent<FixGenerationInput, Fi
     execute(input: FixGenerationInput, context: AgentContext): Promise<AgentResult<FixGenerationOutput>>;
     protected getSystemPrompt(): string;
     protected buildUserPrompt(input: FixGenerationInput, context: AgentContext): string;
+    private findErrorLineInFile;
+    private findEnclosingFunction;
     protected parseResponse(response: string): FixGenerationOutput | null;
 }
 //# sourceMappingURL=fix-generation-agent.d.ts.map
