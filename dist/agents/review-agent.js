@@ -88,6 +88,13 @@ You MUST respond with a JSON object matching this schema:
         if (context.sourceFileContent) {
             parts.push('', '### Original File Content (for verification)', '```javascript', context.sourceFileContent, '```');
         }
+        if (context.relatedFiles && context.relatedFiles.size > 0) {
+            for (const [filePath, content] of context.relatedFiles) {
+                if (!content)
+                    continue;
+                parts.push('', `### Related File: ${filePath} (for verification)`, '```javascript', content, '```');
+            }
+        }
         if (context.prDiff && context.prDiff.files.length > 0) {
             parts.push('', '### PR Changes (for context)');
             for (const file of context.prDiff.files.slice(0, 5)) {

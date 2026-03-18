@@ -199,8 +199,18 @@ class AgentOrchestrator {
                 continue;
             }
             const rawSource = context._rawSourceFileContent;
-            if (rawSource) {
-                const correctionResult = autoCorrectOldCode(lastFix.changes, rawSource, context);
+            const allSources = new Map();
+            if (rawSource && context.testFile) {
+                allSources.set(context.testFile, rawSource);
+            }
+            if (context.relatedFiles) {
+                for (const [path, content] of context.relatedFiles) {
+                    if (content)
+                        allSources.set(path, content);
+                }
+            }
+            if (allSources.size > 0) {
+                const correctionResult = autoCorrectOldCode(lastFix.changes, allSources, context);
                 if (correctionResult.correctedCount > 0) {
                     core.info(`   🔧 Auto-corrected oldCode for ${correctionResult.correctedCount} change(s)`);
                 }
@@ -281,8 +291,7 @@ function addLineNumbers(source) {
     const lines = source.split('\n');
     return lines.map((line, i) => `${String(i + 1).padStart(4)}: ${line}`).join('\n');
 }
-function autoCorrectOldCode(changes, rawSource, _context) {
-    const sourceLines = rawSource.split('\n');
+function autoCorrectOldCode(changes, sourceFiles, _context) {
     const validChanges = [];
     let correctedCount = 0;
     let droppedCount = 0;
@@ -291,6 +300,36 @@ function autoCorrectOldCode(changes, rawSource, _context) {
             validChanges.push(change);
             continue;
         }
+        let rawSource;
+        for (const [path, content] of sourceFiles) {
+            if (change.file.endsWith(path) || path.endsWith(change.file) || change.file.includes(path) || path.includes(change.file)) {
+                rawSource = content;
+                break;
+            }
+        }
+        if (!rawSource) {
+            const changeBasename = change.file.split('/').pop() || '';
+            for (const [path, content] of sourceFiles) {
+                if (path.split('/').pop() === changeBasename) {
+                    rawSource = content;
+                    break;
+                }
+            }
+        }
+        if (!rawSource) {
+            for (const [, content] of sourceFiles) {
+                if (content.includes(change.oldCode)) {
+                    rawSource = content;
+                    break;
+                }
+            }
+        }
+        if (!rawSource) {
+            core.warning(`   ⚠️ No source file found for ${change.file} — keeping change as-is`);
+            validChanges.push(change);
+            continue;
+        }
+        const sourceLines = rawSource.split('\n');
         if (rawSource.includes(change.oldCode)) {
             const firstIdx = rawSource.indexOf(change.oldCode);
             const secondIdx = rawSource.indexOf(change.oldCode, firstIdx + 1);
@@ -1374,6 +1413,18 @@ When PR changes are provided, your fix reasoning MUST be consistent with the dif
         if (context.sourceFileContent) {
             parts.push('', '### Test File Content', '```javascript', context.sourceFileContent, '```');
         }
+        if (context.relatedFiles && context.relatedFiles.size > 0) {
+            parts.push('', '### Related Files (page objects, helpers)');
+            for (const [filePath, content] of context.relatedFiles) {
+                if (!content)
+                    continue;
+                const lines = content.split('\n');
+                const numbered = lines
+                    .map((line, i) => `${String(i + 1).padStart(4)}: ${line}`)
+                    .join('\n');
+                parts.push('', `#### ${filePath} (${lines.length} lines)`, '⚠️ When proposing changes to this file, copy oldCode VERBATIM from the numbered lines below (strip the line number prefix).', '```javascript', numbered, '```');
+            }
+        }
         if (context.prDiff && context.prDiff.files.length > 0) {
             parts.push('', `### Recent Changes in Product Repo (${constants_1.DEFAULT_PRODUCT_REPO})`, `These files were changed in ${constants_1.DEFAULT_PRODUCT_REPO}. They are READ-ONLY context — you may NOT propose changes to them. Only modify test files.`);
             for (const file of context.prDiff.files.slice(0, 5)) {
@@ -1734,6 +1785,13 @@ You MUST respond with a JSON object matching this schema:
         }
         if (context.sourceFileContent) {
             parts.push('', '### Original File Content (for verification)', '```javascript', context.sourceFileContent, '```');
+        }
+        if (context.relatedFiles && context.relatedFiles.size > 0) {
+            for (const [filePath, content] of context.relatedFiles) {
+                if (!content)
+                    continue;
+                parts.push('', `### Related File: ${filePath} (for verification)`, '```javascript', content, '```');
+            }
         }
         if (context.prDiff && context.prDiff.files.length > 0) {
             parts.push('', '### PR Changes (for context)');

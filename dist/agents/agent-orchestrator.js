@@ -192,8 +192,18 @@ class AgentOrchestrator {
                 continue;
             }
             const rawSource = context._rawSourceFileContent;
-            if (rawSource) {
-                const correctionResult = autoCorrectOldCode(lastFix.changes, rawSource, context);
+            const allSources = new Map();
+            if (rawSource && context.testFile) {
+                allSources.set(context.testFile, rawSource);
+            }
+            if (context.relatedFiles) {
+                for (const [path, content] of context.relatedFiles) {
+                    if (content)
+                        allSources.set(path, content);
+                }
+            }
+            if (allSources.size > 0) {
+                const correctionResult = autoCorrectOldCode(lastFix.changes, allSources, context);
                 if (correctionResult.correctedCount > 0) {
                     core.info(`   🔧 Auto-corrected oldCode for ${correctionResult.correctedCount} change(s)`);
                 }
@@ -274,8 +284,7 @@ function addLineNumbers(source) {
     const lines = source.split('\n');
     return lines.map((line, i) => `${String(i + 1).padStart(4)}: ${line}`).join('\n');
 }
-function autoCorrectOldCode(changes, rawSource, _context) {
-    const sourceLines = rawSource.split('\n');
+function autoCorrectOldCode(changes, sourceFiles, _context) {
     const validChanges = [];
     let correctedCount = 0;
     let droppedCount = 0;
@@ -284,6 +293,36 @@ function autoCorrectOldCode(changes, rawSource, _context) {
             validChanges.push(change);
             continue;
         }
+        let rawSource;
+        for (const [path, content] of sourceFiles) {
+            if (change.file.endsWith(path) || path.endsWith(change.file) || change.file.includes(path) || path.includes(change.file)) {
+                rawSource = content;
+                break;
+            }
+        }
+        if (!rawSource) {
+            const changeBasename = change.file.split('/').pop() || '';
+            for (const [path, content] of sourceFiles) {
+                if (path.split('/').pop() === changeBasename) {
+                    rawSource = content;
+                    break;
+                }
+            }
+        }
+        if (!rawSource) {
+            for (const [, content] of sourceFiles) {
+                if (content.includes(change.oldCode)) {
+                    rawSource = content;
+                    break;
+                }
+            }
+        }
+        if (!rawSource) {
+            core.warning(`   ⚠️ No source file found for ${change.file} — keeping change as-is`);
+            validChanges.push(change);
+            continue;
+        }
+        const sourceLines = rawSource.split('\n');
         if (rawSource.includes(change.oldCode)) {
             const firstIdx = rawSource.indexOf(change.oldCode);
             const secondIdx = rawSource.indexOf(change.oldCode, firstIdx + 1);

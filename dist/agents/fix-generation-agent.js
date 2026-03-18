@@ -190,6 +190,18 @@ When PR changes are provided, your fix reasoning MUST be consistent with the dif
         if (context.sourceFileContent) {
             parts.push('', '### Test File Content', '```javascript', context.sourceFileContent, '```');
         }
+        if (context.relatedFiles && context.relatedFiles.size > 0) {
+            parts.push('', '### Related Files (page objects, helpers)');
+            for (const [filePath, content] of context.relatedFiles) {
+                if (!content)
+                    continue;
+                const lines = content.split('\n');
+                const numbered = lines
+                    .map((line, i) => `${String(i + 1).padStart(4)}: ${line}`)
+                    .join('\n');
+                parts.push('', `#### ${filePath} (${lines.length} lines)`, '⚠️ When proposing changes to this file, copy oldCode VERBATIM from the numbered lines below (strip the line number prefix).', '```javascript', numbered, '```');
+            }
+        }
         if (context.prDiff && context.prDiff.files.length > 0) {
             parts.push('', `### Recent Changes in Product Repo (${constants_1.DEFAULT_PRODUCT_REPO})`, `These files were changed in ${constants_1.DEFAULT_PRODUCT_REPO}. They are READ-ONLY context — you may NOT propose changes to them. Only modify test files.`);
             for (const file of context.prDiff.files.slice(0, 5)) {

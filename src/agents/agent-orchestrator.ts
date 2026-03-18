@@ -310,8 +310,17 @@ export class AgentOrchestrator {
 
       // Step 4b: Validate and auto-correct oldCode against actual source
       const rawSource = (context as AgentContextWithRaw)._rawSourceFileContent;
-      if (rawSource) {
-        const correctionResult = autoCorrectOldCode(lastFix.changes, rawSource, context);
+      const allSources = new Map<string, string>();
+      if (rawSource && context.testFile) {
+        allSources.set(context.testFile, rawSource);
+      }
+      if (context.relatedFiles) {
+        for (const [path, content] of context.relatedFiles) {
+          if (content) allSources.set(path, content);
+        }
+      }
+      if (allSources.size > 0) {
+        const correctionResult = autoCorrectOldCode(lastFix.changes, allSources, context);
         if (correctionResult.correctedCount > 0) {
           core.info(`   🔧 Auto-corrected oldCode for ${correctionResult.correctedCount} change(s)`);
         }
@@ -431,15 +440,14 @@ interface AutoCorrectResult {
 }
 
 /**
- * Validate each change's oldCode against the raw source file.
+ * Validate each change's oldCode against the source files (test file + related files).
  * If oldCode doesn't match, attempt to find the correct code at the given line number.
  */
 function autoCorrectOldCode(
   changes: CodeChange[],
-  rawSource: string,
+  sourceFiles: Map<string, string>,
   _context: AgentContext
 ): AutoCorrectResult {
-  const sourceLines = rawSource.split('\n');
   const validChanges: CodeChange[] = [];
   let correctedCount = 0;
   let droppedCount = 0;
@@ -449,6 +457,42 @@ function autoCorrectOldCode(
       validChanges.push(change);
       continue;
     }
+
+    // Find the right source file for this change
+    let rawSource: string | undefined;
+    for (const [path, content] of sourceFiles) {
+      if (change.file.endsWith(path) || path.endsWith(change.file) || change.file.includes(path) || path.includes(change.file)) {
+        rawSource = content;
+        break;
+      }
+    }
+    // Fallback: try matching by filename
+    if (!rawSource) {
+      const changeBasename = change.file.split('/').pop() || '';
+      for (const [path, content] of sourceFiles) {
+        if (path.split('/').pop() === changeBasename) {
+          rawSource = content;
+          break;
+        }
+      }
+    }
+    // Last resort: check all source files for a match
+    if (!rawSource) {
+      for (const [, content] of sourceFiles) {
+        if (content.includes(change.oldCode)) {
+          rawSource = content;
+          break;
+        }
+      }
+    }
+
+    if (!rawSource) {
+      core.warning(`   ⚠️ No source file found for ${change.file} — keeping change as-is`);
+      validChanges.push(change);
+      continue;
+    }
+
+    const sourceLines = rawSource.split('\n');
 
     // Check exact match first
     if (rawSource.includes(change.oldCode)) {

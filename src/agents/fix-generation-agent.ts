@@ -300,6 +300,26 @@ When PR changes are provided, your fix reasoning MUST be consistent with the dif
       );
     }
 
+    // Add related files (page objects, helpers) — these are where fixes often need to go
+    if (context.relatedFiles && context.relatedFiles.size > 0) {
+      parts.push('', '### Related Files (page objects, helpers)');
+      for (const [filePath, content] of context.relatedFiles) {
+        if (!content) continue;
+        const lines = content.split('\n');
+        const numbered = lines
+          .map((line, i) => `${String(i + 1).padStart(4)}: ${line}`)
+          .join('\n');
+        parts.push(
+          '',
+          `#### ${filePath} (${lines.length} lines)`,
+          '⚠️ When proposing changes to this file, copy oldCode VERBATIM from the numbered lines below (strip the line number prefix).',
+          '```javascript',
+          numbered,
+          '```'
+        );
+      }
+    }
+
     if (context.prDiff && context.prDiff.files.length > 0) {
       parts.push(
         '',

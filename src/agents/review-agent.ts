@@ -187,6 +187,20 @@ You MUST respond with a JSON object matching this schema:
       );
     }
 
+    // Add related files for oldCode verification
+    if (context.relatedFiles && context.relatedFiles.size > 0) {
+      for (const [filePath, content] of context.relatedFiles) {
+        if (!content) continue;
+        parts.push(
+          '',
+          `### Related File: ${filePath} (for verification)`,
+          '```javascript',
+          content,
+          '```'
+        );
+      }
+    }
+
     // Add PR diff so the reviewer can validate the fix against actual changes
     if (context.prDiff && context.prDiff.files.length > 0) {
       parts.push('', '### PR Changes (for context)');
