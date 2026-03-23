@@ -49,6 +49,8 @@ export interface ErrorData {
   logs?: string[];
   testArtifactLogs?: string;
   prDiff?: PRDiff;
+  /** Recent diff from the product repo (e.g. learn-webapp) — always fetched independently */
+  productDiff?: PRDiff;
   structuredSummary?: StructuredErrorSummary;
 }
 

@@ -65,6 +65,43 @@ describe('base-agent', () => {
       expect(context.screenshots).toBeUndefined();
       expect(context.logs).toBeUndefined();
       expect(context.prDiff).toBeUndefined();
+      expect(context.productDiff).toBeUndefined();
+    });
+
+    it('should include productDiff when provided', () => {
+      const context = createAgentContext({
+        errorMessage: 'Error',
+        testFile: 'test.ts',
+        testName: 'test',
+        productDiff: {
+          files: [
+            { filename: 'src/Sidebar.tsx', patch: '-old\n+new', status: 'modified' },
+          ],
+        },
+      });
+
+      expect(context.productDiff).toBeDefined();
+      expect(context.productDiff?.files).toHaveLength(1);
+      expect(context.productDiff?.files[0].filename).toBe('src/Sidebar.tsx');
+    });
+
+    it('should include both prDiff and productDiff independently', () => {
+      const context = createAgentContext({
+        errorMessage: 'Error',
+        testFile: 'test.ts',
+        testName: 'test',
+        prDiff: {
+          files: [{ filename: 'test/spec.ts', patch: '+line', status: 'modified' }],
+        },
+        productDiff: {
+          files: [{ filename: 'src/App.tsx', patch: '-old\n+new', status: 'modified' }],
+        },
+      });
+
+      expect(context.prDiff?.files).toHaveLength(1);
+      expect(context.prDiff?.files[0].filename).toBe('test/spec.ts');
+      expect(context.productDiff?.files).toHaveLength(1);
+      expect(context.productDiff?.files[0].filename).toBe('src/App.tsx');
     });
   });
 
@@ -149,6 +186,27 @@ describe('base-agent', () => {
       };
 
       expect(context.sourceFileContent).toContain('describe');
+    });
+
+    it('should support productDiff alongside prDiff', () => {
+      const context: AgentContext = {
+        errorMessage: 'Error',
+        testFile: 'test.ts',
+        testName: 'test',
+        prDiff: {
+          files: [{ filename: 'test/spec.ts', status: 'modified' }],
+        },
+        productDiff: {
+          files: [
+            { filename: 'src/components/Sidebar.tsx', patch: '-old\n+new', status: 'modified' },
+            { filename: 'src/components/Player.tsx', status: 'added' },
+          ],
+        },
+      };
+
+      expect(context.prDiff?.files).toHaveLength(1);
+      expect(context.productDiff?.files).toHaveLength(2);
+      expect(context.productDiff?.files[0].filename).toContain('Sidebar');
     });
   });
 });

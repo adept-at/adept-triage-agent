@@ -146,11 +146,11 @@ export async function processWorkflowLogs(
   // Fetch artifacts in parallel
   // Note: Screenshots and artifact logs live in the test repo (context.repo),
   // while PR diffs come from the app repo (inputs.repository)
-  const [screenshots, artifactLogs, prDiff] = await fetchArtifactsParallel(
+  const [screenshots, artifactLogs, prDiff, productDiff] = await fetchArtifactsParallel(
     artifactFetcher,
     runId,
     failedJob.name,
-    context.repo, // Use context.repo for artifacts, not repoDetails
+    context.repo,
     repoDetails,
     inputs
   );
@@ -165,11 +165,11 @@ export async function processWorkflowLogs(
     inputs
   );
 
-  // Validate we have meaningful data
   const hasLogs = !!(fullLogs && fullLogs.length > 0);
   const hasScreenshots = !!(screenshots && screenshots.length > 0);
   const hasArtifactLogs = !!(artifactLogs && artifactLogs.length > 0);
   const hasPRDiff = !!(prDiff && prDiff.files && prDiff.files.length > 0);
+  const hasProductDiff = !!(productDiff && productDiff.files && productDiff.files.length > 0);
 
   if (!hasLogs && !hasScreenshots && !hasArtifactLogs && !hasPRDiff) {
     core.warning(
@@ -178,7 +178,7 @@ export async function processWorkflowLogs(
     core.info('Attempting analysis with minimal context...');
   } else {
     core.info(
-      `Data collected for analysis: logs=${hasLogs}, screenshots=${hasScreenshots}, artifactLogs=${hasArtifactLogs}, prDiff=${hasPRDiff}`
+      `Data collected for analysis: logs=${hasLogs}, screenshots=${hasScreenshots}, artifactLogs=${hasArtifactLogs}, prDiff=${hasPRDiff}, productDiff=${hasProductDiff}`
     );
   }
 
@@ -199,6 +199,7 @@ export async function processWorkflowLogs(
       logs: [combinedContext],
       testArtifactLogs: capArtifactLogs(artifactLogs),
       prDiff: prDiff || undefined,
+      productDiff: productDiff || undefined,
     };
     errorData.structuredSummary = buildStructuredSummary(errorData);
     return errorData;
@@ -218,6 +219,7 @@ export async function processWorkflowLogs(
     logs: [combinedContext],
     testArtifactLogs: capArtifactLogs(artifactLogs),
     prDiff: prDiff || undefined,
+    productDiff: productDiff || undefined,
   };
   fallbackError.structuredSummary = buildStructuredSummary(fallbackError);
   return fallbackError;
@@ -369,26 +371,33 @@ export async function fetchDiffWithFallback(
     }
   }
 
-  // Strategy 4: Recent product repo commits (last resort)
-  core.info(
-    `📋 Fetching recent product diff from ${inputs.productRepo} (last ${inputs.productDiffCommits || 5} commits)...`
-  );
-  try {
-    const diff = await artifactFetcher.fetchRecentProductDiff(
-      inputs.productRepo,
-      inputs.productDiffCommits || 5
-    );
-    logDiffResult(diff, `recent product diff (${inputs.productRepo})`);
-    if (diff) return diff;
-    core.warning(`⚠️ Recent product diff fetch returned null`);
-  } catch (error) {
-    core.warning(
-      `❌ Failed to fetch recent product diff from ${inputs.productRepo}: ${error}`
-    );
-  }
-
-  core.info('ℹ️ All diff fetch strategies exhausted, proceeding without diff');
+  core.info('ℹ️ No test-repo diff found, proceeding without diff');
   return null;
+}
+
+/**
+ * Always fetch recent product repo diff (e.g. learn-webapp).
+ * This runs independently of the test-repo diff strategies.
+ */
+async function fetchProductDiff(
+  artifactFetcher: ArtifactFetcher,
+  inputs: ActionInputs
+): Promise<PRDiff | null> {
+  const productRepo = inputs.productRepo;
+  if (!productRepo) {
+    core.info('ℹ️ No product repo configured, skipping product diff');
+    return null;
+  }
+  const commitCount = inputs.productDiffCommits || 5;
+  core.info(`📋 Fetching recent product diff from ${productRepo} (last ${commitCount} commits)...`);
+  try {
+    const diff = await artifactFetcher.fetchRecentProductDiff(productRepo, commitCount);
+    logDiffResult(diff, `product diff (${productRepo})`);
+    return diff;
+  } catch (error) {
+    core.warning(`❌ Failed to fetch product diff from ${productRepo}: ${error}`);
+    return null;
+  }
 }
 
 /**
@@ -401,7 +410,7 @@ async function fetchArtifactsParallel(
   artifactRepoDetails: RepoDetails,
   diffRepoDetails: RepoDetails,
   inputs: ActionInputs
-): Promise<[Screenshot[], string, PRDiff | null]> {
+): Promise<[Screenshot[], string, PRDiff | null, PRDiff | null]> {
   const screenshotsPromise = artifactFetcher
     .fetchScreenshots(runId, jobName, artifactRepoDetails)
     .then((screenshots) => {
@@ -432,7 +441,9 @@ async function fetchArtifactsParallel(
     diffRepoDetails
   );
 
-  return Promise.all([screenshotsPromise, artifactLogsPromise, prDiffPromise]);
+  const productDiffPromise = fetchProductDiff(artifactFetcher, inputs);
+
+  return Promise.all([screenshotsPromise, artifactLogsPromise, prDiffPromise, productDiffPromise]);
 }
 
 /**

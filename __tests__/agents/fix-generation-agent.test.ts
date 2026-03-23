@@ -272,6 +272,103 @@ describe('FixGenerationAgent', () => {
     });
   });
 
+  describe('product diff in prompt', () => {
+    it('should include product diff section when productDiff is provided', async () => {
+      const mockResponse: FixGenerationOutput = {
+        changes: [
+          {
+            file: 'test/spec.ts',
+            line: 10,
+            oldCode: 'await $("[aria-label=\\"Transcript\\"]")',
+            newCode: 'await $("[aria-label=\\"Video transcript\\"]")',
+            justification: 'Product changed the aria-label',
+            changeType: 'SELECTOR_UPDATE',
+          },
+        ],
+        confidence: 90,
+        summary: 'Update selector to match product change',
+        reasoning: 'Product repo renamed the aria-label',
+        evidence: ['Product diff shows aria-label change'],
+        risks: [],
+      };
+
+      mockOpenAIClient.generateWithCustomPrompt = jest
+        .fn()
+        .mockResolvedValue(JSON.stringify(mockResponse));
+
+      const context = createAgentContext({
+        errorMessage: 'Element not found: [aria-label="Transcript"]',
+        testFile: 'test/spec.ts',
+        testName: 'should show transcripts',
+        productDiff: {
+          files: [
+            {
+              filename: 'src/components/VideoPlayer.tsx',
+              patch: '-aria-label="Transcript"\n+aria-label="Video transcript"',
+              status: 'modified',
+            },
+          ],
+        },
+      });
+
+      const result = await agent.execute(
+        { analysis: mockAnalysis, investigation: mockInvestigation },
+        context
+      );
+
+      expect(result.success).toBe(true);
+      const promptCall = mockOpenAIClient.generateWithCustomPrompt.mock.calls[0][0];
+      const userContent = Array.isArray(promptCall.userContent)
+        ? promptCall.userContent.map((c: any) => c.text || '').join('\n')
+        : promptCall.userContent;
+      expect(userContent).toContain('MANDATORY: Recent Product Repo Changes');
+      expect(userContent).toContain('VideoPlayer.tsx');
+      expect(userContent).toContain('aria-label');
+    });
+
+    it('should show "no product changes" message when productDiff is absent', async () => {
+      const mockResponse: FixGenerationOutput = {
+        changes: [
+          {
+            file: 'test.cy.ts',
+            line: 10,
+            oldCode: 'cy.get(".btn")',
+            newCode: 'cy.get("[data-testid=\\"btn\\"]")',
+            justification: 'Use stable selector',
+            changeType: 'SELECTOR_UPDATE',
+          },
+        ],
+        confidence: 80,
+        summary: 'Stabilize selector',
+        reasoning: 'Selector is brittle',
+        evidence: [],
+        risks: [],
+      };
+
+      mockOpenAIClient.generateWithCustomPrompt = jest
+        .fn()
+        .mockResolvedValue(JSON.stringify(mockResponse));
+
+      const context = createAgentContext({
+        errorMessage: 'Error',
+        testFile: 'test.cy.ts',
+        testName: 'test',
+      });
+
+      const result = await agent.execute(
+        { analysis: mockAnalysis, investigation: mockInvestigation },
+        context
+      );
+
+      expect(result.success).toBe(true);
+      const promptCall = mockOpenAIClient.generateWithCustomPrompt.mock.calls[0][0];
+      const userContent = Array.isArray(promptCall.userContent)
+        ? promptCall.userContent.map((c: any) => c.text || '').join('\n')
+        : promptCall.userContent;
+      expect(userContent).toContain('No recent changes found in the product repo');
+    });
+  });
+
   describe('CodeChange interface', () => {
     it('should support all change types', () => {
       const changeTypes = [

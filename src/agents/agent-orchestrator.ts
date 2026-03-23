@@ -252,6 +252,16 @@ export class AgentOrchestrator {
       );
     }
 
+    // Log product diff availability
+    if (context.productDiff && context.productDiff.files.length > 0) {
+      core.info(`📦 Product diff available: ${context.productDiff.files.length} files changed`);
+      for (const f of context.productDiff.files.slice(0, 5)) {
+        core.info(`   Product: ${f.filename} (${f.status})`);
+      }
+    } else {
+      core.info('📦 No product diff available — agents will treat failure as test-side issue');
+    }
+
     // Step 3: Investigation Agent
     core.info('🔍 Step 3: Running Investigation Agent...');
     const investigationResult = await this.investigationAgent.execute(

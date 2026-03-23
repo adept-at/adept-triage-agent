@@ -159,6 +159,7 @@ function createAgentContext(params) {
         screenshots: params.screenshots,
         logs: params.logs,
         prDiff: params.prDiff,
+        productDiff: params.productDiff,
         framework: params.framework,
     };
 }

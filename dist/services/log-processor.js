@@ -105,19 +105,20 @@ async function processWorkflowLogs(octokit, artifactFetcher, inputs, repoDetails
     catch (error) {
         core.warning(`Failed to download job logs: ${error}`);
     }
-    const [screenshots, artifactLogs, prDiff] = await fetchArtifactsParallel(artifactFetcher, runId, failedJob.name, context.repo, repoDetails, inputs);
+    const [screenshots, artifactLogs, prDiff, productDiff] = await fetchArtifactsParallel(artifactFetcher, runId, failedJob.name, context.repo, repoDetails, inputs);
     const cappedArtifactLogs = capArtifactLogs(artifactLogs);
     const combinedContext = buildErrorContext(failedJob, extractedError, cappedArtifactLogs, fullLogs, inputs);
     const hasLogs = !!(fullLogs && fullLogs.length > 0);
     const hasScreenshots = !!(screenshots && screenshots.length > 0);
     const hasArtifactLogs = !!(artifactLogs && artifactLogs.length > 0);
     const hasPRDiff = !!(prDiff && prDiff.files && prDiff.files.length > 0);
+    const hasProductDiff = !!(productDiff && productDiff.files && productDiff.files.length > 0);
     if (!hasLogs && !hasScreenshots && !hasArtifactLogs && !hasPRDiff) {
         core.warning('No meaningful data collected for analysis (no logs, screenshots, artifacts, or PR diff)');
         core.info('Attempting analysis with minimal context...');
     }
     else {
-        core.info(`Data collected for analysis: logs=${hasLogs}, screenshots=${hasScreenshots}, artifactLogs=${hasArtifactLogs}, prDiff=${hasPRDiff}`);
+        core.info(`Data collected for analysis: logs=${hasLogs}, screenshots=${hasScreenshots}, artifactLogs=${hasArtifactLogs}, prDiff=${hasPRDiff}, productDiff=${hasProductDiff}`);
     }
     if (extractedError) {
         const errorData = {
@@ -132,6 +133,7 @@ async function processWorkflowLogs(octokit, artifactFetcher, inputs, repoDetails
             logs: [combinedContext],
             testArtifactLogs: capArtifactLogs(artifactLogs),
             prDiff: prDiff || undefined,
+            productDiff: productDiff || undefined,
         };
         errorData.structuredSummary = buildStructuredSummary(errorData);
         return errorData;
@@ -148,6 +150,7 @@ async function processWorkflowLogs(octokit, artifactFetcher, inputs, repoDetails
         logs: [combinedContext],
         testArtifactLogs: capArtifactLogs(artifactLogs),
         prDiff: prDiff || undefined,
+        productDiff: productDiff || undefined,
     };
     fallbackError.structuredSummary = buildStructuredSummary(fallbackError);
     return fallbackError;
@@ -241,19 +244,26 @@ async function fetchDiffWithFallback(artifactFetcher, inputs, repoDetails) {
             }
         }
     }
-    core.info(`📋 Fetching recent product diff from ${inputs.productRepo} (last ${inputs.productDiffCommits || 5} commits)...`);
+    core.info('ℹ️ No test-repo diff found, proceeding without diff');
+    return null;
+}
+async function fetchProductDiff(artifactFetcher, inputs) {
+    const productRepo = inputs.productRepo;
+    if (!productRepo) {
+        core.info('ℹ️ No product repo configured, skipping product diff');
+        return null;
+    }
+    const commitCount = inputs.productDiffCommits || 5;
+    core.info(`📋 Fetching recent product diff from ${productRepo} (last ${commitCount} commits)...`);
     try {
-        const diff = await artifactFetcher.fetchRecentProductDiff(inputs.productRepo, inputs.productDiffCommits || 5);
-        logDiffResult(diff, `recent product diff (${inputs.productRepo})`);
-        if (diff)
-            return diff;
-        core.warning(`⚠️ Recent product diff fetch returned null`);
+        const diff = await artifactFetcher.fetchRecentProductDiff(productRepo, commitCount);
+        logDiffResult(diff, `product diff (${productRepo})`);
+        return diff;
     }
     catch (error) {
-        core.warning(`❌ Failed to fetch recent product diff from ${inputs.productRepo}: ${error}`);
+        core.warning(`❌ Failed to fetch product diff from ${productRepo}: ${error}`);
+        return null;
     }
-    core.info('ℹ️ All diff fetch strategies exhausted, proceeding without diff');
-    return null;
 }
 async function fetchArtifactsParallel(artifactFetcher, runId, jobName, artifactRepoDetails, diffRepoDetails, inputs) {
     const screenshotsPromise = artifactFetcher
@@ -279,7 +289,8 @@ async function fetchArtifactsParallel(artifactFetcher, runId, jobName, artifactR
         return '';
     });
     const prDiffPromise = fetchDiffWithFallback(artifactFetcher, inputs, diffRepoDetails);
-    return Promise.all([screenshotsPromise, artifactLogsPromise, prDiffPromise]);
+    const productDiffPromise = fetchProductDiff(artifactFetcher, inputs);
+    return Promise.all([screenshotsPromise, artifactLogsPromise, prDiffPromise, productDiffPromise]);
 }
 function buildErrorContext(failedJob, extractedError, artifactLogs, fullLogs, inputs) {
     const contextParts = [

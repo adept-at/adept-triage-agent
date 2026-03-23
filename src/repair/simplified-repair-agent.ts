@@ -168,6 +168,15 @@ export class SimplifiedRepairAgent {
               })),
             }
           : undefined,
+        productDiff: errorData?.productDiff
+          ? {
+              files: errorData.productDiff.files.map((f) => ({
+                filename: f.filename,
+                patch: f.patch,
+                status: f.status,
+              })),
+            }
+          : undefined,
         framework: errorData?.framework,
       });
 
@@ -624,28 +633,23 @@ ${lines.length > 150 ? `\n... (${lines.length - 150} more lines)` : ''}
         contextInfo += `\n\n## Test Artifact Logs\n\`\`\`\n${logsPreview}\n\`\`\``;
       }
 
-      // Include PR diff if available - crucial for understanding what changed
       if (errorData.prDiff) {
         core.info(
-          `  ✅ Including PR diff (${errorData.prDiff.totalChanges} files changed)`
+          `  ✅ Including test-repo diff (${errorData.prDiff.totalChanges} files changed)`
         );
-        contextInfo += `\n\n## Recent Changes in Product Repo (${DEFAULT_PRODUCT_REPO})\nThese are READ-ONLY context from the product. Only modify test files.\n`;
+        contextInfo += `\n\n## Recent Changes in Test Repo\nThese are changes in the test repository (commit/PR).\n`;
         contextInfo += `- **Total Files Changed:** ${errorData.prDiff.totalChanges}\n`;
         contextInfo += `- **Lines Added:** ${errorData.prDiff.additions}\n`;
         contextInfo += `- **Lines Deleted:** ${errorData.prDiff.deletions}\n`;
 
         if (errorData.prDiff.files && errorData.prDiff.files.length > 0) {
-          contextInfo += `\n### Changed Files (Most Relevant):\n`;
-
-          // Show up to 10 most relevant files with their changes
+          contextInfo += `\n### Changed Files:\n`;
           const relevantFiles = errorData.prDiff.files.slice(0, 10);
           relevantFiles.forEach((file) => {
             contextInfo += `\n#### ${file.filename} (${file.status})\n`;
             contextInfo += `- Changes: +${file.additions || 0}/-${
               file.deletions || 0
             } lines\n`;
-
-            // Include patch preview if available (first 500 chars)
             if (file.patch) {
               const patchPreview = file.patch.substring(0, 500);
               contextInfo += `\n\`\`\`diff\n${patchPreview}${
@@ -653,10 +657,41 @@ ${lines.length > 150 ? `\n... (${lines.length - 150} more lines)` : ''}
               }\n\`\`\`\n`;
             }
           });
-
           if (errorData.prDiff.files.length > 10) {
             contextInfo += `\n... and ${
               errorData.prDiff.files.length - 10
+            } more files changed\n`;
+          }
+        }
+      }
+
+      if (errorData.productDiff) {
+        core.info(
+          `  ✅ Including product-repo diff (${errorData.productDiff.totalChanges} files changed from ${DEFAULT_PRODUCT_REPO})`
+        );
+        contextInfo += `\n\n## ⚠️ Recent Product Repo Changes (${DEFAULT_PRODUCT_REPO})\nThese are READ-ONLY changes from the product codebase. You MUST review these to determine if a product change caused the failure.\n`;
+        contextInfo += `- **Total Files Changed:** ${errorData.productDiff.totalChanges}\n`;
+        contextInfo += `- **Lines Added:** ${errorData.productDiff.additions}\n`;
+        contextInfo += `- **Lines Deleted:** ${errorData.productDiff.deletions}\n`;
+
+        if (errorData.productDiff.files && errorData.productDiff.files.length > 0) {
+          contextInfo += `\n### Changed Product Files:\n`;
+          const relevantFiles = errorData.productDiff.files.slice(0, 10);
+          relevantFiles.forEach((file) => {
+            contextInfo += `\n#### ${file.filename} (${file.status})\n`;
+            contextInfo += `- Changes: +${file.additions || 0}/-${
+              file.deletions || 0
+            } lines\n`;
+            if (file.patch) {
+              const patchPreview = file.patch.substring(0, 2000);
+              contextInfo += `\n\`\`\`diff\n${patchPreview}${
+                file.patch.length > 2000 ? '\n... (truncated)' : ''
+              }\n\`\`\`\n`;
+            }
+          });
+          if (errorData.productDiff.files.length > 10) {
+            contextInfo += `\n... and ${
+              errorData.productDiff.files.length - 10
             } more files changed\n`;
           }
         }

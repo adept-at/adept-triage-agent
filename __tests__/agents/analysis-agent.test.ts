@@ -189,6 +189,97 @@ describe('AnalysisAgent', () => {
     });
   });
 
+  describe('product diff in prompt', () => {
+    it('should include product diff section when productDiff is provided', async () => {
+      const mockResponse: AnalysisOutput = {
+        rootCauseCategory: 'SELECTOR_MISMATCH',
+        contributingFactors: [],
+        confidence: 90,
+        explanation: 'Product changed the sidebar component',
+        selectors: ['[aria-label="Sidebar"]'],
+        elements: ['sidebar'],
+        issueLocation: 'PRODUCT_CODE',
+        patterns: {
+          hasTimeout: false,
+          hasVisibilityIssue: false,
+          hasNetworkCall: false,
+          hasStateAssertion: false,
+          hasDynamicContent: false,
+          hasResponsiveIssue: false,
+        },
+        suggestedApproach: 'Update selectors to match new product code',
+      };
+
+      mockOpenAIClient.generateWithCustomPrompt = jest
+        .fn()
+        .mockResolvedValue(JSON.stringify(mockResponse));
+
+      const context = createAgentContext({
+        errorMessage: 'Element not found: [aria-label="Sidebar"]',
+        testFile: 'test.ts',
+        testName: 'test sidebar',
+        productDiff: {
+          files: [
+            {
+              filename: 'src/Sidebar.tsx',
+              patch: '-aria-label="Sidebar"\n+aria-label="Navigation sidebar"',
+              status: 'modified',
+            },
+          ],
+        },
+      });
+
+      const result = await agent.execute({}, context);
+
+      expect(result.success).toBe(true);
+      const promptCall = mockOpenAIClient.generateWithCustomPrompt.mock.calls[0][0];
+      const userContent = Array.isArray(promptCall.userContent)
+        ? promptCall.userContent.map((c: any) => c.text || '').join('\n')
+        : promptCall.userContent;
+      expect(userContent).toContain('Recent Product Repo Changes');
+      expect(userContent).toContain('Sidebar.tsx');
+    });
+
+    it('should not include product diff section when productDiff is absent', async () => {
+      const mockResponse: AnalysisOutput = {
+        rootCauseCategory: 'TIMING_ISSUE',
+        contributingFactors: [],
+        confidence: 80,
+        explanation: 'Timing issue',
+        selectors: [],
+        elements: [],
+        issueLocation: 'TEST_CODE',
+        patterns: {
+          hasTimeout: true,
+          hasVisibilityIssue: false,
+          hasNetworkCall: false,
+          hasStateAssertion: false,
+          hasDynamicContent: false,
+          hasResponsiveIssue: false,
+        },
+        suggestedApproach: 'Add wait',
+      };
+
+      mockOpenAIClient.generateWithCustomPrompt = jest
+        .fn()
+        .mockResolvedValue(JSON.stringify(mockResponse));
+
+      const context = createAgentContext({
+        errorMessage: 'Timeout',
+        testFile: 'test.ts',
+        testName: 'test',
+      });
+
+      await agent.execute({}, context);
+
+      const promptCall = mockOpenAIClient.generateWithCustomPrompt.mock.calls[0][0];
+      const userContent = Array.isArray(promptCall.userContent)
+        ? promptCall.userContent.map((c: any) => c.text || '').join('\n')
+        : promptCall.userContent;
+      expect(userContent).not.toContain('Recent Product Repo Changes');
+    });
+  });
+
   describe('RootCauseCategory types', () => {
     it('should have all expected categories', () => {
       const categories: RootCauseCategory[] = [

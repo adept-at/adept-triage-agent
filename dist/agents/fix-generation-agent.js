@@ -155,7 +155,19 @@ When PR changes are provided, your fix reasoning MUST be consistent with the dif
 - If the failure is in code NOT touched by the PR (e.g., login helpers, shared commands, auth flow), do NOT claim that code was "changed" or "updated" — the diff is the source of truth.
 - If the error involves a selector or UI element that no PR file modified, the issue is likely pre-existing (environment drift, flaky test, or infrastructure change outside this PR).
 - In such cases, your fix should address the actual brittleness (e.g., add fallback selectors, improve waits) rather than "adapt to a UI change" that the diff doesn't show.
-- State clearly in your reasoning whether the failure area overlaps with PR changes or not.`;
+- State clearly in your reasoning whether the failure area overlaps with PR changes or not.
+
+## PRODUCT REPO DIFF ANALYSIS (MANDATORY)
+
+When recent product repo changes are provided (e.g. from the learn-webapp), you MUST:
+1. **Read every changed file** in the product diff before generating a fix.
+2. **Correlate product changes with the failure**: If the product changed a component, selector, aria-label, layout, or behavior that the failing test relies on, your fix MUST account for the product change. State which product file/change caused the test to break.
+3. **Distinguish root cause**: Clearly state whether the failure was caused by:
+   - A product change (selector renamed, component restructured, new async behavior, etc.)
+   - A pre-existing test brittleness (timing, flaky wait, environment drift)
+   - A combination of both
+4. **Adapt selectors and assertions**: If a product change renamed an aria-label, CSS class, or restructured DOM, update the test selectors to match the NEW product code — do NOT add fragile workarounds.
+5. If no product diff is provided or the diff is unrelated, state that explicitly in your reasoning.`;
     }
     buildUserPrompt(input, context) {
         const frameworkLabel = (0, base_agent_1.getFrameworkLabel)(context.framework);
@@ -223,7 +235,7 @@ When PR changes are provided, your fix reasoning MUST be consistent with the dif
             }
         }
         if (context.prDiff && context.prDiff.files.length > 0) {
-            parts.push('', `### Recent Changes in Product Repo (${constants_1.DEFAULT_PRODUCT_REPO})`, `These files were changed in ${constants_1.DEFAULT_PRODUCT_REPO}. They are READ-ONLY context — you may NOT propose changes to them. Only modify test files.`);
+            parts.push('', '### Recent Changes in Test Repo', 'These files were changed in the test repository (commit/PR context). Use this to understand what recently changed in the test code.');
             for (const file of context.prDiff.files.slice(0, 5)) {
                 parts.push(`\n**${file.filename}** (${file.status})`);
                 if (file.patch) {
@@ -231,10 +243,25 @@ When PR changes are provided, your fix reasoning MUST be consistent with the dif
                 }
             }
         }
+        if (context.productDiff && context.productDiff.files.length > 0) {
+            parts.push('', `### ⚠️ MANDATORY: Recent Product Repo Changes (${constants_1.DEFAULT_PRODUCT_REPO})`, `These files were recently changed in the product codebase (${constants_1.DEFAULT_PRODUCT_REPO}). They are READ-ONLY — you may NOT modify them. However, you MUST review them to determine if a product change caused the test failure. If a product change renamed a selector, aria-label, component, or restructured layout, your test fix MUST match the new product code.`);
+            for (const file of context.productDiff.files.slice(0, 10)) {
+                parts.push(`\n**${file.filename}** (${file.status})`);
+                if (file.patch) {
+                    parts.push('```diff', file.patch.slice(0, 2000), '```');
+                }
+            }
+            if (context.productDiff.files.length > 10) {
+                parts.push(`\n... and ${context.productDiff.files.length - 10} more files`);
+            }
+        }
+        else {
+            parts.push('', '### Product Repo Changes', `No recent changes found in the product repo (${constants_1.DEFAULT_PRODUCT_REPO}). The failure is likely a test-side issue (timing, selector brittleness, environment drift).`);
+        }
         if (input.previousFeedback) {
             parts.push('', '### Previous Review Feedback', '⚠️ The previous fix attempt was rejected. Please address these issues:', '```', input.previousFeedback, '```');
         }
-        parts.push('', '## Instructions', '1. Based on the analysis and investigation, generate the necessary code changes', '2. Ensure oldCode matches EXACTLY what appears in the test file', '3. Make minimal, targeted changes', '4. Provide clear justification for each change', '', 'Respond with the JSON object as specified in the system prompt.');
+        parts.push('', '## Instructions', '1. Review the product repo diff (if provided) FIRST — determine whether a product change caused this failure', '2. Based on the analysis, investigation, and product diff, generate the necessary code changes', '3. Ensure oldCode matches EXACTLY what appears in the test file', '4. Make minimal, targeted changes', '5. Provide clear justification for each change, explicitly noting if it adapts to a product change', '', 'Respond with the JSON object as specified in the system prompt.');
         return parts.filter(Boolean).join('\n');
     }
     findErrorLineInFile(errorMessage, filePath, _content) {

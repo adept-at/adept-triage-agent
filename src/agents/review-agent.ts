@@ -201,13 +201,26 @@ You MUST respond with a JSON object matching this schema:
       }
     }
 
-    // Add PR diff so the reviewer can validate the fix against actual changes
     if (context.prDiff && context.prDiff.files.length > 0) {
-      parts.push('', '### PR Changes (for context)');
+      parts.push('', '### Test Repo Changes (for context)');
       for (const file of context.prDiff.files.slice(0, 5)) {
         parts.push(`- **${file.filename}** (${file.status})`);
         if (file.patch) {
           parts.push('```diff', file.patch.slice(0, 800), '```');
+        }
+      }
+    }
+
+    if (context.productDiff && context.productDiff.files.length > 0) {
+      parts.push(
+        '',
+        '### Product Repo Changes (MANDATORY review)',
+        'Verify the proposed fix accounts for these product changes. If a product change caused the failure, the fix MUST adapt to the new product code.'
+      );
+      for (const file of context.productDiff.files.slice(0, 8)) {
+        parts.push(`- **${file.filename}** (${file.status})`);
+        if (file.patch) {
+          parts.push('```diff', file.patch.slice(0, 1500), '```');
         }
       }
     }

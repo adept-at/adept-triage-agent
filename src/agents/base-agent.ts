@@ -67,8 +67,16 @@ export interface AgentContext {
   }>;
   /** Additional logs */
   logs?: string[];
-  /** PR diff information */
+  /** PR/commit diff from the test repo */
   prDiff?: {
+    files: Array<{
+      filename: string;
+      patch?: string;
+      status: string;
+    }>;
+  };
+  /** Recent diff from the product repo (e.g. learn-webapp) — always fetched */
+  productDiff?: {
     files: Array<{
       filename: string;
       patch?: string;
@@ -295,6 +303,9 @@ export function createAgentContext(params: {
   prDiff?: {
     files: Array<{ filename: string; patch?: string; status: string }>;
   };
+  productDiff?: {
+    files: Array<{ filename: string; patch?: string; status: string }>;
+  };
   /** Test framework: 'cypress' or 'webdriverio' */
   framework?: string;
 }): AgentContext {
@@ -308,6 +319,7 @@ export function createAgentContext(params: {
     screenshots: params.screenshots,
     logs: params.logs,
     prDiff: params.prDiff,
+    productDiff: params.productDiff,
     framework: params.framework,
   };
 }

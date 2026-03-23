@@ -164,6 +164,15 @@ class AgentOrchestrator {
             }
             core.info(`   Fetched ${codeReadingResult.data.relatedFiles.length + 1} files`);
         }
+        if (context.productDiff && context.productDiff.files.length > 0) {
+            core.info(`📦 Product diff available: ${context.productDiff.files.length} files changed`);
+            for (const f of context.productDiff.files.slice(0, 5)) {
+                core.info(`   Product: ${f.filename} (${f.status})`);
+            }
+        }
+        else {
+            core.info('📦 No product diff available — agents will treat failure as test-side issue');
+        }
         core.info('🔍 Step 3: Running Investigation Agent...');
         const investigationResult = await this.investigationAgent.execute({
             analysis,
@@ -627,11 +636,20 @@ You MUST respond with a JSON object matching this schema:
             parts.push('', '### Relevant Logs', '```', logsText, '```');
         }
         if (context.prDiff && context.prDiff.files.length > 0) {
-            parts.push('', `### Recent Changes in ${constants_1.DEFAULT_PRODUCT_REPO}`);
+            parts.push('', '### Recent Changes in Test Repo');
             for (const file of context.prDiff.files.slice(0, 5)) {
                 parts.push(`- **${file.filename}** (${file.status})`);
                 if (file.patch) {
                     parts.push('```diff', file.patch.slice(0, 800), '```');
+                }
+            }
+        }
+        if (context.productDiff && context.productDiff.files.length > 0) {
+            parts.push('', `### ⚠️ Recent Product Repo Changes (${constants_1.DEFAULT_PRODUCT_REPO})`, 'Review these carefully — if the product changed selectors, components, or layouts the test depends on, classify as PRODUCT_ISSUE.');
+            for (const file of context.productDiff.files.slice(0, 8)) {
+                parts.push(`- **${file.filename}** (${file.status})`);
+                if (file.patch) {
+                    parts.push('```diff', file.patch.slice(0, 1500), '```');
                 }
             }
         }
@@ -856,6 +874,7 @@ function createAgentContext(params) {
         screenshots: params.screenshots,
         logs: params.logs,
         prDiff: params.prDiff,
+        productDiff: params.productDiff,
         framework: params.framework,
     };
 }
@@ -1494,7 +1513,19 @@ When PR changes are provided, your fix reasoning MUST be consistent with the dif
 - If the failure is in code NOT touched by the PR (e.g., login helpers, shared commands, auth flow), do NOT claim that code was "changed" or "updated" — the diff is the source of truth.
 - If the error involves a selector or UI element that no PR file modified, the issue is likely pre-existing (environment drift, flaky test, or infrastructure change outside this PR).
 - In such cases, your fix should address the actual brittleness (e.g., add fallback selectors, improve waits) rather than "adapt to a UI change" that the diff doesn't show.
-- State clearly in your reasoning whether the failure area overlaps with PR changes or not.`;
+- State clearly in your reasoning whether the failure area overlaps with PR changes or not.
+
+## PRODUCT REPO DIFF ANALYSIS (MANDATORY)
+
+When recent product repo changes are provided (e.g. from the learn-webapp), you MUST:
+1. **Read every changed file** in the product diff before generating a fix.
+2. **Correlate product changes with the failure**: If the product changed a component, selector, aria-label, layout, or behavior that the failing test relies on, your fix MUST account for the product change. State which product file/change caused the test to break.
+3. **Distinguish root cause**: Clearly state whether the failure was caused by:
+   - A product change (selector renamed, component restructured, new async behavior, etc.)
+   - A pre-existing test brittleness (timing, flaky wait, environment drift)
+   - A combination of both
+4. **Adapt selectors and assertions**: If a product change renamed an aria-label, CSS class, or restructured DOM, update the test selectors to match the NEW product code — do NOT add fragile workarounds.
+5. If no product diff is provided or the diff is unrelated, state that explicitly in your reasoning.`;
     }
     buildUserPrompt(input, context) {
         const frameworkLabel = (0, base_agent_1.getFrameworkLabel)(context.framework);
@@ -1562,7 +1593,7 @@ When PR changes are provided, your fix reasoning MUST be consistent with the dif
             }
         }
         if (context.prDiff && context.prDiff.files.length > 0) {
-            parts.push('', `### Recent Changes in Product Repo (${constants_1.DEFAULT_PRODUCT_REPO})`, `These files were changed in ${constants_1.DEFAULT_PRODUCT_REPO}. They are READ-ONLY context — you may NOT propose changes to them. Only modify test files.`);
+            parts.push('', '### Recent Changes in Test Repo', 'These files were changed in the test repository (commit/PR context). Use this to understand what recently changed in the test code.');
             for (const file of context.prDiff.files.slice(0, 5)) {
                 parts.push(`\n**${file.filename}** (${file.status})`);
                 if (file.patch) {
@@ -1570,10 +1601,25 @@ When PR changes are provided, your fix reasoning MUST be consistent with the dif
                 }
             }
         }
+        if (context.productDiff && context.productDiff.files.length > 0) {
+            parts.push('', `### ⚠️ MANDATORY: Recent Product Repo Changes (${constants_1.DEFAULT_PRODUCT_REPO})`, `These files were recently changed in the product codebase (${constants_1.DEFAULT_PRODUCT_REPO}). They are READ-ONLY — you may NOT modify them. However, you MUST review them to determine if a product change caused the test failure. If a product change renamed a selector, aria-label, component, or restructured layout, your test fix MUST match the new product code.`);
+            for (const file of context.productDiff.files.slice(0, 10)) {
+                parts.push(`\n**${file.filename}** (${file.status})`);
+                if (file.patch) {
+                    parts.push('```diff', file.patch.slice(0, 2000), '```');
+                }
+            }
+            if (context.productDiff.files.length > 10) {
+                parts.push(`\n... and ${context.productDiff.files.length - 10} more files`);
+            }
+        }
+        else {
+            parts.push('', '### Product Repo Changes', `No recent changes found in the product repo (${constants_1.DEFAULT_PRODUCT_REPO}). The failure is likely a test-side issue (timing, selector brittleness, environment drift).`);
+        }
         if (input.previousFeedback) {
             parts.push('', '### Previous Review Feedback', '⚠️ The previous fix attempt was rejected. Please address these issues:', '```', input.previousFeedback, '```');
         }
-        parts.push('', '## Instructions', '1. Based on the analysis and investigation, generate the necessary code changes', '2. Ensure oldCode matches EXACTLY what appears in the test file', '3. Make minimal, targeted changes', '4. Provide clear justification for each change', '', 'Respond with the JSON object as specified in the system prompt.');
+        parts.push('', '## Instructions', '1. Review the product repo diff (if provided) FIRST — determine whether a product change caused this failure', '2. Based on the analysis, investigation, and product diff, generate the necessary code changes', '3. Ensure oldCode matches EXACTLY what appears in the test file', '4. Make minimal, targeted changes', '5. Provide clear justification for each change, explicitly noting if it adapts to a product change', '', 'Respond with the JSON object as specified in the system prompt.');
         return parts.filter(Boolean).join('\n');
     }
     findErrorLineInFile(errorMessage, filePath, _content) {
@@ -1972,11 +2018,20 @@ You MUST respond with a JSON object matching this schema:
             }
         }
         if (context.prDiff && context.prDiff.files.length > 0) {
-            parts.push('', '### PR Changes (for context)');
+            parts.push('', '### Test Repo Changes (for context)');
             for (const file of context.prDiff.files.slice(0, 5)) {
                 parts.push(`- **${file.filename}** (${file.status})`);
                 if (file.patch) {
                     parts.push('```diff', file.patch.slice(0, 800), '```');
+                }
+            }
+        }
+        if (context.productDiff && context.productDiff.files.length > 0) {
+            parts.push('', '### Product Repo Changes (MANDATORY review)', 'Verify the proposed fix accounts for these product changes. If a product change caused the failure, the fix MUST adapt to the new product code.');
+            for (const file of context.productDiff.files.slice(0, 8)) {
+                parts.push(`- **${file.filename}** (${file.status})`);
+                if (file.patch) {
+                    parts.push('```diff', file.patch.slice(0, 1500), '```');
                 }
             }
         }
@@ -4964,6 +5019,15 @@ class SimplifiedRepairAgent {
                         })),
                     }
                     : undefined,
+                productDiff: errorData?.productDiff
+                    ? {
+                        files: errorData.productDiff.files.map((f) => ({
+                            filename: f.filename,
+                            patch: f.patch,
+                            status: f.status,
+                        })),
+                    }
+                    : undefined,
                 framework: errorData?.framework,
             });
             const result = await this.orchestrator.orchestrate(agentContext, errorData);
@@ -5253,13 +5317,13 @@ ${lines.length > 150 ? `\n... (${lines.length - 150} more lines)` : ''}
                 contextInfo += `\n\n## Test Artifact Logs\n\`\`\`\n${logsPreview}\n\`\`\``;
             }
             if (errorData.prDiff) {
-                core.info(`  ✅ Including PR diff (${errorData.prDiff.totalChanges} files changed)`);
-                contextInfo += `\n\n## Recent Changes in Product Repo (${constants_1.DEFAULT_PRODUCT_REPO})\nThese are READ-ONLY context from the product. Only modify test files.\n`;
+                core.info(`  ✅ Including test-repo diff (${errorData.prDiff.totalChanges} files changed)`);
+                contextInfo += `\n\n## Recent Changes in Test Repo\nThese are changes in the test repository (commit/PR).\n`;
                 contextInfo += `- **Total Files Changed:** ${errorData.prDiff.totalChanges}\n`;
                 contextInfo += `- **Lines Added:** ${errorData.prDiff.additions}\n`;
                 contextInfo += `- **Lines Deleted:** ${errorData.prDiff.deletions}\n`;
                 if (errorData.prDiff.files && errorData.prDiff.files.length > 0) {
-                    contextInfo += `\n### Changed Files (Most Relevant):\n`;
+                    contextInfo += `\n### Changed Files:\n`;
                     const relevantFiles = errorData.prDiff.files.slice(0, 10);
                     relevantFiles.forEach((file) => {
                         contextInfo += `\n#### ${file.filename} (${file.status})\n`;
@@ -5271,6 +5335,28 @@ ${lines.length > 150 ? `\n... (${lines.length - 150} more lines)` : ''}
                     });
                     if (errorData.prDiff.files.length > 10) {
                         contextInfo += `\n... and ${errorData.prDiff.files.length - 10} more files changed\n`;
+                    }
+                }
+            }
+            if (errorData.productDiff) {
+                core.info(`  ✅ Including product-repo diff (${errorData.productDiff.totalChanges} files changed from ${constants_1.DEFAULT_PRODUCT_REPO})`);
+                contextInfo += `\n\n## ⚠️ Recent Product Repo Changes (${constants_1.DEFAULT_PRODUCT_REPO})\nThese are READ-ONLY changes from the product codebase. You MUST review these to determine if a product change caused the failure.\n`;
+                contextInfo += `- **Total Files Changed:** ${errorData.productDiff.totalChanges}\n`;
+                contextInfo += `- **Lines Added:** ${errorData.productDiff.additions}\n`;
+                contextInfo += `- **Lines Deleted:** ${errorData.productDiff.deletions}\n`;
+                if (errorData.productDiff.files && errorData.productDiff.files.length > 0) {
+                    contextInfo += `\n### Changed Product Files:\n`;
+                    const relevantFiles = errorData.productDiff.files.slice(0, 10);
+                    relevantFiles.forEach((file) => {
+                        contextInfo += `\n#### ${file.filename} (${file.status})\n`;
+                        contextInfo += `- Changes: +${file.additions || 0}/-${file.deletions || 0} lines\n`;
+                        if (file.patch) {
+                            const patchPreview = file.patch.substring(0, 2000);
+                            contextInfo += `\n\`\`\`diff\n${patchPreview}${file.patch.length > 2000 ? '\n... (truncated)' : ''}\n\`\`\`\n`;
+                        }
+                    });
+                    if (errorData.productDiff.files.length > 10) {
+                        contextInfo += `\n... and ${errorData.productDiff.files.length - 10} more files changed\n`;
                     }
                 }
             }
@@ -5937,19 +6023,20 @@ async function processWorkflowLogs(octokit, artifactFetcher, inputs, repoDetails
     catch (error) {
         core.warning(`Failed to download job logs: ${error}`);
     }
-    const [screenshots, artifactLogs, prDiff] = await fetchArtifactsParallel(artifactFetcher, runId, failedJob.name, context.repo, repoDetails, inputs);
+    const [screenshots, artifactLogs, prDiff, productDiff] = await fetchArtifactsParallel(artifactFetcher, runId, failedJob.name, context.repo, repoDetails, inputs);
     const cappedArtifactLogs = capArtifactLogs(artifactLogs);
     const combinedContext = buildErrorContext(failedJob, extractedError, cappedArtifactLogs, fullLogs, inputs);
     const hasLogs = !!(fullLogs && fullLogs.length > 0);
     const hasScreenshots = !!(screenshots && screenshots.length > 0);
     const hasArtifactLogs = !!(artifactLogs && artifactLogs.length > 0);
     const hasPRDiff = !!(prDiff && prDiff.files && prDiff.files.length > 0);
+    const hasProductDiff = !!(productDiff && productDiff.files && productDiff.files.length > 0);
     if (!hasLogs && !hasScreenshots && !hasArtifactLogs && !hasPRDiff) {
         core.warning('No meaningful data collected for analysis (no logs, screenshots, artifacts, or PR diff)');
         core.info('Attempting analysis with minimal context...');
     }
     else {
-        core.info(`Data collected for analysis: logs=${hasLogs}, screenshots=${hasScreenshots}, artifactLogs=${hasArtifactLogs}, prDiff=${hasPRDiff}`);
+        core.info(`Data collected for analysis: logs=${hasLogs}, screenshots=${hasScreenshots}, artifactLogs=${hasArtifactLogs}, prDiff=${hasPRDiff}, productDiff=${hasProductDiff}`);
     }
     if (extractedError) {
         const errorData = {
@@ -5964,6 +6051,7 @@ async function processWorkflowLogs(octokit, artifactFetcher, inputs, repoDetails
             logs: [combinedContext],
             testArtifactLogs: capArtifactLogs(artifactLogs),
             prDiff: prDiff || undefined,
+            productDiff: productDiff || undefined,
         };
         errorData.structuredSummary = buildStructuredSummary(errorData);
         return errorData;
@@ -5980,6 +6068,7 @@ async function processWorkflowLogs(octokit, artifactFetcher, inputs, repoDetails
         logs: [combinedContext],
         testArtifactLogs: capArtifactLogs(artifactLogs),
         prDiff: prDiff || undefined,
+        productDiff: productDiff || undefined,
     };
     fallbackError.structuredSummary = buildStructuredSummary(fallbackError);
     return fallbackError;
@@ -6073,19 +6162,26 @@ async function fetchDiffWithFallback(artifactFetcher, inputs, repoDetails) {
             }
         }
     }
-    core.info(`📋 Fetching recent product diff from ${inputs.productRepo} (last ${inputs.productDiffCommits || 5} commits)...`);
+    core.info('ℹ️ No test-repo diff found, proceeding without diff');
+    return null;
+}
+async function fetchProductDiff(artifactFetcher, inputs) {
+    const productRepo = inputs.productRepo;
+    if (!productRepo) {
+        core.info('ℹ️ No product repo configured, skipping product diff');
+        return null;
+    }
+    const commitCount = inputs.productDiffCommits || 5;
+    core.info(`📋 Fetching recent product diff from ${productRepo} (last ${commitCount} commits)...`);
     try {
-        const diff = await artifactFetcher.fetchRecentProductDiff(inputs.productRepo, inputs.productDiffCommits || 5);
-        logDiffResult(diff, `recent product diff (${inputs.productRepo})`);
-        if (diff)
-            return diff;
-        core.warning(`⚠️ Recent product diff fetch returned null`);
+        const diff = await artifactFetcher.fetchRecentProductDiff(productRepo, commitCount);
+        logDiffResult(diff, `product diff (${productRepo})`);
+        return diff;
     }
     catch (error) {
-        core.warning(`❌ Failed to fetch recent product diff from ${inputs.productRepo}: ${error}`);
+        core.warning(`❌ Failed to fetch product diff from ${productRepo}: ${error}`);
+        return null;
     }
-    core.info('ℹ️ All diff fetch strategies exhausted, proceeding without diff');
-    return null;
 }
 async function fetchArtifactsParallel(artifactFetcher, runId, jobName, artifactRepoDetails, diffRepoDetails, inputs) {
     const screenshotsPromise = artifactFetcher
@@ -6111,7 +6207,8 @@ async function fetchArtifactsParallel(artifactFetcher, runId, jobName, artifactR
         return '';
     });
     const prDiffPromise = fetchDiffWithFallback(artifactFetcher, inputs, diffRepoDetails);
-    return Promise.all([screenshotsPromise, artifactLogsPromise, prDiffPromise]);
+    const productDiffPromise = fetchProductDiff(artifactFetcher, inputs);
+    return Promise.all([screenshotsPromise, artifactLogsPromise, prDiffPromise, productDiffPromise]);
 }
 function buildErrorContext(failedJob, extractedError, artifactLogs, fullLogs, inputs) {
     const contextParts = [

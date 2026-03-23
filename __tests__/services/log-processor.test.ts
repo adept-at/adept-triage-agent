@@ -471,21 +471,15 @@ describe('log-processor', () => {
     });
 
     describe('No diff available', () => {
-      it('should fall back to product repo when no PR/branch/commit inputs provided', async () => {
-        mockArtifactFetcher.fetchRecentProductDiff.mockResolvedValue(null);
-
+      it('should return null when no PR/branch/commit inputs provided', async () => {
         const result = await fetchDiffWithFallback(mockArtifactFetcher, baseInputs);
 
         expect(result).toBeNull();
         expect(mockArtifactFetcher.fetchPRDiff).not.toHaveBeenCalled();
         expect(mockArtifactFetcher.fetchBranchDiff).not.toHaveBeenCalled();
         expect(mockArtifactFetcher.fetchCommitDiff).not.toHaveBeenCalled();
-        expect(mockArtifactFetcher.fetchRecentProductDiff).toHaveBeenCalledWith(
-          'adept-at/learn-webapp',
-          5
-        );
         expect(mockCore.info).toHaveBeenCalledWith(
-          'ℹ️ All diff fetch strategies exhausted, proceeding without diff'
+          'ℹ️ No test-repo diff found, proceeding without diff'
         );
       });
 
@@ -501,7 +495,7 @@ describe('log-processor', () => {
 
         expect(result).toBeNull();
         expect(mockCore.info).toHaveBeenCalledWith(
-          'ℹ️ All diff fetch strategies exhausted, proceeding without diff'
+          'ℹ️ No test-repo diff found, proceeding without diff'
         );
       });
     });
@@ -590,74 +584,21 @@ describe('log-processor', () => {
       });
     });
 
-    describe('Product repo fallback (Strategy 4)', () => {
-      const mockProductDiff: PRDiff = {
-        files: [{ filename: 'src/components/Editor.tsx', status: 'modified', additions: 20, deletions: 5, changes: 25 }],
-        totalChanges: 1,
-        additions: 20,
-        deletions: 5,
-      };
-
-      it('should fall back to product repo when no other context is available', async () => {
-        mockArtifactFetcher.fetchRecentProductDiff.mockResolvedValue(mockProductDiff);
-
+    describe('Product diff is no longer in fetchDiffWithFallback (moved to parallel fetch)', () => {
+      it('should NOT call fetchRecentProductDiff — product diff is fetched independently', async () => {
         const result = await fetchDiffWithFallback(mockArtifactFetcher, {
           ...baseInputs,
           productRepo: 'adept-at/learn-webapp',
           productDiffCommits: 5,
         });
 
-        expect(result).toEqual(mockProductDiff);
-        expect(mockArtifactFetcher.fetchRecentProductDiff).toHaveBeenCalledWith('adept-at/learn-webapp', 5);
-      });
-
-      it('should fall back to product repo when branch is main (no other strategies match)', async () => {
-        mockArtifactFetcher.fetchRecentProductDiff.mockResolvedValue(mockProductDiff);
-
-        const result = await fetchDiffWithFallback(mockArtifactFetcher, {
-          ...baseInputs,
-          branch: 'main',
-          productRepo: 'adept-at/learn-webapp',
-          productDiffCommits: 3,
-        });
-
-        expect(result).toEqual(mockProductDiff);
-        expect(mockArtifactFetcher.fetchBranchDiff).not.toHaveBeenCalled();
-        expect(mockArtifactFetcher.fetchRecentProductDiff).toHaveBeenCalledWith('adept-at/learn-webapp', 3);
-      });
-
-      it('should NOT call product repo when PR diff succeeds', async () => {
-        mockArtifactFetcher.fetchPRDiff.mockResolvedValue(mockPRDiff);
-        mockArtifactFetcher.fetchRecentProductDiff.mockResolvedValue(mockProductDiff);
-
-        const result = await fetchDiffWithFallback(mockArtifactFetcher, {
-          ...baseInputs,
-          prNumber: '123',
-          productRepo: 'adept-at/learn-webapp',
-        });
-
-        expect(result).toEqual(mockPRDiff);
+        expect(result).toBeNull();
         expect(mockArtifactFetcher.fetchRecentProductDiff).not.toHaveBeenCalled();
       });
 
-      it('should NOT call product repo when branch diff succeeds', async () => {
-        mockArtifactFetcher.fetchBranchDiff.mockResolvedValue(mockBranchDiff);
-        mockArtifactFetcher.fetchRecentProductDiff.mockResolvedValue(mockProductDiff);
-
-        const result = await fetchDiffWithFallback(mockArtifactFetcher, {
-          ...baseInputs,
-          branch: 'feature-branch',
-          productRepo: 'adept-at/learn-webapp',
-        });
-
-        expect(result).toEqual(mockBranchDiff);
-        expect(mockArtifactFetcher.fetchRecentProductDiff).not.toHaveBeenCalled();
-      });
-
-      it('should use product repo when all other strategies fail', async () => {
+      it('should not call product repo even when all test-repo strategies fail', async () => {
         mockArtifactFetcher.fetchPRDiff.mockResolvedValue(null);
         mockArtifactFetcher.fetchBranchDiff.mockResolvedValue(null);
-        mockArtifactFetcher.fetchRecentProductDiff.mockResolvedValue(mockProductDiff);
 
         const result = await fetchDiffWithFallback(mockArtifactFetcher, {
           ...baseInputs,
@@ -666,44 +607,8 @@ describe('log-processor', () => {
           productRepo: 'adept-at/learn-webapp',
         });
 
-        expect(result).toEqual(mockProductDiff);
-        expect(mockArtifactFetcher.fetchRecentProductDiff).toHaveBeenCalled();
-      });
-
-      it('should return null when product repo fetch also fails', async () => {
-        mockArtifactFetcher.fetchRecentProductDiff.mockResolvedValue(null);
-
-        const result = await fetchDiffWithFallback(mockArtifactFetcher, {
-          ...baseInputs,
-          productRepo: 'adept-at/learn-webapp',
-        });
-
         expect(result).toBeNull();
-      });
-
-      it('should handle product repo fetch errors gracefully', async () => {
-        mockArtifactFetcher.fetchRecentProductDiff.mockRejectedValue(new Error('API rate limit'));
-
-        const result = await fetchDiffWithFallback(mockArtifactFetcher, {
-          ...baseInputs,
-          productRepo: 'adept-at/learn-webapp',
-        });
-
-        expect(result).toBeNull();
-        expect(mockCore.warning).toHaveBeenCalledWith(
-          expect.stringContaining('Failed to fetch recent product diff')
-        );
-      });
-
-      it('should default to 5 commits when productDiffCommits not specified', async () => {
-        mockArtifactFetcher.fetchRecentProductDiff.mockResolvedValue(mockProductDiff);
-
-        await fetchDiffWithFallback(mockArtifactFetcher, {
-          ...baseInputs,
-          productRepo: 'adept-at/learn-webapp',
-        });
-
-        expect(mockArtifactFetcher.fetchRecentProductDiff).toHaveBeenCalledWith('adept-at/learn-webapp', 5);
+        expect(mockArtifactFetcher.fetchRecentProductDiff).not.toHaveBeenCalled();
       });
     });
   });

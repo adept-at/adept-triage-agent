@@ -118,7 +118,7 @@ describe('GitHub Action', () => {
       await run();
       
       expect(mockCore.warning).toHaveBeenCalledWith('Failed to fetch screenshots: Error: Network error');
-      expect(mockCore.info).toHaveBeenCalledWith('Data collected for analysis: logs=true, screenshots=false, artifactLogs=true, prDiff=false');
+      expect(mockCore.info).toHaveBeenCalledWith(expect.stringContaining('Data collected for analysis: logs=true, screenshots=false, artifactLogs=true, prDiff=false'));
       expect(mockAnalyzeFailure).toHaveBeenCalled();
       expect(mockCore.setOutput).toHaveBeenCalledWith('verdict', 'TEST_ISSUE');
     });
@@ -150,7 +150,7 @@ describe('GitHub Action', () => {
       await run();
       
       expect(mockCore.warning).toHaveBeenCalledWith('Failed to fetch test artifact logs: Error: API error');
-      expect(mockCore.info).toHaveBeenCalledWith('Data collected for analysis: logs=true, screenshots=true, artifactLogs=false, prDiff=false');
+      expect(mockCore.info).toHaveBeenCalledWith(expect.stringContaining('Data collected for analysis: logs=true, screenshots=true, artifactLogs=false, prDiff=false'));
       expect(mockAnalyzeFailure).toHaveBeenCalled();
     });
 
@@ -258,7 +258,7 @@ describe('GitHub Action', () => {
       expect(mockCore.warning).toHaveBeenCalledWith(expect.stringContaining('Failed to fetch PR diff'));
       
       // Verify we proceeded with available data
-      expect(mockCore.info).toHaveBeenCalledWith('Data collected for analysis: logs=true, screenshots=false, artifactLogs=true, prDiff=false');
+      expect(mockCore.info).toHaveBeenCalledWith(expect.stringContaining('Data collected for analysis: logs=true, screenshots=false, artifactLogs=true, prDiff=false'));
       
       // Verify analysis was called
       const analyzeCall = mockAnalyzeFailure.mock.calls[0];

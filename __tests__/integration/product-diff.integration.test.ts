@@ -96,53 +96,14 @@ describeIfToken('Product Diff Integration Tests', () => {
     }, 10000);
   });
 
-  describe('fetchDiffWithFallback with product repo', () => {
-    it('should fall back to product repo diff when no PR/branch/commit is provided', async () => {
+  describe('fetchDiffWithFallback no longer includes product repo (v1.25.0)', () => {
+    it('should return null when no PR/branch/commit context — product diff is fetched separately', async () => {
       const inputs: ActionInputs = {
         githubToken: GITHUB_TOKEN!,
         openaiApiKey: '',
         confidenceThreshold: 70,
         productRepo: 'adept-at/learn-webapp',
         productDiffCommits: 3,
-      };
-
-      const diff = await fetchDiffWithFallback(artifactFetcher, inputs);
-
-      expect(diff).not.toBeNull();
-      expect(diff!.files.length).toBeGreaterThan(0);
-
-      console.log('\n=== fetchDiffWithFallback product repo fallback ===');
-      console.log(`Got diff: ${diff!.totalChanges} files, +${diff!.additions}/-${diff!.deletions}`);
-      console.log('This is what the triage agent would see for production-URL test failures');
-    }, 30000);
-
-    it('should NOT use product repo when PR diff is available', async () => {
-      const inputs: ActionInputs = {
-        githubToken: GITHUB_TOKEN!,
-        openaiApiKey: '',
-        confidenceThreshold: 70,
-        prNumber: '1',
-        repository: 'adept-at/learn-webapp',
-        productRepo: 'adept-at/learn-webapp',
-        productDiffCommits: 3,
-      };
-
-      const diff = await fetchDiffWithFallback(artifactFetcher, inputs, {
-        owner: 'adept-at',
-        repo: 'learn-webapp',
-      });
-
-      // Should get a diff from the PR, not the product repo fallback
-      // (PR #1 may not exist, but the point is strategy 1 runs first)
-      console.log('\n=== PR takes priority over product repo ===');
-      console.log(`Result: ${diff ? 'got diff' : 'null (expected if PR #1 doesnt exist)'}`);
-    }, 30000);
-
-    it('should return null when no product repo is configured and no other context', async () => {
-      const inputs: ActionInputs = {
-        githubToken: GITHUB_TOKEN!,
-        openaiApiKey: '',
-        confidenceThreshold: 70,
       };
 
       const diff = await fetchDiffWithFallback(artifactFetcher, inputs);
@@ -150,60 +111,23 @@ describeIfToken('Product Diff Integration Tests', () => {
     }, 10000);
   });
 
-  describe('Real-world simulation: production URL test with product context', () => {
-    it('should provide meaningful context for a production URL test scenario', async () => {
-      console.log('\n========================================');
-      console.log(' SIMULATION: Production URL Test Failure');
-      console.log('========================================\n');
-      console.log('Scenario: mr.skill.lock.yml fails on Sauce Labs against https://learn.adept.at');
-      console.log('No PR, no commit SHA, branch=main — traditionally this means ZERO diff context.\n');
-
-      const inputs: ActionInputs = {
-        githubToken: GITHUB_TOKEN!,
-        openaiApiKey: '',
-        confidenceThreshold: 70,
-        branch: 'main',
-        productRepo: 'adept-at/learn-webapp',
-        productDiffCommits: 5,
-      };
-
-      const diff = await fetchDiffWithFallback(artifactFetcher, inputs);
-
-      expect(diff).not.toBeNull();
-
-      console.log(`With PRODUCT_REPO, the triage agent now sees:`);
-      console.log(`  - ${diff!.totalChanges} files changed in the last 5 commits`);
-      console.log(`  - +${diff!.additions}/-${diff!.deletions} lines\n`);
-
-      const relevantFiles = diff!.files.filter(f =>
-        f.filename.includes('skill') ||
-        f.filename.includes('lexical') ||
-        f.filename.includes('draft') ||
-        f.filename.includes('editor') ||
-        f.filename.includes('lock')
+  describe('Real-world simulation: product diff fetched independently', () => {
+    it('should fetch product diff directly via fetchRecentProductDiff', async () => {
+      const diff = await artifactFetcher.fetchRecentProductDiff(
+        'adept-at/learn-webapp',
+        5
       );
 
-      if (relevantFiles.length > 0) {
-        console.log(`Potentially relevant files for skill lock test:`);
-        relevantFiles.forEach(f => {
-          console.log(`  - ${f.filename} (+${f.additions}/-${f.deletions})`);
-        });
-      } else {
-        console.log('No files matching skill/lexical/editor/lock patterns in recent commits');
-        console.log('(This is expected — the agent still benefits from seeing ALL recent changes)');
-      }
-
-      console.log('\nAll changed files:');
-      diff!.files.slice(0, 15).forEach((f, i) => {
-        console.log(`  ${i + 1}. ${f.filename} [${f.status}] (+${f.additions}/-${f.deletions})`);
-      });
-      if (diff!.files.length > 15) {
-        console.log(`  ... and ${diff!.files.length - 15} more files`);
-      }
+      expect(diff).not.toBeNull();
+      expect(diff!.files.length).toBeGreaterThan(0);
 
       console.log('\n========================================');
-      console.log(' RESULT: Triage agent now has product context!');
+      console.log(' SIMULATION: Product diff (always fetched in parallel)');
       console.log('========================================');
+      console.log(`Files: ${diff!.totalChanges}, +${diff!.additions}/-${diff!.deletions}`);
+      diff!.files.slice(0, 10).forEach((f, i) => {
+        console.log(`  ${i + 1}. ${f.filename} [${f.status}]`);
+      });
     }, 30000);
   });
 });

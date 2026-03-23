@@ -238,6 +238,79 @@ describe('ReviewAgent', () => {
     });
   });
 
+  describe('product diff in prompt', () => {
+    it('should include product diff as mandatory review when productDiff is provided', async () => {
+      const mockResponse: ReviewOutput = {
+        approved: true,
+        issues: [],
+        assessment: 'Fix correctly adapts to product change',
+        fixConfidence: 95,
+      };
+
+      mockOpenAIClient.generateWithCustomPrompt = jest
+        .fn()
+        .mockResolvedValue(JSON.stringify(mockResponse));
+
+      const context = createAgentContext({
+        errorMessage: 'Element not found',
+        testFile: 'test.cy.ts',
+        testName: 'test',
+        productDiff: {
+          files: [
+            {
+              filename: 'src/Player.tsx',
+              patch: '-className="old"\n+className="new"',
+              status: 'modified',
+            },
+          ],
+        },
+      });
+
+      const result = await agent.execute(
+        { proposedFix: mockProposedFix, analysis: mockAnalysis },
+        context
+      );
+
+      expect(result.success).toBe(true);
+      const promptCall = mockOpenAIClient.generateWithCustomPrompt.mock.calls[0][0];
+      const userContent = Array.isArray(promptCall.userContent)
+        ? promptCall.userContent.map((c: any) => c.text || '').join('\n')
+        : promptCall.userContent;
+      expect(userContent).toContain('Product Repo Changes (MANDATORY review)');
+      expect(userContent).toContain('Player.tsx');
+    });
+
+    it('should not include product diff section when productDiff is absent', async () => {
+      const mockResponse: ReviewOutput = {
+        approved: true,
+        issues: [],
+        assessment: 'Looks good',
+        fixConfidence: 85,
+      };
+
+      mockOpenAIClient.generateWithCustomPrompt = jest
+        .fn()
+        .mockResolvedValue(JSON.stringify(mockResponse));
+
+      const context = createAgentContext({
+        errorMessage: 'Error',
+        testFile: 'test.cy.ts',
+        testName: 'test',
+      });
+
+      await agent.execute(
+        { proposedFix: mockProposedFix, analysis: mockAnalysis },
+        context
+      );
+
+      const promptCall = mockOpenAIClient.generateWithCustomPrompt.mock.calls[0][0];
+      const userContent = Array.isArray(promptCall.userContent)
+        ? promptCall.userContent.map((c: any) => c.text || '').join('\n')
+        : promptCall.userContent;
+      expect(userContent).not.toContain('Product Repo Changes (MANDATORY review)');
+    });
+  });
+
   describe('ReviewIssue interface', () => {
     it('should support all severity levels', () => {
       const severities: ReviewIssue['severity'][] = [

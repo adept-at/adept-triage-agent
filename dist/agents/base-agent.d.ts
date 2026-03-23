@@ -27,6 +27,13 @@ export interface AgentContext {
             status: string;
         }>;
     };
+    productDiff?: {
+        files: Array<{
+            filename: string;
+            patch?: string;
+            status: string;
+        }>;
+    };
     framework?: string;
     sourceFileContent?: string;
     relatedFiles?: Map<string, string>;
@@ -64,6 +71,13 @@ export declare function createAgentContext(params: {
     }>;
     logs?: string[];
     prDiff?: {
+        files: Array<{
+            filename: string;
+            patch?: string;
+            status: string;
+        }>;
+    };
+    productDiff?: {
         files: Array<{
             filename: string;
             patch?: string;

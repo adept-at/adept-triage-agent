@@ -32,6 +32,7 @@ export interface ErrorData {
     logs?: string[];
     testArtifactLogs?: string;
     prDiff?: PRDiff;
+    productDiff?: PRDiff;
     structuredSummary?: StructuredErrorSummary;
 }
 export interface Screenshot {
