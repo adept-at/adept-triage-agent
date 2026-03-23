@@ -177,6 +177,12 @@ class AgentOrchestrator {
         while (iterations < this.config.maxIterations) {
             iterations++;
             core.info(`🔧 Step 4: Running Fix Generation Agent (iteration ${iterations})...`);
+            if (reviewFeedback) {
+                core.info(`   📨 Sending previous review feedback to Fix Gen Agent:`);
+                for (const line of reviewFeedback.split('\n')) {
+                    core.info(`      ${line}`);
+                }
+            }
             const fixGenResult = await this.fixGenerationAgent.execute({
                 analysis,
                 investigation,
@@ -190,9 +196,18 @@ class AgentOrchestrator {
             lastFix = fixGenResult.data;
             core.info(`   Confidence: ${lastFix.confidence}%`);
             core.info(`   Changes: ${lastFix.changes.length}`);
+            core.info(`   Summary: ${lastFix.summary}`);
+            for (let ci = 0; ci < lastFix.changes.length; ci++) {
+                const ch = lastFix.changes[ci];
+                core.info(`   Change ${ci + 1}: ${ch.file}:${ch.line} (${ch.changeType})`);
+                core.info(`   oldCode (${ch.oldCode.split('\n').length} lines): ${ch.oldCode.slice(0, 200)}${ch.oldCode.length > 200 ? '...' : ''}`);
+                core.info(`   newCode (${ch.newCode.split('\n').length} lines): ${ch.newCode.slice(0, 200)}${ch.newCode.length > 200 ? '...' : ''}`);
+            }
             if (lastFix.confidence < this.config.minConfidence) {
+                const feedback = `Confidence too low (${lastFix.confidence}%). Please improve the fix.`;
                 core.warning(`Fix confidence (${lastFix.confidence}%) below threshold (${this.config.minConfidence}%)`);
-                reviewFeedback = `Confidence too low (${lastFix.confidence}%). Please improve the fix.`;
+                core.info(`   📝 Feedback to next iteration: ${feedback}`);
+                reviewFeedback = feedback;
                 continue;
             }
             const rawSource = context._rawSourceFileContent;
@@ -207,16 +222,23 @@ class AgentOrchestrator {
                 }
             }
             if (allSources.size > 0) {
+                core.info(`   🔍 Running autoCorrectOldCode against ${allSources.size} source file(s)...`);
                 const correctionResult = autoCorrectOldCode(lastFix.changes, allSources, context);
+                core.info(`   autoCorrectOldCode result: ${correctionResult.changes.length} valid, ${correctionResult.correctedCount} corrected, ${correctionResult.droppedCount} dropped`);
                 if (correctionResult.correctedCount > 0) {
                     core.info(`   🔧 Auto-corrected oldCode for ${correctionResult.correctedCount} change(s)`);
                 }
                 if (correctionResult.droppedCount > 0) {
                     core.warning(`   ⚠️ Dropped ${correctionResult.droppedCount} change(s) — could not match source`);
                 }
+                if (correctionResult.correctedCount === 0 && correctionResult.droppedCount === 0) {
+                    core.info(`   ✅ All oldCode blocks matched source exactly — no correction needed`);
+                }
                 lastFix.changes = correctionResult.changes;
                 if (lastFix.changes.length === 0) {
-                    reviewFeedback = 'All proposed changes had oldCode that could not be matched to the source file. Please copy oldCode EXACTLY from the numbered source lines provided.';
+                    const feedback = 'All proposed changes had oldCode that could not be matched to the source file. Please copy oldCode EXACTLY from the numbered source lines provided.';
+                    core.info(`   📝 Feedback to next iteration: ${feedback}`);
+                    reviewFeedback = feedback;
                     continue;
                 }
             }
@@ -232,7 +254,16 @@ class AgentOrchestrator {
                     const review = reviewResult.data;
                     core.info(`   Approved: ${review.approved}`);
                     core.info(`   Issues: ${review.issues.length}`);
+                    core.info(`   Fix confidence from reviewer: ${review.fixConfidence}%`);
+                    core.info(`   Assessment: ${review.assessment}`);
+                    for (const issue of review.issues) {
+                        core.info(`   [${issue.severity}] Change #${issue.changeIndex}: ${issue.description}${issue.suggestion ? ` → Suggestion: ${issue.suggestion}` : ''}`);
+                    }
+                    if (review.improvements && review.improvements.length > 0) {
+                        core.info(`   Improvements: ${review.improvements.join('; ')}`);
+                    }
                     if (review.approved) {
+                        core.info(`   ✅ Fix APPROVED by Review Agent on iteration ${iterations}`);
                         return {
                             fix: this.convertToFixRecommendation(lastFix),
                             iterations,
@@ -243,6 +274,7 @@ class AgentOrchestrator {
                             .map((i) => `[${i.severity}] ${i.description}`)
                             .join('\n');
                         core.warning(`Fix not approved. Issues: ${review.issues.length}`);
+                        core.info(`   📝 Feedback to next iteration:\n${reviewFeedback}`);
                     }
                 }
             }
@@ -254,12 +286,15 @@ class AgentOrchestrator {
             }
         }
         if (lastFix && lastFix.confidence >= this.config.minConfidence) {
-            core.warning('Max iterations reached, returning best fix');
+            core.warning(`Max iterations (${this.config.maxIterations}) reached — review never approved. Returning last fix as fallback.`);
+            core.info(`   Fallback fix: confidence=${lastFix.confidence}%, changes=${lastFix.changes.length}, summary="${lastFix.summary}"`);
+            core.info(`   ⚠️ This fix was NOT approved by the Review Agent — it is being applied because confidence (${lastFix.confidence}%) >= threshold (${this.config.minConfidence}%) and validation will be the final gate.`);
             return {
                 fix: this.convertToFixRecommendation(lastFix),
                 iterations,
             };
         }
+        core.error(`Max iterations (${this.config.maxIterations}) reached without a viable fix (last confidence: ${lastFix?.confidence ?? 'N/A'}%, threshold: ${this.config.minConfidence}%)`);
         return {
             error: `Max iterations (${this.config.maxIterations}) reached without valid fix`,
             iterations,
