@@ -17,7 +17,7 @@ AI-powered GitHub Action that automatically triages test failures to determine i
 - 🖼️ **Screenshot Analysis**: Automatically fetches and analyzes test screenshots when available
 - 📊 **Confidence Scoring**: Provides confidence levels for each verdict
 - 🔄 **Flexible Integration**: Works with various CI/CD workflows
-- 📝 **Change Diff Analysis**: Analyzes PR, branch, or commit diffs to better determine if failures are related to recent changes
+- 📝 **Change Diff Analysis**: Analyzes test-repo PR, branch, or commit diffs when provided, and recent commits in the default product repo (`adept-at/learn-webapp`) for classification
 
 ### Auto-Fix Feature
 
@@ -108,14 +108,16 @@ See [Architecture Documentation](docs/ARCHITECTURE.md#auto-fix-feature) for deta
 
 ### Change Diff Analysis
 
-When PR, branch, or commit information is provided, the agent will:
+The agent always attempts to fetch a recent **product-repo** diff (default `adept-at/learn-webapp`); workflows do not need to pass `PRODUCT_REPO` unless you want a different repository.
 
-- Fetch the complete diff of changed files
+When PR, branch, or commit information is provided for the **test repo** (`REPOSITORY`), the agent will:
+
+- Fetch the complete diff of changed files in that repository
 - Analyze correlations between test failures and modified code
 - Consider whether failing tests are related to the recent changes
-- Provide more accurate verdicts based on code context
+- Provide more accurate verdicts using both test-repo and product-repo change context
 
-To enable change diff analysis, provide these additional inputs:
+To enable **test-repo** diff lookup, provide these additional inputs:
 
 ```yaml
 - uses: adept-at/adept-triage-agent@v1
@@ -291,6 +293,8 @@ This approach triggers automatically when the specified workflow completes with 
 | `COMMIT_SHA`           | Commit SHA associated with the test failure                                                                                                                                                                                    | No       | -                          |
 | `BRANCH`               | Branch being tested (used to fetch branch diff when no PR number available)                                                                                                                                                    | No       | -                          |
 | `REPOSITORY`           | App/source repository in owner/repo format for PR, branch, or commit diff lookup. Workflow runs and artifacts are still read from the repository where this action executes.                                                 | No       | `${{ github.repository }}` |
+| `PRODUCT_REPO`         | Product repository (owner/repo) for recent commit diff in classification. Defaults to `adept-at/learn-webapp` when unset (via action default and `getInputs()`); omit unless you need another repo.                                | No       | `adept-at/learn-webapp`    |
+| `PRODUCT_DIFF_COMMITS` | Number of recent product commits to include in that diff                                                                                                                                                                       | No       | `5`                        |
 | `TEST_FRAMEWORKS`      | Test framework: "cypress" or "webdriverio"                                                                                                                                                                                     | No       | cypress                    |
 | **Auto-Fix Inputs** | | | |
 | `ENABLE_AUTO_FIX`      | Enable automatic branch creation with fix (opt-in)                                                                                                                                                                             | No       | `false`                    |
@@ -413,7 +417,7 @@ npm run build
 
 ## Security
 
-- Analysis requests can include workflow logs, screenshots, structured summaries, and PR/branch/commit diff patches when provided
+- Analysis requests can include workflow logs, screenshots, structured summaries, test-repo PR/branch/commit diff patches when provided, and recent product-repo diff when the GitHub API returns it
 - When repair is enabled, source files fetched from `AUTO_FIX_TARGET_REPO` may also be sent to OpenAI to generate a fix recommendation
 - All API keys should be stored as secrets
 - The action runs in your GitHub Actions environment

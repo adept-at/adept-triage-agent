@@ -12,6 +12,7 @@ export declare class OpenAIClient {
     private buildPrompt;
     private capLogsForPrompt;
     private formatPRDiffSection;
+    private formatProductDiffSection;
     private parseResponse;
     private validateResponse;
     private ensureJsonMention;

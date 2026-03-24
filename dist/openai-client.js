@@ -363,6 +363,8 @@ ${errorData.context ? `- Additional Context: ${errorData.context}` : ''}
 
 ${errorData.prDiff ? this.formatPRDiffSection(errorData.prDiff) : ''}
 
+${errorData.productDiff ? this.formatProductDiffSection(errorData.productDiff) : ''}
+
 Full Logs and Context:
 ${this.capLogsForPrompt(errorData.logs)}
 
@@ -435,6 +437,46 @@ FOR PRODUCT_ISSUES: You MUST analyze the diff patches above to:
 - Match error symptoms to specific code changes
 - Provide actionable source locations developers can investigate
 - Example: "The null pointer error likely comes from the removed null check at src/components/UserForm.tsx lines 45-47"`;
+        return section;
+    }
+    formatProductDiffSection(productDiff) {
+        const maxFiles = constants_1.ARTIFACTS.MAX_PR_DIFF_FILES;
+        const maxPatchLines = constants_1.ARTIFACTS.MAX_PATCH_LINES;
+        let section = `\n⚠️ Recent Product Repo Changes (${constants_1.DEFAULT_PRODUCT_REPO}):
+- Total files changed: ${productDiff.totalChanges}
+- Lines added: ${productDiff.additions}
+- Lines deleted: ${productDiff.deletions}
+
+These are the most recent changes to the product codebase. If any of these changes affect selectors, components, layouts, or APIs that the failing test depends on, this is likely a PRODUCT_ISSUE — the test is correctly detecting that the product changed.
+
+Changed Product Files:
+`;
+        for (const file of productDiff.files.slice(0, maxFiles)) {
+            section += `\n${file.filename} (+${file.additions}/-${file.deletions})`;
+            if (file.patch && file.patch.length > 0) {
+                const patchLines = file.patch.split('\n');
+                if (patchLines.length <= maxPatchLines) {
+                    section += '\n```diff\n' + file.patch + '\n```\n';
+                }
+                else {
+                    const addedLines = patchLines.filter(line => line.startsWith('+') && !line.startsWith('+++'));
+                    const removedLines = patchLines.filter(line => line.startsWith('-') && !line.startsWith('---'));
+                    const contextLines = patchLines.filter(line => line.startsWith('@@'));
+                    let condensedPatch = [];
+                    if (contextLines.length > 0) {
+                        condensedPatch.push(contextLines[0]);
+                    }
+                    const changedLinesToShow = Math.min(10, addedLines.length + removedLines.length);
+                    condensedPatch = condensedPatch.concat(removedLines.slice(0, Math.floor(changedLinesToShow / 2)), addedLines.slice(0, Math.ceil(changedLinesToShow / 2)));
+                    if (condensedPatch.length > 0) {
+                        section += '\n```diff\n' + condensedPatch.join('\n') + '\n... (patch truncated)\n```\n';
+                    }
+                }
+            }
+        }
+        if (productDiff.files.length > maxFiles) {
+            section += `\n... and ${productDiff.files.length - maxFiles} more files`;
+        }
         return section;
     }
     parseResponse(content) {

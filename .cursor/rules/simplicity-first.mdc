@@ -1,0 +1,36 @@
+---
+description: Prefer the simplest solution with the least code. Avoid overengineering.
+alwaysApply: true
+---
+
+# Simplicity First
+
+Always choose the simplest approach that solves the problem with the least amount of code.
+
+## Principles
+
+- **Constants over inference.** If a value is known and stable, hardcode it as a constant. Don't build dynamic resolution chains, mapping tables, or multi-strategy fallback logic for something that doesn't change.
+- **One place, one truth.** If a default exists, every consumer should use it directly. Don't duplicate fallback logic across layers.
+- **Delete > comment out > keep.** Remove dead code immediately. Never leave "just in case" code paths.
+- **Fewer moving parts.** Each new function, mapping table, or abstraction must justify its existence. If you can delete it and the system still works, it shouldn't exist.
+
+## Before Writing Code, Ask
+
+1. Is there already a constant or config that handles this?
+2. Can I solve this with a one-line change instead of a new function?
+3. Am I building for a scenario that doesn't actually exist?
+
+## Anti-Patterns to Avoid
+
+```typescript
+// BAD: Overengineered inference chain for a known value
+const REPO_BY_HOST: Record<string, string> = { 'learn.adept.at': 'adept-at/learn-webapp' };
+const REPO_BY_TEST: Record<string, string> = { 'adept-at/wdio-9-bidi-mux3': 'adept-at/learn-webapp' };
+function inferFromUrl(url) { /* ... */ }
+function inferFromLogs(logs) { /* ... */ }
+function inferFromTestRepo(repo) { /* ... */ }
+function resolveProductRepo(inputs, logs) { /* 4-strategy fallback chain */ }
+
+// GOOD: It's always learn-webapp. Use the constant.
+const productRepo = inputs.productRepo || DEFAULT_PRODUCT_REPO;
+```

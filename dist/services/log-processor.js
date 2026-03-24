@@ -248,11 +248,7 @@ async function fetchDiffWithFallback(artifactFetcher, inputs, repoDetails) {
     return null;
 }
 async function fetchProductDiff(artifactFetcher, inputs) {
-    const productRepo = inputs.productRepo;
-    if (!productRepo) {
-        core.info('ℹ️ No product repo configured, skipping product diff');
-        return null;
-    }
+    const productRepo = inputs.productRepo || constants_1.DEFAULT_PRODUCT_REPO;
     const commitCount = inputs.productDiffCommits || 5;
     core.info(`📋 Fetching recent product diff from ${productRepo} (last ${commitCount} commits)...`);
     try {

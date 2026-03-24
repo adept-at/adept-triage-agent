@@ -15,7 +15,7 @@ import {
 } from '../types';
 import { ArtifactFetcher } from '../artifact-fetcher';
 import { extractErrorFromLogs } from '../simplified-analyzer';
-import { LOG_LIMITS, SHORT_SHA_LENGTH } from '../config/constants';
+import { LOG_LIMITS, SHORT_SHA_LENGTH, DEFAULT_PRODUCT_REPO } from '../config/constants';
 import { ANSI_ESCAPE_REGEX } from '../utils/text-utils';
 
 interface RepoDetails {
@@ -140,8 +140,6 @@ export async function processWorkflowLogs(
   } catch (error) {
     core.warning(`Failed to download job logs: ${error}`);
   }
-
-  
 
   // Fetch artifacts in parallel
   // Note: Screenshots and artifact logs live in the test repo (context.repo),
@@ -383,11 +381,7 @@ async function fetchProductDiff(
   artifactFetcher: ArtifactFetcher,
   inputs: ActionInputs
 ): Promise<PRDiff | null> {
-  const productRepo = inputs.productRepo;
-  if (!productRepo) {
-    core.info('ℹ️ No product repo configured, skipping product diff');
-    return null;
-  }
+  const productRepo = inputs.productRepo || DEFAULT_PRODUCT_REPO;
   const commitCount = inputs.productDiffCommits || 5;
   core.info(`📋 Fetching recent product diff from ${productRepo} (last ${commitCount} commits)...`);
   try {

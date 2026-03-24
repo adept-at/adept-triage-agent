@@ -190,6 +190,8 @@ If you point the action at the current in-progress job, it can still do a best-e
 | `COMMIT_SHA`           | No       | -                          | Commit SHA associated with the test failure                                                                                                                                                                                                       |
 | `BRANCH`               | No       | -                          | Branch being tested, used for branch diff lookup when no PR number is available                                                                                                                                                                  |
 | `REPOSITORY`           | No       | `${{ github.repository }}` | App/source repository in owner/repo format for PR, branch, or commit diff lookup. Workflow runs and artifacts are still read from the repository where the action executes.                                                                    |
+| `PRODUCT_REPO`         | No       | `adept-at/learn-webapp`    | Product repository (owner/repo) for recent commit diff used in classification. Empty input resolves to this default; workflows do not need to pass it unless targeting another repo.                                                              |
+| `PRODUCT_DIFF_COMMITS` | No       | `5`                        | Number of recent product commits to include in that diff                                                                                                                                                                                          |
 | `TEST_FRAMEWORKS`      | No       | `cypress`                  | Test framework: "cypress" or "webdriverio"                                                                                                                                                                                                         |
 | `ENABLE_AUTO_FIX` | No | `false` | Enable automatic branch creation with fix |
 | `AUTO_FIX_BASE_BRANCH` | No | `main` | Base branch to create fix branch from |
@@ -370,12 +372,14 @@ To analyze all failed jobs in a workflow:
 
 ### Change Diff Analysis
 
-When you provide a `PR_NUMBER`, `BRANCH`, or `COMMIT_SHA`, the triage agent can:
+The agent always attempts to fetch a **recent product-repo diff** (default repository `adept-at/learn-webapp`, last few commits). You do not need to pass `PRODUCT_REPO` unless you want a different product repository; `getInputs()` and the action default already resolve to that repo when the input is empty.
 
-1. Fetch the relevant PR, branch, or commit diff to understand what code changed
-2. Analyze if the changes are related to the test failure
+When you provide a `PR_NUMBER`, `BRANCH`, or `COMMIT_SHA`, the triage agent can also:
+
+1. Fetch the relevant **test-repo** PR, branch, or commit diff from `REPOSITORY`
+2. Analyze if those changes are related to the test failure
 3. Calculate a risk score (high/medium/low/none)
-4. Use this context to make more accurate verdicts
+4. Use **both** test-repo and product-repo diff context in the classification prompt for more accurate `TEST_ISSUE` vs `PRODUCT_ISSUE` verdicts
 
 This is especially useful for determining if a test failure is caused by recent code changes:
 
@@ -469,7 +473,7 @@ jobs:
 
 The agent handles missing optional inputs gracefully:
 
-- **No PR_NUMBER / BRANCH / COMMIT_SHA**: Change diff analysis is skipped
+- **No PR_NUMBER / BRANCH / COMMIT_SHA**: Test-repo PR/branch/commit diff lookup is skipped; recent **product-repo** diff is still fetched using the default product repository (or `PRODUCT_REPO` when set), subject to GitHub API access
 - **No JOB_NAME**: Automatically finds the first failed job
 - **No COMMIT_SHA**: Not required for analysis
 - **No REPOSITORY**: Uses the current repository for diff lookup as well
@@ -481,7 +485,7 @@ Even if some data collection fails (e.g., screenshots unavailable), the agent wi
 1. **Log Collection**: The action fetches all logs from the failed job(s)
 2. **Artifact Analysis**: Downloads and analyzes screenshots and test artifacts
 3. **Structured Error Extraction**: Automatically extracts and categorizes error information
-4. **Change Diff Analysis**: If PR, branch, or commit context is provided, analyzes code changes for relevance
+4. **Change Diff Analysis**: Always attempts a recent product-repo diff (default `adept-at/learn-webapp`); if PR, branch, or commit context is provided, also analyzes the test-repo diff for relevance. Both diffs are included in the classification prompt when available.
 5. **AI Analysis**: Sends structured summary + logs + screenshots to GPT-5.3 Codex for multimodal analysis
 6. **Verdict Generation**: Determines if the failure is a test or product issue
 7. **Confidence Scoring**: Provides a confidence score based on evidence

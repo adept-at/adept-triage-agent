@@ -7,7 +7,7 @@ The Adept Triage Agent is a GitHub Action that automatically analyzes test failu
 ### Key Features
 
 - **Intelligent Failure Classification**: Uses OpenAI GPT-5.3 Codex to analyze test failures
-- **Multimodal Analysis**: Processes screenshots, logs, and PR/branch/commit diffs
+- **Multimodal Analysis**: Processes screenshots, logs, test-repo PR/branch/commit diffs, and a recent product-repo commit diff (default `adept-at/learn-webapp` when `PRODUCT_REPO` is unset)
 - **Fix Recommendations**: Generates actionable fix suggestions for test issues
 - **GitHub Integration**: Seamlessly integrates with GitHub Actions workflows
 - **Configurable Confidence Thresholds**: Allows tuning of analysis certainty
@@ -86,7 +86,8 @@ graph TB
     AF --> GITHUB
     AF --> |Screenshots| LP
     AF --> |Test Artifact Logs| LP
-    AF --> |PR Diff| LP
+    AF --> |Test repo PR/branch/commit diff| LP
+    AF --> |Product repo recent commits diff| LP
 
     LP --> |ErrorData| ANALYZE
     ANALYZE --> OAI
@@ -141,11 +142,13 @@ flowchart TD
 
         FETCH_PARALLEL --> SCREENSHOTS[fetchScreenshots]
         FETCH_PARALLEL --> TEST_ARTIFACT_LOGS[fetchTestArtifactLogs]
-        FETCH_PARALLEL --> PR_DIFF[fetchPRDiff]
+        FETCH_PARALLEL --> PR_DIFF[fetchDiffWithFallback]
+        FETCH_PARALLEL --> PRODUCT_DIFF[fetchProductDiff]
 
         SCREENSHOTS --> BUILD_CONTEXT[buildErrorContext]
         TEST_ARTIFACT_LOGS --> BUILD_CONTEXT
         PR_DIFF --> BUILD_CONTEXT
+        PRODUCT_DIFF --> BUILD_CONTEXT
 
         BUILD_CONTEXT --> BUILD_SUMMARY[buildStructuredSummary]
         BUILD_SUMMARY --> CREATE_ERROR_DATA[Create ErrorData Object]
@@ -281,7 +284,8 @@ Handles extraction and processing of workflow logs and artifacts.
 |----------|---------|--------|---------|
 | `processWorkflowLogs()` | Main log processing | Octokit, ArtifactFetcher, inputs, repoDetails | `ErrorData \| null` |
 | `findTargetJob()` | Find the failed job | Jobs array, inputs, isCurrentJob | `JobInfo \| null` |
-| `fetchArtifactsParallel()` | Fetch all artifacts concurrently | ArtifactFetcher, runId, jobName, artifactRepoDetails, diffRepoDetails, inputs | `[Screenshots, Logs, PRDiff]` |
+| `fetchArtifactsParallel()` | Fetch all artifacts concurrently | ArtifactFetcher, runId, jobName, artifactRepoDetails, diffRepoDetails, inputs | Tuple: screenshots, artifact logs, test-repo diff or null, product-repo diff or null |
+| `fetchProductDiff()` | Recent commits diff for product repo | ArtifactFetcher, inputs (`productRepo` defaults to `DEFAULT_PRODUCT_REPO`) | `PRDiff \| null` |
 | `buildErrorContext()` | Combine all context | Job, error, logs, fullLogs, inputs | Combined context string |
 | `capArtifactLogs()` | Truncate large logs | Raw logs | Capped logs string |
 | `fetchDiffWithFallback()` | Try PR diff → branch diff → commit diff | ArtifactFetcher, inputs, repoDetails | `PRDiff \| null` |
@@ -294,7 +298,7 @@ Handles extraction and processing of workflow logs and artifacts.
 4. Find the target/failed job
 5. Download job logs
 6. Extract structured error from logs
-7. Fetch artifacts in parallel (screenshots, test artifact logs, PR/branch/commit diff)
+7. Fetch artifacts in parallel (screenshots, test artifact logs, test-repo PR/branch/commit diff, product-repo recent commit diff)
 8. Build combined error context
 9. Return `ErrorData` object
 
@@ -347,7 +351,8 @@ Handles all communication with the OpenAI API.
 | `convertToResponsesInput()` | Convert prompt parts to Responses API input | userContent | Responses API input |
 | `buildUserContent()` | Build multimodal content | ErrorData, examples | string \| ContentPart[] |
 | `getSystemPrompt()` | Get the system prompt | None | string |
-| `buildPrompt()` | Build user prompt | ErrorData, examples | string |
+| `buildPrompt()` | Build user prompt (includes `formatPRDiffSection` and `formatProductDiffSection` when diffs exist) | ErrorData, examples | string |
+| `formatProductDiffSection()` | Format product-repo diff for classification prompt | `PRDiff` | string |
 | `parseResponse()` | Parse API response | Content string | `OpenAIResponse` |
 | `generateWithCustomPrompt()` | Generic prompt call | Params object | string |
 
@@ -381,6 +386,7 @@ Fetches and processes workflow artifacts from GitHub.
 | `fetchPRDiff()` | Fetch PR changes | prNumber, repository | `PRDiff \| null` |
 | `fetchCommitDiff()` | Fetch diff for single commit | commitSha, repository | `PRDiff \| null` |
 | `fetchBranchDiff()` | Fetch diff between branch and base | branch, baseBranch, repository | `PRDiff \| null` |
+| `fetchRecentProductDiff()` | Diff across last N commits on default branch | productRepo (owner/repo), commitCount | `PRDiff \| null` |
 | `sortFilesByRelevance()` | Sort files by relevance | PRDiffFile[] | PRDiffFile[] |
 
 #### Screenshot Detection
@@ -593,6 +599,7 @@ interface ErrorData {
   logs?: string[];
   testArtifactLogs?: string;
   prDiff?: PRDiff;
+  productDiff?: PRDiff;
   structuredSummary?: StructuredErrorSummary;
 }
 
@@ -618,6 +625,8 @@ interface ActionInputs {
   prNumber?: string;
   commitSha?: string;
   repository?: string;
+  productRepo: string;
+  productDiffCommits?: number;
   testFrameworks?: string;
   enableAutoFix?: boolean;         // Enable automatic branch creation
   autoFixBaseBranch?: string;      // Base branch to create fix from
@@ -672,7 +681,8 @@ interface ActionInputs {
 ### Error Recovery
 - Screenshots fetch failure: Continues with text-only analysis
 - Uploaded test artifact fetch failure: Uses GitHub Actions logs only
-- PR diff fetch failure: Analyzes without PR context
+- PR diff fetch failure: Analyzes without test-repo PR context
+- Product diff fetch failure: Analyzes without product-repo diff context
 - JSON parse failure: Falls back to text extraction
 
 ---
@@ -986,7 +996,7 @@ AgentOrchestrator.orchestrate(context, errorData)
 All agents receive an `AgentContext` (defined in `src/agents/base-agent.ts`):
 - Error message, test file, test name
 - Screenshots (base64), logs, stack trace
-- PR diff (files + patches)
+- PR diff (files + patches) and product-repo recent commit diff when present
 - Source file content (added by CodeReadingAgent)
 - Framework identifier (cypress/webdriverio)
 
@@ -1014,6 +1024,7 @@ Added explicit **Causal Consistency Rules** to all prompt layers:
 |-------|------|---------------|
 | Main analysis | `src/openai-client.ts` `getSystemPrompt()` | CAUSAL CONSISTENCY RULE — model must validate hypothesis against diff |
 | PR diff section | `src/openai-client.ts` `formatPRDiffSection()` | CAUSAL CONSISTENCY CHECK — explicit wrong/correct reasoning examples |
+| Product diff section | `src/openai-client.ts` `formatProductDiffSection()` | Recent product-repo file/patch context for classification, alongside test-repo PR diff |
 | Fix generation | `src/agents/fix-generation-agent.ts` `getSystemPrompt()` | PR DIFF CONSISTENCY — no claiming code changed if diff doesn't show it |
 | Review | `src/agents/review-agent.ts` `getSystemPrompt()` | New CRITICAL criterion — diff-contradiction means rejection |
 
