@@ -301,12 +301,18 @@ This approach triggers automatically when the specified workflow completes with 
 | `AUTO_FIX_BASE_BRANCH` | Base branch to create fix branch from                                                                                                                                                                                          | No       | `main`                     |
 | `AUTO_FIX_MIN_CONFIDENCE` | Minimum fix confidence required to apply auto-fix (0-100)                                                                                                                                                                   | No       | `70`                       |
 | `AUTO_FIX_TARGET_REPO` | Repository where repair source files are fetched and fix branches are created (owner/repo format)                                                                                                                             | No       | `${{ github.repository }}` |
-| `ENABLE_AGENTIC_REPAIR` | Enable multi-agent repair pipeline for higher quality fixes (uses more API calls)                                                                                                                                             | No       | `false`                    |
+| `ENABLE_AGENTIC_REPAIR` | Enable multi-agent repair pipeline for higher quality fixes (uses more API calls). Enabled by default; set to `'false'` to use single-shot repair instead.                                                                   | No       | `true`                     |
 | **Validation Inputs** | | | |
 | `ENABLE_VALIDATION`    | Enable validation workflow trigger after fix is applied                                                                                                                                                                        | No       | `false`                    |
 | `VALIDATION_WORKFLOW`  | Name of the validation workflow file                                                                                                                                                                                           | No       | `validate-fix.yml`         |
 | `VALIDATION_PREVIEW_URL` | Preview URL for validation tests                                                                                                                                                                                             | No       | -                          |
 | `VALIDATION_SPEC`      | Spec file for validation tests                                                                                                                                                                                                 | No       | -                          |
+| `VALIDATION_TEST_COMMAND` | Custom test command for validation                                                                                                                                                                                          | No       | -                          |
+| **Cursor Validation Inputs** | | | |
+| `ENABLE_CURSOR_VALIDATION` | Enable Cursor-based fix validation. Mutually exclusive with `ENABLE_VALIDATION`; if both are true, GitHub Actions validation takes precedence.                                                                             | No       | `false`                    |
+| `CURSOR_API_KEY`       | API key for Cursor validation                                                                                                                                                                                                  | No       | -                          |
+| `CURSOR_VALIDATION_MODE` | Cursor validation mode                                                                                                                                                                                                       | No       | `poll`                     |
+| `CURSOR_VALIDATION_TIMEOUT` | Timeout for Cursor validation (ms)                                                                                                                                                                                        | No       | `300000`                   |
 
 ## Outputs
 
@@ -331,6 +337,10 @@ This approach triggers automatically when the specified workflow completes with 
 | `validation_run_id` | Workflow run ID of the validation workflow (when discovered)                   |
 | `validation_status` | Validation dispatch status from this action: `pending` or `skipped`            |
 | `validation_url` | URL to the validation workflow run (when discovered or returned by GitHub)        |
+| **Cursor Validation Outputs** | |
+| `cursor_agent_id` | Cursor agent ID (when Cursor validation enabled)                                  |
+| `cursor_agent_url` | URL to Cursor agent run                                                          |
+| `cursor_validation_summary` | Summary of Cursor validation results                                       |
 
 ### Special Verdicts
 

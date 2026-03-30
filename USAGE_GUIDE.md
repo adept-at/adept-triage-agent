@@ -201,7 +201,13 @@ If you point the action at the current in-progress job, it can still do a best-e
 | `VALIDATION_WORKFLOW` | No | `validate-fix.yml` | Validation workflow file name |
 | `VALIDATION_PREVIEW_URL` | No | - | Preview URL for validation tests |
 | `VALIDATION_SPEC` | No | - | Spec file for validation tests |
-| `ENABLE_AGENTIC_REPAIR` | No | `false` | Enable multi-agent repair pipeline |
+| `VALIDATION_TEST_COMMAND` | No | - | Custom test command for validation |
+| `ENABLE_AGENTIC_REPAIR` | No | `true` | Enable multi-agent repair pipeline (enabled by default; set `'false'` to use single-shot) |
+| **Cursor Validation Inputs** | | | |
+| `ENABLE_CURSOR_VALIDATION` | No | `false` | Enable Cursor-based fix validation. Mutually exclusive with `ENABLE_VALIDATION` (GitHub Actions validation takes precedence if both are true). |
+| `CURSOR_API_KEY` | No | - | API key for Cursor validation |
+| `CURSOR_VALIDATION_MODE` | No | `poll` | Cursor validation mode |
+| `CURSOR_VALIDATION_TIMEOUT` | No | `300000` | Timeout for Cursor validation (ms) |
 
 ## Outputs
 
@@ -223,6 +229,9 @@ If you point the action at the current in-progress job, it can still do a best-e
 | `validation_run_id` | Validation workflow run ID | - |
 | `validation_status` | Validation dispatch status: pending or skipped | - |
 | `validation_url` | URL to validation workflow run | - |
+| `cursor_agent_id` | Cursor agent ID (when Cursor validation enabled) | - |
+| `cursor_agent_url` | URL to Cursor agent run | - |
+| `cursor_validation_summary` | Summary of Cursor validation results | - |
 
 ### Special Verdicts
 

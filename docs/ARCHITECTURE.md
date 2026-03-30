@@ -326,16 +326,16 @@ Core analysis engine that uses OpenAI to classify test failures.
 5. **Generic Test Failures** (Priority 1-3) - FAIL, Failed markers
 
 #### Few-Shot Examples
-The analyzer uses 9 curated examples to guide classification:
+The analyzer uses 7 curated examples to guide classification:
 - Intentional test failures (TEST_ISSUE)
 - WebDriver session termination (INCONCLUSIVE)
-- Browser renderer crash (INCONCLUSIVE)
 - Server verification errors (PRODUCT_ISSUE)
 - Element visibility timeouts (TEST_ISSUE)
 - Element not found errors (TEST_ISSUE)
 - Null pointer in product code (PRODUCT_ISSUE)
-- Database connection errors (PRODUCT_ISSUE)
-- HTTP 500 errors (PRODUCT_ISSUE)
+- Cypress login/deployment failure (PRODUCT_ISSUE)
+
+Note: Browser renderer crashes are handled separately via `INFRASTRUCTURE_FAILURE_PATTERNS` (short-circuits to INCONCLUSIVE without an LLM call).
 
 ---
 
@@ -637,7 +637,12 @@ interface ActionInputs {
   validationWorkflow?: string;
   validationPreviewUrl?: string;
   validationSpec?: string;
-  enableAgenticRepair?: boolean;
+  validationTestCommand?: string;
+  enableAgenticRepair?: boolean;   // Defaults to true (action.yml default: 'true')
+  enableCursorValidation?: boolean;
+  cursorApiKey?: string;
+  cursorValidationMode?: 'poll' | 'async';
+  cursorValidationTimeout?: number;
 }
 ```
 
@@ -648,7 +653,7 @@ interface ActionInputs {
 | Output | Type | Description |
 |--------|------|-------------|
 | `verdict` | string | `TEST_ISSUE`, `PRODUCT_ISSUE`, `INCONCLUSIVE`, `PENDING`, `ERROR`, or `NO_FAILURE` |
-| `confidence` | string | Confidence percentage (0-95) |
+| `confidence` | string | Confidence percentage (0-100, capped at 95 by `MAX_CONFIDENCE` constant) |
 | `reasoning` | string | Detailed reasoning for the verdict |
 | `summary` | string | Human-readable summary |
 | `triage_json` | string | Full JSON output with all data |
@@ -663,6 +668,9 @@ interface ActionInputs {
 | `validation_run_id` | string | Validation workflow run ID when discovered after dispatch |
 | `validation_status` | string | Validation dispatch status reported by this action: `pending` or `skipped` |
 | `validation_url` | string | URL for the dispatched validation workflow run when GitHub returns it |
+| `cursor_agent_id` | string | Cursor agent ID when Cursor validation is enabled |
+| `cursor_agent_url` | string | URL to the Cursor agent run |
+| `cursor_validation_summary` | string | Summary of Cursor validation results |
 
 ---
 
@@ -960,7 +968,7 @@ Confidence: {confidence}%
 
 ## Multi-Agent Orchestration Pipeline
 
-When `ENABLE_AGENTIC_REPAIR` is set to `true`, fix generation uses a 5-agent pipeline instead of a single-shot LLM call. The orchestrator is in `src/agents/agent-orchestrator.ts`.
+Fix generation uses a 5-agent pipeline by default (`ENABLE_AGENTIC_REPAIR` defaults to `true` in `action.yml`). Set to `'false'` to fall back to a single-shot LLM call. The orchestrator is in `src/agents/agent-orchestrator.ts`.
 
 ### Agent Pipeline
 
@@ -980,33 +988,48 @@ Steps 4 and 5 loop up to 3 times (configurable via `AGENT_CONFIG.MAX_AGENT_ITERA
 AgentOrchestrator.orchestrate(context, errorData)
   → Start timeout timer (120s)
   → AnalysisAgent.execute() → root cause, confidence, selectors
-  → CodeReadingAgent.execute() → source files
+  → CodeReadingAgent.execute() → source files + related files
   → InvestigationAgent.execute() → findings, recommended approach
   → Loop (max 3 iterations):
       → FixGenerationAgent.execute() → code changes, confidence
       → [if confidence < threshold] → retry with feedback
+      → autoCorrectOldCode() → validate/correct oldCode against source
+      → [if all changes dropped] → retry with "copy oldCode exactly" feedback
       → ReviewAgent.execute() → approved/rejected, issues
       → [if approved] → return fix
       → [if rejected] → retry with review feedback
+  → [if max iterations reached and last fix confidence >= threshold] → return last fix as fallback
   → Convert to FixRecommendation
 ```
+
+### `autoCorrectOldCode` (v1.24.0)
+
+After fix generation but before review, the orchestrator validates each change's `oldCode` against the actual source files (test file + related files fetched by CodeReadingAgent). Three correction strategies are attempted in order:
+
+1. **Strip line-number prefixes** — the LLM may copy numbered lines like `  42: const x = 1;`; strip the prefix and re-check
+2. **Whitespace-normalized matching** — collapse whitespace for fuzzy comparison, then extract the actual source region
+3. **Line-range + signature matching** — use the approximate line number and code signatures to find the correct region
+
+Changes that cannot be matched are dropped. If all changes are dropped, feedback is sent to the next fix-generation iteration.
 
 ### Agent Communication
 
 All agents receive an `AgentContext` (defined in `src/agents/base-agent.ts`):
 - Error message, test file, test name
+- Error type and failed selector (if applicable)
 - Screenshots (base64), logs, stack trace
 - PR diff (files + patches) and product-repo recent commit diff when present
-- Source file content (added by CodeReadingAgent)
+- Source file content (added by CodeReadingAgent, with line numbers for the LLM)
+- Related files map (helpers, page objects — added by CodeReadingAgent)
 - Framework identifier (cypress/webdriverio)
 
-Agents return `AgentResult<T>` with success/failure, typed output data, execution time, and API call count.
+Agents return `AgentResult<T>` with success/failure, typed output data, execution time, API call count, and optional token usage.
 
 ### Fallback Behavior
 
 If the agentic pipeline fails (timeout, all iterations rejected, agent error):
 - Falls back to single-shot repair when `AGENT_CONFIG.FALLBACK_TO_SINGLE_SHOT` is true (default)
-- Returns the best available fix if any iteration produced one above minimum confidence
+- If max iterations reached but the last fix has confidence >= `minConfidence`, returns that fix as a fallback (even without review approval — validation becomes the final gate)
 
 ---
 

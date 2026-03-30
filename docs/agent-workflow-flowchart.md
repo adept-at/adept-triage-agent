@@ -117,7 +117,12 @@ flowchart TB
         CONF_CHECK -->|No| FEEDBACK1["Feedback: Confidence too low"]
         FEEDBACK1 --> LOOP_START
 
-        CONF_CHECK -->|Yes| REVIEW_CHECK{Review<br/>Required?}
+        CONF_CHECK -->|Yes| AUTO_CORRECT["Step 4b: autoCorrectOldCode<br/>Validate oldCode against source<br/>Strip line prefixes / normalize WS /<br/>signature match near target line"]
+        AUTO_CORRECT --> CHANGES_LEFT{Valid changes<br/>remain?}
+        CHANGES_LEFT -->|No| FEEDBACK_AC["Feedback: oldCode did not<br/>match source — copy exactly"]
+        FEEDBACK_AC --> LOOP_START
+
+        CHANGES_LEFT -->|Yes| REVIEW_CHECK{Review<br/>Required?}
         REVIEW_CHECK -->|No| RETURN_FIX["Return Fix"]
 
         REVIEW_CHECK -->|Yes| STEP5
@@ -138,7 +143,7 @@ flowchart TB
     CONVERT --> DONE["Return OrchestrationResult"]
 
     LOOP -->|Max iterations reached| BEST_FIX{Last Fix ≥<br/>Min Confidence?}
-    BEST_FIX -->|Yes| RETURN_BEST["Return Best Fix"]
+    BEST_FIX -->|Yes| RETURN_BEST["Return Last Fix<br/>(not review-approved)"]
     BEST_FIX -->|No| FALLBACK{Fallback<br/>Enabled?}
     FALLBACK -->|Yes| SINGLE["Fall Back to Single-Shot"]
     FALLBACK -->|No| FAIL["Return Failed"]
@@ -306,7 +311,7 @@ flowchart TB
 
         subgraph A1["AnalysisAgent"]
             A1_IN["Input: error, logs, screenshots, PR diff"]
-            A1_WORK["Classifies root cause<br/>SELECTOR_MISMATCH | TIMING_ISSUE<br/>STATE_DEPENDENCY | NETWORK_ISSUE<br/>ELEMENT_VISIBILITY | ENVIRONMENT_ISSUE"]
+            A1_WORK["Classifies root cause<br/>SELECTOR_MISMATCH | TIMING_ISSUE<br/>STATE_DEPENDENCY | NETWORK_ISSUE<br/>ELEMENT_VISIBILITY | ASSERTION_MISMATCH<br/>DATA_DEPENDENCY | ENVIRONMENT_ISSUE | UNKNOWN"]
             A1_OUT["Output: category, confidence,<br/>selectors, patterns"]
             A1_IN --> A1_WORK --> A1_OUT
         end

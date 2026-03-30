@@ -3561,6 +3561,9 @@ async function triggerCursorValidation(inputs, result, fixRecommendation, repoDe
     core.info(`  Agent ID: ${cursorResult.agentId}`);
     core.info(`  Agent URL: ${cursorResult.agentUrl}`);
     core.info(`  Summary: ${cursorResult.summary}`);
+    core.setOutput('cursor_agent_id', cursorResult.agentId);
+    core.setOutput('cursor_agent_url', cursorResult.agentUrl || '');
+    core.setOutput('cursor_validation_summary', cursorResult.summary || '');
 }
 function setInconclusiveOutput(result, inputs, errorData) {
     const inconclusiveTriageJson = {

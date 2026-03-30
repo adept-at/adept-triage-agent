@@ -1,0 +1,471 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Triage Run: lib-wdio-8-e2e-ts #23673610866</title>
+<link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Instrument+Serif&display=swap" rel="stylesheet">
+<script type="module">
+  import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
+  mermaid.initialize({
+    startOnLoad: true,
+    theme: 'base',
+    themeVariables: {
+      primaryColor: '#1a1a2e',
+      primaryTextColor: '#e0e0e0',
+      primaryBorderColor: '#404060',
+      lineColor: '#606080',
+      secondaryColor: '#16213e',
+      tertiaryColor: '#0f3460',
+      fontFamily: 'DM Mono, monospace',
+      fontSize: '13px',
+      nodeTextColor: '#e0e0e0',
+    },
+    flowchart: {
+      htmlLabels: true,
+      curve: 'basis',
+      padding: 12,
+      nodeSpacing: 30,
+      rankSpacing: 40,
+    },
+  });
+</script>
+<style>
+  :root {
+    --bg: #0d0d1a;
+    --surface: #141428;
+    --surface2: #1a1a35;
+    --border: #2a2a50;
+    --text: #c8c8e0;
+    --text-dim: #808098;
+    --accent: #4ecdc4;
+    --accent2: #ff6b6b;
+    --accent3: #ffe66d;
+    --accent4: #a78bfa;
+    --success: #4ecdc4;
+    --warn: #ffe66d;
+    --fail: #ff6b6b;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'DM Mono', monospace;
+    line-height: 1.6;
+    overflow-x: auto;
+  }
+  .header {
+    padding: 2.5rem 3rem 1.5rem;
+    border-bottom: 1px solid var(--border);
+    background: linear-gradient(135deg, var(--surface) 0%, var(--bg) 100%);
+  }
+  .header h1 {
+    font-family: 'Instrument Serif', serif;
+    font-size: 2.2rem;
+    font-weight: 400;
+    color: var(--accent);
+    letter-spacing: -0.02em;
+    margin-bottom: 0.3rem;
+  }
+  .header .subtitle {
+    font-size: 0.85rem;
+    color: var(--text-dim);
+  }
+  .meta-strip {
+    display: flex;
+    gap: 2rem;
+    padding: 1rem 3rem;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    flex-wrap: wrap;
+  }
+  .meta-item {
+    display: flex;
+    flex-direction: column;
+    gap: 0.15rem;
+  }
+  .meta-item .label {
+    font-size: 0.65rem;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    color: var(--text-dim);
+  }
+  .meta-item .value {
+    font-size: 0.85rem;
+    color: var(--text);
+  }
+  .meta-item .value.verdict {
+    color: var(--accent3);
+    font-weight: 500;
+  }
+  .meta-item .value.confidence {
+    color: var(--success);
+    font-weight: 500;
+  }
+  .section {
+    padding: 2rem 3rem;
+    border-bottom: 1px solid var(--border);
+  }
+  .section h2 {
+    font-family: 'Instrument Serif', serif;
+    font-size: 1.4rem;
+    font-weight: 400;
+    color: var(--accent4);
+    margin-bottom: 0.4rem;
+    letter-spacing: -0.01em;
+  }
+  .section .desc {
+    font-size: 0.78rem;
+    color: var(--text-dim);
+    margin-bottom: 1.2rem;
+  }
+  .mermaid {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 1.5rem;
+    overflow-x: auto;
+  }
+  .mermaid svg {
+    max-width: 100%;
+  }
+  .legend {
+    display: flex;
+    gap: 1.5rem;
+    margin-top: 1rem;
+    flex-wrap: wrap;
+  }
+  .legend-item {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    font-size: 0.72rem;
+    color: var(--text-dim);
+  }
+  .legend-dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 2px;
+  }
+  .dot-repo { background: #2d6a4f; }
+  .dot-action { background: #4361ee; }
+  .dot-agent { background: #7b2cbf; }
+  .dot-api { background: #e76f51; }
+  .dot-output { background: #4ecdc4; }
+
+  @media (max-width: 900px) {
+    .header, .section { padding-left: 1.5rem; padding-right: 1.5rem; }
+    .meta-strip { padding: 1rem 1.5rem; gap: 1rem; }
+  }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1>Triage Run Flowchart</h1>
+  <div class="subtitle">lib-wdio-8-e2e-ts &middot; Run #23673610866 &middot; 2026-03-28</div>
+</div>
+
+<div class="meta-strip">
+  <div class="meta-item">
+    <span class="label">Repo</span>
+    <span class="value">adept-at/lib-wdio-8-e2e-ts</span>
+  </div>
+  <div class="meta-item">
+    <span class="label">Spec</span>
+    <span class="value">redeem.org.access.expire.access.ts</span>
+  </div>
+  <div class="meta-item">
+    <span class="label">Verdict</span>
+    <span class="value verdict">TEST_ISSUE</span>
+  </div>
+  <div class="meta-item">
+    <span class="label">Confidence</span>
+    <span class="value confidence">95%</span>
+  </div>
+  <div class="meta-item">
+    <span class="label">Fix Branch</span>
+    <span class="value">fix/triage-agent/test-helpers-multi-mailosaur-ts-20260328-263</span>
+  </div>
+  <div class="meta-item">
+    <span class="label">Commit</span>
+    <span class="value">6ca5b6e</span>
+  </div>
+</div>
+
+<!-- ─── DIAGRAM 1: End-to-End Workflow ─── -->
+<div class="section">
+  <h2>1 &middot; End-to-End Workflow</h2>
+  <div class="desc">From test failure through dispatch, triage, repair, and Slack notification.</div>
+  <div class="mermaid">
+flowchart TB
+    subgraph REPO["lib-wdio-8-e2e-ts (Consumer Repo)"]
+        direction TB
+        TEST_WF["Sauce Labs E2E Workflow\n<b>sauceTest</b> job\nredeem.org.access.expire.access.ts\nmain @ 6ca5b6e"]
+        TEST_WF -->|"❌ Job timed out / test failed"| DISPATCH_ACTION
+        DISPATCH_ACTION["adept-common/triage-dispatch@main\n<b>if: failure()</b>\nCollects: run_id, job_name, spec,\nbranch, commit_sha, repo_url"]
+    end
+
+    DISPATCH_ACTION -->|"repository_dispatch:\ntriage-failed-test"| TRIAGE_WF
+
+    subgraph TRIAGE["Triage Workflow (same repo)"]
+        direction TB
+        TRIAGE_WF["triage-failed-tests.yml\ncalls adept-common reusable workflow"]
+        TRIAGE_WF --> TRIAGE_ACTION["adept-at/adept-triage-agent@v1\n<b>src/index.ts → run()</b>"]
+        TRIAGE_ACTION --> GATHER["Data Gathering\n(log-processor.ts)"]
+        GATHER --> ANALYZE["AI Classification\n(simplified-analyzer.ts)"]
+        ANALYZE -->|"TEST_ISSUE 95%"| REPAIR["Agentic Repair Pipeline\n(5 agents)"]
+        REPAIR -->|"FixRecommendation"| AUTOFIX["Auto-Fix\n(fix-applier.ts)"]
+        AUTOFIX -->|"Branch created"| OUTPUTS["Set GitHub Action Outputs\nverdict, confidence, fix_branch..."]
+    end
+
+    subgraph NOTIFY["Notification"]
+        OUTPUTS --> SLACK_ACTION["adept-common/triage-slack-notify@main"]
+        SLACK_ACTION --> SLACK["Slack #SauceAlerts\n🧪 TEST_ISSUE 95%\n✅ Auto-Fix Applied"]
+    end
+
+    subgraph EXTERNAL["External Services"]
+        GATHER -.->|"REST API"| GITHUB_API["GitHub API\nLogs, artifacts,\nscreenshots, diffs"]
+        ANALYZE -.->|"Responses API"| OPENAI["OpenAI\ngpt-5.3-codex"]
+        REPAIR -.->|"Responses API\n(4 LLM calls)"| OPENAI
+        AUTOFIX -.->|"REST API\nCreate branch + commit"| GITHUB_API
+    end
+
+    style TEST_WF fill:#7f1d1d,stroke:#991b1b,color:#fca5a5
+    style DISPATCH_ACTION fill:#1e3a5f,stroke:#2563eb,color:#93c5fd
+    style TRIAGE_WF fill:#1e3a5f,stroke:#2563eb,color:#93c5fd
+    style TRIAGE_ACTION fill:#3b0764,stroke:#7c3aed,color:#c4b5fd
+    style GATHER fill:#1a1a35,stroke:#404060,color:#c8c8e0
+    style ANALYZE fill:#1a1a35,stroke:#404060,color:#c8c8e0
+    style REPAIR fill:#3b0764,stroke:#7c3aed,color:#c4b5fd
+    style AUTOFIX fill:#064e3b,stroke:#059669,color:#6ee7b7
+    style OUTPUTS fill:#064e3b,stroke:#059669,color:#6ee7b7
+    style SLACK_ACTION fill:#1e3a5f,stroke:#2563eb,color:#93c5fd
+    style SLACK fill:#064e3b,stroke:#059669,color:#6ee7b7
+    style GITHUB_API fill:#7c2d12,stroke:#ea580c,color:#fed7aa
+    style OPENAI fill:#7c2d12,stroke:#ea580c,color:#fed7aa
+  </div>
+  <div class="legend">
+    <div class="legend-item"><div class="legend-dot dot-repo"></div> Success / Output</div>
+    <div class="legend-item"><div class="legend-dot dot-action"></div> GitHub Actions</div>
+    <div class="legend-item"><div class="legend-dot dot-agent"></div> Triage Agent / AI Pipeline</div>
+    <div class="legend-item"><div class="legend-dot dot-api"></div> External APIs</div>
+    <div class="legend-item"><div class="legend-dot" style="background:#7f1d1d"></div> Failed Job</div>
+  </div>
+</div>
+
+<!-- ─── DIAGRAM 2: Data Gathering Detail ─── -->
+<div class="section">
+  <h2>2 &middot; Data Gathering Phase</h2>
+  <div class="desc">What the log processor collected from run #23673610866 before calling OpenAI.</div>
+  <div class="mermaid">
+flowchart LR
+    subgraph INPUTS["Inputs from Dispatch"]
+        RUN_ID["WORKFLOW_RUN_ID\n#23673610866"]
+        JOB["JOB_NAME\nsauceTest"]
+        COMMIT["COMMIT_SHA\n6ca5b6e"]
+        BRANCH["BRANCH\nmain"]
+    end
+
+    RUN_ID --> PROC["processWorkflowLogs()"]
+    JOB --> PROC
+    PROC --> FIND_JOB["findTargetJob()\nMatch 'sauceTest'"]
+    FIND_JOB --> DL_LOGS["Download Job Logs\nvia GitHub API"]
+    DL_LOGS --> EXTRACT["extractErrorFromLogs()\nPattern: WDIO Error in '...'\nFramework: webdriverio"]
+
+    EXTRACT --> PARALLEL
+
+    subgraph PARALLEL["fetchArtifactsParallel()"]
+        direction TB
+        SS["fetchScreenshots()\n→ 1 screenshot (base64)"]
+        AL["fetchTestArtifactLogs()\n→ WDIO artifact logs"]
+        DIFF["fetchDiffWithFallback()\n→ commit diff for 6ca5b6e\nin lib-wdio-8-e2e-ts"]
+        PDIFF["fetchProductDiff()\n→ last 5 commits from\nadept-at/learn-webapp"]
+    end
+
+    PARALLEL --> BUILD["buildErrorContext()\n+ buildStructuredSummary()"]
+    BUILD --> ERROR_DATA["ErrorData\n{message, framework: 'webdriverio',\nscreenshots: 1, prDiff, productDiff,\ntestArtifactLogs, structuredSummary}"]
+
+    style PROC fill:#1a1a35,stroke:#404060,color:#c8c8e0
+    style FIND_JOB fill:#1a1a35,stroke:#404060,color:#c8c8e0
+    style DL_LOGS fill:#1a1a35,stroke:#404060,color:#c8c8e0
+    style EXTRACT fill:#1a1a35,stroke:#404060,color:#c8c8e0
+    style SS fill:#3b0764,stroke:#7c3aed,color:#c4b5fd
+    style AL fill:#3b0764,stroke:#7c3aed,color:#c4b5fd
+    style DIFF fill:#3b0764,stroke:#7c3aed,color:#c4b5fd
+    style PDIFF fill:#3b0764,stroke:#7c3aed,color:#c4b5fd
+    style BUILD fill:#1a1a35,stroke:#404060,color:#c8c8e0
+    style ERROR_DATA fill:#064e3b,stroke:#059669,color:#6ee7b7
+  </div>
+</div>
+
+<!-- ─── DIAGRAM 3: Classification ─── -->
+<div class="section">
+  <h2>3 &middot; AI Classification</h2>
+  <div class="desc">Infrastructure check → OpenAI analysis → confidence calculation.</div>
+  <div class="mermaid">
+flowchart TB
+    ERROR_DATA["ErrorData from log processor"] --> INFRA{"detectInfrastructureFailure()\nSession crash? Browser crash?"}
+    INFRA -->|"No match\n(Mailosaur timeout ≠ infra)"| AI_CALL
+
+    AI_CALL["client.analyze(errorData, FEW_SHOT_EXAMPLES)\ngpt-5.3-codex via Responses API"]
+    AI_CALL --> PARSE["parseResponse()\n→ verdict: TEST_ISSUE\n→ reasoning: Mailosaur polling logic\n→ indicators: [timeout, test helper]"]
+
+    PARSE --> CALC["calculateConfidence()\nBase: 70\n+ Screenshot bonus: 10\n+ Logs bonus: 5\n+ PR diff bonus: 5\n+ Framework bonus: 5\n= 95 (capped at 95)"]
+
+    CALC --> THRESHOLD{"95% ≥ threshold 70%?"}
+    THRESHOLD -->|"Yes"| VERDICT_CHECK{"Verdict?"}
+    VERDICT_CHECK -->|"TEST_ISSUE"| GEN_FIX["→ Generate Fix Recommendation"]
+
+    style ERROR_DATA fill:#1a1a35,stroke:#404060,color:#c8c8e0
+    style AI_CALL fill:#7c2d12,stroke:#ea580c,color:#fed7aa
+    style PARSE fill:#1a1a35,stroke:#404060,color:#c8c8e0
+    style CALC fill:#1a1a35,stroke:#404060,color:#c8c8e0
+    style GEN_FIX fill:#3b0764,stroke:#7c3aed,color:#c4b5fd
+  </div>
+</div>
+
+<!-- ─── DIAGRAM 4: Multi-Agent Pipeline ─── -->
+<div class="section">
+  <h2>4 &middot; Multi-Agent Repair Pipeline</h2>
+  <div class="desc">5 specialized agents collaborating to generate a verified fix for multi.mailosaur.ts.</div>
+  <div class="mermaid">
+flowchart TB
+    START["SimplifiedRepairAgent\nenableAgenticRepair: true\n→ tryAgenticRepair()"] --> ORCH
+
+    subgraph ORCH["AgentOrchestrator.orchestrate() — 120s timeout"]
+        direction TB
+
+        STEP1["<b>Step 1: AnalysisAgent</b> ⚡ LLM\nClassify root cause of Mailosaur\ntimeout in multi.mailosaur.ts"]
+        STEP1 -->|"rootCause: TIMING_ISSUE\nselectors, patterns"| STEP2
+
+        STEP2["<b>Step 2: CodeReadingAgent</b> 📁 No LLM\nFetch via GitHub API:\n• test/helpers/multi.mailosaur.ts\n• test/specs/access-codes/redeem.org.access.expire.access.ts\n• cypress/support or test/helpers imports"]
+        STEP2 -->|"sourceFileContent + relatedFiles\n+ custom commands"| STEP3
+
+        STEP3["<b>Step 3: InvestigationAgent</b> ⚡ LLM\nCross-reference analysis with code\nIdentify: Mailosaur poll timing,\nretry logic, wait configuration"]
+        STEP3 -->|"findings, isTestCodeFixable: true\nrecommendedApproach"| LOOP
+
+        subgraph LOOP["Fix / Review Loop (max 3 iterations)"]
+            direction TB
+
+            STEP4["<b>Step 4: FixGenerationAgent</b> ⚡ LLM\nGenerate oldCode → newCode\nfor multi.mailosaur.ts"]
+            STEP4 --> CONF_CHK{"Confidence ≥ 70%?"}
+            CONF_CHK -->|"No"| FB1["Feedback → retry"]
+            FB1 --> STEP4
+
+            CONF_CHK -->|"Yes"| AUTOCORRECT["<b>Step 4b: autoCorrectOldCode</b>\nValidate oldCode against\nfetched source file\n(strip line prefixes,\nnormalize whitespace,\nsignature match)"]
+            AUTOCORRECT --> VALID{"Changes remain?"}
+            VALID -->|"No"| FB2["Feedback: copy oldCode exactly"]
+            FB2 --> STEP4
+
+            VALID -->|"Yes"| STEP5["<b>Step 5: ReviewAgent</b> ⚡ LLM\n• oldCode matches source? ✓\n• newCode valid syntax? ✓\n• Addresses root cause? ✓\n• No side effects? ✓\n• Consistent with diff? ✓"]
+            STEP5 --> APPROVED{"Approved?"}
+            APPROVED -->|"No"| FB3["Review issues → feedback"]
+            FB3 --> STEP4
+            APPROVED -->|"Yes ✅"| CONVERT
+        end
+
+        CONVERT["convertToFixRecommendation()\n→ FixRecommendation"]
+    end
+
+    CONVERT --> RESULT["Fix for multi.mailosaur.ts\nconfidence: high\noldCode → newCode changes"]
+
+    style START fill:#3b0764,stroke:#7c3aed,color:#c4b5fd
+    style STEP1 fill:#3b0764,stroke:#9333ea,color:#d8b4fe
+    style STEP2 fill:#1e3a5f,stroke:#2563eb,color:#93c5fd
+    style STEP3 fill:#3b0764,stroke:#9333ea,color:#d8b4fe
+    style STEP4 fill:#3b0764,stroke:#9333ea,color:#d8b4fe
+    style AUTOCORRECT fill:#1a1a35,stroke:#f59e0b,color:#fde68a
+    style STEP5 fill:#3b0764,stroke:#9333ea,color:#d8b4fe
+    style CONVERT fill:#064e3b,stroke:#059669,color:#6ee7b7
+    style RESULT fill:#064e3b,stroke:#059669,color:#6ee7b7
+  </div>
+</div>
+
+<!-- ─── DIAGRAM 5: Auto-Fix Application ─── -->
+<div class="section">
+  <h2>5 &middot; Auto-Fix Application</h2>
+  <div class="desc">Branch creation, commit, and output propagation.</div>
+  <div class="mermaid">
+flowchart LR
+    FIX["FixRecommendation"] --> CAN{"canApply()?\nconfidence ≥ 70"}
+    CAN -->|"Yes"| FETCH["Fetch base branch\n(main)"]
+    FETCH --> BRANCH["Create branch:\nfix/triage-agent/\ntest-helpers-multi-mailosaur-ts-\n20260328-263"]
+    BRANCH --> APPLY["Apply changes to\nmulti.mailosaur.ts\nvia GitHub Contents API"]
+    APPLY --> COMMIT["Commit:\nfix(test): adjust Mailosaur\npoll timing ..."]
+    COMMIT --> OUTPUTS["GitHub Action Outputs:\nauto_fix_applied: true\nauto_fix_branch: fix/triage-agent/...\nauto_fix_commit: SHA\nauto_fix_files: [multi.mailosaur.ts]"]
+
+    OUTPUTS --> SLACK_NOTIFY["triage-slack-notify\n→ Slack #SauceAlerts"]
+
+    style FIX fill:#3b0764,stroke:#7c3aed,color:#c4b5fd
+    style BRANCH fill:#064e3b,stroke:#059669,color:#6ee7b7
+    style APPLY fill:#064e3b,stroke:#059669,color:#6ee7b7
+    style COMMIT fill:#064e3b,stroke:#059669,color:#6ee7b7
+    style OUTPUTS fill:#064e3b,stroke:#059669,color:#6ee7b7
+    style SLACK_NOTIFY fill:#1e3a5f,stroke:#2563eb,color:#93c5fd
+  </div>
+</div>
+
+<!-- ─── DIAGRAM 6: Timeline ─── -->
+<div class="section">
+  <h2>6 &middot; Approximate Timeline</h2>
+  <div class="desc">Sequence of events from 5:50 PM to 5:54 PM.</div>
+  <div class="mermaid">
+sequenceDiagram
+    participant SL as Sauce Labs
+    participant GHA as GitHub Actions<br/>(lib-wdio-8-e2e-ts)
+    participant DISP as triage-dispatch
+    participant TRI as Triage Workflow
+    participant AGENT as adept-triage-agent
+    participant OAI as OpenAI (gpt-5.3-codex)
+    participant GHAPI as GitHub API
+    participant SLACK as Slack
+
+    Note over SL,GHA: ~5:50 PM — Test times out on Sauce Labs
+    SL->>GHA: sauceTest job fails
+    GHA->>SLACK: ⚠️ Workflow Timed Out!
+    GHA->>DISP: if: failure() → collect payload
+    DISP->>TRI: repository_dispatch (triage-failed-test)
+
+    Note over TRI,AGENT: Triage workflow starts
+    TRI->>AGENT: uses: adept-triage-agent@v1
+
+    Note over AGENT,GHAPI: Data Gathering (~5s)
+    AGENT->>GHAPI: Get workflow run, find sauceTest job
+    GHAPI-->>AGENT: Job logs
+    AGENT->>GHAPI: Fetch screenshots, artifacts, diffs (parallel)
+    GHAPI-->>AGENT: 1 screenshot + WDIO logs + commit diff + product diff
+
+    Note over AGENT,OAI: Classification (~5s)
+    AGENT->>OAI: analyze(ErrorData, FEW_SHOT_EXAMPLES)
+    OAI-->>AGENT: TEST_ISSUE, 95%
+
+    Note over AGENT,OAI: Agentic Repair (~45-90s)
+    AGENT->>OAI: Step 1 — AnalysisAgent
+    OAI-->>AGENT: TIMING_ISSUE, selectors
+    AGENT->>GHAPI: Step 2 — CodeReadingAgent (fetch files)
+    GHAPI-->>AGENT: multi.mailosaur.ts + related files
+    AGENT->>OAI: Step 3 — InvestigationAgent
+    OAI-->>AGENT: Findings, recommended approach
+    AGENT->>OAI: Step 4 — FixGenerationAgent
+    OAI-->>AGENT: oldCode → newCode changes
+    Note over AGENT: Step 4b — autoCorrectOldCode
+    AGENT->>OAI: Step 5 — ReviewAgent
+    OAI-->>AGENT: ✅ Approved
+
+    Note over AGENT,GHAPI: Auto-Fix (~3s)
+    AGENT->>GHAPI: Create branch + commit fix
+    GHAPI-->>AGENT: Branch created, commit SHA
+
+    Note over AGENT,SLACK: ~5:54 PM — Outputs set
+    AGENT-->>TRI: Outputs: TEST_ISSUE, 95%, fix branch
+    TRI->>SLACK: 🧪 Test Issue + ✅ Auto-Fix Applied
+  </div>
+</div>
+
+<div style="padding: 2rem 3rem; text-align: center; color: var(--text-dim); font-size: 0.72rem; border-top: 1px solid var(--border);">
+  Generated from adept-triage-agent source code analysis &middot; Run #23673610866 &middot; 2026-03-28
+</div>
+
+</body>
+</html>
