@@ -251,6 +251,7 @@ function getInputs(): ActionInputs {
     validationSpec: core.getInput('VALIDATION_SPEC') || undefined,
     validationTestCommand:
       core.getInput('VALIDATION_TEST_COMMAND') || undefined,
+    npmToken: core.getInput('NPM_TOKEN') || undefined,
     // Agentic repair input
     enableAgenticRepair: core.getInput('ENABLE_AGENTIC_REPAIR') === 'true',
     // Product repo diff inputs
@@ -387,6 +388,7 @@ async function iterativeFixValidateLoop(
       repo: autoFixTargetRepo.repo,
       branch: baseBranch,
       githubToken: inputs.githubToken,
+      npmToken: inputs.npmToken,
       testCommand: inputs.validationTestCommand!,
       spec: inputs.validationSpec || errorData.fileName,
       previewUrl: inputs.validationPreviewUrl || DEFAULT_PRODUCT_URL,

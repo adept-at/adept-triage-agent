@@ -118,6 +118,7 @@ export interface ActionInputs {
     validationPreviewUrl?: string;
     validationSpec?: string;
     validationTestCommand?: string;
+    npmToken?: string;
     enableAgenticRepair?: boolean;
     productRepo: string;
     productDiffCommits?: number;

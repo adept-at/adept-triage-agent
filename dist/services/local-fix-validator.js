@@ -67,7 +67,7 @@ class LocalFixValidator {
         if (!fs.existsSync(npmrcPath)) {
             fs.writeFileSync(npmrcPath, '//npm.pkg.github.com/:_authToken=${NODE_AUTH_TOKEN}\n@adept-at:registry=https://npm.pkg.github.com\n', 'utf-8');
         }
-        const npmEnv = { ...process.env, NODE_AUTH_TOKEN: this.config.githubToken };
+        const npmEnv = { ...process.env, NODE_AUTH_TOKEN: this.config.npmToken || this.config.githubToken };
         try {
             (0, child_process_1.execSync)('npm ci 2>&1', {
                 cwd: this._workDir,

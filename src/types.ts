@@ -157,6 +157,8 @@ export interface ActionInputs {
   validationSpec?: string;
   /** Original test command template with {spec} and {url} placeholders */
   validationTestCommand?: string;
+  /** Token for npm registry auth (GitHub Packages). Falls back to githubToken. */
+  npmToken?: string;
   /** Enable multi-agent repair pipeline for higher quality fixes */
   enableAgenticRepair?: boolean;
   /** Product repository (owner/repo). All browser-test repos target learn-webapp. */

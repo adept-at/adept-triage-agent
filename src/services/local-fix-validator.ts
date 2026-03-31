@@ -10,6 +10,7 @@ export interface LocalValidatorConfig {
   repo: string;
   branch: string;
   githubToken: string;
+  npmToken?: string;
   testCommand: string;
   spec?: string;
   previewUrl?: string;
@@ -74,7 +75,7 @@ export class LocalFixValidator {
         'utf-8'
       );
     }
-    const npmEnv = { ...process.env, NODE_AUTH_TOKEN: this.config.githubToken };
+    const npmEnv = { ...process.env, NODE_AUTH_TOKEN: this.config.npmToken || this.config.githubToken };
     try {
       execSync('npm ci 2>&1', {
         cwd: this._workDir,

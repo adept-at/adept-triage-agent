@@ -4,6 +4,7 @@ export interface LocalValidatorConfig {
     repo: string;
     branch: string;
     githubToken: string;
+    npmToken?: string;
     testCommand: string;
     spec?: string;
     previewUrl?: string;
