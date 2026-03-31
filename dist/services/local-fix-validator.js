@@ -78,15 +78,24 @@ class LocalFixValidator {
             });
         }
         catch (ciErr) {
-            const ciMsg = ciErr.stderr || String(ciErr);
-            core.info(`npm ci failed (${ciMsg.slice(0, 200)}), falling back to npm install`);
-            (0, child_process_1.execSync)('npm install 2>&1', {
-                cwd: this._workDir,
-                encoding: 'utf-8',
-                stdio: 'pipe',
-                maxBuffer: MAX_BUFFER,
-                env: npmEnv,
-            });
+            const e = ciErr;
+            const ciOutput = e.stdout || e.stderr || String(ciErr);
+            core.info(`npm ci failed:\n${ciOutput.slice(-500)}`);
+            core.info('Falling back to npm install...');
+            try {
+                (0, child_process_1.execSync)('npm install 2>&1', {
+                    cwd: this._workDir,
+                    encoding: 'utf-8',
+                    stdio: 'pipe',
+                    maxBuffer: MAX_BUFFER,
+                    env: npmEnv,
+                });
+            }
+            catch (installErr) {
+                const ie = installErr;
+                const installOutput = ie.stdout || ie.stderr || String(installErr);
+                throw new Error(`npm install failed:\n${installOutput.slice(-1000)}`);
+            }
         }
         core.info('✅ Setup complete');
     }
