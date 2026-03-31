@@ -66,12 +66,14 @@ export class LocalFixValidator {
     );
 
     core.info('📦 Installing dependencies...');
+    const npmEnv = { ...process.env, NODE_AUTH_TOKEN: this.config.githubToken };
     try {
       execSync('npm ci 2>&1', {
         cwd: this._workDir,
         encoding: 'utf-8',
         stdio: 'pipe',
         maxBuffer: MAX_BUFFER,
+        env: npmEnv,
       });
     } catch {
       core.info('npm ci failed, falling back to npm install');
@@ -80,6 +82,7 @@ export class LocalFixValidator {
         encoding: 'utf-8',
         stdio: 'pipe',
         maxBuffer: MAX_BUFFER,
+        env: npmEnv,
       });
     }
 

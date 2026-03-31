@@ -6021,12 +6021,14 @@ class LocalFixValidator {
         core.info(`  git clone --branch ${this.config.branch} --depth 50 ${maskedUrl}`);
         (0, child_process_1.execSync)(`git clone --branch ${this.config.branch} --depth 50 ${cloneUrl} ${this._workDir}`, { encoding: 'utf-8', stdio: 'pipe' });
         core.info('📦 Installing dependencies...');
+        const npmEnv = { ...process.env, NODE_AUTH_TOKEN: this.config.githubToken };
         try {
             (0, child_process_1.execSync)('npm ci 2>&1', {
                 cwd: this._workDir,
                 encoding: 'utf-8',
                 stdio: 'pipe',
                 maxBuffer: MAX_BUFFER,
+                env: npmEnv,
             });
         }
         catch {
@@ -6036,6 +6038,7 @@ class LocalFixValidator {
                 encoding: 'utf-8',
                 stdio: 'pipe',
                 maxBuffer: MAX_BUFFER,
+                env: npmEnv,
             });
         }
         core.info('✅ Setup complete');
