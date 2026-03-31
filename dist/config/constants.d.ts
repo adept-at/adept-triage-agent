@@ -87,8 +87,6 @@ export declare const AGENT_CONFIG: {
 };
 export declare const FIX_VALIDATE_LOOP: {
     readonly MAX_ITERATIONS: 3;
-    readonly POLL_INTERVAL_MS: 15000;
-    readonly POLL_TIMEOUT_MS: 600000;
-    readonly INITIAL_POLL_DELAY_MS: 20000;
+    readonly TEST_TIMEOUT_MS: 300000;
 };
 //# sourceMappingURL=constants.d.ts.map

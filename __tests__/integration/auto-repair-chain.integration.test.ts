@@ -1,6 +1,7 @@
 /**
- * Auto-repair chain integration test.
- * Covers FixApplier: confidence threshold, branch creation, validation trigger (workflow_dispatch inputs).
+ * Legacy GitHubFixApplier integration test.
+ * Tests the remote push + workflow_dispatch validation path (used when VALIDATION_TEST_COMMAND is not set).
+ * The primary validation path is now LocalFixValidator (local clone + test in same container).
  *
  * Run: npm run test:integration -- --testPathPattern=auto-repair-chain
  */

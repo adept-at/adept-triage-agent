@@ -166,12 +166,7 @@ export const AGENT_CONFIG = {
 
 /** Iterative fix-validate loop configuration */
 export const FIX_VALIDATE_LOOP = {
-  /** Maximum fix-validate iterations before giving up */
   MAX_ITERATIONS: 3,
-  /** How often to poll for validation workflow completion (ms) */
-  POLL_INTERVAL_MS: 15_000,
-  /** Maximum time to wait for a single validation run (ms) — 10 minutes */
-  POLL_TIMEOUT_MS: 600_000,
-  /** Delay before first poll to let the workflow initialize */
-  INITIAL_POLL_DELAY_MS: 20_000,
+  /** Maximum time for a single local test run (5 minutes) */
+  TEST_TIMEOUT_MS: 300_000,
 } as const;

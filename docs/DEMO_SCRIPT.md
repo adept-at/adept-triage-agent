@@ -236,11 +236,11 @@ Show:
 
 **What to say:**
 
-> "When the verdict is TEST_ISSUE and confidence is high enough, the agent can create a fix branch automatically. It reads the test code, generates a patch, and pushes it via the GitHub API. If validation is enabled, it triggers a workflow to re-run the specific test."
+> "When the verdict is TEST_ISSUE and confidence is high enough, the agent can apply a fix automatically. With auto-fix, validation, and `VALIDATION_TEST_COMMAND` all enabled, it clones the test repository into the same Action container, applies the patch on disk, and runs your test command there — up to three times if needed. It only pushes the branch and opens the PR after the test passes. If `VALIDATION_TEST_COMMAND` is not set, validation falls back to dispatching `validate-fix.yml` remotely instead."
 
 **What to show:**
-- The auto-fix inputs in a triage workflow
-- `src/repair/fix-applier.ts` — `applyFix()` method
+- The auto-fix and validation inputs in a triage workflow (`ENABLE_AUTO_FIX`, `ENABLE_VALIDATION`, `VALIDATION_TEST_COMMAND`)
+- `src/repair/fix-applier.ts` — `applyFix()` method and the local validation path alongside it
 
 ---
 

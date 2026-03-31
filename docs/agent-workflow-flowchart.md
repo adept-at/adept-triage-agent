@@ -62,12 +62,14 @@ flowchart TB
 
     APPLY_FIX --> CREATE_BRANCH["Create Branch<br/>via GitHub API"]
     CREATE_BRANCH --> COMMIT["Commit Changes<br/>via GitHub API"]
-    COMMIT --> VALIDATE_CHECK{Validation<br/>Enabled?}
+    COMMIT --> VALIDATE_CHECK{Local validation path?<br/>ENABLE_AUTO_FIX + ENABLE_VALIDATION<br/>+ VALIDATION_TEST_COMMAND}
 
-    VALIDATE_CHECK -->|Yes| DISPATCH["Trigger Validation Workflow<br/>createWorkflowDispatch()"]
-    VALIDATE_CHECK -->|No| CONFIDENCE_CHECK
+    VALIDATE_CHECK -->|Yes| LOCAL_LOOP["Local validation loop<br/>iterativeFixValidateLoop + LocalFixValidator<br/>clone failing branch, npm ci, up to 3x:<br/>fix → apply on disk → run test command"]
+    VALIDATE_CHECK -->|No, validation without command| LEGACY_DISPATCH["Legacy: push + optional<br/>workflow_dispatch (validate-fix.yml)"]
+    VALIDATE_CHECK -->|No validation| CONFIDENCE_CHECK
 
-    DISPATCH --> CONFIDENCE_CHECK
+    LOCAL_LOOP --> CONFIDENCE_CHECK
+    LEGACY_DISPATCH --> CONFIDENCE_CHECK
 
     CONFIDENCE_CHECK{Confidence ≥<br/>Threshold?}
     CONFIDENCE_CHECK -->|No| INCONCLUSIVE["Output: INCONCLUSIVE"]
@@ -266,7 +268,7 @@ flowchart LR
         REPO["REPOSITORY + BRANCH"]
         CONF_THRESH["CONFIDENCE_THRESHOLD"]
         FRAMEWORKS["TEST_FRAMEWORKS<br/>(cypress | webdriverio)"]
-        AUTOFIX_IN["ENABLE_AUTO_FIX<br/>ENABLE_AGENTIC_REPAIR"]
+        AUTOFIX_IN["ENABLE_AUTO_FIX<br/>ENABLE_AGENTIC_REPAIR<br/>VALIDATION_TEST_COMMAND"]
     end
 
     subgraph COLLECTION["Data Collection Layer"]
@@ -294,7 +296,7 @@ flowchart LR
         JSON_OUT["triage_json: complete analysis"]
         FIX_OUT["fix_recommendation: proposed changes"]
         AUTOFIX_OUT["auto_fix_branch: branch name"]
-        VALID_OUT["validation_status: pending | skipped"]
+        VALID_OUT["validation_status: pending | passed | failed | skipped"]
     end
 
     INPUTS_LAYER --> COLLECTION

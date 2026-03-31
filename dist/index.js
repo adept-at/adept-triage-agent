@@ -3053,9 +3053,7 @@ exports.AGENT_CONFIG = {
 };
 exports.FIX_VALIDATE_LOOP = {
     MAX_ITERATIONS: 3,
-    POLL_INTERVAL_MS: 15_000,
-    POLL_TIMEOUT_MS: 600_000,
-    INITIAL_POLL_DELAY_MS: 20_000,
+    TEST_TIMEOUT_MS: 300_000,
 };
 //# sourceMappingURL=constants.js.map
 
@@ -3112,6 +3110,7 @@ const repair_context_1 = __nccwpck_require__(4026);
 const simplified_repair_agent_1 = __nccwpck_require__(9247);
 const log_processor_1 = __nccwpck_require__(5833);
 const fix_applier_1 = __nccwpck_require__(2134);
+const local_fix_validator_1 = __nccwpck_require__(5168);
 const constants_1 = __nccwpck_require__(8361);
 const repo_utils_1 = __nccwpck_require__(4843);
 const cursor_cloud_validator_1 = __nccwpck_require__(1697);
@@ -3209,7 +3208,7 @@ async function run() {
         }
         let fixRecommendation = null;
         let autoFixResult = null;
-        if (inputs.enableAutoFix && inputs.enableValidation) {
+        if (inputs.enableAutoFix && inputs.enableValidation && inputs.validationTestCommand) {
             const autoFixTargetRepo = resolveAutoFixTargetRepo(inputs);
             const loopResult = await iterativeFixValidateLoop(inputs, repoDetails, autoFixTargetRepo, errorData, openaiClient, octokit);
             fixRecommendation = loopResult.fixRecommendation;
@@ -3305,7 +3304,7 @@ async function generateFixRecommendation(inputs, repoDetails, errorData, openaiC
             octokit,
             owner: autoFixTargetRepo.owner,
             repo: autoFixTargetRepo.repo,
-            branch: inputs.autoFixBaseBranch || 'main',
+            branch: inputs.branch || inputs.autoFixBaseBranch || 'main',
         }, {
             enableAgenticRepair: inputs.enableAgenticRepair,
         });
@@ -3329,91 +3328,95 @@ async function iterativeFixValidateLoop(inputs, repoDetails, autoFixTargetRepo, 
     let autoFixResult = null;
     let previousAttempt;
     const failedFixFingerprints = new Set();
-    const fixApplier = (0, fix_applier_1.createFixApplier)({
-        octokit,
+    const minConfidence = inputs.autoFixMinConfidence || constants_1.AUTO_FIX.DEFAULT_MIN_CONFIDENCE;
+    const baseBranch = inputs.branch || inputs.autoFixBaseBranch || 'main';
+    const validator = new local_fix_validator_1.LocalFixValidator({
         owner: autoFixTargetRepo.owner,
         repo: autoFixTargetRepo.repo,
-        baseBranch: inputs.autoFixBaseBranch || 'main',
-        minConfidence: inputs.autoFixMinConfidence || constants_1.AUTO_FIX.DEFAULT_MIN_CONFIDENCE,
-        enableValidation: inputs.enableValidation,
-        validationWorkflow: inputs.validationWorkflow,
-        validationTestCommand: inputs.validationTestCommand,
-    });
-    for (let iteration = 0; iteration < maxIterations; iteration++) {
-        core.info(`\n${'='.repeat(60)}\n🔄 Fix-Validate iteration ${iteration + 1}/${maxIterations}\n${'='.repeat(60)}`);
-        fixRecommendation = await generateFixRecommendation(inputs, repoDetails, errorData, openaiClient, octokit, previousAttempt);
-        if (!fixRecommendation) {
-            core.warning(`Iteration ${iteration + 1}: could not generate fix recommendation`);
-            break;
+        branch: baseBranch,
+        githubToken: inputs.githubToken,
+        testCommand: inputs.validationTestCommand,
+        spec: inputs.validationSpec || errorData.fileName,
+        previewUrl: inputs.validationPreviewUrl || constants_1.DEFAULT_PRODUCT_URL,
+        testTimeoutMs: constants_1.FIX_VALIDATE_LOOP.TEST_TIMEOUT_MS,
+    }, octokit);
+    try {
+        await validator.setup();
+        for (let iteration = 0; iteration < maxIterations; iteration++) {
+            core.info(`\n${'='.repeat(60)}\n🔄 Fix-Validate iteration ${iteration + 1}/${maxIterations}\n${'='.repeat(60)}`);
+            fixRecommendation = await generateFixRecommendation(inputs, repoDetails, errorData, openaiClient, octokit, previousAttempt);
+            if (!fixRecommendation) {
+                core.warning(`Iteration ${iteration + 1}: could not generate fix recommendation`);
+                break;
+            }
+            if (fixRecommendation.confidence < minConfidence ||
+                !fixRecommendation.proposedChanges?.length) {
+                core.info(`Iteration ${iteration + 1}: fix rejected — confidence ${fixRecommendation.confidence}% below ${minConfidence}% or no changes`);
+                break;
+            }
+            const fingerprint = fixFingerprint(fixRecommendation);
+            if (failedFixFingerprints.has(fingerprint)) {
+                core.warning(`Iteration ${iteration + 1}: fix identical to a previous failed attempt. Stopping.`);
+                break;
+            }
+            core.info(`Iteration ${iteration + 1}: fix passed quality gates (confidence: ${fixRecommendation.confidence}%, changes: ${fixRecommendation.proposedChanges.length})`);
+            try {
+                await validator.applyFix(fixRecommendation.proposedChanges);
+            }
+            catch (applyError) {
+                core.warning(`Iteration ${iteration + 1}: failed to apply fix locally — ${applyError}`);
+                break;
+            }
+            core.info(`\n🧪 Running test locally...`);
+            const testResult = await validator.runTest();
+            if (testResult.passed) {
+                core.info(`\n✅ Test PASSED on iteration ${iteration + 1}! (${testResult.durationMs}ms)`);
+                const branchName = (0, fix_applier_1.generateFixBranchName)(fixRecommendation.proposedChanges[0].file);
+                try {
+                    const pushResult = await validator.pushAndCreatePR({
+                        branchName,
+                        commitMessage: `fix(test): ${fixRecommendation.summary.slice(0, 50)}\n\nAutomated fix generated by adept-triage-agent.\nValidated locally before push.\n\nFiles: ${fixRecommendation.proposedChanges.map((c) => c.file).join(', ')}\nConfidence: ${fixRecommendation.confidence}%`,
+                        prTitle: `Auto-fix: ${errorData.fileName || fixRecommendation.proposedChanges[0].file}`,
+                        prBody: `Validated fix from triage run ${github.context.runId}`,
+                        baseBranch,
+                    });
+                    autoFixResult = {
+                        success: true,
+                        modifiedFiles: fixRecommendation.proposedChanges.map((c) => c.file),
+                        commitSha: pushResult.commitSha,
+                        branchName: pushResult.branchName,
+                        validationStatus: 'passed',
+                    };
+                }
+                catch (pushError) {
+                    core.warning(`Test passed but push/PR creation failed: ${pushError}`);
+                    autoFixResult = {
+                        success: false,
+                        modifiedFiles: fixRecommendation.proposedChanges.map((c) => c.file),
+                        error: `Push failed after successful test: ${pushError}`,
+                        validationStatus: 'passed',
+                    };
+                }
+                return { fixRecommendation, autoFixResult };
+            }
+            core.warning(`\n❌ Test FAILED on iteration ${iteration + 1} (exit code: ${testResult.exitCode}, ${testResult.durationMs}ms)`);
+            failedFixFingerprints.add(fingerprint);
+            await validator.reset();
+            if (iteration < maxIterations - 1) {
+                core.info('Feeding failure logs back into repair agent for next attempt...');
+                previousAttempt = {
+                    iteration: iteration + 1,
+                    previousFix: fixRecommendation,
+                    validationLogs: testResult.logs,
+                };
+            }
+            else {
+                core.warning(`\n🛑 All ${maxIterations} fix attempts exhausted. Giving up.`);
+            }
         }
-        if (!fixApplier.canApply(fixRecommendation)) {
-            core.info(`Iteration ${iteration + 1}: fix rejected — confidence below threshold or no changes proposed`);
-            break;
-        }
-        const fingerprint = fixFingerprint(fixRecommendation);
-        if (failedFixFingerprints.has(fingerprint)) {
-            core.warning(`Iteration ${iteration + 1}: repair agent proposed a fix identical to a previous failed attempt. Stopping.`);
-            break;
-        }
-        core.info(`Iteration ${iteration + 1}: fix passed quality gates (confidence: ${fixRecommendation.confidence}%, changes: ${fixRecommendation.proposedChanges.length})`);
-        if (iteration === 0) {
-            autoFixResult = await fixApplier.applyFix(fixRecommendation);
-        }
-        else if (autoFixResult?.branchName) {
-            autoFixResult = await fixApplier.reapplyFix(fixRecommendation, autoFixResult.branchName);
-        }
-        if (!autoFixResult?.success || !autoFixResult.branchName) {
-            core.warning(`Iteration ${iteration + 1}: failed to apply fix — ${autoFixResult?.error}`);
-            break;
-        }
-        core.info(`✅ Fix applied to branch: ${autoFixResult.branchName}`);
-        const spec = inputs.validationSpec ||
-            errorData.fileName ||
-            fixRecommendation.proposedChanges[0]?.file;
-        const previewUrl = inputs.validationPreviewUrl || constants_1.DEFAULT_PRODUCT_URL;
-        if (!spec) {
-            core.warning('No spec file identified for validation');
-            autoFixResult.validationStatus = 'skipped';
-            break;
-        }
-        const validationTrigger = await fixApplier.triggerValidation({
-            branch: autoFixResult.branchName,
-            spec,
-            previewUrl,
-            triageRunId: github.context.runId.toString(),
-            testCommand: inputs.validationTestCommand,
-        });
-        if (!validationTrigger?.runId) {
-            core.warning('Could not get validation run ID — cannot poll for results');
-            autoFixResult.validationStatus = 'pending';
-            if (validationTrigger?.url)
-                autoFixResult.validationUrl = validationTrigger.url;
-            break;
-        }
-        autoFixResult.validationRunId = validationTrigger.runId;
-        autoFixResult.validationUrl = validationTrigger.url;
-        core.info(`\n🧪 Waiting for validation run ${validationTrigger.runId}...`);
-        const outcome = await fixApplier.waitForValidation(validationTrigger.runId);
-        if (outcome.passed) {
-            core.info(`\n✅ Validation PASSED on iteration ${iteration + 1}! PR will be created by validate-fix workflow.`);
-            autoFixResult.validationStatus = 'passed';
-            autoFixResult.validationUrl = outcome.url || autoFixResult.validationUrl;
-            return { fixRecommendation, autoFixResult };
-        }
-        core.warning(`\n❌ Validation FAILED on iteration ${iteration + 1} (conclusion: ${outcome.conclusion})`);
-        autoFixResult.validationStatus = 'failed';
-        failedFixFingerprints.add(fingerprint);
-        if (iteration < maxIterations - 1) {
-            core.info('Feeding failure logs back into repair agent for next attempt...');
-            previousAttempt = {
-                iteration: iteration + 1,
-                previousFix: fixRecommendation,
-                validationLogs: outcome.logs || 'No logs available',
-            };
-        }
-        else {
-            core.warning(`\n🛑 All ${maxIterations} fix attempts exhausted. Giving up.`);
-        }
+    }
+    finally {
+        await validator.cleanup();
     }
     return { fixRecommendation, autoFixResult };
 }
@@ -3430,7 +3433,7 @@ async function attemptAutoFix(inputs, fixRecommendation, octokit, repoDetails, e
         octokit,
         owner: repoDetails.owner,
         repo: repoDetails.repo,
-        baseBranch: inputs.autoFixBaseBranch || 'main',
+        baseBranch: inputs.branch || inputs.autoFixBaseBranch || 'main',
         minConfidence: inputs.autoFixMinConfidence || constants_1.AUTO_FIX.DEFAULT_MIN_CONFIDENCE,
         enableValidation: inputs.enableValidation,
         validationWorkflow: inputs.validationWorkflow,
@@ -3673,7 +3676,7 @@ function setSuccessOutput(result, errorData, autoFixResult) {
     }
     else {
         core.setOutput('auto_fix_applied', 'false');
-        core.setOutput('validation_status', 'skipped');
+        core.setOutput('validation_status', autoFixResult?.validationStatus || 'skipped');
     }
     core.info(`Verdict: ${result.verdict}`);
     core.info(`Confidence: ${result.confidence}%`);
@@ -3699,25 +3702,15 @@ function setSuccessOutput(result, errorData, autoFixResult) {
             core.info(`  Branch: ${autoFixResult.branchName}`);
             core.info(`  Commit: ${autoFixResult.commitSha}`);
             core.info(`  Files: ${autoFixResult.modifiedFiles.join(', ')}`);
-            if (autoFixResult.validationRunId) {
+            if (autoFixResult.validationStatus === 'passed') {
+                core.info('\n🧪 Validation: passed (locally validated before push)');
+            }
+            else if (autoFixResult.validationRunId) {
                 core.info(`\n🧪 Validation: ${autoFixResult.validationStatus}`);
                 core.info(`  Run ID: ${autoFixResult.validationRunId}`);
-                core.info(`  URL: ${autoFixResult.validationUrl ||
-                    `https://github.com/${github.context.repo.owner}/${github.context.repo.repo}/actions/runs/${autoFixResult.validationRunId}`}`);
-                core.info('\n👉 Validation was triggered. Any PR creation must happen in your downstream workflow or be done manually.');
-            }
-            else if (autoFixResult.validationStatus === 'pending') {
-                core.info('\n🧪 Validation: pending');
-                if (autoFixResult.validationUrl) {
-                    core.info(`  URL: ${autoFixResult.validationUrl}`);
-                }
-                else {
-                    core.info('  Run ID / URL not available yet');
-                }
-                core.info('\n👉 Validation was triggered. Any PR creation must happen in your downstream workflow or be done manually.');
             }
             else {
-                core.info('\n👉 To create a PR, visit your repository and open a PR from the branch above.');
+                core.info(`\n🧪 Validation: ${autoFixResult.validationStatus || 'skipped'}`);
             }
         }
     }
@@ -4641,7 +4634,9 @@ class GitHubFixApplier {
     }
     async waitForValidation(runId) {
         const { octokit, owner, repo } = this.config;
-        const { POLL_INTERVAL_MS, POLL_TIMEOUT_MS, INITIAL_POLL_DELAY_MS, } = constants_1.FIX_VALIDATE_LOOP;
+        const POLL_INTERVAL_MS = 15_000;
+        const POLL_TIMEOUT_MS = 600_000;
+        const INITIAL_POLL_DELAY_MS = 20_000;
         core.info(`Waiting for validation run ${runId} to complete...`);
         await sleep(INITIAL_POLL_DELAY_MS);
         const deadline = Date.now() + POLL_TIMEOUT_MS;
@@ -5954,6 +5949,214 @@ function frameworkNotes(framework) {
     }
 }
 //# sourceMappingURL=cursor-prompt-builder.js.map
+
+/***/ }),
+
+/***/ 5168:
+/***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
+
+"use strict";
+
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.LocalFixValidator = void 0;
+const core = __importStar(__nccwpck_require__(7484));
+const fs = __importStar(__nccwpck_require__(9896));
+const os = __importStar(__nccwpck_require__(857));
+const path = __importStar(__nccwpck_require__(6928));
+const child_process_1 = __nccwpck_require__(5317);
+const DEFAULT_TEST_TIMEOUT_MS = 300_000;
+const MAX_LOG_CHARS = 20_000;
+const MAX_BUFFER = 10 * 1024 * 1024;
+class LocalFixValidator {
+    config;
+    octokit;
+    _workDir;
+    constructor(config, octokit) {
+        this.config = config;
+        this.octokit = octokit;
+        this._workDir = '';
+    }
+    get workDir() {
+        return this._workDir;
+    }
+    async setup() {
+        this._workDir = path.join(os.tmpdir(), 'triage-fix-' + Date.now());
+        core.setSecret(this.config.githubToken);
+        const cloneUrl = `https://x-access-token:${this.config.githubToken}@github.com/${this.config.owner}/${this.config.repo}.git`;
+        const maskedUrl = cloneUrl.replace(this.config.githubToken, '***');
+        core.info(`📂 Cloning ${this.config.owner}/${this.config.repo}@${this.config.branch} into ${this._workDir}`);
+        core.info(`  git clone --branch ${this.config.branch} --depth 50 ${maskedUrl}`);
+        (0, child_process_1.execSync)(`git clone --branch ${this.config.branch} --depth 50 ${cloneUrl} ${this._workDir}`, { encoding: 'utf-8', stdio: 'pipe' });
+        core.info('📦 Installing dependencies...');
+        try {
+            (0, child_process_1.execSync)('npm ci 2>&1', {
+                cwd: this._workDir,
+                encoding: 'utf-8',
+                stdio: 'pipe',
+                maxBuffer: MAX_BUFFER,
+            });
+        }
+        catch {
+            core.info('npm ci failed, falling back to npm install');
+            (0, child_process_1.execSync)('npm install 2>&1', {
+                cwd: this._workDir,
+                encoding: 'utf-8',
+                stdio: 'pipe',
+                maxBuffer: MAX_BUFFER,
+            });
+        }
+        core.info('✅ Setup complete');
+    }
+    async applyFix(changes) {
+        for (const change of changes) {
+            const cleanPath = change.file
+                .replace(/^\.\//, '')
+                .replace(/^\/home\/runner\/work\/[^/]+\/[^/]+\//, '');
+            const filePath = path.join(this._workDir, cleanPath);
+            if (!filePath.startsWith(this._workDir)) {
+                throw new Error(`Path traversal rejected: ${cleanPath}`);
+            }
+            const content = fs.readFileSync(filePath, 'utf-8');
+            const idx = content.indexOf(change.oldCode);
+            if (idx === -1) {
+                throw new Error(`Could not find oldCode in ${cleanPath}. Expected to find:\n${change.oldCode.slice(0, 200)}`);
+            }
+            const secondIdx = content.indexOf(change.oldCode, idx + 1);
+            if (secondIdx !== -1) {
+                throw new Error(`Ambiguous match: oldCode appears more than once in ${cleanPath}`);
+            }
+            const updated = content.slice(0, idx) + change.newCode + content.slice(idx + change.oldCode.length);
+            fs.writeFileSync(filePath, updated, 'utf-8');
+        }
+    }
+    async runTest() {
+        if (!this.config.testCommand) {
+            throw new Error('No testCommand configured — cannot run validation');
+        }
+        let cmd = this.config.testCommand;
+        if (this.config.spec) {
+            cmd = cmd.replace('{spec}', this.config.spec);
+        }
+        if (this.config.previewUrl) {
+            cmd = cmd.replace('{url}', this.config.previewUrl);
+        }
+        const timeout = this.config.testTimeoutMs || DEFAULT_TEST_TIMEOUT_MS;
+        const start = Date.now();
+        try {
+            const output = (0, child_process_1.execSync)(cmd, {
+                cwd: this._workDir,
+                encoding: 'utf-8',
+                timeout,
+                env: { ...process.env },
+                maxBuffer: MAX_BUFFER,
+                stdio: 'pipe',
+            });
+            const durationMs = Date.now() - start;
+            return {
+                passed: true,
+                logs: output.slice(-MAX_LOG_CHARS),
+                exitCode: 0,
+                durationMs,
+            };
+        }
+        catch (err) {
+            const durationMs = Date.now() - start;
+            const execErr = err;
+            if (execErr.killed) {
+                return {
+                    passed: false,
+                    logs: `Test timed out after ${timeout}ms`,
+                    exitCode: 1,
+                    durationMs,
+                };
+            }
+            const combined = [execErr.stdout || '', execErr.stderr || ''].join('\n');
+            return {
+                passed: false,
+                logs: combined.slice(-MAX_LOG_CHARS),
+                exitCode: execErr.status ?? 1,
+                durationMs,
+            };
+        }
+    }
+    async reset() {
+        (0, child_process_1.execSync)('git checkout -- .', {
+            cwd: this._workDir,
+            encoding: 'utf-8',
+        });
+        (0, child_process_1.execSync)('git clean -fd', {
+            cwd: this._workDir,
+            encoding: 'utf-8',
+        });
+    }
+    async pushAndCreatePR(options) {
+        const execOpts = { cwd: this._workDir, encoding: 'utf-8' };
+        (0, child_process_1.execFileSync)('git', ['config', 'user.name', 'adept-triage-agent[bot]'], execOpts);
+        (0, child_process_1.execFileSync)('git', ['config', 'user.email', 'adept-triage-agent[bot]@users.noreply.github.com'], execOpts);
+        (0, child_process_1.execFileSync)('git', ['checkout', '-b', options.branchName], execOpts);
+        (0, child_process_1.execFileSync)('git', ['add', '-A'], execOpts);
+        (0, child_process_1.execFileSync)('git', ['commit', '-m', options.commitMessage], execOpts);
+        (0, child_process_1.execFileSync)('git', ['push', 'origin', options.branchName], { ...execOpts, stdio: 'pipe' });
+        const commitSha = (0, child_process_1.execFileSync)('git', ['rev-parse', 'HEAD'], execOpts).trim();
+        const { data: pr } = await this.octokit.pulls.create({
+            owner: this.config.owner,
+            repo: this.config.repo,
+            title: options.prTitle,
+            body: options.prBody,
+            head: options.branchName,
+            base: options.baseBranch,
+        });
+        return {
+            branchName: options.branchName,
+            commitSha,
+            prUrl: pr.html_url,
+            prNumber: pr.number,
+        };
+    }
+    async cleanup() {
+        try {
+            fs.rmSync(this._workDir, { recursive: true, force: true });
+        }
+        catch (err) {
+            core.warning(`Failed to clean up ${this._workDir}: ${err}`);
+        }
+    }
+}
+exports.LocalFixValidator = LocalFixValidator;
+//# sourceMappingURL=local-fix-validator.js.map
 
 /***/ }),
 

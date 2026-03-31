@@ -88,8 +88,6 @@ exports.AGENT_CONFIG = {
 };
 exports.FIX_VALIDATE_LOOP = {
     MAX_ITERATIONS: 3,
-    POLL_INTERVAL_MS: 15_000,
-    POLL_TIMEOUT_MS: 600_000,
-    INITIAL_POLL_DELAY_MS: 20_000,
+    TEST_TIMEOUT_MS: 300_000,
 };
 //# sourceMappingURL=constants.js.map

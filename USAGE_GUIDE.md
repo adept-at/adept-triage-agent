@@ -197,11 +197,11 @@ If you point the action at the current in-progress job, it can still do a best-e
 | `AUTO_FIX_BASE_BRANCH` | No | `main` | Base branch to create fix branch from |
 | `AUTO_FIX_MIN_CONFIDENCE` | No | `70` | Minimum fix confidence (0-100) to apply auto-fix |
 | `AUTO_FIX_TARGET_REPO` | No | `${{ github.repository }}` | Repository for fix branches (owner/repo format) |
-| `ENABLE_VALIDATION` | No | `false` | Enable validation workflow after fix |
-| `VALIDATION_WORKFLOW` | No | `validate-fix.yml` | Validation workflow file name |
-| `VALIDATION_PREVIEW_URL` | No | - | Preview URL for validation tests |
-| `VALIDATION_SPEC` | No | - | Spec file for validation tests |
-| `VALIDATION_TEST_COMMAND` | No | - | Custom test command for validation |
+| `ENABLE_VALIDATION` | No | `false` | With `ENABLE_AUTO_FIX` and `VALIDATION_TEST_COMMAND`, runs local validation before push (clone, `npm ci`, apply fix, run command; push + PR on pass; up to 3 iterations). |
+| `VALIDATION_WORKFLOW` | No | `validate-fix.yml` | Used only when `VALIDATION_TEST_COMMAND` is unset (legacy remote dispatch). |
+| `VALIDATION_PREVIEW_URL` | No | - | Replaces `{url}` in `VALIDATION_TEST_COMMAND`. |
+| `VALIDATION_SPEC` | No | - | Replaces `{spec}` in `VALIDATION_TEST_COMMAND`. |
+| `VALIDATION_TEST_COMMAND` | No | - | Local test command template; `{spec}` and `{url}` placeholders. Primary validation path when set. |
 | `ENABLE_AGENTIC_REPAIR` | No | `true` | Enable multi-agent repair pipeline (enabled by default; set `'false'` to use single-shot) |
 | **Cursor Validation Inputs** | | | |
 | `ENABLE_CURSOR_VALIDATION` | No | `false` | Enable Cursor-based fix validation. Mutually exclusive with `ENABLE_VALIDATION` (GitHub Actions validation takes precedence if both are true). |
@@ -226,9 +226,9 @@ If you point the action at the current in-progress job, it can still do a best-e
 | `auto_fix_branch` | Created branch name | - |
 | `auto_fix_commit` | Last commit SHA from auto-fix | - |
 | `auto_fix_files` | JSON array of modified file paths | - |
-| `validation_run_id` | Validation workflow run ID | - |
-| `validation_status` | Validation dispatch status: pending or skipped | - |
-| `validation_url` | URL to validation workflow run | - |
+| `validation_run_id` | Validation workflow run ID (legacy remote path only) | - |
+| `validation_status` | `passed`, `pending`, or `skipped` | - |
+| `validation_url` | URL to validation workflow run (legacy remote path only) | - |
 | `cursor_agent_id` | Cursor agent ID (when Cursor validation enabled) | - |
 | `cursor_agent_url` | URL to Cursor agent run | - |
 | `cursor_validation_summary` | Summary of Cursor validation results | - |

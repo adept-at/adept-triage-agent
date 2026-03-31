@@ -4,12 +4,17 @@ This document outlines practical approaches to E2E test the triage agent's dispa
 
 ## Chain Overview
 
+**Primary (local):** When `ENABLE_AUTO_FIX`, `ENABLE_VALIDATION`, and `VALIDATION_TEST_COMMAND` are all set, the agent clones the test repo in the same job, applies fixes on disk, runs the test command in-container (up to 3 iterations), and only pushes the branch and opens a PR when the test passes. No `workflow_dispatch` to `validate-fix.yml` on this path.
+
+**Legacy (remote):** If `VALIDATION_TEST_COMMAND` is not set, validation falls back to `validate-fix.yml` (workflow_dispatch): that workflow checks out the fix branch, runs the failing spec, and creates a PR if it passes.
+
 ```
 Test workflow fails
   → triage-dispatch fires repository_dispatch (triage-failed-test)
   → triage-failed-tests.yml receives dispatch, calls adept-triage-agent
-  → Agent analyzes failure, generates fix, creates branch, triggers validate-fix.yml
-  → validate-fix.yml checks out fix branch, runs failing spec, creates PR if pass
+  → Agent analyzes failure, generates fix
+  → [Primary] Clone repo locally → apply patch → run VALIDATION_TEST_COMMAND (iterate ≤3) → push + PR only on pass
+  → [Legacy, if no VALIDATION_TEST_COMMAND] workflow_dispatch → validate-fix.yml → run spec on branch → PR if pass
 ```
 
 **Repos with auto-fix + validation:** lib-cypress-canary, lib-wdio-8-e2e-ts, lib-wdio-8-multi-remote  
@@ -52,6 +57,7 @@ Test workflow fails
 3. **Verify the shared workflow** in `adept-at/adept-common` passes:
    - `ENABLE_AUTO_FIX: 'true'`
    - `ENABLE_VALIDATION: 'true'`
+   - `VALIDATION_TEST_COMMAND` set (primary path: in-container validation; without it, remote `validate-fix.yml` is the fallback when validation is on)
    - `VALIDATION_PREVIEW_URL` from `client_payload.preview_url`
    - `VALIDATION_SPEC` from `client_payload.spec`
 
@@ -59,7 +65,7 @@ Test workflow fails
    - Run the demo workflow (or push a branch that runs the synthetic spec)
    - Wait for test to fail
    - Dispatch fires automatically, or run: `./scripts/smoke-test-dispatch.sh` (adapted with the new run_id)
-   - Monitor triage run → fix branch created → validate-fix triggered → spec passes
+   - Monitor triage run → local clone + test command iterations (or legacy `validate-fix` run) → spec passes → push/PR when applicable
 
 ### Pros
 
@@ -81,8 +87,9 @@ Test workflow fails
 | repository_dispatch | ✅ (via triage-dispatch or manual) |
 | Triage workflow | ✅ |
 | Agent analysis + fix | ✅ |
-| Branch creation | ✅ |
-| workflow_dispatch (validate-fix) | ✅ |
+| Branch creation / push (after local pass) | ✅ |
+| In-container test command (`VALIDATION_TEST_COMMAND`) | ✅ (primary) |
+| workflow_dispatch → `validate-fix.yml` | ✅ (legacy only, if `VALIDATION_TEST_COMMAND` unset) |
 | Validation run + pass | ✅ |
 
 ### Effort
@@ -94,7 +101,7 @@ Test workflow fails
 
 ## Approach 2: Orchestrated Integration Workflow
 
-**Idea:** A single GitHub Actions workflow that runs a failing test, captures `workflow_run_id`, fires `repository_dispatch`, then polls for the fix branch and validation result.
+**Idea:** A single GitHub Actions workflow that runs a failing test, captures `workflow_run_id`, fires `repository_dispatch`, then polls for the triage run and fix branch. For the primary path, assert local validation inside the triage job logs (test command passes before push/PR). For the legacy path without `VALIDATION_TEST_COMMAND`, poll for a `validate-fix` workflow run.
 
 ### Implementation
 
@@ -133,14 +140,14 @@ Test workflow fails
    1. Checks out a branch with the synthetic broken spec
    2. Runs the spec (expecting failure)
    3. The existing `if: failure()` triage-dispatch step fires automatically
-   4. A follow-up job uses `gh` to poll for the triage workflow run, then the fix branch, then the validation run
+   4. A follow-up job uses `gh` to poll for the triage workflow run and the fix branch (and, on the legacy remote path, the `validate-fix` run)
    5. Fails the workflow if any step doesn't complete within a timeout
 
-2. **Polling logic** (in a separate job):
+2. **Polling / assertion logic** (in a separate job):
    - Poll for `triage-failed-tests` workflow run (event: repository_dispatch)
    - Poll for branch matching `fix/triage-agent/*`
-   - Poll for `validate-fix` workflow run
-   - Assert validation conclusion is `success`
+   - **Primary:** Triage logs should show the cloned repo, test command runs, and success before push/PR; no separate `validate-fix` dispatch
+   - **Legacy:** If `VALIDATION_TEST_COMMAND` is not set, poll for `validate-fix` workflow run and assert conclusion is `success`
 
 ### Pros
 
@@ -177,7 +184,7 @@ Test workflow fails
      - Failed test with preview URL
      - Spec path and branch info
    - After triage completes, use `gh` to check for `auto_fix_applied` (from artifact or run logs) and for a `fix/triage-agent/*` branch
-   - If validation is enabled, poll for `validate-fix` run and check conclusion
+   - If validation is enabled with `VALIDATION_TEST_COMMAND`, confirm success from triage run logs (local test passes before push). If validation relies on the remote fallback only, poll for `validate-fix` run and check conclusion
 
 2. **Maintain a “golden” failure run:**
    - Periodically run a synthetic failure (Approach 1) and record the run_id
@@ -186,8 +193,9 @@ Test workflow fails
 
 3. **Verification steps:**
    ```bash
-   # After triage completes
+   # After triage completes (inspect triage job logs for local test command when VALIDATION_TEST_COMMAND is set)
    gh api repos/adept-at/lib-cypress-canary/branches --jq '.[] | select(.name | startswith("fix/triage-agent")) | .name'
+   # Legacy remote validation only:
    gh run list --repo adept-at/lib-cypress-canary -w validate-fix.yml -L 5
    ```
 
@@ -205,7 +213,7 @@ Test workflow fails
 
 ### Chain Coverage
 
-- Dispatch → triage → (optionally) fix → validation
+- Dispatch → triage → (optionally) fix → in-container test command (`VALIDATION_TEST_COMMAND`) or legacy `validate-fix`
 - Does not create the initial failure; relies on pre-existing run
 
 ### Effort
@@ -251,7 +259,7 @@ Test workflow fails
    - `adept-triage-agent` action runs in a container; needs Node, `node_modules`, etc.
    - Artifacts and logs for `workflow_run_id: 12345678` must exist in GitHub — act does not create them
    - Cross-repo actions (triage-dispatch, triage-slack-notify) require those repos to be accessible
-   - Validation workflow would run locally in Docker; Sauce Labs/chrome in CI would not
+   - In-container `VALIDATION_TEST_COMMAND` runs in the same Docker context as the action; browser/Sauce parity with real CI may still differ. Remote `validate-fix.yml` is not exercised the same way under act
 
 ### Pros
 
@@ -274,7 +282,7 @@ Test workflow fails
 | Triage workflow | ⚠️ Partial (in Docker) |
 | Agent analysis | ⚠️ If real run_id + secrets |
 | Branch creation | ❌ (would hit real API) |
-| Validation | ⚠️ Local Docker only |
+| Local test command / validation | ⚠️ Same Docker as action; not full CI parity |
 
 ### Effort
 
@@ -289,7 +297,7 @@ Test workflow fails
 
 ### Implementation
 
-- Already covered: `FixApplier.applyFix`, `triggerValidation` (workflow_dispatch), confidence thresholds
+- Already covered: `FixApplier.applyFix`, local validation loop / legacy `triggerValidation` (workflow_dispatch to `validate-fix` when no test command), confidence thresholds
 - Add: Mock log processor returning canned `ErrorData`; mock analyzer returning `TEST_ISSUE` + fix recommendation; assert full `run()` flow up to `attemptAutoFix`
 - Use `jest.mock` for Octokit, OpenAI, artifact fetcher
 
@@ -321,7 +329,7 @@ Test workflow fails
   2. Ensure the workflow that runs it has triage-dispatch, ENABLE_AUTO_FIX, ENABLE_VALIDATION
   3. Verify adept-common triage workflow passes preview_url and spec to the agent
   4. Run the test (via PR or workflow_dispatch), let it fail
-  5. Confirm dispatch fires (automatic or via script) and watch triage → fix → validate
+  5. Confirm dispatch fires (automatic or via script) and watch triage → fix → in-container validation (or legacy `validate-fix`)
 
 ### 2. Extended Smoke Script (Best for ongoing verification)
 
@@ -330,7 +338,7 @@ Test workflow fails
 - **Repos:** adept-triage-agent
 - **Steps:**
   1. Add `--full-chain` and `--run-id` to smoke-test-dispatch.sh
-  2. After triage, check for fix branch and validate-fix run
+  2. After triage, check for fix branch and success in logs (`VALIDATION_TEST_COMMAND` path) or a legacy `validate-fix` run
   3. Optionally maintain a “golden” run_id from a recent synthetic failure
 
 ### 3. Orchestrated Integration Workflow (Best for CI gates)
@@ -339,7 +347,7 @@ Test workflow fails
 - **Effort:** 4–8 hours
 - **Repos:** lib-cypress-canary or adept-triage-agent
 - **Steps:**
-  1. Add `e2e-triage-chain.yml` that runs synthetic spec, fires dispatch, polls for fix + validation
+  1. Add `e2e-triage-chain.yml` that runs synthetic spec, fires dispatch, polls for fix + asserts local validation or legacy `validate-fix`
   2. Handle failing-job outputs carefully (e.g. run_id in artifact before failure)
   3. Run on schedule or manual
 
@@ -349,9 +357,11 @@ Test workflow fails
 
 | Repo | Triage | Auto-fix | Validation |
 |------|--------|----------|------------|
-| lib-cypress-canary | ✅ | ✅ | ✅ (needs validate-fix.yml, preview_url) |
+| lib-cypress-canary | ✅ | ✅ | ✅ (`VALIDATION_TEST_COMMAND` primary; `preview_url` + `spec` in payload; `validate-fix.yml` only if test command unset) |
 | lib-wdio-8-e2e-ts | ✅ | ✅ | ✅ |
 | lib-wdio-8-multi-remote | ✅ | ✅ | ✅ |
 | learn-webapp | ✅ | ❌ | N/A |
 
-Validation requires: `validate-fix.yml` workflow (workflow_dispatch), `preview_url` in dispatch payload, `spec` in payload.
+**Primary validation:** `ENABLE_AUTO_FIX` + `ENABLE_VALIDATION` + `VALIDATION_TEST_COMMAND` — agent clones the test repo, runs the command in the triage container (iterate up to 3×), pushes and opens a PR only on pass. **`VALIDATION_TEST_COMMAND` is the main requirement** for this path.
+
+**Legacy fallback:** If `VALIDATION_TEST_COMMAND` is not set but validation is enabled, `validate-fix.yml` (workflow_dispatch) runs the spec on the fix branch. Still needs `preview_url` and `spec` in the dispatch payload where the consumer workflow provides them.

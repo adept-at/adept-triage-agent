@@ -7,7 +7,7 @@
 import * as core from '@actions/core';
 import { Octokit } from '@octokit/rest';
 import { FixRecommendation } from '../types';
-import { AUTO_FIX, FIX_VALIDATE_LOOP } from '../config/constants';
+import { AUTO_FIX } from '../config/constants';
 
 /**
  * Result of applying a fix
@@ -547,11 +547,9 @@ export class GitHubFixApplier implements FixApplier {
    */
   async waitForValidation(runId: number): Promise<ValidationOutcome> {
     const { octokit, owner, repo } = this.config;
-    const {
-      POLL_INTERVAL_MS,
-      POLL_TIMEOUT_MS,
-      INITIAL_POLL_DELAY_MS,
-    } = FIX_VALIDATE_LOOP;
+    const POLL_INTERVAL_MS = 15_000;
+    const POLL_TIMEOUT_MS = 600_000;
+    const INITIAL_POLL_DELAY_MS = 20_000;
 
     core.info(`Waiting for validation run ${runId} to complete...`);
     await sleep(INITIAL_POLL_DELAY_MS);

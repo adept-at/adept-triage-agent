@@ -78,7 +78,16 @@ The agentic pipeline falls back to single-shot if it fails to produce a valid fi
 
 #### Fix Validation (Optional)
 
-You can validate fixes by triggering a follow-up workflow that re-runs the failing test against the generated fix branch:
+When `ENABLE_AUTO_FIX=true`, `ENABLE_VALIDATION=true`, and `VALIDATION_TEST_COMMAND` is set, the action validates fixes **locally** in the runner:
+
+1. Clones the test repo (failing branch)
+2. Installs dependencies (`npm ci`)
+3. Generates a fix via the LLM and applies it to local files
+4. Runs `VALIDATION_TEST_COMMAND` locally (`{spec}` and `{url}` are substituted from `VALIDATION_SPEC` and `VALIDATION_PREVIEW_URL` when set)
+5. If the test passes: pushes the branch and opens a PR automatically
+6. If the test fails: resets local changes, feeds failure logs back to the LLM, and retries (up to 3 iterations)
+
+When `ENABLE_VALIDATION=true` but `VALIDATION_TEST_COMMAND` is **not** set, the action uses the **legacy** path: pushes the fix via the GitHub API and optionally dispatches `VALIDATION_WORKFLOW` (for example `validate-fix.yml`) for remote validation.
 
 ```yaml
 - uses: adept-at/adept-triage-agent@v1
@@ -86,23 +95,13 @@ You can validate fixes by triggering a follow-up workflow that re-runs the faili
     GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
     WORKFLOW_RUN_ID: ${{ github.event.workflow_run.id }}
-    # Enable auto-fix with validation
     ENABLE_AUTO_FIX: 'true'
     ENABLE_AGENTIC_REPAIR: 'true'
-    ENABLE_VALIDATION: 'true'           # Trigger validation workflow
-    VALIDATION_WORKFLOW: 'validate-fix.yml'
+    ENABLE_VALIDATION: 'true'
+    VALIDATION_TEST_COMMAND: 'npx cypress run --spec {spec}'
     VALIDATION_PREVIEW_URL: '${{ github.event.client_payload.preview_url }}'
     VALIDATION_SPEC: '${{ github.event.client_payload.spec }}'
 ```
-
-When validation is enabled:
-
-1. Fix is applied to a branch
-2. The action dispatches your validation workflow with the fix branch, preview URL, and spec
-3. The action reports validation as `pending` or `skipped`
-4. Any pass/fail handling, cleanup, or PR creation must happen in your downstream validation workflow
-
-**Important:** Auto-fix creates a branch only. This action does not wait for validation to finish and does not create a PR automatically.
 
 See [Architecture Documentation](docs/ARCHITECTURE.md#auto-fix-feature) for detailed configuration and safety guardrails.
 
@@ -303,11 +302,11 @@ This approach triggers automatically when the specified workflow completes with 
 | `AUTO_FIX_TARGET_REPO` | Repository where repair source files are fetched and fix branches are created (owner/repo format)                                                                                                                             | No       | `${{ github.repository }}` |
 | `ENABLE_AGENTIC_REPAIR` | Enable multi-agent repair pipeline for higher quality fixes (uses more API calls). Enabled by default; set to `'false'` to use single-shot repair instead.                                                                   | No       | `true`                     |
 | **Validation Inputs** | | | |
-| `ENABLE_VALIDATION`    | Enable validation workflow trigger after fix is applied                                                                                                                                                                        | No       | `false`                    |
-| `VALIDATION_WORKFLOW`  | Name of the validation workflow file                                                                                                                                                                                           | No       | `validate-fix.yml`         |
-| `VALIDATION_PREVIEW_URL` | Preview URL for validation tests                                                                                                                                                                                             | No       | -                          |
-| `VALIDATION_SPEC`      | Spec file for validation tests                                                                                                                                                                                                 | No       | -                          |
-| `VALIDATION_TEST_COMMAND` | Custom test command for validation                                                                                                                                                                                          | No       | -                          |
+| `ENABLE_VALIDATION`    | Enable local validation before push when used with `VALIDATION_TEST_COMMAND`: clone repo, apply fix, run tests locally, push branch and open PR on success (up to 3 iterations on failure).                                                                                                        | No       | `false`                    |
+| `VALIDATION_WORKFLOW`  | Validation workflow filename; used by the legacy remote path when `VALIDATION_TEST_COMMAND` is unset.                                                                                                                                                                                           | No       | `validate-fix.yml`         |
+| `VALIDATION_PREVIEW_URL` | Replaces `{url}` in `VALIDATION_TEST_COMMAND`.                                                                                                                                                                                             | No       | -                          |
+| `VALIDATION_SPEC`      | Replaces `{spec}` in `VALIDATION_TEST_COMMAND`.                                                                                                                                                                                                 | No       | -                          |
+| `VALIDATION_TEST_COMMAND` | Test command template with `{spec}` and `{url}` placeholders; when set with `ENABLE_VALIDATION`, runs locally to validate fixes before push.                                                                                                                                                                                          | No       | -                          |
 | **Cursor Validation Inputs** | | | |
 | `ENABLE_CURSOR_VALIDATION` | Enable Cursor-based fix validation. Mutually exclusive with `ENABLE_VALIDATION`; if both are true, GitHub Actions validation takes precedence.                                                                             | No       | `false`                    |
 | `CURSOR_API_KEY`       | API key for Cursor validation                                                                                                                                                                                                  | No       | -                          |
@@ -334,9 +333,9 @@ This approach triggers automatically when the specified workflow completes with 
 | `auto_fix_commit` | Last commit SHA created while applying the fix (if auto-fix applied)            |
 | `auto_fix_files` | JSON array of modified files (if auto-fix applied)                               |
 | **Validation Outputs** | |
-| `validation_run_id` | Workflow run ID of the validation workflow (when discovered)                   |
-| `validation_status` | Validation dispatch status from this action: `pending` or `skipped`            |
-| `validation_url` | URL to the validation workflow run (when discovered or returned by GitHub)        |
+| `validation_run_id` | Workflow run ID of the validation workflow (legacy remote validation path only).                   |
+| `validation_status` | `passed` (local test succeeded), `pending`, or `skipped`.            |
+| `validation_url` | URL to the validation workflow run (legacy remote validation path only).        |
 | **Cursor Validation Outputs** | |
 | `cursor_agent_id` | Cursor agent ID (when Cursor validation enabled)                                  |
 | `cursor_agent_url` | URL to Cursor agent run                                                          |

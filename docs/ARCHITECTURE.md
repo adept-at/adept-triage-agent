@@ -493,12 +493,17 @@ interface FixApplierConfig {
 
 #### Fix Application Process
 
+**Local validation path** (when `ENABLE_AUTO_FIX`, `ENABLE_VALIDATION`, and `VALIDATION_TEST_COMMAND` are all set — see `iterativeFixValidateLoop` in `src/index.ts` and `LocalFixValidator` in `src/services/local-fix-validator.ts`):
+
 1. **Confidence Check**: Verify fix recommendation meets minimum confidence threshold
-2. **Branch Creation**: Fetch base branch and create new fix branch
-3. **Apply Changes**: For each proposed change, read file, apply string replacement, write back
-4. **Commit via GitHub API**: Write updated file contents to the fix branch
-5. **Optional Validation Dispatch**: Trigger a follow-up workflow if validation is enabled
-6. **Cleanup on Failure**: If any step fails, delete the branch and return to original state
+2. **Clone test repo locally**: Check out the failing branch in a temporary directory
+3. **Install dependencies**: Run `npm ci` in the clone
+4. **Iterative loop** (up to 3 attempts): LLM generates a fix → apply changes on disk → run `VALIDATION_TEST_COMMAND` locally → on success, push and create a PR; on failure, reset working tree, feed test logs back to the next iteration
+5. **Cleanup**: Remove the temporary directory
+
+**Legacy path** (when `VALIDATION_TEST_COMMAND` is not set): create/update the fix branch and apply changes via the GitHub API, then optionally dispatch `validate-fix.yml` (or the configured validation workflow) via `workflow_dispatch` instead of running tests locally.
+
+For either path, **cleanup on failure** still applies: if a step fails, delete the branch when appropriate and return to a safe state.
 
 ---
 
@@ -666,7 +671,7 @@ interface ActionInputs {
 | `auto_fix_commit` | string | Last commit SHA created while applying the fix (if auto-fix applied) |
 | `auto_fix_files` | string | JSON array of modified files (if auto-fix applied) |
 | `validation_run_id` | string | Validation workflow run ID when discovered after dispatch |
-| `validation_status` | string | Validation dispatch status reported by this action: `pending` or `skipped` |
+| `validation_status` | string | Validation status reported by this action: `pending`, `passed`, `failed`, or `skipped` (aligns with local validation and legacy dispatch outcomes) |
 | `validation_url` | string | URL for the dispatched validation workflow run when GitHub returns it |
 | `cursor_agent_id` | string | Cursor agent ID when Cursor validation is enabled |
 | `cursor_agent_url` | string | URL to the Cursor agent run |
@@ -729,11 +734,11 @@ The Auto-Fix feature allows the triage agent to automatically apply AI-generated
 ### Overview
 
 When a test failure is classified as `TEST_ISSUE` and the fix recommendation meets confidence requirements, the auto-fix feature can:
-1. Create a new branch from your base branch
+1. Create a new branch from your base branch (or work in a local clone when the local validation path is active)
 2. Apply the proposed code changes
-3. Commit the changes through the GitHub API
-4. Optionally dispatch a validation workflow
-5. Provide branch and validation details for downstream automation or manual review
+3. Commit the changes through the GitHub API, **or** run the **local validation** loop: clone the test repo, `npm ci`, then up to three iterations of generate-fix → apply on disk → run `VALIDATION_TEST_COMMAND` → push and open a PR when tests pass
+4. When `VALIDATION_TEST_COMMAND` is unset, optionally dispatch a validation workflow (`workflow_dispatch` to `validate-fix.yml` or the configured workflow) instead of executing tests in the runner
+5. Provide branch, PR, and validation details for downstream automation or manual review
 
 ### Auto-Fix Decision Flow
 
@@ -760,13 +765,18 @@ flowchart TD
     FETCH_BASE --> CREATE_BRANCH[Create Fix Branch<br/>fix/triage-agent/...]
     CREATE_BRANCH --> APPLY_CHANGES[Apply Code Changes]
     APPLY_CHANGES --> COMMIT[Commit Changes via<br/>GitHub API]
-    COMMIT --> VALIDATE{Validation<br/>Enabled?}
-    VALIDATE -->|Yes| DISPATCH[Dispatch Validation Workflow]
-    VALIDATE -->|No| SUCCESS
+    COMMIT --> VALIDATE{Local validation?<br/>ENABLE_VALIDATION +<br/>VALIDATION_TEST_COMMAND}
+    VALIDATE -->|Yes| LOCAL_VAL[Local loop<br/>iterativeFixValidateLoop<br/>clone, npm ci, up to 3x:<br/>fix → apply → run tests]
+    VALIDATE -->|No, validation on| LEGACY_VAL[Legacy: push via API +<br/>optional workflow_dispatch]
+    VALIDATE -->|No validation| OUTPUT_SUCCESS
 
-    DISPATCH --> SUCCESS{Success?}
-    SUCCESS --> |Yes| OUTPUT_SUCCESS[Output Results<br/>auto_fix_applied: true<br/>auto_fix_branch: ...<br/>auto_fix_commit: ...]
-    SUCCESS --> |No| CLEANUP[Cleanup Branch<br/>auto_fix_applied: false]
+    LOCAL_VAL --> LOCAL_OK{Tests<br/>passed?}
+    LOCAL_OK -->|Yes| OUTPUT_SUCCESS[Output Results<br/>auto_fix_applied: true<br/>auto_fix_branch: ...<br/>auto_fix_commit: ...<br/>PR when local path]
+    LOCAL_OK -->|No| CLEANUP[Cleanup Branch<br/>auto_fix_applied: false]
+
+    LEGACY_VAL --> LEGACY_OK{Success?}
+    LEGACY_OK --> |Yes| OUTPUT_SUCCESS
+    LEGACY_OK --> |No| CLEANUP
 
     SKIP_PRODUCT --> END_OUTPUT([Set Outputs])
     SKIP_NO_FIX --> END_OUTPUT
@@ -899,18 +909,16 @@ ENABLE_AUTO_FIX: 'true'
 AUTO_FIX_MIN_CONFIDENCE: '80'
 ```
 
-#### 3. No Auto-PR Creation
+#### 3. Pull Request Creation (Path-Dependent)
 
-The agent creates a **branch only** - it does **not** automatically create a pull request. This ensures:
-- Engineers must explicitly review and create the PR
-- No changes are merged without human approval
-- Teams maintain full control over their codebase
+- **Local validation path** (`ENABLE_AUTO_FIX`, `ENABLE_VALIDATION`, and `VALIDATION_TEST_COMMAND` all set): when local tests pass after applying the fix, the agent **opens a pull request** (after push) so the change is reviewable in GitHub. Merging still requires normal repo policies and human review.
+- **Legacy path** (no `VALIDATION_TEST_COMMAND`): the agent typically creates a **branch only** and does **not** automatically open a PR, so engineers explicitly create the PR from the branch if they want one.
 
 After auto-fix applies, engineers receive:
 - Branch name for inspection
 - Commit SHA for verification
 - List of modified files for review
-- Optional validation run details if a validation workflow was dispatched
+- A PR link when the local validation path succeeded, or optional validation run details if a validation workflow was dispatched on the legacy path
 
 #### 4. Required Permissions
 

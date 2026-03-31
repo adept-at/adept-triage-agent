@@ -60,21 +60,21 @@ inputs:
     required: false
     default: ${{ github.repository }}
   ENABLE_VALIDATION:
-    description: 'Enable validation workflow trigger after fix is applied'
+    description: 'Enable local test validation of auto-fixes before pushing. When true with ENABLE_AUTO_FIX and VALIDATION_TEST_COMMAND, the action clones the repo, applies the fix, runs the test locally, and only pushes + creates a PR when the test passes (up to 3 iterations).'
     required: false
     default: 'false'
   VALIDATION_WORKFLOW:
-    description: 'Name of the validation workflow file (e.g., validate-fix.yml)'
+    description: 'Name of the validation workflow file (e.g., validate-fix.yml). Used by the legacy remote validation path when VALIDATION_TEST_COMMAND is not set.'
     required: false
     default: 'validate-fix.yml'
   VALIDATION_PREVIEW_URL:
-    description: 'Preview URL for validation tests (if different from original)'
+    description: 'Preview URL for validation tests (if different from original). Replaces {url} in VALIDATION_TEST_COMMAND.'
     required: false
   VALIDATION_SPEC:
-    description: 'Spec file for validation tests (if different from detected)'
+    description: 'Spec file for validation tests (if different from detected). Replaces {spec} in VALIDATION_TEST_COMMAND.'
     required: false
   VALIDATION_TEST_COMMAND:
-    description: 'Original test command template with {spec} and {url} placeholders. Passed to validate-fix.yml so it runs the test the same way the original workflow did.'
+    description: 'Test command template with {spec} and {url} placeholders. When set with ENABLE_VALIDATION, the action runs this command locally to validate fixes before pushing. Example: npx wdio run wdio.conf.ts --spec {spec}'
     required: false
   ENABLE_AGENTIC_REPAIR:
     description: 'Enable multi-agent repair pipeline for higher quality fixes (uses more API calls but produces better results). Enabled by default; set to false to disable.'
@@ -132,11 +132,11 @@ outputs:
   auto_fix_files:
     description: 'JSON array of modified files (if auto-fix applied)'
   validation_run_id:
-    description: 'Workflow run ID of the validation workflow (when discovered)'
+    description: 'Workflow run ID of the validation workflow (legacy remote validation path only)'
   validation_status:
-    description: 'Validation dispatch status reported by this action: pending or skipped'
+    description: 'Validation status: passed (local test succeeded), pending, or skipped'
   validation_url:
-    description: 'URL to the validation workflow run (when discovered or returned by GitHub)'
+    description: 'URL to the validation workflow run (legacy remote validation path only)'
   cursor_agent_id:
     description: 'Cursor cloud agent ID (when Cursor validation is used)'
   cursor_agent_url:

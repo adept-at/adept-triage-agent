@@ -8,7 +8,8 @@ import { ActionInputs, FixRecommendation } from './types';
 import { buildRepairContext } from './repair-context';
 import { SimplifiedRepairAgent } from './repair/simplified-repair-agent';
 import { processWorkflowLogs } from './services/log-processor';
-import { createFixApplier, ApplyResult, ValidationOutcome } from './repair/fix-applier';
+import { createFixApplier, ApplyResult, generateFixBranchName } from './repair/fix-applier';
+import { LocalFixValidator } from './services/local-fix-validator';
 import { AUTO_FIX, CURSOR_CLOUD, FIX_VALIDATE_LOOP, DEFAULT_PRODUCT_REPO, DEFAULT_PRODUCT_URL } from './config/constants';
 import { parseRepoString } from './utils/repo-utils';
 import { CursorCloudValidator, CursorValidationParams } from './services/cursor-cloud-validator';
@@ -159,8 +160,8 @@ async function run(): Promise<void> {
     let fixRecommendation: FixRecommendation | null = null;
     let autoFixResult: ApplyResult | null = null;
 
-    if (inputs.enableAutoFix && inputs.enableValidation) {
-      // Iterative fix-validate loop: generate fix, validate, retry on failure
+    if (inputs.enableAutoFix && inputs.enableValidation && inputs.validationTestCommand) {
+      // Local fix-validate loop: clone, apply, test, iterate up to 3x
       const autoFixTargetRepo = resolveAutoFixTargetRepo(inputs);
       const loopResult = await iterativeFixValidateLoop(
         inputs,
@@ -327,7 +328,7 @@ async function generateFixRecommendation(
         octokit,
         owner: autoFixTargetRepo.owner,
         repo: autoFixTargetRepo.repo,
-        branch: inputs.autoFixBaseBranch || 'main',
+        branch: inputs.branch || inputs.autoFixBaseBranch || 'main',
       },
       {
         enableAgenticRepair: inputs.enableAgenticRepair,
@@ -354,10 +355,10 @@ async function generateFixRecommendation(
 }
 
 /**
- * Iterative fix-validate loop.
- * Generates a fix, applies it, triggers validation, waits for result.
- * If validation fails, feeds the failure logs back into the repair agent
- * and tries again — up to FIX_VALIDATE_LOOP.MAX_ITERATIONS times.
+ * Local fix-validate loop.
+ * Clones the test repo, applies fixes locally, runs the test command,
+ * and iterates up to MAX_ITERATIONS times. Only pushes + creates a PR
+ * when the test passes.
  */
 async function iterativeFixValidateLoop(
   inputs: ActionInputs,
@@ -377,143 +378,134 @@ async function iterativeFixValidateLoop(
     | { iteration: number; previousFix: FixRecommendation; validationLogs: string }
     | undefined;
   const failedFixFingerprints = new Set<string>();
+  const minConfidence = inputs.autoFixMinConfidence || AUTO_FIX.DEFAULT_MIN_CONFIDENCE;
+  const baseBranch = inputs.branch || inputs.autoFixBaseBranch || 'main';
 
-  const fixApplier = createFixApplier({
-    octokit,
-    owner: autoFixTargetRepo.owner,
-    repo: autoFixTargetRepo.repo,
-    baseBranch: inputs.autoFixBaseBranch || 'main',
-    minConfidence:
-      inputs.autoFixMinConfidence || AUTO_FIX.DEFAULT_MIN_CONFIDENCE,
-    enableValidation: inputs.enableValidation,
-    validationWorkflow: inputs.validationWorkflow,
-    validationTestCommand: inputs.validationTestCommand,
-  });
+  const validator = new LocalFixValidator(
+    {
+      owner: autoFixTargetRepo.owner,
+      repo: autoFixTargetRepo.repo,
+      branch: baseBranch,
+      githubToken: inputs.githubToken,
+      testCommand: inputs.validationTestCommand!,
+      spec: inputs.validationSpec || errorData.fileName,
+      previewUrl: inputs.validationPreviewUrl || DEFAULT_PRODUCT_URL,
+      testTimeoutMs: FIX_VALIDATE_LOOP.TEST_TIMEOUT_MS,
+    },
+    octokit
+  );
 
-  for (let iteration = 0; iteration < maxIterations; iteration++) {
-    core.info(
-      `\n${'='.repeat(60)}\n🔄 Fix-Validate iteration ${iteration + 1}/${maxIterations}\n${'='.repeat(60)}`
-    );
+  try {
+    await validator.setup();
 
-    // 1. Generate fix (with feedback from previous attempt if any)
-    fixRecommendation = await generateFixRecommendation(
-      inputs,
-      repoDetails,
-      errorData,
-      openaiClient,
-      octokit,
-      previousAttempt
-    );
-
-    if (!fixRecommendation) {
-      core.warning(`Iteration ${iteration + 1}: could not generate fix recommendation`);
-      break;
-    }
-
-    // Quality gate: confidence + has changes
-    if (!fixApplier.canApply(fixRecommendation)) {
+    for (let iteration = 0; iteration < maxIterations; iteration++) {
       core.info(
-        `Iteration ${iteration + 1}: fix rejected — confidence below threshold or no changes proposed`
+        `\n${'='.repeat(60)}\n🔄 Fix-Validate iteration ${iteration + 1}/${maxIterations}\n${'='.repeat(60)}`
       );
-      break;
-    }
 
-    // Quality gate (iterations 2+): reject if this fix duplicates ANY prior failed attempt
-    const fingerprint = fixFingerprint(fixRecommendation);
-    if (failedFixFingerprints.has(fingerprint)) {
-      core.warning(
-        `Iteration ${iteration + 1}: repair agent proposed a fix identical to a previous failed attempt. Stopping.`
+      fixRecommendation = await generateFixRecommendation(
+        inputs,
+        repoDetails,
+        errorData,
+        openaiClient,
+        octokit,
+        previousAttempt
       );
-      break;
-    }
 
-    core.info(
-      `Iteration ${iteration + 1}: fix passed quality gates (confidence: ${fixRecommendation.confidence}%, changes: ${fixRecommendation.proposedChanges.length})`
-    );
+      if (!fixRecommendation) {
+        core.warning(`Iteration ${iteration + 1}: could not generate fix recommendation`);
+        break;
+      }
 
-    // 2. Apply fix (create branch on first iteration, reset + reapply on subsequent)
-    if (iteration === 0) {
-      autoFixResult = await fixApplier.applyFix(fixRecommendation);
-    } else if (autoFixResult?.branchName) {
-      autoFixResult = await fixApplier.reapplyFix(
-        fixRecommendation,
-        autoFixResult.branchName
-      );
-    }
+      if (
+        fixRecommendation.confidence < minConfidence ||
+        !fixRecommendation.proposedChanges?.length
+      ) {
+        core.info(
+          `Iteration ${iteration + 1}: fix rejected — confidence ${fixRecommendation.confidence}% below ${minConfidence}% or no changes`
+        );
+        break;
+      }
 
-    if (!autoFixResult?.success || !autoFixResult.branchName) {
-      core.warning(`Iteration ${iteration + 1}: failed to apply fix — ${autoFixResult?.error}`);
-      break;
-    }
+      const fingerprint = fixFingerprint(fixRecommendation);
+      if (failedFixFingerprints.has(fingerprint)) {
+        core.warning(
+          `Iteration ${iteration + 1}: fix identical to a previous failed attempt. Stopping.`
+        );
+        break;
+      }
 
-    core.info(`✅ Fix applied to branch: ${autoFixResult.branchName}`);
-
-    // 3. Trigger validation
-    const spec =
-      inputs.validationSpec ||
-      (errorData as { fileName?: string }).fileName ||
-      fixRecommendation.proposedChanges[0]?.file;
-    const previewUrl =
-      inputs.validationPreviewUrl || DEFAULT_PRODUCT_URL;
-
-    if (!spec) {
-      core.warning('No spec file identified for validation');
-      autoFixResult.validationStatus = 'skipped';
-      break;
-    }
-
-    const validationTrigger = await fixApplier.triggerValidation({
-      branch: autoFixResult.branchName,
-      spec,
-      previewUrl,
-      triageRunId: github.context.runId.toString(),
-      testCommand: inputs.validationTestCommand,
-    });
-
-    if (!validationTrigger?.runId) {
-      core.warning('Could not get validation run ID — cannot poll for results');
-      autoFixResult.validationStatus = 'pending';
-      if (validationTrigger?.url) autoFixResult.validationUrl = validationTrigger.url;
-      break;
-    }
-
-    autoFixResult.validationRunId = validationTrigger.runId;
-    autoFixResult.validationUrl = validationTrigger.url;
-
-    // 4. Wait for validation to complete
-    core.info(`\n🧪 Waiting for validation run ${validationTrigger.runId}...`);
-    const outcome: ValidationOutcome = await fixApplier.waitForValidation(
-      validationTrigger.runId
-    );
-
-    if (outcome.passed) {
       core.info(
-        `\n✅ Validation PASSED on iteration ${iteration + 1}! PR will be created by validate-fix workflow.`
+        `Iteration ${iteration + 1}: fix passed quality gates (confidence: ${fixRecommendation.confidence}%, changes: ${fixRecommendation.proposedChanges.length})`
       );
-      autoFixResult.validationStatus = 'passed';
-      autoFixResult.validationUrl = outcome.url || autoFixResult.validationUrl;
-      return { fixRecommendation, autoFixResult };
-    }
 
-    // 5. Validation failed — record fingerprint and prepare feedback for next iteration
-    core.warning(
-      `\n❌ Validation FAILED on iteration ${iteration + 1} (conclusion: ${outcome.conclusion})`
-    );
-    autoFixResult.validationStatus = 'failed';
-    failedFixFingerprints.add(fingerprint);
+      try {
+        await validator.applyFix(fixRecommendation.proposedChanges);
+      } catch (applyError) {
+        core.warning(`Iteration ${iteration + 1}: failed to apply fix locally — ${applyError}`);
+        break;
+      }
 
-    if (iteration < maxIterations - 1) {
-      core.info('Feeding failure logs back into repair agent for next attempt...');
-      previousAttempt = {
-        iteration: iteration + 1,
-        previousFix: fixRecommendation,
-        validationLogs: outcome.logs || 'No logs available',
-      };
-    } else {
+      core.info(`\n🧪 Running test locally...`);
+      const testResult = await validator.runTest();
+
+      if (testResult.passed) {
+        core.info(
+          `\n✅ Test PASSED on iteration ${iteration + 1}! (${testResult.durationMs}ms)`
+        );
+
+        const branchName = generateFixBranchName(
+          fixRecommendation.proposedChanges[0].file
+        );
+
+        try {
+          const pushResult = await validator.pushAndCreatePR({
+            branchName,
+            commitMessage: `fix(test): ${fixRecommendation.summary.slice(0, 50)}\n\nAutomated fix generated by adept-triage-agent.\nValidated locally before push.\n\nFiles: ${fixRecommendation.proposedChanges.map((c) => c.file).join(', ')}\nConfidence: ${fixRecommendation.confidence}%`,
+            prTitle: `Auto-fix: ${errorData.fileName || fixRecommendation.proposedChanges[0].file}`,
+            prBody: `Validated fix from triage run ${github.context.runId}`,
+            baseBranch,
+          });
+
+          autoFixResult = {
+            success: true,
+            modifiedFiles: fixRecommendation.proposedChanges.map((c) => c.file),
+            commitSha: pushResult.commitSha,
+            branchName: pushResult.branchName,
+            validationStatus: 'passed',
+          };
+        } catch (pushError) {
+          core.warning(`Test passed but push/PR creation failed: ${pushError}`);
+          autoFixResult = {
+            success: false,
+            modifiedFiles: fixRecommendation.proposedChanges.map((c) => c.file),
+            error: `Push failed after successful test: ${pushError}`,
+            validationStatus: 'passed',
+          };
+        }
+
+        return { fixRecommendation, autoFixResult };
+      }
+
       core.warning(
-        `\n🛑 All ${maxIterations} fix attempts exhausted. Giving up.`
+        `\n❌ Test FAILED on iteration ${iteration + 1} (exit code: ${testResult.exitCode}, ${testResult.durationMs}ms)`
       );
+      failedFixFingerprints.add(fingerprint);
+      await validator.reset();
+
+      if (iteration < maxIterations - 1) {
+        core.info('Feeding failure logs back into repair agent for next attempt...');
+        previousAttempt = {
+          iteration: iteration + 1,
+          previousFix: fixRecommendation,
+          validationLogs: testResult.logs,
+        };
+      } else {
+        core.warning(`\n🛑 All ${maxIterations} fix attempts exhausted. Giving up.`);
+      }
     }
+  } finally {
+    await validator.cleanup();
   }
 
   return { fixRecommendation, autoFixResult };
@@ -544,7 +536,7 @@ async function attemptAutoFix(
     octokit,
     owner: repoDetails.owner,
     repo: repoDetails.repo,
-    baseBranch: inputs.autoFixBaseBranch || 'main',
+    baseBranch: inputs.branch || inputs.autoFixBaseBranch || 'main',
     minConfidence:
       inputs.autoFixMinConfidence || AUTO_FIX.DEFAULT_MIN_CONFIDENCE,
     enableValidation: inputs.enableValidation,
@@ -897,7 +889,10 @@ function setSuccessOutput(
     }
   } else {
     core.setOutput('auto_fix_applied', 'false');
-    core.setOutput('validation_status', 'skipped');
+    core.setOutput(
+      'validation_status',
+      autoFixResult?.validationStatus || 'skipped'
+    );
   }
 
   // Log results
@@ -938,33 +933,13 @@ function setSuccessOutput(
       core.info(`  Commit: ${autoFixResult.commitSha}`);
       core.info(`  Files: ${autoFixResult.modifiedFiles.join(', ')}`);
 
-      // Log validation status
-      if (autoFixResult.validationRunId) {
+      if (autoFixResult.validationStatus === 'passed') {
+        core.info('\n🧪 Validation: passed (locally validated before push)');
+      } else if (autoFixResult.validationRunId) {
         core.info(`\n🧪 Validation: ${autoFixResult.validationStatus}`);
         core.info(`  Run ID: ${autoFixResult.validationRunId}`);
-        core.info(
-          `  URL: ${
-            autoFixResult.validationUrl ||
-            `https://github.com/${github.context.repo.owner}/${github.context.repo.repo}/actions/runs/${autoFixResult.validationRunId}`
-          }`
-        );
-        core.info(
-          '\n👉 Validation was triggered. Any PR creation must happen in your downstream workflow or be done manually.'
-        );
-      } else if (autoFixResult.validationStatus === 'pending') {
-        core.info('\n🧪 Validation: pending');
-        if (autoFixResult.validationUrl) {
-          core.info(`  URL: ${autoFixResult.validationUrl}`);
-        } else {
-          core.info('  Run ID / URL not available yet');
-        }
-        core.info(
-          '\n👉 Validation was triggered. Any PR creation must happen in your downstream workflow or be done manually.'
-        );
       } else {
-        core.info(
-          '\n👉 To create a PR, visit your repository and open a PR from the branch above.'
-        );
+        core.info(`\n🧪 Validation: ${autoFixResult.validationStatus || 'skipped'}`);
       }
     }
   }
