@@ -18,15 +18,15 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           ref: main
           token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
-          node-version: '20.x'
+          node-version: '24.x'
           cache: 'npm'
 
       - name: Install dependencies
@@ -81,14 +81,14 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
-          ref: main # Always use main with updated dist
+          ref: main
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
-          node-version: '20.x'
+          node-version: '24.x'
           cache: 'npm'
 
       - name: Install dependencies
@@ -127,28 +127,19 @@ jobs:
 
           echo "✅ Updated tag $TAG to latest main with bundled dist"
 
-      # Upload the built artifact to the existing release
       - name: Upload Release Asset
         if: github.event_name == 'release'
-        uses: actions/upload-release-asset@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        uses: softprops/action-gh-release@v2
         with:
-          upload_url: ${{ github.event.release.upload_url }}
-          asset_path: ./dist/index.js
-          asset_name: index.js
-          asset_content_type: application/javascript
+          tag_name: ${{ github.event.release.tag_name }}
+          files: ./dist/index.js
 
-      # For workflow_dispatch, create the release
       - name: Create Release (workflow_dispatch)
         if: github.event_name == 'workflow_dispatch'
-        id: create_release
-        uses: actions/create-release@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.event.inputs.tag }}
-          release_name: Release ${{ github.event.inputs.tag }}
+          name: Release ${{ github.event.inputs.tag }}
           body: |
             ## Changes in this Release
 
@@ -163,19 +154,7 @@ jobs:
             ```
 
             See [README](https://github.com/${{ github.repository }}/blob/main/README.md) for detailed usage instructions.
-          draft: false
-          prerelease: false
-
-      - name: Upload Release Asset (workflow_dispatch)
-        if: github.event_name == 'workflow_dispatch'
-        uses: actions/upload-release-asset@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          upload_url: ${{ steps.create_release.outputs.upload_url }}
-          asset_path: ./dist/index.js
-          asset_name: index.js
-          asset_content_type: application/javascript
+          files: ./dist/index.js
 
   update-major-tag:
     runs-on: ubuntu-latest
@@ -183,9 +162,9 @@ jobs:
     if: github.event.release.tag_name || github.event.inputs.tag
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
-          ref: main # Use main with updated dist
+          ref: main
           fetch-depth: 0
 
       - name: Update major version tag

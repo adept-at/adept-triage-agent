@@ -145,5 +145,5 @@ outputs:
     description: 'Summary from the Cursor cloud agent validation'
 
 runs:
-  using: 'node20'
+  using: 'node24'
   main: 'dist/index.js' 
