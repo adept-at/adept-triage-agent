@@ -6021,6 +6021,10 @@ class LocalFixValidator {
         core.info(`  git clone --branch ${this.config.branch} --depth 50 ${maskedUrl}`);
         (0, child_process_1.execSync)(`git clone --branch ${this.config.branch} --depth 50 ${cloneUrl} ${this._workDir}`, { encoding: 'utf-8', stdio: 'pipe' });
         core.info('📦 Installing dependencies...');
+        const npmrcPath = path.join(this._workDir, '.npmrc');
+        if (!fs.existsSync(npmrcPath)) {
+            fs.writeFileSync(npmrcPath, '//npm.pkg.github.com/:_authToken=${NODE_AUTH_TOKEN}\n@adept-at:registry=https://npm.pkg.github.com\n', 'utf-8');
+        }
         const npmEnv = { ...process.env, NODE_AUTH_TOKEN: this.config.githubToken };
         try {
             (0, child_process_1.execSync)('npm ci 2>&1', {
@@ -6031,8 +6035,9 @@ class LocalFixValidator {
                 env: npmEnv,
             });
         }
-        catch {
-            core.info('npm ci failed, falling back to npm install');
+        catch (ciErr) {
+            const ciMsg = ciErr.stderr || String(ciErr);
+            core.info(`npm ci failed (${ciMsg.slice(0, 200)}), falling back to npm install`);
             (0, child_process_1.execSync)('npm install 2>&1', {
                 cwd: this._workDir,
                 encoding: 'utf-8',

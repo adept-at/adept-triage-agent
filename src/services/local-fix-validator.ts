@@ -66,6 +66,14 @@ export class LocalFixValidator {
     );
 
     core.info('📦 Installing dependencies...');
+    const npmrcPath = path.join(this._workDir, '.npmrc');
+    if (!fs.existsSync(npmrcPath)) {
+      fs.writeFileSync(
+        npmrcPath,
+        '//npm.pkg.github.com/:_authToken=${NODE_AUTH_TOKEN}\n@adept-at:registry=https://npm.pkg.github.com\n',
+        'utf-8'
+      );
+    }
     const npmEnv = { ...process.env, NODE_AUTH_TOKEN: this.config.githubToken };
     try {
       execSync('npm ci 2>&1', {
@@ -75,8 +83,9 @@ export class LocalFixValidator {
         maxBuffer: MAX_BUFFER,
         env: npmEnv,
       });
-    } catch {
-      core.info('npm ci failed, falling back to npm install');
+    } catch (ciErr: unknown) {
+      const ciMsg = (ciErr as { stderr?: string }).stderr || String(ciErr);
+      core.info(`npm ci failed (${ciMsg.slice(0, 200)}), falling back to npm install`);
       execSync('npm install 2>&1', {
         cwd: this._workDir,
         encoding: 'utf-8',
