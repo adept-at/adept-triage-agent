@@ -41,35 +41,19 @@ flowchart TB
 
     AI_CALL --> VERDICT{Verdict?}
 
-    VERDICT -->|TEST_ISSUE| FIX_REC["Generate Fix Recommendation<br/>SimplifiedRepairAgent"]
+    VERDICT -->|TEST_ISSUE| PATH_CHECK{Local validation?<br/>enableAutoFix +<br/>enableValidation +<br/>testCommand}
     VERDICT -->|PRODUCT_ISSUE| CONFIDENCE_CHECK
     VERDICT -->|INCONCLUSIVE| CONFIDENCE_CHECK
 
-    FIX_REC --> AGENTIC_CHECK{Agentic<br/>Repair Enabled?}
+    PATH_CHECK -->|Yes| LOCAL_LOOP["Local Fix-Validate Loop<br/>iterativeFixValidateLoop()<br/><br/>1. Clone failing branch + npm ci<br/>2. Generate fix (agentic or single-shot)<br/>3. Apply to local files<br/>4. Run test command in container<br/>5. If pass → push branch + create PR<br/>6. If fail → reset, iterate (up to 3x)"]
+    PATH_CHECK -->|No| FIX_REC["Generate Fix Recommendation<br/>SimplifiedRepairAgent"]
 
-    AGENTIC_CHECK -->|Yes| ORCHESTRATOR
-    AGENTIC_CHECK -->|No| SINGLE_SHOT["Single-Shot Repair<br/>simplified-repair-agent.ts"]
-
-    SINGLE_SHOT --> FIX_RESULT
-    ORCHESTRATOR --> FIX_RESULT
-
-    FIX_RESULT{Fix<br/>Generated?}
-    FIX_RESULT -->|Yes| AUTO_FIX_CHECK{Auto-Fix<br/>Enabled?}
-    FIX_RESULT -->|No| CONFIDENCE_CHECK
-
-    AUTO_FIX_CHECK -->|Yes| APPLY_FIX["Apply Fix<br/>fix-applier.ts"]
+    FIX_REC --> AUTO_FIX_CHECK{Auto-Fix<br/>Enabled?}
+    AUTO_FIX_CHECK -->|Yes| APPLY_FIX["Apply Fix via GitHub API<br/>fix-applier.ts<br/>Create branch + commit"]
     AUTO_FIX_CHECK -->|No| CONFIDENCE_CHECK
 
-    APPLY_FIX --> CREATE_BRANCH["Create Branch<br/>via GitHub API"]
-    CREATE_BRANCH --> COMMIT["Commit Changes<br/>via GitHub API"]
-    COMMIT --> VALIDATE_CHECK{Local validation path?<br/>ENABLE_AUTO_FIX + ENABLE_VALIDATION<br/>+ VALIDATION_TEST_COMMAND}
-
-    VALIDATE_CHECK -->|Yes| LOCAL_LOOP["Local validation loop<br/>iterativeFixValidateLoop + LocalFixValidator<br/>clone failing branch, npm ci, up to 3x:<br/>fix → apply on disk → run test command"]
-    VALIDATE_CHECK -->|No, validation without command| LEGACY_DISPATCH["Legacy: push + optional<br/>workflow_dispatch (validate-fix.yml)"]
-    VALIDATE_CHECK -->|No validation| CONFIDENCE_CHECK
-
+    APPLY_FIX --> CONFIDENCE_CHECK
     LOCAL_LOOP --> CONFIDENCE_CHECK
-    LEGACY_DISPATCH --> CONFIDENCE_CHECK
 
     CONFIDENCE_CHECK{Confidence ≥<br/>Threshold?}
     CONFIDENCE_CHECK -->|No| INCONCLUSIVE["Output: INCONCLUSIVE"]
@@ -208,7 +192,7 @@ flowchart TB
 flowchart LR
     subgraph TRIAGE["adept-triage-agent<br/>(GitHub Action)"]
         direction TB
-        ACTION["action.yml<br/>Node.js 20 Runtime"]
+        ACTION["action.yml<br/>Node.js 24 Runtime"]
         SRC["src/ TypeScript Source"]
         DIST["dist/ Compiled Bundle"]
     end

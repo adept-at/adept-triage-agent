@@ -17,8 +17,8 @@ Test workflow fails
   → [Legacy, if no VALIDATION_TEST_COMMAND] workflow_dispatch → validate-fix.yml → run spec on branch → PR if pass
 ```
 
-**Repos with auto-fix + validation:** lib-cypress-canary, lib-wdio-8-e2e-ts, lib-wdio-8-multi-remote  
-**Repos with triage only:** learn-webapp
+**Repos with auto-fix + validation:** lib-cypress-canary, lib-wdio-8-e2e-ts, lib-wdio-8-multi-remote, learn-webapp  
+**Repos with triage + wdio-9-bidi:** wdio-9-bidi-mux3
 
 ## Key Challenges
 
@@ -357,10 +357,11 @@ Test workflow fails
 
 | Repo | Triage | Auto-fix | Validation |
 |------|--------|----------|------------|
-| lib-cypress-canary | ✅ | ✅ | ✅ (`VALIDATION_TEST_COMMAND` primary; `preview_url` + `spec` in payload; `validate-fix.yml` only if test command unset) |
+| lib-cypress-canary | ✅ | ✅ | ✅ (`VALIDATION_TEST_COMMAND` primary; `preview_url` + `spec` in payload) |
 | lib-wdio-8-e2e-ts | ✅ | ✅ | ✅ |
 | lib-wdio-8-multi-remote | ✅ | ✅ | ✅ |
-| learn-webapp | ✅ | ❌ | N/A |
+| wdio-9-bidi-mux3 | ✅ | ✅ | ✅ |
+| learn-webapp | ✅ | ✅ | ✅ (Cypress E2E + AG Grid, Sauce Labs and local Chrome) |
 
 **Primary validation:** `ENABLE_AUTO_FIX` + `ENABLE_VALIDATION` + `VALIDATION_TEST_COMMAND` — agent clones the test repo, runs the command in the triage container (iterate up to 3×), pushes and opens a PR only on pass. **`VALIDATION_TEST_COMMAND` is the main requirement** for this path.
 
