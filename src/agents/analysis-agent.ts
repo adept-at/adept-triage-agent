@@ -79,9 +79,10 @@ export class AnalysisAgent extends BaseAgent<AnalysisInput, AnalysisOutput> {
    */
   async execute(
     input: AnalysisInput,
-    context: AgentContext
+    context: AgentContext,
+    previousResponseId?: string
   ): Promise<AgentResult<AnalysisOutput>> {
-    return this.executeWithTimeout(input, context);
+    return this.executeWithTimeout(input, context, previousResponseId);
   }
 
   /**

@@ -32,7 +32,7 @@ export interface InvestigationInput {
 }
 export declare class InvestigationAgent extends BaseAgent<InvestigationInput, InvestigationOutput> {
     constructor(openaiClient: OpenAIClient, config?: Partial<AgentConfig>);
-    execute(input: InvestigationInput, context: AgentContext): Promise<AgentResult<InvestigationOutput>>;
+    execute(input: InvestigationInput, context: AgentContext, previousResponseId?: string): Promise<AgentResult<InvestigationOutput>>;
     protected getSystemPrompt(): string;
     protected buildUserPrompt(input: InvestigationInput, context: AgentContext): string;
     protected parseResponse(response: string): InvestigationOutput | null;

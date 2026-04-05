@@ -90,9 +90,10 @@ export class InvestigationAgent extends BaseAgent<
    */
   async execute(
     input: InvestigationInput,
-    context: AgentContext
+    context: AgentContext,
+    previousResponseId?: string
   ): Promise<AgentResult<InvestigationOutput>> {
-    return this.executeWithTimeout(input, context);
+    return this.executeWithTimeout(input, context, previousResponseId);
   }
 
   /**

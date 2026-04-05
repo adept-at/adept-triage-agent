@@ -15,7 +15,10 @@ export declare class SimplifiedRepairAgent {
         iteration: number;
         previousFix: FixRecommendation;
         validationLogs: string;
-    }): Promise<FixRecommendation | null>;
+    }, previousResponseId?: string): Promise<{
+        fix: FixRecommendation;
+        lastResponseId?: string;
+    } | null>;
     private tryAgenticRepair;
     private singleShotRepair;
     private extractFilePath;

@@ -21,6 +21,7 @@ export interface OrchestrationResult {
     totalTimeMs: number;
     iterations: number;
     approach: 'agentic' | 'single-shot' | 'failed';
+    lastResponseId?: string;
     agentResults: {
         analysis?: AgentResult<AnalysisOutput>;
         codeReading?: AgentResult<CodeReadingOutput>;
@@ -37,7 +38,7 @@ export declare class AgentOrchestrator {
     private fixGenerationAgent;
     private reviewAgent;
     constructor(openaiClient: OpenAIClient, config?: Partial<OrchestratorConfig>, sourceFetchContext?: SourceFetchContext);
-    orchestrate(context: AgentContext, errorData?: ErrorData): Promise<OrchestrationResult>;
+    orchestrate(context: AgentContext, errorData?: ErrorData, previousResponseId?: string): Promise<OrchestrationResult>;
     private runPipeline;
     private convertToFixRecommendation;
 }

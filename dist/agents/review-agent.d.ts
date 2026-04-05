@@ -23,7 +23,7 @@ export interface ReviewInput {
 }
 export declare class ReviewAgent extends BaseAgent<ReviewInput, ReviewOutput> {
     constructor(openaiClient: OpenAIClient, config?: Partial<AgentConfig>);
-    execute(input: ReviewInput, context: AgentContext): Promise<AgentResult<ReviewOutput>>;
+    execute(input: ReviewInput, context: AgentContext, previousResponseId?: string): Promise<AgentResult<ReviewOutput>>;
     protected getSystemPrompt(): string;
     protected buildUserPrompt(input: ReviewInput, context: AgentContext): string;
     protected parseResponse(response: string): ReviewOutput | null;

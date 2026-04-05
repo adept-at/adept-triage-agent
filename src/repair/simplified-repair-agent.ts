@@ -90,8 +90,9 @@ export class SimplifiedRepairAgent {
       iteration: number;
       previousFix: FixRecommendation;
       validationLogs: string;
-    }
-  ): Promise<FixRecommendation | null> {
+    },
+    previousResponseId?: string
+  ): Promise<{ fix: FixRecommendation; lastResponseId?: string } | null> {
     try {
       core.info('🔧 Generating fix recommendation...');
 
@@ -101,12 +102,13 @@ export class SimplifiedRepairAgent {
         const agenticResult = await this.tryAgenticRepair(
           repairContext,
           errorData,
-          previousAttempt
+          previousAttempt,
+          previousResponseId
         );
 
         if (agenticResult) {
           core.info(
-            `✅ Agentic repair succeeded with ${agenticResult.confidence}% confidence`
+            `✅ Agentic repair succeeded with ${agenticResult.fix.confidence}% confidence`
           );
           return agenticResult;
         }
@@ -116,8 +118,9 @@ export class SimplifiedRepairAgent {
         );
       }
 
-      // Single-shot repair (original logic)
-      return await this.singleShotRepair(repairContext, errorData, previousAttempt);
+      // Single-shot repair (original logic, no conversation chaining)
+      const singleShotFix = await this.singleShotRepair(repairContext, errorData, previousAttempt);
+      return singleShotFix ? { fix: singleShotFix } : null;
     } catch (error) {
       core.warning(`Failed to generate fix recommendation: ${error}`);
       return null;
@@ -134,8 +137,9 @@ export class SimplifiedRepairAgent {
       iteration: number;
       previousFix: FixRecommendation;
       validationLogs: string;
-    }
-  ): Promise<FixRecommendation | null> {
+    },
+    previousResponseId?: string
+  ): Promise<{ fix: FixRecommendation; lastResponseId?: string } | null> {
     if (!this.orchestrator) {
       return null;
     }
@@ -183,7 +187,8 @@ export class SimplifiedRepairAgent {
       // Run the orchestration
       const result = await this.orchestrator.orchestrate(
         agentContext,
-        errorData
+        errorData,
+        previousResponseId
       );
 
       if (result.success && result.fix) {
@@ -197,7 +202,7 @@ export class SimplifiedRepairAgent {
             change.file = cleaned;
           }
         }
-        return result.fix;
+        return { fix: result.fix, lastResponseId: result.lastResponseId };
       }
 
       core.info(
@@ -884,7 +889,7 @@ You MUST respond in strict JSON only with this schema:
         }
       }
 
-      const content = await this.openaiClient.generateWithCustomPrompt({
+      const { text: content } = await this.openaiClient.generateWithCustomPrompt({
         systemPrompt,
         userContent: userParts,
         responseAsJson: true,

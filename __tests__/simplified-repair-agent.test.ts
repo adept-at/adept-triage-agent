@@ -46,8 +46,7 @@ describe('SimplifiedRepairAgent', () => {
 });`;
 
     it('should reject recommendation when all changes have hallucinated oldCode', async () => {
-      const mockGenerateWithCustomPrompt = jest.fn().mockResolvedValue(
-        JSON.stringify({
+      const mockGenerateWithCustomPrompt = jest.fn().mockResolvedValue({ text: JSON.stringify({
           confidence: 85,
           reasoning: 'Update selector',
           changes: [
@@ -61,8 +60,7 @@ describe('SimplifiedRepairAgent', () => {
           ],
           evidence: ['Selector mismatch'],
           rootCause: 'Selector changed',
-        })
-      );
+        }), responseId: 'mock-resp-id' });
 
       const mockOctokit = {
         repos: {
@@ -100,8 +98,7 @@ describe('SimplifiedRepairAgent', () => {
   return <button data-testid="submit-btn">Submit</button>;
 };`;
 
-      const mockGenerateWithCustomPrompt = jest.fn().mockResolvedValue(
-        JSON.stringify({
+      const mockGenerateWithCustomPrompt = jest.fn().mockResolvedValue({ text: JSON.stringify({
           confidence: 85,
           reasoning: 'Update selector in test and component',
           changes: [
@@ -122,8 +119,7 @@ describe('SimplifiedRepairAgent', () => {
           ],
           evidence: ['Selector standardization'],
           rootCause: 'Inconsistent testids',
-        })
-      );
+        }), responseId: 'mock-resp-id' });
 
       const mockGetContent = jest.fn().mockImplementation(({ path }: { path: string }) => {
         if (path === 'cypress/e2e/test.cy.ts') {
@@ -153,14 +149,13 @@ describe('SimplifiedRepairAgent', () => {
       const result = await agentWithSource.generateFixRecommendation(baseContext);
 
       expect(result).not.toBeNull();
-      expect(result?.proposedChanges).toHaveLength(2);
-      expect(result?.proposedChanges[0].file).toBe('cypress/e2e/test.cy.ts');
-      expect(result?.proposedChanges[1].file).toBe('src/components/Button.tsx');
+      expect(result?.fix.proposedChanges).toHaveLength(2);
+      expect(result?.fix.proposedChanges[0].file).toBe('cypress/e2e/test.cy.ts');
+      expect(result?.fix.proposedChanges[1].file).toBe('src/components/Button.tsx');
     });
 
     it('should reject changes targeting files that cannot be fetched', async () => {
-      const mockGenerateWithCustomPrompt = jest.fn().mockResolvedValue(
-        JSON.stringify({
+      const mockGenerateWithCustomPrompt = jest.fn().mockResolvedValue({ text: JSON.stringify({
           confidence: 85,
           reasoning: 'Fix in unfetchable file',
           changes: [
@@ -174,8 +169,7 @@ describe('SimplifiedRepairAgent', () => {
           ],
           evidence: ['Value wrong'],
           rootCause: 'Wrong value',
-        })
-      );
+        }), responseId: 'mock-resp-id' });
 
       const mockOctokit = {
         repos: {
@@ -214,8 +208,7 @@ describe('SimplifiedRepairAgent', () => {
   });
 });`;
 
-      const mockGenerateWithCustomPrompt = jest.fn().mockResolvedValue(
-        JSON.stringify({
+      const mockGenerateWithCustomPrompt = jest.fn().mockResolvedValue({ text: JSON.stringify({
           confidence: 85,
           reasoning: 'Update selector',
           changes: [
@@ -229,8 +222,7 @@ describe('SimplifiedRepairAgent', () => {
           ],
           evidence: ['Selector changed'],
           rootCause: 'Selector mismatch',
-        })
-      );
+        }), responseId: 'mock-resp-id' });
 
       const mockOctokit = {
         repos: {
@@ -259,8 +251,7 @@ describe('SimplifiedRepairAgent', () => {
   return { timeout: 5000 };
 }`;
 
-      const mockGenerateWithCustomPrompt = jest.fn().mockResolvedValue(
-        JSON.stringify({
+      const mockGenerateWithCustomPrompt = jest.fn().mockResolvedValue({ text: JSON.stringify({
           confidence: 85,
           reasoning: 'Multi-file fix',
           changes: [
@@ -288,8 +279,7 @@ describe('SimplifiedRepairAgent', () => {
           ],
           evidence: ['Multiple issues'],
           rootCause: 'Several problems',
-        })
-      );
+        }), responseId: 'mock-resp-id' });
 
       const mockOctokit = {
         repos: {
@@ -321,9 +311,9 @@ describe('SimplifiedRepairAgent', () => {
       const result = await agentWithSource.generateFixRecommendation(baseContext);
 
       expect(result).not.toBeNull();
-      expect(result?.proposedChanges).toHaveLength(2);
-      expect(result?.proposedChanges[0].file).toBe('cypress/e2e/test.cy.ts');
-      expect(result?.proposedChanges[1].file).toBe('cypress/support/helpers.ts');
+      expect(result?.fix.proposedChanges).toHaveLength(2);
+      expect(result?.fix.proposedChanges[0].file).toBe('cypress/e2e/test.cy.ts');
+      expect(result?.fix.proposedChanges[1].file).toBe('cypress/support/helpers.ts');
     });
 
     it('should fetch each target file only once when multiple changes target it', async () => {
@@ -335,8 +325,7 @@ export function helperB() {
   return 'b';
 }`;
 
-      const mockGenerateWithCustomPrompt = jest.fn().mockResolvedValue(
-        JSON.stringify({
+      const mockGenerateWithCustomPrompt = jest.fn().mockResolvedValue({ text: JSON.stringify({
           confidence: 85,
           reasoning: 'Two changes in same helper file',
           changes: [
@@ -357,8 +346,7 @@ export function helperB() {
           ],
           evidence: ['Return values changed'],
           rootCause: 'Outdated values',
-        })
-      );
+        }), responseId: 'mock-resp-id' });
 
       const mockGetContent = jest.fn().mockImplementation(({ path }: { path: string }) => {
         if (path === 'cypress/e2e/test.cy.ts') {
@@ -388,7 +376,7 @@ export function helperB() {
       const result = await agentWithSource.generateFixRecommendation(baseContext);
 
       expect(result).not.toBeNull();
-      expect(result?.proposedChanges).toHaveLength(2);
+      expect(result?.fix.proposedChanges).toHaveLength(2);
 
       const helperFetches = mockGetContent.mock.calls.filter(
         (call: any[]) => call[0].path === 'cypress/support/helpers.ts'
@@ -397,8 +385,7 @@ export function helperB() {
     });
 
     it('should keep valid changes and discard hallucinated ones', async () => {
-      const mockGenerateWithCustomPrompt = jest.fn().mockResolvedValue(
-        JSON.stringify({
+      const mockGenerateWithCustomPrompt = jest.fn().mockResolvedValue({ text: JSON.stringify({
           confidence: 85,
           reasoning: 'Update selectors',
           changes: [
@@ -419,8 +406,7 @@ export function helperB() {
           ],
           evidence: ['Selector mismatch'],
           rootCause: 'Selector changed',
-        })
-      );
+        }), responseId: 'mock-resp-id' });
 
       const mockOctokit = {
         repos: {
@@ -451,8 +437,8 @@ export function helperB() {
 
       // Should keep only the valid change
       expect(result).not.toBeNull();
-      expect(result?.proposedChanges).toHaveLength(1);
-      expect(result?.proposedChanges[0].oldCode).toContain('submit-btn');
+      expect(result?.fix.proposedChanges).toHaveLength(1);
+      expect(result?.fix.proposedChanges[0].oldCode).toContain('submit-btn');
     });
   });
 
@@ -472,8 +458,7 @@ export function helperB() {
     };
 
     it('should generate fix recommendation for high confidence response', async () => {
-      mockGenerateWithCustomPrompt.mockResolvedValue(
-        JSON.stringify({
+      mockGenerateWithCustomPrompt.mockResolvedValue({ text: JSON.stringify({
           confidence: 85,
           reasoning: 'Selector has changed in the application',
           changes: [{
@@ -485,28 +470,25 @@ export function helperB() {
           }],
           evidence: ['Button selector changed in recent commit'],
           rootCause: 'Selector mismatch'
-        })
-      );
+        }), responseId: 'mock-resp-id' });
 
       const result = await agent.generateFixRecommendation(baseContext);
 
       expect(result).not.toBeNull();
-      expect(result?.confidence).toBe(85);
-      expect(result?.proposedChanges).toHaveLength(1);
-      expect(result?.evidence).toContain('Button selector changed in recent commit');
-      expect(result?.summary).toContain('Fix Recommendation');
+      expect(result?.fix.confidence).toBe(85);
+      expect(result?.fix.proposedChanges).toHaveLength(1);
+      expect(result?.fix.evidence).toContain('Button selector changed in recent commit');
+      expect(result?.fix.summary).toContain('Fix Recommendation');
     });
 
     it('should return null for low confidence response', async () => {
-      mockGenerateWithCustomPrompt.mockResolvedValue(
-        JSON.stringify({
+      mockGenerateWithCustomPrompt.mockResolvedValue({ text: JSON.stringify({
           confidence: 30,
           reasoning: 'Not enough information',
           changes: [],
           evidence: [],
           rootCause: 'Unknown'
-        })
-      );
+        }), responseId: 'mock-resp-id' });
 
       const result = await agent.generateFixRecommendation(baseContext);
 
@@ -514,16 +496,14 @@ export function helperB() {
     });
 
     it('should handle non-JSON response gracefully', async () => {
-      mockGenerateWithCustomPrompt.mockResolvedValue(
-        'This is a plain text response suggesting to update the selector'
-      );
+      mockGenerateWithCustomPrompt.mockResolvedValue({ text: 'This is a plain text response suggesting to update the selector', responseId: 'mock-resp-id' });
 
       const result = await agent.generateFixRecommendation(baseContext);
 
       expect(result).not.toBeNull();
-      expect(result?.confidence).toBe(60); // Default confidence
-      expect(result?.reasoning).toContain('update the selector');
-      expect(result?.proposedChanges).toHaveLength(1); // Should extract basic change
+      expect(result?.fix.confidence).toBe(60); // Default confidence
+      expect(result?.fix.reasoning).toContain('update the selector');
+      expect(result?.fix.proposedChanges).toHaveLength(1); // Should extract basic change
     });
 
     it('should generate appropriate fix for TIMEOUT errors', async () => {
@@ -541,7 +521,7 @@ export function helperB() {
       const result = await agent.generateFixRecommendation(timeoutContext);
 
       expect(result).not.toBeNull();
-      expect(result?.proposedChanges[0]?.newCode).toContain('wait');
+      expect(result?.fix.proposedChanges[0]?.newCode).toContain('wait');
     });
 
     it('should handle API errors gracefully', async () => {
@@ -553,19 +533,17 @@ export function helperB() {
     });
 
     it('should include selector in summary when available', async () => {
-      mockGenerateWithCustomPrompt.mockResolvedValue(
-        JSON.stringify({
+      mockGenerateWithCustomPrompt.mockResolvedValue({ text: JSON.stringify({
           confidence: 75,
           reasoning: 'Fix needed',
           changes: [],
           evidence: [],
           rootCause: 'Selector issue'
-        })
-      );
+        }), responseId: 'mock-resp-id' });
 
       const result = await agent.generateFixRecommendation(baseContext);
 
-      expect(result?.summary).toContain('[data-testid="submit-btn"]');
+      expect(result?.fix.summary).toContain('[data-testid="submit-btn"]');
     });
   });
 });

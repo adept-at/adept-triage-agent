@@ -6,8 +6,8 @@ class ReviewAgent extends base_agent_1.BaseAgent {
     constructor(openaiClient, config) {
         super(openaiClient, 'ReviewAgent', config);
     }
-    async execute(input, context) {
-        return this.executeWithTimeout(input, context);
+    async execute(input, context, previousResponseId) {
+        return this.executeWithTimeout(input, context, previousResponseId);
     }
     getSystemPrompt() {
         return `You are a senior QA engineer reviewing proposed test fixes.

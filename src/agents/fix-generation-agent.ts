@@ -89,9 +89,10 @@ export class FixGenerationAgent extends BaseAgent<
    */
   async execute(
     input: FixGenerationInput,
-    context: AgentContext
+    context: AgentContext,
+    previousResponseId?: string
   ): Promise<AgentResult<FixGenerationOutput>> {
-    return this.executeWithTimeout(input, context);
+    return this.executeWithTimeout(input, context, previousResponseId);
   }
 
   /**

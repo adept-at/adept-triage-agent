@@ -24,7 +24,7 @@ export interface AnalysisInput {
 }
 export declare class AnalysisAgent extends BaseAgent<AnalysisInput, AnalysisOutput> {
     constructor(openaiClient: OpenAIClient, config?: Partial<AgentConfig>);
-    execute(input: AnalysisInput, context: AgentContext): Promise<AgentResult<AnalysisOutput>>;
+    execute(input: AnalysisInput, context: AgentContext, previousResponseId?: string): Promise<AgentResult<AnalysisOutput>>;
     protected getSystemPrompt(): string;
     protected buildUserPrompt(input: AnalysisInput, context: AgentContext): string;
     protected parseResponse(response: string): AnalysisOutput | null;

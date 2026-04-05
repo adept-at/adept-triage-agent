@@ -92,7 +92,7 @@ describe('FixGenerationAgent', () => {
 
       mockOpenAIClient.generateWithCustomPrompt = jest
         .fn()
-        .mockResolvedValue(JSON.stringify(mockResponse));
+        .mockResolvedValue({ text: JSON.stringify(mockResponse), responseId: 'mock-resp-id' });
 
       const context = createAgentContext({
         errorMessage: 'Element not found: [data-testid="submit"]',
@@ -145,7 +145,7 @@ describe('FixGenerationAgent', () => {
 
       mockOpenAIClient.generateWithCustomPrompt = jest
         .fn()
-        .mockResolvedValue(JSON.stringify(mockResponse));
+        .mockResolvedValue({ text: JSON.stringify(mockResponse), responseId: 'mock-resp-id' });
 
       const context = createAgentContext({
         errorMessage: 'Error',
@@ -186,7 +186,7 @@ describe('FixGenerationAgent', () => {
 
       mockOpenAIClient.generateWithCustomPrompt = jest
         .fn()
-        .mockResolvedValue(JSON.stringify(mockResponse));
+        .mockResolvedValue({ text: JSON.stringify(mockResponse), responseId: 'mock-resp-id' });
 
       const context = createAgentContext({
         errorMessage: 'Error',
@@ -208,16 +208,17 @@ describe('FixGenerationAgent', () => {
     });
 
     it('should fail when no changes are generated', async () => {
-      mockOpenAIClient.generateWithCustomPrompt = jest.fn().mockResolvedValue(
-        JSON.stringify({
+      mockOpenAIClient.generateWithCustomPrompt = jest.fn().mockResolvedValue({
+        text: JSON.stringify({
           changes: [],
           confidence: 50,
           summary: 'No fix possible',
           reasoning: 'Cannot determine fix',
           evidence: [],
           risks: [],
-        })
-      );
+        }),
+        responseId: 'mock-resp-id',
+      });
 
       const context = createAgentContext({
         errorMessage: 'Error',
@@ -237,8 +238,8 @@ describe('FixGenerationAgent', () => {
     });
 
     it('should fail when change is missing required fields', async () => {
-      mockOpenAIClient.generateWithCustomPrompt = jest.fn().mockResolvedValue(
-        JSON.stringify({
+      mockOpenAIClient.generateWithCustomPrompt = jest.fn().mockResolvedValue({
+        text: JSON.stringify({
           changes: [
             {
               file: 'test.cy.ts',
@@ -251,8 +252,9 @@ describe('FixGenerationAgent', () => {
           reasoning: 'Reason',
           evidence: [],
           risks: [],
-        })
-      );
+        }),
+        responseId: 'mock-resp-id',
+      });
 
       const context = createAgentContext({
         errorMessage: 'Error',
@@ -294,7 +296,7 @@ describe('FixGenerationAgent', () => {
 
       mockOpenAIClient.generateWithCustomPrompt = jest
         .fn()
-        .mockResolvedValue(JSON.stringify(mockResponse));
+        .mockResolvedValue({ text: JSON.stringify(mockResponse), responseId: 'mock-resp-id' });
 
       const context = createAgentContext({
         errorMessage: 'Element not found: [aria-label="Transcript"]',
@@ -347,7 +349,7 @@ describe('FixGenerationAgent', () => {
 
       mockOpenAIClient.generateWithCustomPrompt = jest
         .fn()
-        .mockResolvedValue(JSON.stringify(mockResponse));
+        .mockResolvedValue({ text: JSON.stringify(mockResponse), responseId: 'mock-resp-id' });
 
       const context = createAgentContext({
         errorMessage: 'Error',

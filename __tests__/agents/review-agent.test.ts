@@ -73,7 +73,7 @@ describe('ReviewAgent', () => {
 
       mockOpenAIClient.generateWithCustomPrompt = jest
         .fn()
-        .mockResolvedValue(JSON.stringify(mockResponse));
+        .mockResolvedValue({ text: JSON.stringify(mockResponse), responseId: 'mock-resp-id' });
 
       const context = createAgentContext({
         errorMessage: 'Element not found',
@@ -113,7 +113,7 @@ describe('ReviewAgent', () => {
 
       mockOpenAIClient.generateWithCustomPrompt = jest
         .fn()
-        .mockResolvedValue(JSON.stringify(mockResponse));
+        .mockResolvedValue({ text: JSON.stringify(mockResponse), responseId: 'mock-resp-id' });
 
       const context = createAgentContext({
         errorMessage: 'Error',
@@ -155,7 +155,7 @@ describe('ReviewAgent', () => {
 
       mockOpenAIClient.generateWithCustomPrompt = jest
         .fn()
-        .mockResolvedValue(JSON.stringify(mockResponse));
+        .mockResolvedValue({ text: JSON.stringify(mockResponse), responseId: 'mock-resp-id' });
 
       const context = createAgentContext({
         errorMessage: 'Error',
@@ -192,7 +192,7 @@ describe('ReviewAgent', () => {
 
       mockOpenAIClient.generateWithCustomPrompt = jest
         .fn()
-        .mockResolvedValue(JSON.stringify(mockResponse));
+        .mockResolvedValue({ text: JSON.stringify(mockResponse), responseId: 'mock-resp-id' });
 
       const context = createAgentContext({
         errorMessage: 'Error',
@@ -249,7 +249,7 @@ describe('ReviewAgent', () => {
 
       mockOpenAIClient.generateWithCustomPrompt = jest
         .fn()
-        .mockResolvedValue(JSON.stringify(mockResponse));
+        .mockResolvedValue({ text: JSON.stringify(mockResponse), responseId: 'mock-resp-id' });
 
       const context = createAgentContext({
         errorMessage: 'Element not found',
@@ -290,7 +290,7 @@ describe('ReviewAgent', () => {
 
       mockOpenAIClient.generateWithCustomPrompt = jest
         .fn()
-        .mockResolvedValue(JSON.stringify(mockResponse));
+        .mockResolvedValue({ text: JSON.stringify(mockResponse), responseId: 'mock-resp-id' });
 
       const context = createAgentContext({
         errorMessage: 'Error',

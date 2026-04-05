@@ -70,7 +70,7 @@ class AgentOrchestrator {
         this.fixGenerationAgent = new fix_generation_agent_1.FixGenerationAgent(openaiClient);
         this.reviewAgent = new review_agent_1.ReviewAgent(openaiClient);
     }
-    async orchestrate(context, errorData) {
+    async orchestrate(context, errorData, previousResponseId) {
         const startTime = Date.now();
         const agentResults = {};
         let iterations = 0;
@@ -82,7 +82,7 @@ class AgentOrchestrator {
                     reject(new Error(`Orchestration timed out after ${this.config.totalTimeoutMs}ms`));
                 }, this.config.totalTimeoutMs);
             });
-            const pipelinePromise = this.runPipeline(context, errorData, agentResults);
+            const pipelinePromise = this.runPipeline(context, errorData, agentResults, previousResponseId);
             const result = await Promise.race([pipelinePromise, timeoutPromise]);
             clearTimeout(timeoutId);
             iterations = result.iterations;
@@ -95,6 +95,7 @@ class AgentOrchestrator {
                     totalTimeMs,
                     iterations,
                     approach: 'agentic',
+                    lastResponseId: result.lastResponseId,
                     agentResults,
                 };
             }
@@ -133,15 +134,18 @@ class AgentOrchestrator {
             };
         }
     }
-    async runPipeline(context, _errorData, agentResults) {
+    async runPipeline(context, _errorData, agentResults, previousResponseId) {
         let iterations = 0;
+        let lastResponseId = previousResponseId;
         core.info('📊 Step 1: Running Analysis Agent...');
-        const analysisResult = await this.analysisAgent.execute({}, context);
+        const analysisResult = await this.analysisAgent.execute({}, context, lastResponseId);
         agentResults.analysis = analysisResult;
+        lastResponseId = analysisResult.responseId ?? lastResponseId;
         if (!analysisResult.success || !analysisResult.data) {
             return {
                 error: `Analysis agent failed: ${analysisResult.error}`,
                 iterations,
+                lastResponseId,
             };
         }
         const analysis = analysisResult.data;
@@ -177,12 +181,14 @@ class AgentOrchestrator {
         const investigationResult = await this.investigationAgent.execute({
             analysis,
             codeContext: codeReadingResult.data,
-        }, context);
+        }, context, lastResponseId);
         agentResults.investigation = investigationResult;
+        lastResponseId = investigationResult.responseId ?? lastResponseId;
         if (!investigationResult.success || !investigationResult.data) {
             return {
                 error: `Investigation agent failed: ${investigationResult.error}`,
                 iterations,
+                lastResponseId,
             };
         }
         const investigation = investigationResult.data;
@@ -203,8 +209,9 @@ class AgentOrchestrator {
                 analysis,
                 investigation,
                 previousFeedback: reviewFeedback,
-            }, context);
+            }, context, lastResponseId);
             agentResults.fixGeneration = fixGenResult;
+            lastResponseId = fixGenResult.responseId ?? lastResponseId;
             if (!fixGenResult.success || !fixGenResult.data) {
                 core.warning(`Fix generation failed on iteration ${iterations}`);
                 continue;
@@ -264,8 +271,9 @@ class AgentOrchestrator {
                     proposedFix: lastFix,
                     analysis,
                     codeContext: codeReadingResult.data,
-                }, context);
+                }, context, lastResponseId);
                 agentResults.review = reviewResult;
+                lastResponseId = reviewResult.responseId ?? lastResponseId;
                 if (reviewResult.success && reviewResult.data) {
                     const review = reviewResult.data;
                     core.info(`   Approved: ${review.approved}`);
@@ -283,6 +291,7 @@ class AgentOrchestrator {
                         return {
                             fix: this.convertToFixRecommendation(lastFix),
                             iterations,
+                            lastResponseId,
                         };
                     }
                     else {
@@ -298,6 +307,7 @@ class AgentOrchestrator {
                 return {
                     fix: this.convertToFixRecommendation(lastFix),
                     iterations,
+                    lastResponseId,
                 };
             }
         }
@@ -308,12 +318,14 @@ class AgentOrchestrator {
             return {
                 fix: this.convertToFixRecommendation(lastFix),
                 iterations,
+                lastResponseId,
             };
         }
         core.error(`Max iterations (${this.config.maxIterations}) reached without a viable fix (last confidence: ${lastFix?.confidence ?? 'N/A'}%, threshold: ${this.config.minConfidence}%)`);
         return {
             error: `Max iterations (${this.config.maxIterations}) reached without valid fix`,
             iterations,
+            lastResponseId,
         };
     }
     convertToFixRecommendation(fix) {
@@ -538,8 +550,8 @@ class AnalysisAgent extends base_agent_1.BaseAgent {
     constructor(openaiClient, config) {
         super(openaiClient, 'AnalysisAgent', config);
     }
-    async execute(input, context) {
-        return this.executeWithTimeout(input, context);
+    async execute(input, context, previousResponseId) {
+        return this.executeWithTimeout(input, context, previousResponseId);
     }
     getSystemPrompt() {
         return `You are an expert test failure analyst specializing in end-to-end tests (Cypress and WebDriverIO).
@@ -777,7 +789,7 @@ class BaseAgent {
         this.agentName = agentName;
         this.config = { ...exports.DEFAULT_AGENT_CONFIG, ...config };
     }
-    async executeWithTimeout(input, context) {
+    async executeWithTimeout(input, context, previousResponseId) {
         const startTime = Date.now();
         let apiCalls = 0;
         let timeoutId;
@@ -788,9 +800,9 @@ class BaseAgent {
                     reject(new Error(`Agent timed out after ${this.config.timeoutMs}ms`));
                 }, this.config.timeoutMs);
             });
-            const taskPromise = this.runAgentTask(input, context);
+            const taskPromise = this.runAgentTask(input, context, previousResponseId);
             apiCalls++;
-            const result = await Promise.race([taskPromise, timeoutPromise]);
+            const { data: result, responseId } = await Promise.race([taskPromise, timeoutPromise]);
             clearTimeout(timeoutId);
             const executionTimeMs = Date.now() - startTime;
             core.info(`[${this.agentName}] Completed in ${executionTimeMs}ms`);
@@ -799,6 +811,7 @@ class BaseAgent {
                 data: result,
                 executionTimeMs,
                 apiCalls,
+                responseId,
             };
         }
         catch (error) {
@@ -814,7 +827,7 @@ class BaseAgent {
             };
         }
     }
-    async runAgentTask(input, context) {
+    async runAgentTask(input, context, previousResponseId) {
         const systemPrompt = this.getSystemPrompt();
         const userPrompt = this.buildUserPrompt(input, context);
         if (this.config.verbose) {
@@ -834,17 +847,18 @@ class BaseAgent {
                 }
             }
         }
-        const response = await this.openaiClient.generateWithCustomPrompt({
+        const { text, responseId } = await this.openaiClient.generateWithCustomPrompt({
             systemPrompt,
             userContent: content,
             temperature: this.config.temperature,
             responseAsJson: true,
+            previousResponseId,
         });
-        const parsed = this.parseResponse(response);
+        const parsed = this.parseResponse(text);
         if (!parsed) {
             throw new Error('Failed to parse agent response');
         }
-        return parsed;
+        return { data: parsed, responseId };
     }
     log(message, level = 'info') {
         const formattedMessage = `[${this.agentName}] ${message}`;
@@ -896,7 +910,7 @@ class CodeReadingAgent extends base_agent_1.BaseAgent {
         super(openaiClient, 'CodeReadingAgent', config);
         this.sourceFetchContext = sourceFetchContext;
     }
-    async execute(input, context) {
+    async execute(input, context, _previousResponseId) {
         const startTime = Date.now();
         let apiCalls = 0;
         try {
@@ -1368,8 +1382,8 @@ class FixGenerationAgent extends base_agent_1.BaseAgent {
             maxTokens: 6000,
         });
     }
-    async execute(input, context) {
-        return this.executeWithTimeout(input, context);
+    async execute(input, context, previousResponseId) {
+        return this.executeWithTimeout(input, context, previousResponseId);
     }
     getSystemPrompt() {
         return `You are an expert test engineer who specializes in fixing failing E2E tests (Cypress or WebDriverIO).
@@ -1761,8 +1775,8 @@ class InvestigationAgent extends base_agent_1.BaseAgent {
     constructor(openaiClient, config) {
         super(openaiClient, 'InvestigationAgent', config);
     }
-    async execute(input, context) {
-        return this.executeWithTimeout(input, context);
+    async execute(input, context, previousResponseId) {
+        return this.executeWithTimeout(input, context, previousResponseId);
     }
     getSystemPrompt() {
         return `You are an expert investigator for test failures. Your job is to cross-reference error analysis with actual code to identify the specific cause of failures.
@@ -1928,8 +1942,8 @@ class ReviewAgent extends base_agent_1.BaseAgent {
     constructor(openaiClient, config) {
         super(openaiClient, 'ReviewAgent', config);
     }
-    async execute(input, context) {
-        return this.executeWithTimeout(input, context);
+    async execute(input, context, previousResponseId) {
+        return this.executeWithTimeout(input, context, previousResponseId);
     }
     getSystemPrompt() {
         return `You are a senior QA engineer reviewing proposed test fixes.
@@ -3215,7 +3229,8 @@ async function run() {
             autoFixResult = loopResult.autoFixResult;
         }
         else {
-            fixRecommendation = await generateFixRecommendation(inputs, repoDetails, errorData, openaiClient, octokit);
+            const singleResult = await generateFixRecommendation(inputs, repoDetails, errorData, openaiClient, octokit);
+            fixRecommendation = singleResult?.fix ?? null;
             if (fixRecommendation && inputs.enableAutoFix) {
                 const autoFixTargetRepo = resolveAutoFixTargetRepo(inputs);
                 autoFixResult = await attemptAutoFix(inputs, fixRecommendation, octokit, autoFixTargetRepo, errorData);
@@ -3282,7 +3297,7 @@ function resolveRepository(inputs) {
 function resolveAutoFixTargetRepo(inputs) {
     return (0, repo_utils_1.parseRepoString)(inputs.autoFixTargetRepo, 'AUTO_FIX_TARGET_REPO');
 }
-async function generateFixRecommendation(inputs, repoDetails, errorData, openaiClient, octokit, previousAttempt) {
+async function generateFixRecommendation(inputs, repoDetails, errorData, openaiClient, octokit, previousAttempt, previousResponseId) {
     try {
         const iterLabel = previousAttempt
             ? ` (iteration ${previousAttempt.iteration + 1})`
@@ -3309,14 +3324,14 @@ async function generateFixRecommendation(inputs, repoDetails, errorData, openaiC
         }, {
             enableAgenticRepair: inputs.enableAgenticRepair,
         });
-        const recommendation = await repairAgent.generateFixRecommendation(repairContext, errorData, previousAttempt);
-        if (recommendation) {
-            core.info(`✅ Fix recommendation generated with ${recommendation.confidence}% confidence`);
+        const result = await repairAgent.generateFixRecommendation(repairContext, errorData, previousAttempt, previousResponseId);
+        if (result) {
+            core.info(`✅ Fix recommendation generated with ${result.fix.confidence}% confidence`);
         }
         else {
             core.info('❌ Could not generate fix recommendation');
         }
-        return recommendation;
+        return result;
     }
     catch (error) {
         core.warning(`Failed to generate fix recommendation: ${error}`);
@@ -3331,6 +3346,7 @@ async function iterativeFixValidateLoop(inputs, repoDetails, autoFixTargetRepo, 
     const failedFixFingerprints = new Set();
     const minConfidence = inputs.autoFixMinConfidence || constants_1.AUTO_FIX.DEFAULT_MIN_CONFIDENCE;
     const baseBranch = inputs.branch || inputs.autoFixBaseBranch || 'main';
+    let lastResponseId;
     const validator = new local_fix_validator_1.LocalFixValidator({
         owner: autoFixTargetRepo.owner,
         repo: autoFixTargetRepo.repo,
@@ -3346,11 +3362,14 @@ async function iterativeFixValidateLoop(inputs, repoDetails, autoFixTargetRepo, 
         await validator.setup();
         for (let iteration = 0; iteration < maxIterations; iteration++) {
             core.info(`\n${'='.repeat(60)}\n🔄 Fix-Validate iteration ${iteration + 1}/${maxIterations}\n${'='.repeat(60)}`);
-            fixRecommendation = await generateFixRecommendation(inputs, repoDetails, errorData, openaiClient, octokit, previousAttempt);
-            if (!fixRecommendation) {
+            const fixResult = await generateFixRecommendation(inputs, repoDetails, errorData, openaiClient, octokit, previousAttempt, lastResponseId);
+            if (!fixResult) {
+                fixRecommendation = null;
                 core.warning(`Iteration ${iteration + 1}: could not generate fix recommendation`);
                 break;
             }
+            fixRecommendation = fixResult.fix;
+            lastResponseId = fixResult.lastResponseId ?? lastResponseId;
             if (fixRecommendation.confidence < minConfidence ||
                 !fixRecommendation.proposedChanges?.length) {
                 core.info(`Iteration ${iteration + 1}: fix rejected — confidence ${fixRecommendation.confidence}% below ${minConfidence}% or no changes`);
@@ -3815,7 +3834,7 @@ class OpenAIClient {
                 }
                 const result = this.parseResponse(content);
                 this.validateResponse(result);
-                return result;
+                return { ...result, responseId: response.id };
             }
             catch (error) {
                 core.warning(`OpenAI API attempt ${attempt} failed: ${error}`);
@@ -4289,12 +4308,13 @@ Changed Product Files:
             input,
             max_output_tokens: constants_1.OPENAI.MAX_COMPLETION_TOKENS,
             text: params.responseAsJson ? { format: { type: 'json_object' } } : undefined,
+            ...(params.previousResponseId ? { previous_response_id: params.previousResponseId } : {}),
         });
         const content = response.output_text;
         if (!content) {
             throw new Error('Empty response from OpenAI');
         }
-        return content;
+        return { text: content, responseId: response.id };
     }
 }
 exports.OpenAIClient = OpenAIClient;
@@ -5012,26 +5032,27 @@ class SimplifiedRepairAgent {
             });
         }
     }
-    async generateFixRecommendation(repairContext, errorData, previousAttempt) {
+    async generateFixRecommendation(repairContext, errorData, previousAttempt, previousResponseId) {
         try {
             core.info('🔧 Generating fix recommendation...');
             if (this.config.enableAgenticRepair && this.orchestrator) {
                 core.info('🤖 Attempting agentic repair...');
-                const agenticResult = await this.tryAgenticRepair(repairContext, errorData, previousAttempt);
+                const agenticResult = await this.tryAgenticRepair(repairContext, errorData, previousAttempt, previousResponseId);
                 if (agenticResult) {
-                    core.info(`✅ Agentic repair succeeded with ${agenticResult.confidence}% confidence`);
+                    core.info(`✅ Agentic repair succeeded with ${agenticResult.fix.confidence}% confidence`);
                     return agenticResult;
                 }
                 core.info('🔄 Agentic repair did not produce a fix, falling back to single-shot...');
             }
-            return await this.singleShotRepair(repairContext, errorData, previousAttempt);
+            const singleShotFix = await this.singleShotRepair(repairContext, errorData, previousAttempt);
+            return singleShotFix ? { fix: singleShotFix } : null;
         }
         catch (error) {
             core.warning(`Failed to generate fix recommendation: ${error}`);
             return null;
         }
     }
-    async tryAgenticRepair(repairContext, errorData, previousAttempt) {
+    async tryAgenticRepair(repairContext, errorData, previousAttempt, previousResponseId) {
         if (!this.orchestrator) {
             return null;
         }
@@ -5072,7 +5093,7 @@ class SimplifiedRepairAgent {
                     : undefined,
                 framework: errorData?.framework,
             });
-            const result = await this.orchestrator.orchestrate(agentContext, errorData);
+            const result = await this.orchestrator.orchestrate(agentContext, errorData, previousResponseId);
             if (result.success && result.fix) {
                 core.info(`🤖 Agentic approach: ${result.approach}, iterations: ${result.iterations}, time: ${result.totalTimeMs}ms`);
                 for (const change of result.fix.proposedChanges) {
@@ -5082,7 +5103,7 @@ class SimplifiedRepairAgent {
                         change.file = cleaned;
                     }
                 }
-                return result.fix;
+                return { fix: result.fix, lastResponseId: result.lastResponseId };
             }
             core.info(`🤖 Agentic approach failed: ${result.error || 'No fix generated'}`);
             return null;
@@ -5566,7 +5587,7 @@ You MUST respond in strict JSON only with this schema:
                     }
                 }
             }
-            const content = await this.openaiClient.generateWithCustomPrompt({
+            const { text: content } = await this.openaiClient.generateWithCustomPrompt({
                 systemPrompt,
                 userContent: userParts,
                 responseAsJson: true,

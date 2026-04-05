@@ -159,7 +159,7 @@ describe('Fix Recommendation Integration', () => {
         indicators: ['indicator1'],
       });
 
-      mockGenerateFixRecommendation.mockResolvedValue(fixRecommendation);
+      mockGenerateFixRecommendation.mockResolvedValue({ fix: fixRecommendation });
 
       // Run the action
       await run();
@@ -388,7 +388,7 @@ describe('Fix Recommendation Integration', () => {
         reasoning: 'Generic fix',
       };
 
-      mockGenerateFixRecommendation.mockResolvedValue(fixRecommendation);
+      mockGenerateFixRecommendation.mockResolvedValue({ fix: fixRecommendation });
 
       // Run the action
       await run();
@@ -441,7 +441,7 @@ describe('Fix Recommendation Integration', () => {
         indicators: [],
       });
 
-      mockGenerateFixRecommendation.mockResolvedValue(fixRecommendation);
+      mockGenerateFixRecommendation.mockResolvedValue({ fix: fixRecommendation });
 
       // Run the action
       await run();

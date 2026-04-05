@@ -1,0 +1,462 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Adept Triage Agent — Agent Prompts</title>
+<link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Instrument+Serif&display=swap" rel="stylesheet">
+<style>
+  :root { --bg: #0d0d1a; --surface: #141428; --s2: #1a1a35; --border: #2a2a50; --text: #c8c8e0; --dim: #808098; --teal: #4ecdc4; --purple: #a78bfa; --yellow: #ffe66d; --red: #ff6b6b; }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: var(--bg); color: var(--text); font-family: 'DM Mono', monospace; line-height: 1.6; max-width: 920px; margin: 0 auto; }
+
+  .header { padding: 2.5rem 2rem 1.5rem; border-bottom: 1px solid var(--border); }
+  .header h1 { font-family: 'Instrument Serif', serif; font-size: 2rem; color: var(--teal); font-weight: 400; }
+  .header p { font-size: 0.8rem; color: var(--dim); margin-top: 0.3rem; }
+
+  .agent { margin: 2rem 1.5rem; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); overflow: hidden; }
+  .agent-head { padding: 1rem 1.2rem; border-bottom: 1px solid var(--border); }
+  .agent-head h2 { font-family: 'Instrument Serif', serif; font-size: 1.2rem; font-weight: 400; color: var(--purple); }
+  .agent-head .sub { font-size: 0.72rem; color: var(--dim); margin-top: 0.2rem; }
+
+  .block { border-top: 1px solid var(--border); }
+  .block-label { padding: 0.5rem 1.2rem; font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.1em; }
+  .bl-system { color: var(--purple); background: #110f24; }
+  .bl-user { color: var(--teal); background: #071a18; }
+  .bl-response { color: var(--yellow); background: #1a1800; }
+  .bl-inject { color: var(--red); background: #1a0f0f; }
+
+  details { border-top: 1px solid var(--border); }
+  summary { padding: 0.5rem 1.2rem; cursor: pointer; font-size: 0.72rem; color: var(--dim); list-style: none; }
+  summary::-webkit-details-marker { display: none; }
+  summary::before { content: '\25B6 '; font-size: 0.6rem; }
+  details[open] summary::before { content: '\25BC '; }
+
+  pre { background: #0a0a18; border: 1px solid var(--border); border-radius: 4px; padding: 0.8rem; font-size: 0.68rem; line-height: 1.5; overflow-x: auto; white-space: pre-wrap; word-break: break-word; color: var(--text); margin: 0 1.2rem 0.8rem; }
+
+  .inject { background: #1a0a0a; border: 1px solid #4a2020; border-left: 3px solid var(--red); border-radius: 0 4px 4px 0; padding: 0.5rem 0.8rem; margin: 0.3rem 1.2rem 0.8rem; font-size: 0.72rem; }
+  .inject strong { color: var(--red); }
+  .inject code { color: var(--yellow); font-size: 0.7rem; }
+
+  .arrow { text-align: center; padding: 0.6rem; color: var(--dim); }
+  .arrow .line { font-size: 1.5rem; }
+  .arrow .label { font-size: 0.7rem; color: var(--teal); margin-top: 0.2rem; }
+
+  .footer { padding: 2rem; text-align: center; font-size: 0.72rem; color: var(--dim); border-top: 1px solid var(--border); margin-top: 2rem; }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1>Agent Prompts and Data Flow</h1>
+  <p>For each agent: the system prompt, the user prompt (showing exactly where the previous agent's JSON response is injected), and the JSON response that feeds the next agent.</p>
+</div>
+
+<!-- ===== CLASSIFICATION AGENT ===== -->
+<div class="agent">
+  <div class="agent-head">
+    <h2>Classification Agent</h2>
+    <div class="sub">src/openai-client.ts &mdash; First LLM call. Determines TEST_ISSUE, PRODUCT_ISSUE, or INCONCLUSIVE.</div>
+  </div>
+
+  <details>
+    <summary>System Prompt (permanent identity &mdash; same every run)</summary>
+    <pre>You are an expert at analyzing test failures and determining whether
+they are caused by issues in the test code itself (TEST_ISSUE),
+actual bugs in the product code (PRODUCT_ISSUE), or external
+execution/provider failures (INCONCLUSIVE).
+
+[TEST_ISSUE indicators: timing, selectors, overlays, flaky behavior...]
+[PRODUCT_ISSUE indicators: 500/404 errors, null refs, login not rendering...]
+[INCONCLUSIVE indicators: session terminated, browser crash...]
+[Screenshot analysis rules...]
+[CAUSAL CONSISTENCY RULE: hypothesis must match PR diff evidence]
+
+Respond with JSON: { verdict, reasoning, indicators, suggestedSourceLocations }</pre>
+  </details>
+
+  <details>
+    <summary>User Prompt (built from gathered data &mdash; unique each run)</summary>
+    <pre>Framework: webdriverio
+Test Name: should login and play video
+File: test/specs/skills/lms.video.plays.e2e.ts
+
+## PR Changes (test repo diff)
+[15 files changed: workflow version bumps only]
+
+## Product Repo Changes (adept-at/learn-webapp, last 5 commits)
+- src/components/skill/edit/Editor/plugins/PastePlugin.tsx (+26/-15)
+- src/pages/auth/InviteAccept.tsx (+14/-13)
+- src/components/Invite/Accept/Accept.tsx (+8/-14)
+
+Full Logs: [29,769 chars of test execution logs]
+
+Respond with your analysis as a JSON object.</pre>
+  </details>
+
+  <div class="block"><div class="block-label bl-response">JSON Response</div></div>
+  <pre>{
+  "verdict": "TEST_ISSUE",
+  "reasoning": "mux-player not clickable after 15s. PR only updates
+    workflow files. Product diff shows PastePlugin and InviteAccept
+    changes — unrelated to video playback.",
+  "indicators": ["clickability timeout", "test spec line 120",
+    "no app errors", "PR unrelated to test"]
+}</pre>
+</div>
+
+<div class="arrow">
+  <div class="line">&#8595;</div>
+  <div class="label">verdict = TEST_ISSUE, so orchestrator starts the 5-agent repair pipeline</div>
+</div>
+
+<!-- ===== ANALYSIS AGENT ===== -->
+<div class="agent">
+  <div class="agent-head">
+    <h2>Step 1: Analysis Agent</h2>
+    <div class="sub">src/agents/analysis-agent.ts &mdash; Classifies root cause into 9 categories.</div>
+  </div>
+
+  <details>
+    <summary>System Prompt</summary>
+    <pre>You are an expert test failure analyst for Cypress and WebDriverIO.
+
+Root Cause Categories:
+SELECTOR_MISMATCH, TIMING_ISSUE, STATE_DEPENDENCY, NETWORK_ISSUE,
+ELEMENT_VISIBILITY, ASSERTION_MISMATCH, DATA_DEPENDENCY,
+ENVIRONMENT_ISSUE, UNKNOWN
+
+Respond with JSON:
+{ rootCauseCategory, confidence, explanation, selectors,
+  elements, patterns, suggestedApproach }</pre>
+  </details>
+
+  <details open>
+    <summary>User Prompt &mdash; where does previous data come in?</summary>
+    <pre>Test: test/specs/skills/lms.video.plays.e2e.ts
+Framework: WebDriverIO
+Error: element ("mux-player") still not clickable after 15000ms
+
+[stack trace, test logs — from ErrorData gathered earlier]
+[PR diff — from GitHub API]
+[Product diff — from learn-webapp]</pre>
+    <div class="inject"><strong>No previous agent JSON here</strong> — this is the first agent in the pipeline. It receives the raw ErrorData (logs, diffs, screenshots) that was gathered before any agents ran.</div>
+  </details>
+
+  <div class="block"><div class="block-label bl-response">JSON Response</div></div>
+  <pre>{
+  "rootCauseCategory": "ELEMENT_VISIBILITY",
+  "confidence": 90,
+  "explanation": "mux-player exists but is not interactable
+    due to SCORM iframe context drift",
+  "selectors": ["mux-player"],
+  "patterns": { "hasVisibilityIssue": true, "hasTimeout": true },
+  "suggestedApproach": "re-establish frame context before interaction"
+}</pre>
+</div>
+
+<div class="arrow">
+  <div class="line">&#8595;</div>
+  <div class="label">Orchestrator takes this JSON and passes it to the next two agents</div>
+</div>
+
+<!-- ===== CODE READING AGENT ===== -->
+<div class="agent">
+  <div class="agent-head">
+    <h2>Step 2: Code Reading Agent</h2>
+    <div class="sub">src/agents/code-reading-agent.ts &mdash; No LLM. Fetches files via GitHub API.</div>
+  </div>
+
+  <div class="block"><div class="block-label bl-inject">What it receives from Analysis Agent</div></div>
+  <div class="inject">
+    The orchestrator passes <code>analysis.selectors</code> = <code>["mux-player"]</code> so the Code Reading Agent knows which elements to look for when finding related files.
+    <br><br>
+    From <code>agent-orchestrator.ts</code> line 228:
+    <br><code>codeReadingAgent.execute({ testFile, errorSelectors: analysis.selectors }, context)</code>
+  </div>
+
+  <div class="block"><div class="block-label bl-response">Output (not JSON from LLM &mdash; from GitHub API)</div></div>
+  <pre>Fetched 4 files:
+- test/specs/skills/lms.video.plays.e2e.ts (5270 chars) — the test file
+- test/pageobjects/adept.video.player.ts (25118 chars) — page object
+- wdio.conf.ts (18999 chars) — config
+- test/helpers/index.ts (1982 chars) — helpers
+
+Orchestrator then does:
+  context.sourceFileContent = addLineNumbers(testFileContent)
+  context.relatedFiles = Map of all fetched files</pre>
+  <div class="inject">
+    <strong>This enriches the shared context object.</strong> Every agent after this point sees <code>context.sourceFileContent</code> (the line-numbered test file) and <code>context.relatedFiles</code> (helpers, page objects) in their user prompts.
+  </div>
+</div>
+
+<div class="arrow">
+  <div class="line">&#8595;</div>
+  <div class="label">Orchestrator passes analysis JSON + code context to Investigation Agent</div>
+</div>
+
+<!-- ===== INVESTIGATION AGENT ===== -->
+<div class="agent">
+  <div class="agent-head">
+    <h2>Step 3: Investigation Agent</h2>
+    <div class="sub">src/agents/investigation-agent.ts &mdash; Cross-references analysis with actual code.</div>
+  </div>
+
+  <details>
+    <summary>System Prompt</summary>
+    <pre>You are an expert investigator for test failures.
+
+Investigation Process:
+1. Compare selectors — do they exist in the codebase?
+2. Trace changes — what recent changes could cause this?
+3. Check timing — is the test too fast/slow?
+4. Cross-reference — match error patterns with code
+
+Respond with JSON:
+{ findings[], isTestCodeFixable, recommendedApproach, selectorsToUpdate }</pre>
+  </details>
+
+  <details open>
+    <summary>User Prompt &mdash; where does previous agent JSON come in?</summary>
+    <div class="inject">
+      <strong>Analysis Agent JSON injected here.</strong> From <code>investigation-agent.ts</code> lines 166-183:
+      <br><br>
+      <code>input.analysis.rootCauseCategory</code> &rarr; "ELEMENT_VISIBILITY"<br>
+      <code>input.analysis.confidence</code> &rarr; 90<br>
+      <code>input.analysis.explanation</code> &rarr; "mux-player not interactable..."<br>
+      <code>input.analysis.selectors</code> &rarr; ["mux-player"]<br>
+      <code>input.analysis.patterns.hasVisibilityIssue</code> &rarr; true<br>
+      <code>input.analysis.patterns.hasTimeout</code> &rarr; true
+    </div>
+    <pre>### Error Analysis Results
+- Root Cause Category: ELEMENT_VISIBILITY        <-- from analysis JSON
+- Analysis Confidence: 90%                        <-- from analysis JSON
+- Explanation: mux-player not interactable...     <-- from analysis JSON
+
+### Identified Selectors
+- `mux-player`                                    <-- from analysis JSON
+
+### Detected Patterns
+- Timeout: true                                   <-- from analysis JSON
+- Visibility Issue: true                          <-- from analysis JSON
+
+### Test File Content
+```javascript
+  1: import VideoPlayer from '../../pageobjects...'  <-- from Code Reading
+  2: const launchCourse = ...                         <-- from Code Reading
+  ...
+120: await $('mux-player').waitForClickable();        <-- from Code Reading
+```
+
+### Related Files
+[page objects, helpers from Code Reading Agent]
+
+### Product Diff (learn-webapp)
+[PastePlugin.tsx, InviteAccept.tsx, Accept.tsx]</pre>
+  </details>
+
+  <div class="block"><div class="block-label bl-response">JSON Response</div></div>
+  <pre>{
+  "findings": [
+    { "type": "TIMING_GAP", "severity": "HIGH",
+      "description": "waitForClickable fails on mux-player because
+        SCORM iframe context drifts after navigation" }
+  ],
+  "isTestCodeFixable": true,
+  "recommendedApproach": "Re-establish window and iframe context
+    before interacting with mux-player. Use VideoPlayer helper."
+}</pre>
+</div>
+
+<div class="arrow">
+  <div class="line">&#8595;</div>
+  <div class="label">Orchestrator passes analysis JSON + investigation JSON + code to Fix Gen</div>
+</div>
+
+<!-- ===== FIX GENERATION AGENT ===== -->
+<div class="agent">
+  <div class="agent-head">
+    <h2>Step 4: Fix Generation Agent</h2>
+    <div class="sub">src/agents/fix-generation-agent.ts &mdash; Generates oldCode / newCode changes.</div>
+  </div>
+
+  <details>
+    <summary>System Prompt</summary>
+    <pre>You are an expert test engineer specializing in fixing E2E tests.
+
+CRITICAL — oldCode must be copied character-for-character from source.
+
+## WebDriverIO Fix Patterns
+[wait examples, multi-remote examples, selector examples]
+
+PRODUCT DIFF ANALYSIS (MANDATORY):
+If failure correlates with a product change, set confidence below 30.
+
+Respond with JSON:
+{ changes: [{ file, line, oldCode, newCode, justification }],
+  confidence, summary, reasoning }</pre>
+  </details>
+
+  <details open>
+    <summary>User Prompt &mdash; where do previous agent JSONs come in?</summary>
+    <div class="inject">
+      <strong>Both Analysis and Investigation Agent JSONs injected here.</strong> From <code>fix-generation-agent.ts</code> lines 272-284:
+      <br><br>
+      <code>input.analysis.rootCauseCategory</code> &rarr; "ELEMENT_VISIBILITY"<br>
+      <code>input.analysis.suggestedApproach</code> &rarr; "re-establish frame context"<br>
+      <code>input.investigation.isTestCodeFixable</code> &rarr; true<br>
+      <code>input.investigation.recommendedApproach</code> &rarr; "Use VideoPlayer helper"<br>
+      <code>input.investigation.selectorsToUpdate</code> &rarr; [{ current: "mux-player" }]
+    </div>
+    <pre>### Analysis Summary
+- Root Cause: ELEMENT_VISIBILITY                  <-- from Analysis JSON
+- Confidence: 90%                                  <-- from Analysis JSON
+- Suggested Approach: re-establish frame context   <-- from Analysis JSON
+
+### Investigation Findings
+- Is Test Code Fixable: true                       <-- from Investigation JSON
+- Recommended Approach: Use VideoPlayer helper      <-- from Investigation JSON
+- Selectors to Update: mux-player                  <-- from Investigation JSON
+
+### Source File (line-numbered)
+[full test file from Code Reading Agent]
+
+### Related Files
+[VideoPlayer page object, helpers, wdio.conf]
+
+### Product Diff
+[PastePlugin.tsx, InviteAccept.tsx, Accept.tsx]
+
+### Previous Review Feedback (if iteration 2+)
+[issues from Review Agent — e.g. "duplicate startVideo call"]</pre>
+  </details>
+
+  <div class="block"><div class="block-label bl-response">JSON Response</div></div>
+  <pre>{
+  "changes": [{
+    "file": "test/specs/skills/lms.video.plays.e2e.ts",
+    "line": 118,
+    "oldCode": "await $('mux-player').waitForClickable();\n...",
+    "newCode": "await browser.switchToWindow(handles[1]);\n
+      await browser.switchToFrame(null);\n..."
+  }],
+  "confidence": 91,
+  "summary": "Re-establish iframe context before interaction"
+}</pre>
+</div>
+
+<div class="arrow">
+  <div class="line">&#8595;</div>
+  <div class="label">Orchestrator passes analysis JSON + proposed fix JSON + source code to Review</div>
+</div>
+
+<!-- ===== REVIEW AGENT ===== -->
+<div class="agent">
+  <div class="agent-head">
+    <h2>Step 5: Review Agent</h2>
+    <div class="sub">src/agents/review-agent.ts &mdash; Approves or rejects with feedback.</div>
+  </div>
+
+  <details>
+    <summary>System Prompt</summary>
+    <pre>You are a senior QA engineer reviewing proposed test fixes.
+
+CRITICAL Issues (auto-reject):
+- oldCode doesn't match file, syntax errors, doesn't fix root cause,
+  reasoning contradicts PR diff
+
+WARNING Issues: suboptimal selectors, fragile timing
+
+Approve if: No CRITICAL issues AND fix addresses root cause
+Reject if: Any CRITICAL issues
+
+Respond with JSON: { approved, issues[], assessment, fixConfidence }</pre>
+  </details>
+
+  <details open>
+    <summary>User Prompt &mdash; where do previous agent JSONs come in?</summary>
+    <div class="inject">
+      <strong>Analysis JSON + Fix Generation JSON injected here.</strong> From <code>review-agent.ts</code> lines 146-159:
+      <br><br>
+      <code>input.analysis.rootCauseCategory</code> &rarr; "ELEMENT_VISIBILITY"<br>
+      <code>input.analysis.explanation</code> &rarr; "iframe context drift"<br>
+      <code>input.proposedFix.summary</code> &rarr; "Re-establish iframe context"<br>
+      <code>input.proposedFix.confidence</code> &rarr; 91<br>
+      <code>input.proposedFix.changes[0].oldCode</code> &rarr; the exact old code<br>
+      <code>input.proposedFix.changes[0].newCode</code> &rarr; the exact new code
+    </div>
+    <pre>### Root Cause Being Fixed
+- Category: ELEMENT_VISIBILITY                     <-- from Analysis JSON
+- Explanation: iframe context drift                <-- from Analysis JSON
+
+### Proposed Fix
+- Summary: Re-establish iframe context             <-- from Fix Gen JSON
+- Confidence: 91%                                   <-- from Fix Gen JSON
+
+### Code Changes
+Change 1: test/specs/skills/lms.video.plays.e2e.ts
+Old Code:                                           <-- from Fix Gen JSON
+  await $('mux-player').waitForClickable();
+  ...
+New Code:                                           <-- from Fix Gen JSON
+  await browser.switchToWindow(handles[1]);
+  await browser.switchToFrame(null);
+  ...
+
+### Original File Content (to verify oldCode matches)
+[line-numbered source from Code Reading Agent]
+
+### Product Diff
+[PastePlugin.tsx, InviteAccept.tsx — to verify reasoning consistency]</pre>
+  </details>
+
+  <div class="block"><div class="block-label bl-response">JSON Response</div></div>
+  <pre>{
+  "approved": true,
+  "issues": [
+    { "severity": "WARNING",
+      "description": "handles[1] assumes window order" }
+  ],
+  "assessment": "Fix re-establishes iframe context correctly.
+    Consistent with product diff: learn-webapp changes are
+    in invite/paste flows, not SCORM playback.",
+  "fixConfidence": 85
+}</pre>
+  <div class="inject">
+    <strong>If rejected:</strong> The <code>issues</code> array becomes the <code>previousFeedback</code> string sent back to Fix Generation Agent's user prompt for the next iteration. The orchestrator does this at line 308:<br>
+    <code>fixGenerationAgent.execute({ analysis, investigation, previousFeedback: reviewFeedback })</code>
+  </div>
+</div>
+
+<div class="arrow">
+  <div class="line">&#8595;</div>
+  <div class="label">approved = true &rarr; apply fix to local clone, run test, push + PR if it passes</div>
+</div>
+
+<!-- ===== LOCAL VALIDATION ===== -->
+<div class="agent">
+  <div class="agent-head">
+    <h2>Local Validation Loop</h2>
+    <div class="sub">src/services/local-fix-validator.ts &mdash; Apply, test, iterate, push.</div>
+  </div>
+
+  <div class="block"><div class="block-label bl-inject">What it receives from the agent pipeline</div></div>
+  <div class="inject">
+    The approved <code>changes</code> array from Fix Generation Agent:<br>
+    <code>changes[0].oldCode</code> &rarr; find this in the local file<br>
+    <code>changes[0].newCode</code> &rarr; replace with this<br><br>
+    If the test fails, <code>testResult.logs</code> (last 20K chars of stdout/stderr) are fed back to the repair agent as <code>previousAttempt.validationLogs</code>, and the entire 5-agent pipeline runs again.
+  </div>
+
+  <pre>1. Find oldCode in local file &rarr; replace with newCode
+2. Run: npx wdio wdio.conf.ts --spec {spec} -b chrome {url} -t sauce
+3. If PASS &rarr; git push + create PR
+4. If FAIL &rarr; reset files, feed logs back, run all 5 agents again</pre>
+</div>
+
+<div class="footer">
+  Model: gpt-5.3-codex &middot; API: OpenAI Responses API &middot; Runtime: Node.js 24 &middot; Source: adept-at/adept-triage-agent
+</div>
+
+</body>
+</html>

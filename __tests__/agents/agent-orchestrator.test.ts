@@ -179,17 +179,18 @@ describe('AgentOrchestrator', () => {
         .fn()
         .mockImplementation(() => {
           callCount++;
+          const wrap = (obj: unknown) => ({ text: JSON.stringify(obj), responseId: `mock-${callCount}` });
           switch (callCount) {
             case 1:
-              return Promise.resolve(JSON.stringify(analysisResponse));
+              return Promise.resolve(wrap(analysisResponse));
             case 2:
-              return Promise.resolve(JSON.stringify(investigationResponse));
+              return Promise.resolve(wrap(investigationResponse));
             case 3:
-              return Promise.resolve(JSON.stringify(fixGenerationResponse));
+              return Promise.resolve(wrap(fixGenerationResponse));
             case 4:
-              return Promise.resolve(JSON.stringify(reviewResponse));
+              return Promise.resolve(wrap(reviewResponse));
             default:
-              return Promise.resolve('{}');
+              return Promise.resolve(wrap({}));
           }
         });
 
@@ -234,12 +235,13 @@ describe('AgentOrchestrator', () => {
     }, 10000);
 
     it('should track execution time', async () => {
-      mockOpenAIClient.generateWithCustomPrompt = jest.fn().mockResolvedValue(
-        JSON.stringify({
+      mockOpenAIClient.generateWithCustomPrompt = jest.fn().mockResolvedValue({
+        text: JSON.stringify({
           rootCauseCategory: 'UNKNOWN',
           confidence: 50,
-        })
-      );
+        }),
+        responseId: 'mock-resp-id',
+      });
 
       const orchestrator = createOrchestrator(mockOpenAIClient);
       const context = createAgentContext({
@@ -321,17 +323,18 @@ describe('AgentOrchestrator', () => {
             userContent: params.userContent,
           });
           callCount++;
+          const wrap = (obj: unknown) => ({ text: JSON.stringify(obj), responseId: `mock-${callCount}` });
           switch (callCount) {
             case 1:
-              return Promise.resolve(JSON.stringify(analysisResponse));
+              return Promise.resolve(wrap(analysisResponse));
             case 2:
-              return Promise.resolve(JSON.stringify(investigationResponse));
+              return Promise.resolve(wrap(investigationResponse));
             case 3:
-              return Promise.resolve(JSON.stringify(fixGenerationResponse));
+              return Promise.resolve(wrap(fixGenerationResponse));
             case 4:
-              return Promise.resolve(JSON.stringify(reviewResponse));
+              return Promise.resolve(wrap(reviewResponse));
             default:
-              return Promise.resolve('{}');
+              return Promise.resolve(wrap({}));
           }
         });
 
@@ -417,17 +420,18 @@ describe('AgentOrchestrator', () => {
         .mockImplementation((params: { userContent: string | unknown[] }) => {
           capturedCalls.push({ userContent: params.userContent });
           callCount++;
+          const wrap = (obj: unknown) => ({ text: JSON.stringify(obj), responseId: `mock-${callCount}` });
           switch (callCount) {
             case 1:
-              return Promise.resolve(JSON.stringify(analysisResponse));
+              return Promise.resolve(wrap(analysisResponse));
             case 2:
-              return Promise.resolve(JSON.stringify(investigationResponse));
+              return Promise.resolve(wrap(investigationResponse));
             case 3:
-              return Promise.resolve(JSON.stringify(fixGenerationResponse));
+              return Promise.resolve(wrap(fixGenerationResponse));
             case 4:
-              return Promise.resolve(JSON.stringify(reviewResponse));
+              return Promise.resolve(wrap(reviewResponse));
             default:
-              return Promise.resolve('{}');
+              return Promise.resolve(wrap({}));
           }
         });
 
@@ -506,17 +510,18 @@ describe('AgentOrchestrator', () => {
         .mockImplementation((params: { userContent: string | unknown[] }) => {
           capturedCalls.push({ userContent: params.userContent });
           callCount++;
+          const wrap = (obj: unknown) => ({ text: JSON.stringify(obj), responseId: `mock-${callCount}` });
           switch (callCount) {
             case 1:
-              return Promise.resolve(JSON.stringify(analysisResponse));
+              return Promise.resolve(wrap(analysisResponse));
             case 2:
-              return Promise.resolve(JSON.stringify(investigationResponse));
+              return Promise.resolve(wrap(investigationResponse));
             case 3:
-              return Promise.resolve(JSON.stringify(fixGenerationResponse));
+              return Promise.resolve(wrap(fixGenerationResponse));
             case 4:
-              return Promise.resolve(JSON.stringify(reviewResponse));
+              return Promise.resolve(wrap(reviewResponse));
             default:
-              return Promise.resolve('{}');
+              return Promise.resolve(wrap({}));
           }
         });
 

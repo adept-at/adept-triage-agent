@@ -75,7 +75,8 @@ export class CodeReadingAgent extends BaseAgent<
    */
   async execute(
     input: CodeReadingInput,
-    context: AgentContext
+    context: AgentContext,
+    _previousResponseId?: string
   ): Promise<AgentResult<CodeReadingOutput>> {
     const startTime = Date.now();
     let apiCalls = 0;

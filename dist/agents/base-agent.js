@@ -62,7 +62,7 @@ class BaseAgent {
         this.agentName = agentName;
         this.config = { ...exports.DEFAULT_AGENT_CONFIG, ...config };
     }
-    async executeWithTimeout(input, context) {
+    async executeWithTimeout(input, context, previousResponseId) {
         const startTime = Date.now();
         let apiCalls = 0;
         let timeoutId;
@@ -73,9 +73,9 @@ class BaseAgent {
                     reject(new Error(`Agent timed out after ${this.config.timeoutMs}ms`));
                 }, this.config.timeoutMs);
             });
-            const taskPromise = this.runAgentTask(input, context);
+            const taskPromise = this.runAgentTask(input, context, previousResponseId);
             apiCalls++;
-            const result = await Promise.race([taskPromise, timeoutPromise]);
+            const { data: result, responseId } = await Promise.race([taskPromise, timeoutPromise]);
             clearTimeout(timeoutId);
             const executionTimeMs = Date.now() - startTime;
             core.info(`[${this.agentName}] Completed in ${executionTimeMs}ms`);
@@ -84,6 +84,7 @@ class BaseAgent {
                 data: result,
                 executionTimeMs,
                 apiCalls,
+                responseId,
             };
         }
         catch (error) {
@@ -99,7 +100,7 @@ class BaseAgent {
             };
         }
     }
-    async runAgentTask(input, context) {
+    async runAgentTask(input, context, previousResponseId) {
         const systemPrompt = this.getSystemPrompt();
         const userPrompt = this.buildUserPrompt(input, context);
         if (this.config.verbose) {
@@ -119,17 +120,18 @@ class BaseAgent {
                 }
             }
         }
-        const response = await this.openaiClient.generateWithCustomPrompt({
+        const { text, responseId } = await this.openaiClient.generateWithCustomPrompt({
             systemPrompt,
             userContent: content,
             temperature: this.config.temperature,
             responseAsJson: true,
+            previousResponseId,
         });
-        const parsed = this.parseResponse(response);
+        const parsed = this.parseResponse(text);
         if (!parsed) {
             throw new Error('Failed to parse agent response');
         }
-        return parsed;
+        return { data: parsed, responseId };
     }
     log(message, level = 'info') {
         const formattedMessage = `[${this.agentName}] ${message}`;

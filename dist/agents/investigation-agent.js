@@ -6,8 +6,8 @@ class InvestigationAgent extends base_agent_1.BaseAgent {
     constructor(openaiClient, config) {
         super(openaiClient, 'InvestigationAgent', config);
     }
-    async execute(input, context) {
-        return this.executeWithTimeout(input, context);
+    async execute(input, context, previousResponseId) {
+        return this.executeWithTimeout(input, context, previousResponseId);
     }
     getSystemPrompt() {
         return `You are an expert investigator for test failures. Your job is to cross-reference error analysis with actual code to identify the specific cause of failures.

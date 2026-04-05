@@ -7,8 +7,8 @@ class AnalysisAgent extends base_agent_1.BaseAgent {
     constructor(openaiClient, config) {
         super(openaiClient, 'AnalysisAgent', config);
     }
-    async execute(input, context) {
-        return this.executeWithTimeout(input, context);
+    async execute(input, context, previousResponseId) {
+        return this.executeWithTimeout(input, context, previousResponseId);
     }
     getSystemPrompt() {
         return `You are an expert test failure analyst specializing in end-to-end tests (Cypress and WebDriverIO).

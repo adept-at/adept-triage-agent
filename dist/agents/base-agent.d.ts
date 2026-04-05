@@ -7,6 +7,7 @@ export interface AgentResult<T = unknown> {
     executionTimeMs: number;
     apiCalls: number;
     tokensUsed?: number;
+    responseId?: string;
 }
 export interface AgentContext {
     errorMessage: string;
@@ -50,11 +51,11 @@ export declare abstract class BaseAgent<TInput, TOutput> {
     protected config: AgentConfig;
     protected agentName: string;
     constructor(openaiClient: OpenAIClient, agentName: string, config?: Partial<AgentConfig>);
-    abstract execute(input: TInput, context: AgentContext): Promise<AgentResult<TOutput>>;
+    abstract execute(input: TInput, context: AgentContext, previousResponseId?: string): Promise<AgentResult<TOutput>>;
     protected abstract getSystemPrompt(): string;
     protected abstract buildUserPrompt(input: TInput, context: AgentContext): string;
     protected abstract parseResponse(response: string): TOutput | null;
-    protected executeWithTimeout(input: TInput, context: AgentContext): Promise<AgentResult<TOutput>>;
+    protected executeWithTimeout(input: TInput, context: AgentContext, previousResponseId?: string): Promise<AgentResult<TOutput>>;
     private runAgentTask;
     protected log(message: string, level?: 'info' | 'debug' | 'warning'): void;
 }

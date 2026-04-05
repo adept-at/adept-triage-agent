@@ -43,7 +43,7 @@ describe('AnalysisAgent', () => {
 
       mockOpenAIClient.generateWithCustomPrompt = jest
         .fn()
-        .mockResolvedValue(JSON.stringify(mockResponse));
+        .mockResolvedValue({ text: JSON.stringify(mockResponse), responseId: 'mock-resp-id' });
 
       const context = createAgentContext({
         errorMessage:
@@ -86,7 +86,7 @@ describe('AnalysisAgent', () => {
 
       mockOpenAIClient.generateWithCustomPrompt = jest
         .fn()
-        .mockResolvedValue(JSON.stringify(mockResponse));
+        .mockResolvedValue({ text: JSON.stringify(mockResponse), responseId: 'mock-resp-id' });
 
       const context = createAgentContext({
         errorMessage: 'Timed out after 10000ms waiting for element',
@@ -138,7 +138,7 @@ describe('AnalysisAgent', () => {
     it('should handle response with missing required fields', async () => {
       mockOpenAIClient.generateWithCustomPrompt = jest
         .fn()
-        .mockResolvedValue(JSON.stringify({ someOtherField: 'value' }));
+        .mockResolvedValue({ text: JSON.stringify({ someOtherField: 'value' }), responseId: 'mock-resp-id' });
 
       const context = createAgentContext({
         errorMessage: 'Error',
@@ -173,7 +173,7 @@ describe('AnalysisAgent', () => {
 
       mockOpenAIClient.generateWithCustomPrompt = jest
         .fn()
-        .mockResolvedValue(JSON.stringify(mockResponse));
+        .mockResolvedValue({ text: JSON.stringify(mockResponse), responseId: 'mock-resp-id' });
 
       const context = createAgentContext({
         errorMessage: 'Element is not visible',
@@ -212,7 +212,7 @@ describe('AnalysisAgent', () => {
 
       mockOpenAIClient.generateWithCustomPrompt = jest
         .fn()
-        .mockResolvedValue(JSON.stringify(mockResponse));
+        .mockResolvedValue({ text: JSON.stringify(mockResponse), responseId: 'mock-resp-id' });
 
       const context = createAgentContext({
         errorMessage: 'Element not found: [aria-label="Sidebar"]',
@@ -262,7 +262,7 @@ describe('AnalysisAgent', () => {
 
       mockOpenAIClient.generateWithCustomPrompt = jest
         .fn()
-        .mockResolvedValue(JSON.stringify(mockResponse));
+        .mockResolvedValue({ text: JSON.stringify(mockResponse), responseId: 'mock-resp-id' });
 
       const context = createAgentContext({
         errorMessage: 'Timeout',

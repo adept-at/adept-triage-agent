@@ -69,9 +69,10 @@ export class ReviewAgent extends BaseAgent<ReviewInput, ReviewOutput> {
    */
   async execute(
     input: ReviewInput,
-    context: AgentContext
+    context: AgentContext,
+    previousResponseId?: string
   ): Promise<AgentResult<ReviewOutput>> {
-    return this.executeWithTimeout(input, context);
+    return this.executeWithTimeout(input, context, previousResponseId);
   }
 
   /**

@@ -10,8 +10,8 @@ class FixGenerationAgent extends base_agent_1.BaseAgent {
             maxTokens: 6000,
         });
     }
-    async execute(input, context) {
-        return this.executeWithTimeout(input, context);
+    async execute(input, context, previousResponseId) {
+        return this.executeWithTimeout(input, context, previousResponseId);
     }
     getSystemPrompt() {
         return `You are an expert test engineer who specializes in fixing failing E2E tests (Cypress or WebDriverIO).

@@ -5,7 +5,9 @@ export declare class OpenAIClient {
     private maxRetries;
     private retryDelay;
     constructor(apiKey: string);
-    analyze(errorData: ErrorData, examples: FewShotExample[]): Promise<OpenAIResponse>;
+    analyze(errorData: ErrorData, examples: FewShotExample[]): Promise<OpenAIResponse & {
+        responseId: string;
+    }>;
     private convertToResponsesInput;
     private buildUserContent;
     private getSystemPrompt;
@@ -22,6 +24,10 @@ export declare class OpenAIClient {
         userContent: string | Array<OpenAI.Chat.Completions.ChatCompletionContentPartText | OpenAI.Chat.Completions.ChatCompletionContentPartImage>;
         responseAsJson?: boolean;
         temperature?: number;
-    }): Promise<string>;
+        previousResponseId?: string;
+    }): Promise<{
+        text: string;
+        responseId: string;
+    }>;
 }
 //# sourceMappingURL=openai-client.d.ts.map

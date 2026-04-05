@@ -8,7 +8,7 @@ class CodeReadingAgent extends base_agent_1.BaseAgent {
         super(openaiClient, 'CodeReadingAgent', config);
         this.sourceFetchContext = sourceFetchContext;
     }
-    async execute(input, context) {
+    async execute(input, context, _previousResponseId) {
         const startTime = Date.now();
         let apiCalls = 0;
         try {

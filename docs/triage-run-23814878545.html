@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Triage Run: lib-wdio-8-e2e-ts #23814878545</title>
+<title>Triage Run #23814878545 — Demo Walkthrough</title>
 <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Instrument+Serif&display=swap" rel="stylesheet">
 <script type="module">
   import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
@@ -11,394 +11,118 @@
     startOnLoad: true,
     theme: 'base',
     themeVariables: {
-      primaryColor: '#1a1a2e',
-      primaryTextColor: '#e0e0e0',
-      primaryBorderColor: '#404060',
-      lineColor: '#606080',
-      secondaryColor: '#16213e',
-      tertiaryColor: '#0f3460',
-      fontFamily: 'DM Mono, monospace',
-      fontSize: '13px',
-      nodeTextColor: '#e0e0e0',
+      primaryColor: '#1a1a2e', primaryTextColor: '#e0e0e0', primaryBorderColor: '#404060',
+      lineColor: '#606080', secondaryColor: '#16213e', tertiaryColor: '#0f3460',
+      fontFamily: 'DM Mono, monospace', fontSize: '13px', nodeTextColor: '#e0e0e0',
     },
-    flowchart: {
-      htmlLabels: true,
-      curve: 'basis',
-      padding: 12,
-      nodeSpacing: 30,
-      rankSpacing: 40,
-    },
+    flowchart: { htmlLabels: true, curve: 'basis', padding: 12, nodeSpacing: 30, rankSpacing: 40 },
   });
 </script>
 <style>
   :root {
-    --bg: #0d0d1a;
-    --surface: #141428;
-    --surface2: #1a1a35;
-    --border: #2a2a50;
-    --text: #c8c8e0;
-    --text-dim: #808098;
-    --accent: #4ecdc4;
-    --accent2: #ff6b6b;
-    --accent3: #ffe66d;
-    --accent4: #a78bfa;
-    --success: #4ecdc4;
-    --warn: #ffe66d;
-    --fail: #ff6b6b;
+    --bg: #0d0d1a; --surface: #141428; --surface2: #1a1a35; --border: #2a2a50;
+    --text: #c8c8e0; --text-dim: #808098; --accent: #4ecdc4; --accent2: #ff6b6b;
+    --accent3: #ffe66d; --accent4: #a78bfa; --success: #4ecdc4; --warn: #ffe66d; --fail: #ff6b6b;
   }
   * { margin: 0; padding: 0; box-sizing: border-box; }
-  body {
-    background: var(--bg);
-    color: var(--text);
-    font-family: 'DM Mono', monospace;
-    line-height: 1.6;
-    overflow-x: auto;
-  }
-  .header {
-    padding: 2.5rem 3rem 1.5rem;
-    border-bottom: 1px solid var(--border);
-    background: linear-gradient(135deg, var(--surface) 0%, var(--bg) 100%);
-  }
-  .header h1 {
-    font-family: 'Instrument Serif', serif;
-    font-size: 2.2rem;
-    font-weight: 400;
-    color: var(--accent);
-    letter-spacing: -0.02em;
-    margin-bottom: 0.3rem;
-  }
-  .header .subtitle {
-    font-size: 0.85rem;
-    color: var(--text-dim);
-  }
-  .header .version-badge {
-    display: inline-block;
-    font-size: 0.68rem;
-    padding: 0.15rem 0.5rem;
-    border-radius: 3px;
-    background: #064e3b;
-    color: #6ee7b7;
-    margin-left: 0.5rem;
-    vertical-align: middle;
-    letter-spacing: 0.03em;
-  }
-  .meta-strip {
-    display: flex;
-    gap: 2rem;
-    padding: 1rem 3rem;
-    background: var(--surface);
-    border-bottom: 1px solid var(--border);
-    flex-wrap: wrap;
-  }
-  .meta-item {
-    display: flex;
-    flex-direction: column;
-    gap: 0.15rem;
-  }
-  .meta-item .label {
-    font-size: 0.65rem;
-    text-transform: uppercase;
-    letter-spacing: 0.1em;
-    color: var(--text-dim);
-  }
-  .meta-item .value {
-    font-size: 0.85rem;
-    color: var(--text);
-  }
-  .meta-item .value.verdict {
-    color: var(--accent3);
-    font-weight: 500;
-  }
-  .meta-item .value.confidence {
-    color: var(--success);
-    font-weight: 500;
-  }
-  .section {
-    padding: 2rem 3rem;
-    border-bottom: 1px solid var(--border);
-  }
-  .section h2 {
-    font-family: 'Instrument Serif', serif;
-    font-size: 1.4rem;
-    font-weight: 400;
-    color: var(--accent4);
-    margin-bottom: 0.4rem;
-    letter-spacing: -0.01em;
-  }
-  .section .desc {
-    font-size: 0.78rem;
-    color: var(--text-dim);
-    margin-bottom: 1.2rem;
-  }
-  .mermaid {
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    padding: 1.5rem;
-    overflow-x: auto;
-  }
-  .mermaid svg {
-    max-width: 100%;
-  }
-  .legend {
-    display: flex;
-    gap: 1.5rem;
-    margin-top: 1rem;
-    flex-wrap: wrap;
-  }
-  .legend-item {
-    display: flex;
-    align-items: center;
-    gap: 0.4rem;
-    font-size: 0.72rem;
-    color: var(--text-dim);
-  }
-  .legend-dot {
-    width: 10px;
-    height: 10px;
-    border-radius: 2px;
-  }
-  .dot-repo { background: #2d6a4f; }
-  .dot-action { background: #4361ee; }
-  .dot-agent { background: #7b2cbf; }
-  .dot-api { background: #e76f51; }
-  .dot-output { background: #4ecdc4; }
+  body { background: var(--bg); color: var(--text); font-family: 'DM Mono', monospace; line-height: 1.6; }
+  a { color: var(--accent); text-decoration: none; border-bottom: 1px dotted var(--accent); transition: border-color 0.15s, color 0.15s; }
+  a:hover { color: #7fece5; border-bottom-style: solid; }
+  :not(pre) > code { background: var(--surface2); padding: 0.1rem 0.3rem; border-radius: 3px; font-size: 0.78em; color: var(--accent3); }
 
-  .meta-item a {
-    color: var(--accent);
-    text-decoration: none;
-    border-bottom: 1px dotted var(--accent);
-    transition: border-color 0.15s, color 0.15s;
-  }
-  .meta-item a:hover {
-    color: #7fece5;
-    border-bottom-style: solid;
-  }
-  .links-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
-    gap: 0.75rem;
-  }
-  .link-card {
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    padding: 0.8rem 1rem;
-    display: flex;
-    align-items: flex-start;
-    gap: 0.6rem;
-    transition: border-color 0.15s;
-  }
-  .link-card:hover { border-color: var(--accent); }
-  .link-card .icon {
-    font-size: 1.1rem;
-    flex-shrink: 0;
-    margin-top: 0.15rem;
-  }
-  .link-card .info { flex: 1; min-width: 0; }
-  .link-card .info .title {
-    font-size: 0.82rem;
-    color: var(--text);
-    margin-bottom: 0.15rem;
-  }
-  .link-card .info a {
-    font-size: 0.72rem;
-    color: var(--accent);
-    text-decoration: none;
-    word-break: break-all;
-  }
-  .link-card .info a:hover { text-decoration: underline; }
-  .link-card .info .desc {
-    font-size: 0.68rem;
-    color: var(--text-dim);
-    margin-top: 0.15rem;
-  }
+  .header { padding: 2.5rem 3rem 1.5rem; border-bottom: 1px solid var(--border); background: linear-gradient(135deg, var(--surface) 0%, var(--bg) 100%); }
+  .header h1 { font-family: 'Instrument Serif', serif; font-size: 2.2rem; font-weight: 400; color: var(--accent); letter-spacing: -0.02em; margin-bottom: 0.3rem; }
+  .header .subtitle { font-size: 0.85rem; color: var(--text-dim); }
+  .version-badge { display: inline-block; font-size: 0.68rem; padding: 0.15rem 0.5rem; border-radius: 3px; background: #064e3b; color: #6ee7b7; margin-left: 0.5rem; vertical-align: middle; letter-spacing: 0.03em; }
 
-  .agent-step {
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    margin-bottom: 1rem;
-    overflow: hidden;
-  }
-  .agent-step summary {
-    padding: 0.8rem 1rem;
-    cursor: pointer;
-    font-size: 0.85rem;
-    color: var(--text);
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-    user-select: none;
-    list-style: none;
-  }
-  .agent-step summary::-webkit-details-marker { display: none; }
-  .agent-step summary::before {
-    content: '\25B8';
-    font-size: 0.75rem;
-    color: var(--text-dim);
-    transition: transform 0.15s;
-    display: inline-block;
-    width: 0.8rem;
-  }
-  .agent-step[open] summary::before { transform: rotate(90deg); }
-  .agent-step summary .badge {
-    font-size: 0.62rem;
-    padding: 0.15rem 0.45rem;
-    border-radius: 3px;
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-    font-weight: 500;
-  }
-  .badge-llm { background: #3b0764; color: #d8b4fe; }
-  .badge-api { background: #1e3a5f; color: #93c5fd; }
-  .badge-nollm { background: #1a1a35; color: #808098; }
-  .badge-fail { background: #7f1d1d; color: #fca5a5; }
-  .badge-pass { background: #064e3b; color: #6ee7b7; }
-  .badge-loop { background: #4a1d96; color: #c4b5fd; }
-  .agent-step .agent-body {
-    padding: 0 1rem 1rem;
-    border-top: 1px solid var(--border);
-  }
-  .prompt-block {
-    margin-top: 0.75rem;
-  }
-  .prompt-block h4 {
-    font-size: 0.72rem;
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
-    color: var(--accent4);
-    margin-bottom: 0.4rem;
-  }
-  .prompt-block pre {
-    background: #0a0a18;
-    border: 1px solid var(--border);
-    border-radius: 4px;
-    padding: 0.8rem;
-    font-size: 0.72rem;
-    line-height: 1.55;
-    color: var(--text);
-    overflow-x: auto;
-    white-space: pre-wrap;
-    word-break: break-word;
-    max-height: 400px;
-    overflow-y: auto;
-  }
-  .prompt-block pre .placeholder {
-    color: var(--accent3);
-    font-style: italic;
-  }
-  .response-schema {
-    background: #0a0a18;
-    border: 1px solid #2a3a2a;
-    border-left: 3px solid var(--success);
-    border-radius: 4px;
-    padding: 0.8rem;
-    font-size: 0.72rem;
-    line-height: 1.55;
-    color: var(--text);
-    overflow-x: auto;
-    white-space: pre-wrap;
-    max-height: 300px;
-    overflow-y: auto;
-  }
-  .response-reject {
-    background: #0a0a18;
-    border: 1px solid #3a2a2a;
-    border-left: 3px solid var(--fail);
-    border-radius: 4px;
-    padding: 0.8rem;
-    font-size: 0.72rem;
-    line-height: 1.55;
-    color: var(--text);
-    overflow-x: auto;
-    white-space: pre-wrap;
-    max-height: 300px;
-    overflow-y: auto;
-  }
-  .agent-note {
-    font-size: 0.72rem;
-    color: var(--text-dim);
-    padding: 0.4rem 0;
-    font-style: italic;
-  }
-  .sub-prompt { margin-top: 0.5rem; }
-  .sub-prompt details {
-    border: 1px solid var(--border);
-    border-radius: 4px;
-    margin-top: 0.4rem;
-  }
-  .sub-prompt details summary {
-    font-size: 0.72rem;
-    padding: 0.4rem 0.6rem;
-    cursor: pointer;
-    color: var(--text-dim);
-  }
-  .sub-prompt details summary:hover { color: var(--text); }
-  .sub-prompt details .inner { padding: 0 0.6rem 0.6rem; }
+  .meta-strip { display: flex; gap: 2rem; padding: 1rem 3rem; background: var(--surface); border-bottom: 1px solid var(--border); flex-wrap: wrap; }
+  .meta-item { display: flex; flex-direction: column; gap: 0.15rem; }
+  .meta-item .label { font-size: 0.65rem; text-transform: uppercase; letter-spacing: 0.1em; color: var(--text-dim); }
+  .meta-item .value { font-size: 0.85rem; color: var(--text); }
+  .meta-item .value.verdict { color: var(--accent3); font-weight: 500; }
+  .meta-item .value.confidence { color: var(--success); font-weight: 500; }
 
-  .iteration-header {
-    font-family: 'Instrument Serif', serif;
-    font-size: 1.05rem;
-    color: var(--accent3);
-    margin: 1.2rem 0 0.6rem;
-    padding-bottom: 0.3rem;
-    border-bottom: 1px solid var(--border);
-  }
-  .iteration-header.fail { color: var(--fail); }
-  .iteration-header.pass { color: var(--success); }
+  .section { padding: 2rem 3rem; border-bottom: 1px solid var(--border); }
+  .section h2 { font-family: 'Instrument Serif', serif; font-size: 1.4rem; font-weight: 400; color: var(--accent4); margin-bottom: 0.4rem; letter-spacing: -0.01em; }
+  .section .desc { font-size: 0.78rem; color: var(--text-dim); margin-bottom: 1.2rem; }
 
-  .callout {
-    background: var(--surface2);
-    border: 1px solid var(--border);
-    border-left: 3px solid var(--accent4);
-    border-radius: 4px;
-    padding: 0.8rem 1rem;
-    margin: 1rem 0;
-    font-size: 0.78rem;
-    color: var(--text);
-    line-height: 1.6;
-  }
+  .callout { background: var(--surface2); border: 1px solid var(--border); border-left: 3px solid var(--accent4); border-radius: 4px; padding: 0.8rem 1rem; font-size: 0.78rem; line-height: 1.6; }
   .callout strong { color: var(--accent); }
-  .callout.callout-new {
-    border-left-color: var(--success);
-    background: #0a1a15;
-  }
+  .callout-strip { padding: 0.8rem 3rem; border-bottom: 1px solid var(--border); }
 
-  @media (max-width: 900px) {
-    .header, .section { padding-left: 1.5rem; padding-right: 1.5rem; }
-    .meta-strip { padding: 1rem 1.5rem; gap: 1rem; }
-    .links-grid { grid-template-columns: 1fr; }
-  }
+  .story-list { list-style: none; padding: 0; }
+  .story-step { display: flex; gap: 1rem; padding: 0.55rem 0; border-bottom: 1px solid rgba(42, 42, 80, 0.3); font-size: 0.82rem; align-items: flex-start; }
+  .story-step:last-child { border-bottom: none; }
+  .step-num { flex-shrink: 0; width: 1.5rem; height: 1.5rem; line-height: 1.5rem; text-align: center; font-size: 0.65rem; background: var(--surface2); border: 1px solid var(--border); border-radius: 50%; color: var(--text-dim); margin-top: 0.1rem; }
+  .step-num.hl { border-color: var(--accent4); color: var(--accent4); }
+  .step-num.fail { border-color: var(--fail); color: var(--fail); }
+  .step-num.pass { border-color: var(--success); color: var(--success); }
+
+  .tag { display: inline-block; font-size: 0.62rem; padding: 0.1rem 0.35rem; border-radius: 3px; text-transform: uppercase; letter-spacing: 0.05em; font-weight: 500; vertical-align: middle; }
+  .tag-warn { background: #332b00; color: #ffe66d; }
+  .tag-fail { background: #7f1d1d; color: #fca5a5; }
+  .tag-pass { background: #064e3b; color: #6ee7b7; }
+
+  .mermaid { background: var(--surface); border: 1px solid var(--border); border-radius: 6px; padding: 1.5rem; overflow-x: auto; }
+  .mermaid svg { max-width: 100%; }
+
+  .product-callout { background: #110f24; border: 1px solid #3b2d6e; border-left: 4px solid var(--accent4); border-radius: 6px; padding: 1.2rem 1.5rem; }
+  .product-callout h3 { font-family: 'Instrument Serif', serif; font-size: 1.05rem; font-weight: 400; color: var(--accent4); margin-bottom: 0.2rem; }
+  .product-callout .pc-sub { font-size: 0.72rem; color: var(--text-dim); margin-bottom: 1rem; }
+  .file-list { list-style: none; background: #0a0a18; border: 1px solid var(--border); border-radius: 4px; padding: 0.6rem 0.8rem; margin-bottom: 1rem; }
+  .file-list li { padding: 0.15rem 0; font-size: 0.75rem; }
+  .file-list .fp { color: var(--accent); }
+  .file-list .fs { color: var(--text-dim); font-size: 0.68rem; }
+  .aq { background: #0a0a18; border: 1px solid var(--border); border-left: 2px solid var(--accent4); border-radius: 4px; padding: 0.6rem 0.8rem; margin-top: 0.6rem; font-size: 0.75rem; line-height: 1.5; }
+  .aq .aq-name { color: var(--accent4); font-size: 0.62rem; text-transform: uppercase; letter-spacing: 0.05em; font-weight: 500; }
+  .aq .aq-text { color: var(--text); font-style: italic; display: block; margin-top: 0.15rem; }
+
+  .diff-pair { display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem; margin: 0.8rem 0; }
+  .diff-block { background: #0a0a18; border: 1px solid var(--border); border-radius: 4px; overflow: hidden; min-width: 0; }
+  .diff-block pre { padding: 0.8rem; font-size: 0.72rem; line-height: 1.5; white-space: pre-wrap; word-break: break-word; color: var(--text); margin: 0; }
+  .diff-label { padding: 0.3rem 0.8rem; font-size: 0.6rem; text-transform: uppercase; letter-spacing: 0.08em; font-weight: 500; border-bottom: 1px solid var(--border); }
+  .diff-old { border-left: 3px solid var(--fail); }
+  .diff-old .diff-label { background: #1a0f0f; color: var(--fail); }
+  .diff-new { border-left: 3px solid var(--success); }
+  .diff-new .diff-label { background: #0f1a12; color: var(--success); }
+  .diff-reject { border-left: 3px solid var(--warn); }
+  .diff-reject .diff-label { background: #1a1508; color: var(--warn); }
+
+  .result { display: inline-flex; align-items: center; padding: 0.3rem 0.7rem; border-radius: 4px; font-size: 0.75rem; font-weight: 500; margin-top: 0.5rem; line-height: 1.5; }
+  .result.fail { background: #1a0f0f; border: 1px solid #7f1d1d; color: #fca5a5; }
+  .result.pass { background: #0f1a12; border: 1px solid #064e3b; color: #6ee7b7; }
+
+  .agent-step { background: var(--surface); border: 1px solid var(--border); border-radius: 6px; margin-bottom: 0.75rem; overflow: hidden; }
+  .agent-step summary { padding: 0.7rem 1rem; cursor: pointer; font-size: 0.82rem; color: var(--text); display: flex; align-items: center; gap: 0.5rem; user-select: none; list-style: none; }
+  .agent-step summary::-webkit-details-marker { display: none; }
+  .agent-step summary::before { content: '\25B8'; font-size: 0.75rem; color: var(--text-dim); transition: transform 0.15s; display: inline-block; width: 0.8rem; }
+  .agent-step[open] summary::before { transform: rotate(90deg); }
+  .badge { font-size: 0.62rem; padding: 0.15rem 0.45rem; border-radius: 3px; text-transform: uppercase; letter-spacing: 0.05em; font-weight: 500; }
+  .badge-llm { background: #3b0764; color: #d8b4fe; }
+  .badge-nollm { background: #1a1a35; color: #808098; }
+  .agent-step .agent-body { padding: 0 1rem 1rem; border-top: 1px solid var(--border); }
+  .agent-note { font-size: 0.72rem; color: var(--text-dim); padding: 0.4rem 0; font-style: italic; }
+  .prompt-block { margin-top: 0.5rem; }
+  .prompt-block h4 { font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.08em; color: var(--accent4); margin-bottom: 0.3rem; }
+  .prompt-block pre { background: #0a0a18; border: 1px solid var(--border); border-radius: 4px; padding: 0.6rem; font-size: 0.72rem; line-height: 1.5; color: var(--text); overflow-x: auto; white-space: pre-wrap; word-break: break-word; max-height: 250px; overflow-y: auto; margin: 0; }
+  .response-ok { border-left: 3px solid var(--success); }
+  .response-fail { border-left: 3px solid var(--fail); }
+
+  @media (max-width: 1200px) { .diff-pair { grid-template-columns: 1fr; } }
+  @media (max-width: 900px) { .header, .section { padding-left: 1.5rem; padding-right: 1.5rem; } .meta-strip, .callout-strip { padding-left: 1.5rem; padding-right: 1.5rem; } }
 </style>
 </head>
 <body>
 
 <div class="header">
-  <h1>Triage Run Flowchart <span class="version-badge">v1.26.0 &mdash; Local Fix-Validate Loop</span></h1>
-  <div class="subtitle">lib-wdio-8-e2e-ts &middot; Run #23814878545 &middot; 2026-03-31</div>
+  <h1>Triage Run #23814878545 <span class="version-badge">v1.26.0 &mdash; Local Fix-Validate Loop</span></h1>
+  <div class="subtitle">lib-wdio-8-e2e-ts &middot; feature/update-actions-node24 &middot; 2026-03-31</div>
 </div>
 
 <div class="meta-strip">
   <div class="meta-item">
-    <span class="label">Repo</span>
-    <span class="value"><a href="https://github.com/adept-at/lib-wdio-8-e2e-ts" target="_blank">adept-at/lib-wdio-8-e2e-ts</a></span>
-  </div>
-  <div class="meta-item">
-    <span class="label">Workflow Run</span>
-    <span class="value"><a href="https://github.com/adept-at/lib-wdio-8-e2e-ts/actions/runs/23814878545" target="_blank">#23814878545</a></span>
-  </div>
-  <div class="meta-item">
-    <span class="label">Job</span>
-    <span class="value">sauceTest (lms.video.plays.e2e)</span>
-  </div>
-  <div class="meta-item">
     <span class="label">Spec</span>
     <span class="value">lms.video.plays.e2e.ts</span>
-  </div>
-  <div class="meta-item">
-    <span class="label">Branch</span>
-    <span class="value">feature/update-actions-node24</span>
   </div>
   <div class="meta-item">
     <span class="label">Verdict</span>
@@ -409,895 +133,356 @@
     <span class="value confidence">95%</span>
   </div>
   <div class="meta-item">
-    <span class="label">Fix Branch</span>
-    <span class="value"><a href="https://github.com/adept-at/lib-wdio-8-e2e-ts/tree/fix/triage-agent/test-specs-skills-lms-video-plays-e2e-ts-20260331-839" target="_blank">fix/triage-agent/...20260331-839</a></span>
-  </div>
-  <div class="meta-item">
-    <span class="label">Fix Commit</span>
-    <span class="value"><a href="https://github.com/adept-at/lib-wdio-8-e2e-ts/commit/194f626" target="_blank">194f626</a></span>
-  </div>
-  <div class="meta-item">
-    <span class="label">PR</span>
-    <span class="value"><a href="https://github.com/adept-at/lib-wdio-8-e2e-ts/pull/286" target="_blank">#286</a></span>
-  </div>
-  <div class="meta-item">
     <span class="label">Commit</span>
     <span class="value"><a href="https://github.com/adept-at/lib-wdio-8-e2e-ts/commit/7bb1475" target="_blank">7bb1475</a></span>
   </div>
   <div class="meta-item">
-    <span class="label">Total Time</span>
-    <span class="value confidence">~5 min</span>
+    <span class="label">Fix PR</span>
+    <span class="value"><a href="https://github.com/adept-at/lib-wdio-8-e2e-ts/pull/286" target="_blank">#286</a></span>
+  </div>
+  <div class="meta-item">
+    <span class="label">Fix Branch</span>
+    <span class="value"><a href="https://github.com/adept-at/lib-wdio-8-e2e-ts/tree/fix/triage-agent/test-specs-skills-lms-video-plays-e2e-ts-20260331-839" target="_blank">fix/triage-agent/...-839</a></span>
   </div>
 </div>
 
-<div class="callout callout-new">
-  <strong>What's new in v1.26.0:</strong> Instead of pushing code and dispatching a separate workflow to validate, the triage agent now <strong>clones the repo locally</strong>, applies the fix to disk, and runs the failing test in the same container. If the test fails, it resets, feeds the failure logs back to the AI, and iterates. Only validated code gets pushed. This run used <strong>2 iterations</strong> &mdash; the first fix failed, the second passed.
+<div class="callout-strip">
+  <div class="callout">
+    <strong>What's new in v1.26.0:</strong> The triage agent now clones the repo locally, applies fixes to disk, and runs the failing test in the same container. If the test fails, it resets, feeds failure logs back to the AI, and iterates. Only validated code gets pushed. This run used <strong>2 iterations</strong> &mdash; the first fix failed, the second passed.
+  </div>
 </div>
 
-<!-- DIAGRAM 1: End-to-End Workflow -->
+<!-- Section 1: The Story -->
 <div class="section">
-  <h2>1 &middot; End-to-End Workflow</h2>
-  <div class="desc">From test failure on Sauce Labs through triage, local fix-validate loop, and PR creation.</div>
+  <h2>1 &middot; What Happened</h2>
+  <div class="desc">The full story in 8 steps.</div>
+  <ol class="story-list">
+    <li class="story-step">
+      <span class="step-num">1</span>
+      <span>Test fails on Sauce Labs: <code>element ("mux-player") still not clickable after 15000ms</code></span>
+    </li>
+    <li class="story-step">
+      <span class="step-num">2</span>
+      <span>Triage agent activates, gathers logs + diffs + product repo changes</span>
+    </li>
+    <li class="story-step">
+      <span class="step-num">3</span>
+      <span>AI classifies: <span class="tag tag-warn">TEST_ISSUE</span> at 95% confidence</span>
+    </li>
+    <li class="story-step">
+      <span class="step-num hl">4</span>
+      <span><strong>Product diff reviewed:</strong> learn-webapp changed PastePlugin.tsx and InviteAccept.tsx &mdash; NOT related to video playback. Confirms test-side issue.</span>
+    </li>
+    <li class="story-step">
+      <span class="step-num">5</span>
+      <span>Clones repo locally, installs dependencies (18s)</span>
+    </li>
+    <li class="story-step">
+      <span class="step-num fail">6</span>
+      <span><strong>Iteration 1:</strong> 5 agents generate a fix &rarr; local test run &rarr; <span class="tag tag-fail">FAILS</span> (80s)</span>
+    </li>
+    <li class="story-step">
+      <span class="step-num pass">7</span>
+      <span><strong>Iteration 2:</strong> agents learn from failure, review catches a bug, different fix &rarr; local test run &rarr; <span class="tag tag-pass">PASSES</span> (80s)</span>
+    </li>
+    <li class="story-step">
+      <span class="step-num pass">8</span>
+      <span>Pushes fix branch, creates <a href="https://github.com/adept-at/lib-wdio-8-e2e-ts/pull/286" target="_blank">PR #286</a></span>
+    </li>
+  </ol>
+</div>
+
+<!-- Section 2: Agent Orchestration -->
+<div class="section">
+  <h2>2 &middot; Agent Flow</h2>
+  <div class="desc">The local fix-validate loop for this run. Iteration 1 fails, iteration 2 succeeds.</div>
   <div class="mermaid">
 flowchart TB
-    subgraph REPO["lib-wdio-8-e2e-ts (Consumer Repo)"]
-        direction TB
-        TEST_WF["Sauce Labs E2E Workflow\n<b>sauceTest</b> job\nlms.video.plays.e2e.ts\nfeature/update-actions-node24 @ 7bb1475"]
-        TEST_WF -->|"Test failed on Sauce Labs"| DISPATCH_ACTION
-        DISPATCH_ACTION["adept-common/triage-dispatch@main\n<b>if: failure()</b>\nCollects: run_id, job_name, spec,\nbranch, commit_sha, repo_url"]
-    end
+    FAIL["Test Fails on Sauce Labs\nmux-player not clickable after 15s"] --> GATHER["Gather Logs + Diffs\n+ Product Diff"]
+    GATHER --> CLASS["Classify: TEST_ISSUE 95%"]
+    CLASS --> CLONE["Clone Repo + npm ci\n18s setup"]
 
-    DISPATCH_ACTION -->|"repository_dispatch:\ntriage-failed-test"| TRIAGE_WF
+    CLONE --> PIPE1["Iteration 1\n5 Agents generate fix\n93% confidence, APPROVED"]
+    PIPE1 --> TEST1{"Run Test Locally\n80s"}
+    TEST1 -->|"FAILED\nposter overlay blocks click"| RESET["Reset files\nFeed failure logs to agents"]
 
-    subgraph TRIAGE["Triage Agent (v1.26.0)"]
-        direction TB
-        TRIAGE_WF["triage-failed-tests.yml\ncalls adept-common reusable workflow"]
-        TRIAGE_WF --> TRIAGE_ACTION["adept-at/adept-triage-agent@v1\n<b>src/index.ts -> run()</b>"]
-        TRIAGE_ACTION --> GATHER["Data Gathering\n(log-processor.ts)"]
-        GATHER --> ANALYZE["AI Classification\n(simplified-analyzer.ts)"]
-        ANALYZE -->|"TEST_ISSUE 95%"| CLONE["Clone Repo Locally\nnpm ci (18s setup)"]
-        CLONE --> LOOP["Local Fix-Validate Loop\n(max 3 iterations)"]
-        LOOP -->|"Iteration 1: FAILED"| LOOP
-        LOOP -->|"Iteration 2: PASSED"| PUSH["Push Branch +\nCreate PR #286"]
-        PUSH --> OUTPUTS["Set GitHub Action Outputs\nverdict, confidence, fix_branch,\nfix_pr: #286"]
-    end
+    RESET --> PIPE2["Iteration 2\n5 Agents + failure feedback\nFix 89% REJECTED by Review\nFix 91% APPROVED"]
+    PIPE2 --> TEST2{"Run Test Locally\n80s"}
+    TEST2 -->|"PASSED"| PUSH["Push Branch\nCreate PR #286"]
 
-    subgraph NOTIFY["Notification"]
-        OUTPUTS --> SLACK_ACTION["adept-common/triage-slack-notify@main"]
-        SLACK_ACTION --> SLACK["Slack #SauceAlerts\nTEST_ISSUE 95%\nAuto-Fix Validated + PR #286"]
-    end
-
-    subgraph EXTERNAL["External Services"]
-        GATHER -.->|"REST API"| GITHUB_API["GitHub API\nLogs, artifacts,\nscreenshots, diffs"]
-        ANALYZE -.->|"Responses API"| OPENAI["OpenAI\ngpt-5.3-codex"]
-        LOOP -.->|"Responses API\n(multi-agent pipeline)"| OPENAI
-        PUSH -.->|"REST API\nCreate branch + PR"| GITHUB_API
-    end
-
-    style TEST_WF fill:#7f1d1d,stroke:#991b1b,color:#fca5a5
-    style DISPATCH_ACTION fill:#1e3a5f,stroke:#2563eb,color:#93c5fd
-    style TRIAGE_WF fill:#1e3a5f,stroke:#2563eb,color:#93c5fd
-    style TRIAGE_ACTION fill:#3b0764,stroke:#7c3aed,color:#c4b5fd
+    style FAIL fill:#7f1d1d,stroke:#991b1b,color:#fca5a5
     style GATHER fill:#1a1a35,stroke:#404060,color:#c8c8e0
-    style ANALYZE fill:#1a1a35,stroke:#404060,color:#c8c8e0
+    style CLASS fill:#1a1a35,stroke:#404060,color:#c8c8e0
     style CLONE fill:#1a1a35,stroke:#404060,color:#c8c8e0
-    style LOOP fill:#4a1d96,stroke:#7c3aed,color:#c4b5fd
+    style PIPE1 fill:#3b0764,stroke:#9333ea,color:#d8b4fe
+    style TEST1 fill:#7f1d1d,stroke:#991b1b,color:#fca5a5
+    style RESET fill:#1a1a35,stroke:#f59e0b,color:#fde68a
+    style PIPE2 fill:#3b0764,stroke:#9333ea,color:#d8b4fe
+    style TEST2 fill:#064e3b,stroke:#059669,color:#6ee7b7
     style PUSH fill:#064e3b,stroke:#059669,color:#6ee7b7
-    style OUTPUTS fill:#064e3b,stroke:#059669,color:#6ee7b7
-    style SLACK_ACTION fill:#1e3a5f,stroke:#2563eb,color:#93c5fd
-    style SLACK fill:#064e3b,stroke:#059669,color:#6ee7b7
-    style GITHUB_API fill:#7c2d12,stroke:#ea580c,color:#fed7aa
-    style OPENAI fill:#7c2d12,stroke:#ea580c,color:#fed7aa
-  </div>
-  <div class="legend">
-    <div class="legend-item"><div class="legend-dot dot-repo"></div> Success / Output</div>
-    <div class="legend-item"><div class="legend-dot dot-action"></div> GitHub Actions</div>
-    <div class="legend-item"><div class="legend-dot dot-agent"></div> Triage Agent / AI Pipeline</div>
-    <div class="legend-item"><div class="legend-dot dot-api"></div> External APIs</div>
-    <div class="legend-item"><div class="legend-dot" style="background:#7f1d1d"></div> Failed Job</div>
-    <div class="legend-item"><div class="legend-dot" style="background:#4a1d96"></div> Fix-Validate Loop</div>
   </div>
 </div>
 
-<!-- DIAGRAM 2: Data Gathering Detail -->
+<!-- Section 3: Product Diff Impact -->
 <div class="section">
-  <h2>2 &middot; Data Gathering Phase</h2>
-  <div class="desc">What the log processor collected from run #23814878545 before calling OpenAI.</div>
-  <div class="mermaid">
-flowchart LR
-    subgraph INPUTS["Inputs from Dispatch"]
-        RUN_ID["WORKFLOW_RUN_ID\n#23814878545"]
-        JOB["JOB_NAME\nsauceTest\n(lms.video.plays.e2e)"]
-        COMMIT["COMMIT_SHA\n7bb1475"]
-        BRANCH["BRANCH\nfeature/update-actions-node24"]
-    end
+  <h2>3 &middot; Product Diff Impact</h2>
+  <div class="desc">Every agent in the pipeline references the product diff. Here is how each one used it.</div>
 
-    RUN_ID --> PROC["processWorkflowLogs()"]
-    JOB --> PROC
-    PROC --> FIND_JOB["findTargetJob()\nMatch 'sauceTest'"]
-    FIND_JOB --> DL_LOGS["Download Job Logs\nvia GitHub API"]
-    DL_LOGS --> EXTRACT["extractErrorFromLogs()\nPattern: WDIO Error in '...'\nFramework: webdriverio"]
+  <div class="product-callout">
+    <h3>learn-webapp changes (last 5 commits)</h3>
+    <p class="pc-sub">These files changed in the product repo during the same window as the test failure.</p>
 
-    EXTRACT --> PARALLEL
+    <ul class="file-list">
+      <li><span class="fp">src/components/skill/edit/Editor/plugins/PastePlugin.tsx</span> <span class="fs">(+26/-15)</span></li>
+      <li><span class="fp">src/pages/auth/InviteAccept.tsx</span> <span class="fs">(+14/-13)</span></li>
+      <li><span class="fp">src/components/Invite/Accept/Accept.tsx</span> <span class="fs">(+8/-14)</span></li>
+    </ul>
 
-    subgraph PARALLEL["fetchArtifactsParallel()"]
-        direction TB
-        SS["fetchScreenshots()\n-> screenshot (base64)"]
-        AL["fetchTestArtifactLogs()\n-> WDIO artifact logs"]
-        DIFF["fetchDiffWithFallback()\n-> commit diff for 7bb1475\nin lib-wdio-8-e2e-ts"]
-        PDIFF["fetchProductDiff()\n-> last 5 commits from\nadept-at/learn-webapp"]
-    end
-
-    PARALLEL --> BUILD["buildErrorContext()\n+ buildStructuredSummary()"]
-    BUILD --> ERROR_DATA["ErrorData\n{message, framework: 'webdriverio',\nscreenshots, prDiff, productDiff,\ntestArtifactLogs, structuredSummary}"]
-
-    style PROC fill:#1a1a35,stroke:#404060,color:#c8c8e0
-    style FIND_JOB fill:#1a1a35,stroke:#404060,color:#c8c8e0
-    style DL_LOGS fill:#1a1a35,stroke:#404060,color:#c8c8e0
-    style EXTRACT fill:#1a1a35,stroke:#404060,color:#c8c8e0
-    style SS fill:#3b0764,stroke:#7c3aed,color:#c4b5fd
-    style AL fill:#3b0764,stroke:#7c3aed,color:#c4b5fd
-    style DIFF fill:#3b0764,stroke:#7c3aed,color:#c4b5fd
-    style PDIFF fill:#3b0764,stroke:#7c3aed,color:#c4b5fd
-    style BUILD fill:#1a1a35,stroke:#404060,color:#c8c8e0
-    style ERROR_DATA fill:#064e3b,stroke:#059669,color:#6ee7b7
-  </div>
-</div>
-
-<!-- DIAGRAM 3: Classification -->
-<div class="section">
-  <h2>3 &middot; AI Classification</h2>
-  <div class="desc">Infrastructure check &rarr; OpenAI analysis &rarr; confidence calculation.</div>
-  <div class="mermaid">
-flowchart TB
-    ERROR_DATA["ErrorData from log processor"] --> INFRA{"detectInfrastructureFailure()\nSession crash? Browser crash?"}
-    INFRA -->|"No match\n(video element visibility != infra)"| AI_CALL
-
-    AI_CALL["client.analyze(errorData, FEW_SHOT_EXAMPLES)\ngpt-5.3-codex via Responses API"]
-    AI_CALL --> PARSE["parseResponse()\n-> verdict: TEST_ISSUE\n-> reasoning: Video element not clickable\n   in cross-frame context\n-> indicators: [visibility, iframe, waitFor]"]
-
-    PARSE --> CALC["calculateConfidence()\nBase: 70\n+ Screenshot bonus: 10\n+ Logs bonus: 5\n+ PR diff bonus: 5\n+ Framework bonus: 5\n= 95 (capped at 95)"]
-
-    CALC --> THRESHOLD{"95% >= threshold 70%?"}
-    THRESHOLD -->|"Yes"| VERDICT_CHECK{"Verdict?"}
-    VERDICT_CHECK -->|"TEST_ISSUE"| GEN_FIX["-> Clone repo + enter\nLocal Fix-Validate Loop"]
-
-    style ERROR_DATA fill:#1a1a35,stroke:#404060,color:#c8c8e0
-    style AI_CALL fill:#7c2d12,stroke:#ea580c,color:#fed7aa
-    style PARSE fill:#1a1a35,stroke:#404060,color:#c8c8e0
-    style CALC fill:#1a1a35,stroke:#404060,color:#c8c8e0
-    style GEN_FIX fill:#4a1d96,stroke:#7c3aed,color:#c4b5fd
-  </div>
-</div>
-
-<!-- DIAGRAM 4: Multi-Agent Pipeline -->
-<div class="section">
-  <h2>4 &middot; Multi-Agent Repair Pipeline</h2>
-  <div class="desc">5 specialized agents collaborating to generate a fix for lms.video.plays.e2e.ts. Runs once per iteration.</div>
-  <div class="mermaid">
-flowchart TB
-    START["SimplifiedRepairAgent\nenableAgenticRepair: true\n-> tryAgenticRepair()"] --> ORCH
-
-    subgraph ORCH["AgentOrchestrator.orchestrate() -- per iteration"]
-        direction TB
-
-        STEP1["<b>Step 1: AnalysisAgent</b> LLM\nClassify root cause of video\nelement visibility failure"]
-        STEP1 -->|"rootCause: ELEMENT_VISIBILITY\nselectors, patterns"| STEP2
-
-        STEP2["<b>Step 2: CodeReadingAgent</b> No LLM\nFetch via GitHub API:\n- lms.video.plays.e2e.ts\n- helpers/VideoPlayer.ts\n- wdio.conf.ts\n- page objects"]
-        STEP2 -->|"sourceFileContent + relatedFiles\n+ custom commands"| STEP3
-
-        STEP3["<b>Step 3: InvestigationAgent</b> LLM\nCross-reference analysis with code\nIdentify: frame context, waitFor\nstrategy, element visibility"]
-        STEP3 -->|"findings, isTestCodeFixable: true\nrecommendedApproach"| LOOP
-
-        subgraph LOOP["Fix / Review Loop (max 3 iterations)"]
-            direction TB
-
-            STEP4["<b>Step 4: FixGenerationAgent</b> LLM\nGenerate oldCode -> newCode\nfor lms.video.plays.e2e.ts"]
-            STEP4 --> CONF_CHK{"Confidence >= 70%?"}
-            CONF_CHK -->|"No"| FB1["Feedback -> retry"]
-            FB1 --> STEP4
-
-            CONF_CHK -->|"Yes"| AUTOCORRECT["<b>Step 4b: autoCorrectOldCode</b>\nValidate oldCode against\nfetched source file"]
-            AUTOCORRECT --> VALID{"Changes remain?"}
-            VALID -->|"No"| FB2["Feedback: copy oldCode exactly"]
-            FB2 --> STEP4
-
-            VALID -->|"Yes"| STEP5["<b>Step 5: ReviewAgent</b> LLM\n- oldCode matches source?\n- newCode valid syntax?\n- Addresses root cause?\n- No side effects?"]
-            STEP5 --> APPROVED{"Approved?"}
-            APPROVED -->|"No"| FB3["Review issues -> feedback"]
-            FB3 --> STEP4
-            APPROVED -->|"Yes"| CONVERT
-        end
-
-        CONVERT["convertToFixRecommendation()\n-> FixRecommendation"]
-    end
-
-    CONVERT --> RESULT["Fix applied to local disk\n-> run test to validate"]
-
-    style START fill:#3b0764,stroke:#7c3aed,color:#c4b5fd
-    style STEP1 fill:#3b0764,stroke:#9333ea,color:#d8b4fe
-    style STEP2 fill:#1e3a5f,stroke:#2563eb,color:#93c5fd
-    style STEP3 fill:#3b0764,stroke:#9333ea,color:#d8b4fe
-    style STEP4 fill:#3b0764,stroke:#9333ea,color:#d8b4fe
-    style AUTOCORRECT fill:#1a1a35,stroke:#f59e0b,color:#fde68a
-    style STEP5 fill:#3b0764,stroke:#9333ea,color:#d8b4fe
-    style CONVERT fill:#064e3b,stroke:#059669,color:#6ee7b7
-    style RESULT fill:#064e3b,stroke:#059669,color:#6ee7b7
-  </div>
-</div>
-
-<!-- DIAGRAM 5: Local Fix-Validate Loop (NEW) -->
-<div class="section">
-  <h2>5 &middot; Local Fix-Validate Loop</h2>
-  <div class="desc">New in v1.26.0 &mdash; clone, apply fix to disk, run test locally, iterate on failure. Only push validated code.</div>
-  <div class="mermaid">
-flowchart TB
-    CLASSIFY["TEST_ISSUE 95%\n-> enableLocalValidation: true"] --> CLONE["git clone lib-wdio-8-e2e-ts\nnpm ci\n(18s setup)"]
-
-    CLONE --> ITER1
-
-    subgraph ITER1["Iteration 1 of 3"]
-        direction TB
-        AGENTS1["5-Agent Repair Pipeline\nAnalysis -> Code Reading ->\nInvestigation -> Fix Gen -> Review"]
-        AGENTS1 -->|"93% confidence\nAPPROVED"| APPLY1["Apply fix to local disk\nreplaced waitForClickable with\nwaitForDisplayed + viewport check"]
-        APPLY1 --> RUN1["Run test locally\nnpx wdio run wdio.conf.ts\n--spec lms.video.plays.e2e.ts"]
-        RUN1 -->|"80s"| RESULT1{"Test result?"}
-        RESULT1 -->|"FAILED"| RESET1["git checkout -- .\nReset local files\nCapture failure logs"]
-    end
-
-    RESET1 -->|"Feed failure logs\nas context"| ITER2
-
-    subgraph ITER2["Iteration 2 of 3"]
-        direction TB
-        AGENTS2["5-Agent Repair Pipeline\n(with previous failure feedback)\nAnalysis -> Code Reading ->\nInvestigation -> Fix Gen -> Review"]
-        AGENTS2 -->|"Fix Gen iter 1: 89%\nReview: REJECTED\n(duplicate startVideo call)"| AGENTS2B["Fix Gen iter 2: 91%\nRe-established frame context\nReview: APPROVED 85%"]
-        AGENTS2B --> APPLY2["Apply fix to local disk\nre-established window/frame\ncontext before interaction"]
-        APPLY2 --> RUN2["Run test locally\nnpx wdio run wdio.conf.ts\n--spec lms.video.plays.e2e.ts"]
-        RUN2 -->|"80s"| RESULT2{"Test result?"}
-        RESULT2 -->|"PASSED"| PUSH
-    end
-
-    PUSH["git push origin fix/triage-agent/...\ngh pr create #286"] --> DONE["Outputs set\nSlack notification sent\n19:16:38"]
-
-    style CLASSIFY fill:#1a1a35,stroke:#404060,color:#c8c8e0
-    style CLONE fill:#1a1a35,stroke:#404060,color:#c8c8e0
-    style AGENTS1 fill:#3b0764,stroke:#9333ea,color:#d8b4fe
-    style APPLY1 fill:#1a1a35,stroke:#f59e0b,color:#fde68a
-    style RUN1 fill:#1a1a35,stroke:#404060,color:#c8c8e0
-    style RESULT1 fill:#7f1d1d,stroke:#991b1b,color:#fca5a5
-    style RESET1 fill:#7f1d1d,stroke:#991b1b,color:#fca5a5
-    style AGENTS2 fill:#3b0764,stroke:#9333ea,color:#d8b4fe
-    style AGENTS2B fill:#3b0764,stroke:#9333ea,color:#d8b4fe
-    style APPLY2 fill:#1a1a35,stroke:#f59e0b,color:#fde68a
-    style RUN2 fill:#1a1a35,stroke:#404060,color:#c8c8e0
-    style RESULT2 fill:#064e3b,stroke:#059669,color:#6ee7b7
-    style PUSH fill:#064e3b,stroke:#059669,color:#6ee7b7
-    style DONE fill:#064e3b,stroke:#059669,color:#6ee7b7
-  </div>
-  <div class="legend">
-    <div class="legend-item"><div class="legend-dot dot-agent"></div> AI Pipeline</div>
-    <div class="legend-item"><div class="legend-dot" style="background:#f59e0b"></div> Fix Applied to Disk</div>
-    <div class="legend-item"><div class="legend-dot" style="background:#7f1d1d"></div> Test Failed</div>
-    <div class="legend-item"><div class="legend-dot dot-repo"></div> Test Passed / Pushed</div>
-  </div>
-</div>
-
-<!-- DIAGRAM 6: Timeline -->
-<div class="section">
-  <h2>6 &middot; Timeline</h2>
-  <div class="desc">Sequence of events from 19:11 to 19:16 (~5 minutes total).</div>
-  <div class="mermaid">
-sequenceDiagram
-    participant SL as Sauce Labs
-    participant GHA as GitHub Actions
-    participant AGENT as Triage Agent (v1.26.0)
-    participant OAI as OpenAI (gpt-5.3-codex)
-    participant GHAPI as GitHub API
-    participant LOCAL as Local Runner
-    participant SLACK as Slack
-
-    Note over SL,GHA: Test fails on Sauce Labs
-    SL->>GHA: sauceTest job fails (lms.video.plays.e2e)
-    GHA->>AGENT: repository_dispatch (triage-failed-test)
-
-    Note over AGENT: 19:11:25 - Triage starts
-    Note over AGENT,GHAPI: Data Gathering (~2s)
-    AGENT->>GHAPI: Logs, screenshots, diffs (parallel)
-    GHAPI-->>AGENT: ErrorData assembled
-
-    Note over AGENT,OAI: 19:11:27 - Classification
-    AGENT->>OAI: analyze(ErrorData)
-    OAI-->>AGENT: TEST_ISSUE, 95%
-
-    Note over AGENT,LOCAL: 19:11:35 - Clone + setup (18s)
-    AGENT->>LOCAL: git clone + npm ci
-
-    rect rgb(59, 7, 100)
-    Note over AGENT,LOCAL: 19:11:53 - Iteration 1/3
-    AGENT->>OAI: AnalysisAgent (6s)
-    OAI-->>AGENT: ELEMENT_VISIBILITY 90%
-    AGENT->>GHAPI: CodeReadingAgent (4 files)
-    GHAPI-->>AGENT: test + helpers + conf + page object
-    AGENT->>OAI: InvestigationAgent (23s)
-    OAI-->>AGENT: 5 findings, approach
-    AGENT->>OAI: FixGenerationAgent (14s)
-    OAI-->>AGENT: 93% confidence fix
-    AGENT->>OAI: ReviewAgent (5s)
-    OAI-->>AGENT: APPROVED 91%
-    AGENT->>LOCAL: Apply fix + run test (80s)
-    LOCAL-->>AGENT: FAILED
-    Note over AGENT: Reset files, capture failure logs
-    end
-
-    rect rgb(6, 78, 59)
-    Note over AGENT,LOCAL: 19:14:03 - Iteration 2/3 (with failure feedback)
-    AGENT->>OAI: AnalysisAgent (7s)
-    OAI-->>AGENT: ELEMENT_VISIBILITY 93%
-    AGENT->>GHAPI: CodeReadingAgent (4 files)
-    AGENT->>OAI: InvestigationAgent (20s)
-    OAI-->>AGENT: 3 findings, frame context approach
-    AGENT->>OAI: FixGen iter 1 (89%)
-    AGENT->>OAI: ReviewAgent: REJECTED (duplicate call)
-    AGENT->>OAI: FixGen iter 2 (91%)
-    OAI-->>AGENT: Re-established frame context
-    AGENT->>OAI: ReviewAgent: APPROVED 85%
-    AGENT->>LOCAL: Apply fix + run test (80s)
-    LOCAL-->>AGENT: PASSED
-    end
-
-    Note over AGENT,GHAPI: 19:16:35 - Push validated code
-    AGENT->>GHAPI: Push branch + create PR #286
-    GHAPI-->>AGENT: PR created
-
-    Note over AGENT,SLACK: 19:16:38 - Done
-    AGENT-->>SLACK: TEST_ISSUE 95% + Validated Fix PR #286
-  </div>
-</div>
-
-<!-- SECTION 7: GitHub Workflow Links -->
-<div class="section">
-  <h2>7 &middot; GitHub Workflow Links</h2>
-  <div class="desc">Direct links to all GitHub Actions resources referenced in this triage run.</div>
-  <div class="links-grid">
-    <div class="link-card">
-      <span class="icon">&#x1F534;</span>
-      <div class="info">
-        <div class="title">Failed Workflow Run</div>
-        <a href="https://github.com/adept-at/lib-wdio-8-e2e-ts/actions/runs/23814878545" target="_blank">github.com/adept-at/lib-wdio-8-e2e-ts/actions/runs/23814878545</a>
-        <div class="desc">The Sauce Labs E2E workflow run that failed and triggered triage</div>
-      </div>
+    <div class="aq">
+      <span class="aq-name">Classification Agent</span>
+      <span class="aq-text">"The PR only updates GitHub Actions workflow versions and Node runtime versions in CI files; it does not modify the failing spec logic or product video player code paths."</span>
     </div>
-    <div class="link-card">
-      <span class="icon">&#x1F4E6;</span>
-      <div class="info">
-        <div class="title">Consumer Repo</div>
-        <a href="https://github.com/adept-at/lib-wdio-8-e2e-ts" target="_blank">github.com/adept-at/lib-wdio-8-e2e-ts</a>
-        <div class="desc">The test repo where the failure originated</div>
-      </div>
+
+    <div class="aq">
+      <span class="aq-name">Investigation Agent</span>
+      <span class="aq-text">"Product changes are in invite/paste flows, not SCORM playback."</span>
     </div>
-    <div class="link-card">
-      <span class="icon">&#x1F916;</span>
-      <div class="info">
-        <div class="title">Triage Agent Action</div>
-        <a href="https://github.com/adept-at/adept-triage-agent" target="_blank">github.com/adept-at/adept-triage-agent</a>
-        <div class="desc">adept-triage-agent v1.26.0 with local fix-validate loop</div>
-      </div>
-    </div>
-    <div class="link-card">
-      <span class="icon">&#x1F500;</span>
-      <div class="info">
-        <div class="title">Pull Request #286</div>
-        <a href="https://github.com/adept-at/lib-wdio-8-e2e-ts/pull/286" target="_blank">github.com/adept-at/lib-wdio-8-e2e-ts/pull/286</a>
-        <div class="desc">Auto-created PR with the validated fix (passed local test)</div>
-      </div>
-    </div>
-    <div class="link-card">
-      <span class="icon">&#x1F33F;</span>
-      <div class="info">
-        <div class="title">Fix Branch</div>
-        <a href="https://github.com/adept-at/lib-wdio-8-e2e-ts/tree/fix/triage-agent/test-specs-skills-lms-video-plays-e2e-ts-20260331-839" target="_blank">fix/triage-agent/test-specs-skills-lms-video-plays-e2e-ts-20260331-839</a>
-        <div class="desc">Auto-created branch with the validated fix</div>
-      </div>
-    </div>
-    <div class="link-card">
-      <span class="icon">&#x1F4DD;</span>
-      <div class="info">
-        <div class="title">Triggering Commit</div>
-        <a href="https://github.com/adept-at/lib-wdio-8-e2e-ts/commit/7bb1475" target="_blank">7bb1475</a>
-        <div class="desc">The commit on feature/update-actions-node24 that triggered the failing test</div>
-      </div>
-    </div>
-    <div class="link-card">
-      <span class="icon">&#x1F4BE;</span>
-      <div class="info">
-        <div class="title">Fix Commit</div>
-        <a href="https://github.com/adept-at/lib-wdio-8-e2e-ts/commit/194f626" target="_blank">194f626</a>
-        <div class="desc">The validated fix commit pushed after local test passed</div>
-      </div>
-    </div>
-    <div class="link-card">
-      <span class="icon">&#x1F3D7;&#xFE0F;</span>
-      <div class="info">
-        <div class="title">Product Repo (learn-webapp)</div>
-        <a href="https://github.com/adept-at/learn-webapp" target="_blank">github.com/adept-at/learn-webapp</a>
-        <div class="desc">Product repo checked for recent changes (last 5 commits)</div>
-      </div>
+
+    <div class="aq">
+      <span class="aq-name">Review Agent</span>
+      <span class="aq-text">"Reasoning is consistent with the supplied product diff: product changes are in invite/paste flows and do not directly alter LMS SCORM playback DOM."</span>
     </div>
   </div>
 </div>
 
-<!-- SECTION 8: Agent Steps & Outputs -->
+<!-- Section 4: Iteration 1 — Failed -->
 <div class="section">
-  <h2>8 &middot; Agent Steps &amp; Outputs</h2>
-  <div class="desc">Detailed breakdown of every agent step across both iterations. Each collapsible section shows what the agent did, key output, and timing.</div>
+  <h2>4 &middot; Iteration 1 &mdash; Failed</h2>
+  <div class="desc">5 agents generate a fix at 93% confidence. Approach: replace <code>waitForClickable</code> with <code>waitForDisplayed</code> + viewport scroll. The review agent approved it, but the local test proved it wrong.</div>
 
-  <!-- 8.1 Classification Agent -->
+  <div class="diff-pair">
+    <div class="diff-block diff-old">
+      <div class="diff-label">Original Code (lms.video.plays.e2e.ts)</div>
+      <pre>await $('mux-player').waitForExist();
+await $('mux-player').scrollIntoView();
+await $('mux-player').waitForClickable();
+await browser.pause(2000);
+await $('mux-player').click();
+await browser.pause(2000);
+await $('mux-player').click();
+await VideoPlayer.startVideoIndexAndMonitorEvents(0, 5.0, true, 1);</pre>
+    </div>
+    <div class="diff-block diff-new">
+      <div class="diff-label">Iteration 1 Fix (93% confidence)</div>
+      <pre>await $('mux-player').waitForExist();
+await $('mux-player').waitForDisplayed({ timeout: 15000 });
+await $('mux-player').scrollIntoView({ block: 'center' });
+await browser.pause(2000);
+await $('mux-player').click();
+await browser.pause(2000);
+await $('mux-player').click();
+await VideoPlayer.startVideoIndexAndMonitorEvents(0, 5.0, true, 1);</pre>
+    </div>
+  </div>
+
+  <div class="result fail">FAILED after 80s &mdash; Element is not clickable at point (512, 384). The poster overlay (<code>div.vjs-poster</code>) intercepts the click. The fix addressed the symptom, not the root cause.</div>
+</div>
+
+<!-- Section 5: Iteration 2 — Passed -->
+<div class="section">
+  <h2>5 &middot; Iteration 2 &mdash; Passed</h2>
+  <div class="desc">Agents receive the iteration 1 failure logs as context. The investigation agent identifies the real issue: the browser frame context must be re-established before interacting with the video player inside nested iframes.</div>
+
+  <div class="diff-block diff-reject" style="margin-bottom: 1rem;">
+    <div class="diff-label">Review Agent Rejected First Attempt (62% confidence)</div>
+    <pre>CRITICAL: duplicate startVideo() call &mdash; first uses static VideoPlayer.startVideo()
+which doesn't exist, second uses the instance. This will throw a TypeError at runtime.
+
+Suggestion: Remove the static call. Use only the instance method.</pre>
+  </div>
+
+  <p style="font-size: 0.78rem; color: var(--text-dim); margin-bottom: 0.5rem;">Fix generation retried with review feedback. Second attempt: 91% confidence, approved at 85%.</p>
+
+  <div class="diff-pair">
+    <div class="diff-block diff-old">
+      <div class="diff-label">Original Code (same block)</div>
+      <pre>await $('mux-player').waitForExist();
+await $('mux-player').scrollIntoView();
+await $('mux-player').waitForClickable();
+await browser.pause(2000);
+await $('mux-player').click();
+await browser.pause(2000);
+await $('mux-player').click();
+await VideoPlayer.startVideoIndexAndMonitorEvents(0, 5.0, true, 1);</pre>
+    </div>
+    <div class="diff-block diff-new">
+      <div class="diff-label">Final Fix (91% confidence)</div>
+      <pre>await browser.switchToWindow(handles[1]);
+await browser.switchToFrame(null);
+const outerIframeForPlayer = await $('iframe[name="scormdriver_content"]');
+await outerIframeForPlayer.waitForExist({ timeout: 30000 });
+await browser.switchToFrame(outerIframeForPlayer);
+const innerIframeForPlayer = await $('iframe#contentRelay');
+await innerIframeForPlayer.waitForExist({ timeout: 30000 });
+await browser.switchToFrame(innerIframeForPlayer);
+await $('mux-player').waitForDisplayed({ timeout: 60000 });
+await VideoPlayer.startVideoIndexAndMonitorEvents(0, 5.0, true, 1);</pre>
+    </div>
+  </div>
+
+  <div class="result pass">PASSED after 80s &mdash; video played successfully. Fix validated locally. Branch pushed, PR #286 created.</div>
+</div>
+
+<!-- Section 6: Agent Details -->
+<div class="section">
+  <h2>6 &middot; Agent Details</h2>
+  <div class="desc">Collapsible details for each agent. Data shown is from iteration 2 (the successful pass) unless noted.</div>
+
   <details class="agent-step">
     <summary>
       <span class="badge badge-llm">LLM</span>
-      <strong>Classification Agent</strong> &mdash; 19:11:27 (2s)
+      <strong>Classification Agent</strong>
     </summary>
     <div class="agent-body">
-      <p class="agent-note">Classifies the failure as TEST_ISSUE, PRODUCT_ISSUE, or INCONCLUSIVE using error logs, screenshots, and diffs.</p>
+      <p class="agent-note">Receives error logs, screenshots, and diffs. Classifies the failure as TEST_ISSUE, PRODUCT_ISSUE, or INCONCLUSIVE.</p>
       <div class="prompt-block">
-        <h4>Key Output</h4>
-        <pre class="response-schema">{
+        <h4>Key Prompt Elements</h4>
+        <pre>- Error: element ("mux-player") still not clickable after 15000ms
+- Framework: webdriverio
+- PR Diff: updates GitHub Actions workflow versions + Node runtime (CI-only)
+- Product Diff: PastePlugin.tsx, InviteAccept.tsx, Accept.tsx
+- Screenshot: video player page with poster overlay visible</pre>
+      </div>
+      <div class="prompt-block">
+        <h4>Response</h4>
+        <pre class="response-ok">{
   "verdict": "TEST_ISSUE",
-  "reasoning": "The video element interaction fails because the test attempts to click an element inside an iframe without properly establishing the frame context. The waitForClickable call times out because the element, while present in the DOM, is not interactable from the parent frame context. This is a test synchronization issue, not a product bug.",
-  "indicators": ["element visibility", "iframe context", "waitForClickable timeout", "cross-frame interaction"],
-  "confidence": 95,
-  "suggestedSourceLocations": []
+  "reasoning": "The concrete failure is: element ('mux-player') still not clickable
+    after 15000ms at test/specs/skills/lms.video.plays.e2e.ts:120:5. This is a
+    classic interaction/synchronization failure. The PR only updates GitHub Actions
+    workflow versions and Node runtime versions in CI files; it does not modify
+    the failing spec logic or product video player code paths.",
+  "indicators": ["element visibility", "iframe context", "waitForClickable timeout"],
+  "confidence": 95
 }</pre>
       </div>
     </div>
   </details>
 
-  <!-- ═══════════════════════════════════════════ -->
-  <div class="iteration-header fail">Iteration 1 of 3 &mdash; 19:11:53 &rarr; 19:14:00 (FAILED)</div>
-  <!-- ═══════════════════════════════════════════ -->
-
-  <!-- 8.2 Iteration 1: AnalysisAgent -->
   <details class="agent-step">
     <summary>
       <span class="badge badge-llm">LLM</span>
-      <strong>Step 1: AnalysisAgent</strong> &mdash; 6s
+      <strong>Analysis Agent</strong> &mdash; 6-7s
     </summary>
     <div class="agent-body">
-      <p class="agent-note">Classifies the root cause category and extracts selectors, patterns, and a suggested fix approach.</p>
+      <p class="agent-note">Classifies root cause category and extracts patterns. In iteration 2, informed by iteration 1 failure logs.</p>
       <div class="prompt-block">
-        <h4>Key Output</h4>
-        <pre class="response-schema">{
+        <h4>Response (Iteration 2)</h4>
+        <pre class="response-ok">{
   "rootCauseCategory": "ELEMENT_VISIBILITY",
-  "contributingFactors": ["TIMING_ISSUE"],
-  "confidence": 90,
-  "explanation": "The video play button element exists in the DOM inside an iframe but is not interactable from the test's execution context. The waitForClickable times out because the element is behind an iframe boundary and the test does not switch frame context before attempting the interaction.",
-  "selectors": [".vjs-big-play-button", "[data-testid='video-player']"],
-  "elements": ["video play button", "video player iframe"],
-  "issueLocation": "TEST_CODE",
-  "patterns": {
-    "hasTimeout": true,
-    "hasVisibilityIssue": true,
-    "hasNetworkCall": false,
-    "hasStateAssertion": false,
-    "hasDynamicContent": true,
-    "hasResponsiveIssue": false
-  },
-  "suggestedApproach": "Replace waitForClickable with waitForDisplayed and add explicit viewport/frame context checks before interacting with the video element."
+  "confidence": 93,
+  "explanation": "The previous fix attempt revealed the true issue: the video poster
+    overlay (div.vjs-poster) intercepts clicks. The fix needs to re-establish the
+    correct window/frame context so the video player's own click handler can
+    process the event.",
+  "suggestedApproach": "Re-establish browser window/frame context and use the
+    VideoPlayer helper's startVideo() method."
 }</pre>
       </div>
     </div>
   </details>
 
-  <!-- 8.3 Iteration 1: CodeReadingAgent -->
   <details class="agent-step">
     <summary>
       <span class="badge badge-nollm">No LLM</span>
-      <strong>Step 2: CodeReadingAgent</strong> &mdash; fetched 4 files
+      <strong>Code Reading Agent</strong>
     </summary>
     <div class="agent-body">
-      <p class="agent-note">No LLM call. Fetches source files via the GitHub Contents API to provide code context for subsequent agents.</p>
+      <p class="agent-note">Fetches source files via GitHub API. No LLM call.</p>
       <div class="prompt-block">
-        <h4>Files Fetched</h4>
-        <pre>Via GitHub Contents API (octokit.repos.getContent):
-
-1. test/specs/skills/lms.video.plays.e2e.ts
-   -> The failing spec file (video playback E2E test)
-
-2. test/helpers/VideoPlayer.ts
-   -> VideoPlayer page object with startVideo(), waitForVideoPlaying() helpers
-
-3. wdio.conf.ts
-   -> WebDriverIO configuration (Sauce Labs settings, timeouts)
-
-4. test/helpers/common.ts
-   -> Shared test helpers (login, navigation)</pre>
+        <h4>Files Fetched (4 files)</h4>
+        <pre>1. test/specs/skills/lms.video.plays.e2e.ts  (failing spec)
+2. test/helpers/VideoPlayer.ts                (page object with startVideo helper)
+3. wdio.conf.ts                               (Sauce Labs config, timeouts)
+4. test/helpers/common.ts                      (shared helpers)</pre>
       </div>
     </div>
   </details>
 
-  <!-- 8.4 Iteration 1: InvestigationAgent -->
   <details class="agent-step">
     <summary>
       <span class="badge badge-llm">LLM</span>
-      <strong>Step 3: InvestigationAgent</strong> &mdash; 23s
+      <strong>Investigation Agent</strong> &mdash; 20-23s
     </summary>
     <div class="agent-body">
-      <p class="agent-note">Cross-references the AnalysisAgent output with actual code. Identified 5 findings related to frame context and element visibility.</p>
+      <p class="agent-note">Cross-references analysis with actual code. In iteration 2, identified that the VideoPlayer helper already handles poster dismissal.</p>
       <div class="prompt-block">
-        <h4>Key Output</h4>
-        <pre class="response-schema">{
-  "findings": [
-    {
-      "type": "TIMING_GAP",
-      "severity": "HIGH",
-      "description": "waitForClickable used instead of waitForDisplayed — the video element inside the iframe is never 'clickable' from the parent context",
-      "location": { "file": "test/specs/skills/lms.video.plays.e2e.ts" }
-    },
-    {
-      "type": "SELECTOR_CHANGE",
-      "severity": "HIGH",
-      "description": "No explicit frame switch before interacting with video player element"
-    },
-    {
-      "type": "TIMING_GAP",
-      "severity": "MEDIUM",
-      "description": "Video player iframe may not be fully loaded when interaction begins"
-    },
-    {
-      "type": "OTHER",
-      "severity": "MEDIUM",
-      "description": "VideoPlayer helper has a startVideo() method that handles frame context, but it's not being used in the failing code path"
-    },
-    {
-      "type": "OTHER",
-      "severity": "LOW",
-      "description": "Viewport scroll may be needed to bring video player into view"
-    }
-  ],
-  "isTestCodeFixable": true,
-  "recommendedApproach": "Replace the direct waitForClickable + click sequence with waitForDisplayed, add an explicit viewport scroll to ensure the element is in view, and verify the element is interactable before clicking.",
-  "confidence": 88
-}</pre>
+        <h4>Key Findings (Iteration 2)</h4>
+        <pre class="response-ok">1. [HIGH] Poster overlay covers play button. Test clicks directly instead
+   of using VideoPlayer.startVideo() which handles poster dismissal.
+2. [HIGH] After poster dismiss, brief wait needed. VideoPlayer helper
+   handles this internally.
+3. [MEDIUM] Browser frame context needs re-establishing before interaction.
+
+Product changes are in invite/paste flows, not SCORM playback.
+
+Recommended: Use VideoPlayer.startVideo() with proper frame context.
+Confidence: 90%</pre>
       </div>
     </div>
   </details>
 
-  <!-- 8.5 Iteration 1: FixGenerationAgent -->
   <details class="agent-step">
     <summary>
       <span class="badge badge-llm">LLM</span>
-      <strong>Step 4: FixGenerationAgent</strong> &mdash; 14s, 93% confidence
+      <strong>Fix Generation Agent</strong>
     </summary>
     <div class="agent-body">
-      <p class="agent-note">Generated a fix replacing waitForClickable with waitForDisplayed + viewport scroll check.</p>
+      <p class="agent-note">Generates oldCode to newCode replacements. In iteration 2, first attempt was rejected (duplicate call), second was approved.</p>
       <div class="prompt-block">
-        <h4>Key Output</h4>
-        <pre class="response-schema">{
-  "changes": [
-    {
-      "file": "test/specs/skills/lms.video.plays.e2e.ts",
-      "oldCode": "    await videoPlayer.waitForClickable({ timeout: 15000 });\n    await videoPlayer.click();",
-      "newCode": "    await videoPlayer.waitForDisplayed({ timeout: 15000 });\n    await videoPlayer.scrollIntoView();\n    await videoPlayer.click();",
-      "justification": "waitForClickable fails in cross-frame context; waitForDisplayed + scrollIntoView ensures the element is visible and in the viewport before clicking",
-      "changeType": "WAIT_ADDITION"
-    }
-  ],
-  "confidence": 93,
-  "summary": "Replace waitForClickable with waitForDisplayed + viewport scroll for video player element"
-}</pre>
+        <h4>Iteration 2, Attempt 1 (89% &mdash; REJECTED)</h4>
+        <pre class="response-fail">Used VideoPlayer.startVideo() but called it twice: once as a static
+method (doesn't exist) and once on the instance. Would throw TypeError.</pre>
+      </div>
+      <div class="prompt-block">
+        <h4>Iteration 2, Attempt 2 (91% &mdash; APPROVED)</h4>
+        <pre class="response-ok">Re-establish window/frame context, then use VideoPlayer helper:
+
+oldCode: waitForExist + scrollIntoView + waitForClickable + direct clicks
+newCode: switchToWindow + switchToFrame chain + waitForDisplayed +
+         VideoPlayer.startVideoIndexAndMonitorEvents()
+
+"The fix re-establishes the full iframe navigation chain instead of
+trying to interact with mux-player from an ambiguous frame context."</pre>
       </div>
     </div>
   </details>
 
-  <!-- 8.6 Iteration 1: ReviewAgent -->
   <details class="agent-step">
     <summary>
       <span class="badge badge-llm">LLM</span>
-      <strong>Step 5: ReviewAgent</strong> &mdash; 5s, APPROVED 91%
+      <strong>Review Agent</strong> &mdash; 5-8s
     </summary>
     <div class="agent-body">
-      <p class="agent-note">Approved the fix. No critical issues found. The oldCode matched the source file exactly.</p>
+      <p class="agent-note">Senior QA review. Validates oldCode matches source, newCode is valid, fix addresses root cause, no side effects.</p>
       <div class="prompt-block">
-        <h4>Key Output</h4>
-        <pre class="response-schema">{
+        <h4>Iteration 2, Final Review (APPROVED 85%)</h4>
+        <pre class="response-ok">{
   "approved": true,
-  "issues": [],
-  "assessment": "The fix correctly replaces waitForClickable with waitForDisplayed and adds scrollIntoView. The oldCode matches the source exactly. The change addresses the root cause of the cross-frame visibility issue.",
-  "fixConfidence": 91
+  "assessment": "The fix correctly re-establishes the parent frame context,
+    then delegates to the VideoPlayer helper which handles the full
+    poster-dismiss-and-play sequence. The oldCode matches the source exactly.
+    Reasoning is consistent with the supplied product diff: product changes
+    are in invite/paste flows and do not directly alter LMS SCORM playback DOM.",
+  "fixConfidence": 85
 }</pre>
-      </div>
-    </div>
-  </details>
-
-  <!-- 8.7 Iteration 1: Local Test Run -->
-  <details class="agent-step">
-    <summary>
-      <span class="badge badge-fail">FAILED</span>
-      <strong>Local Test Run</strong> &mdash; 80s
-    </summary>
-    <div class="agent-body">
-      <p class="agent-note">Fix applied to disk, test executed locally. The test still failed &mdash; the video element was displayed but clicking it did not start playback because the frame context was not properly established.</p>
-      <div class="prompt-block">
-        <h4>Failure Output</h4>
-        <pre>npx wdio run wdio.conf.ts --spec ./test/specs/skills/lms.video.plays.e2e.ts
-
-FAILED: "Skills - Video - should play video content"
-  Error: Element is not clickable at point (512, 384)
-  Other element would receive the click: &lt;div class="vjs-poster"&gt;
-
-  The video poster overlay is still covering the play button.
-  waitForDisplayed passed (element IS displayed) but the poster
-  overlay is intercepting the click event.
-
-  Duration: 80s
-  Exit code: 1</pre>
-      </div>
-      <div class="prompt-block">
-        <h4>Action Taken</h4>
-        <pre>git checkout -- .
-# Reset all local file changes
-# Captured failure logs to feed back to next iteration</pre>
-      </div>
-    </div>
-  </details>
-
-  <!-- ═══════════════════════════════════════════ -->
-  <div class="iteration-header pass">Iteration 2 of 3 &mdash; 19:14:03 &rarr; 19:16:35 (PASSED)</div>
-  <!-- ═══════════════════════════════════════════ -->
-
-  <!-- 8.8 Iteration 2: AnalysisAgent -->
-  <details class="agent-step">
-    <summary>
-      <span class="badge badge-llm">LLM</span>
-      <strong>Step 1: AnalysisAgent</strong> &mdash; 7s (with failure feedback)
-    </summary>
-    <div class="agent-body">
-      <p class="agent-note">Re-analyzed with the iteration 1 failure logs as additional context. Now understands the poster overlay is the real blocker.</p>
-      <div class="prompt-block">
-        <h4>Key Output</h4>
-        <pre class="response-schema">{
-  "rootCauseCategory": "ELEMENT_VISIBILITY",
-  "contributingFactors": ["TIMING_ISSUE"],
-  "confidence": 93,
-  "explanation": "The previous fix attempt revealed the true issue: the video poster overlay (div.vjs-poster) intercepts clicks to the play button. The element IS displayed, but it's covered by the poster. The fix needs to either dismiss the poster first or re-establish the correct window/frame context so the video player's own click handler can process the event.",
-  "suggestedApproach": "Re-establish the browser window/frame context and use the VideoPlayer helper's startVideo() method which correctly handles the poster dismiss + play sequence."
-}</pre>
-      </div>
-    </div>
-  </details>
-
-  <!-- 8.9 Iteration 2: CodeReadingAgent -->
-  <details class="agent-step">
-    <summary>
-      <span class="badge badge-nollm">No LLM</span>
-      <strong>Step 2: CodeReadingAgent</strong> &mdash; fetched 4 files
-    </summary>
-    <div class="agent-body">
-      <p class="agent-note">Re-fetched the same 4 files to provide fresh context alongside the failure feedback.</p>
-    </div>
-  </details>
-
-  <!-- 8.10 Iteration 2: InvestigationAgent -->
-  <details class="agent-step">
-    <summary>
-      <span class="badge badge-llm">LLM</span>
-      <strong>Step 3: InvestigationAgent</strong> &mdash; 20s
-    </summary>
-    <div class="agent-body">
-      <p class="agent-note">Updated investigation with 3 findings. Key insight: the VideoPlayer helper already handles poster dismissal, but the test bypasses it.</p>
-      <div class="prompt-block">
-        <h4>Key Output</h4>
-        <pre class="response-schema">{
-  "findings": [
-    {
-      "type": "SELECTOR_CHANGE",
-      "severity": "HIGH",
-      "description": "The poster overlay (div.vjs-poster) covers the play button. The test clicks the play button directly instead of using the VideoPlayer.startVideo() helper which dismisses the poster first."
-    },
-    {
-      "type": "TIMING_GAP",
-      "severity": "HIGH",
-      "description": "After the poster is dismissed, a brief wait is needed for the play button to become interactable. The VideoPlayer helper handles this internally."
-    },
-    {
-      "type": "OTHER",
-      "severity": "MEDIUM",
-      "description": "The browser frame context needs to be re-established (switchToParentFrame) to ensure the click target is correct."
-    }
-  ],
-  "isTestCodeFixable": true,
-  "recommendedApproach": "Replace the manual waitForDisplayed + click sequence with the VideoPlayer helper's startVideo() method, which handles poster dismissal, frame context, and the play interaction in the correct order.",
-  "confidence": 90
-}</pre>
-      </div>
-    </div>
-  </details>
-
-  <!-- 8.11 Iteration 2: FixGenerationAgent (2 internal iterations) -->
-  <details class="agent-step">
-    <summary>
-      <span class="badge badge-llm">LLM</span>
-      <span class="badge badge-loop">2 ITERATIONS</span>
-      <strong>Step 4: FixGenerationAgent</strong>
-    </summary>
-    <div class="agent-body">
-      <p class="agent-note">First attempt was rejected by the ReviewAgent. Second attempt was approved.</p>
-
-      <div class="prompt-block">
-        <h4>Fix Gen Iteration 1 &mdash; 89% confidence</h4>
-        <pre class="response-reject">{
-  "changes": [
-    {
-      "file": "test/specs/skills/lms.video.plays.e2e.ts",
-      "oldCode": "    await videoPlayer.waitForClickable({ timeout: 15000 });\n    await videoPlayer.click();",
-      "newCode": "    await VideoPlayer.startVideo();\n    await videoPlayer.startVideo();",
-      "justification": "Use the VideoPlayer helper to handle poster + play sequence"
-    }
-  ],
-  "confidence": 89,
-  "summary": "Use VideoPlayer.startVideo() helper instead of manual click"
-}
-
--> Sent to ReviewAgent...</pre>
-      </div>
-
-      <div class="prompt-block">
-        <h4>ReviewAgent Response &mdash; REJECTED (62% confidence)</h4>
-        <pre class="response-reject">{
-  "approved": false,
-  "issues": [
-    {
-      "severity": "CRITICAL",
-      "description": "Duplicate startVideo() call — first uses static VideoPlayer.startVideo() which doesn't exist, second uses the instance. This will throw a TypeError at runtime.",
-      "suggestion": "Remove the static call. Use only the instance method: await videoPlayer.startVideo();"
-    }
-  ],
-  "fixConfidence": 62
-}</pre>
-      </div>
-
-      <div class="prompt-block">
-        <h4>Fix Gen Iteration 2 &mdash; 91% confidence (with review feedback)</h4>
-        <pre class="response-schema">{
-  "changes": [
-    {
-      "file": "test/specs/skills/lms.video.plays.e2e.ts",
-      "oldCode": "    await videoPlayer.waitForClickable({ timeout: 15000 });\n    await videoPlayer.click();",
-      "newCode": "    await browser.switchToParentFrame();\n    await videoPlayer.startVideo();",
-      "justification": "Re-establish parent frame context, then use the VideoPlayer helper's startVideo() method which correctly handles poster dismissal, frame switching, and play button interaction",
-      "changeType": "LOGIC_CHANGE"
-    }
-  ],
-  "confidence": 91,
-  "summary": "Re-establish frame context and use VideoPlayer.startVideo() helper for correct poster dismiss + play sequence"
-}</pre>
-      </div>
-    </div>
-  </details>
-
-  <!-- 8.12 Iteration 2: ReviewAgent (final) -->
-  <details class="agent-step">
-    <summary>
-      <span class="badge badge-llm">LLM</span>
-      <strong>Step 5: ReviewAgent</strong> &mdash; 8s, APPROVED 85%
-    </summary>
-    <div class="agent-body">
-      <p class="agent-note">Approved the second fix generation attempt. The frame context reset + helper usage is correct.</p>
-      <div class="prompt-block">
-        <h4>Key Output</h4>
-        <pre class="response-schema">{
-  "approved": true,
-  "issues": [],
-  "assessment": "The fix correctly re-establishes the parent frame context with switchToParentFrame(), then delegates to the VideoPlayer.startVideo() helper which handles the full poster-dismiss-and-play sequence. The oldCode matches the source exactly. This addresses both the poster overlay issue discovered in iteration 1 and the underlying frame context problem.",
-  "fixConfidence": 85,
-  "improvements": [
-    "Consider adding a comment explaining why switchToParentFrame is needed here"
-  ]
-}</pre>
-      </div>
-    </div>
-  </details>
-
-  <!-- 8.13 Iteration 2: Local Test Run -->
-  <details class="agent-step">
-    <summary>
-      <span class="badge badge-pass">PASSED</span>
-      <strong>Local Test Run</strong> &mdash; 80s
-    </summary>
-    <div class="agent-body">
-      <p class="agent-note">Fix applied to disk, test executed locally. The test passed &mdash; video played successfully after frame context reset + poster dismissal.</p>
-      <div class="prompt-block">
-        <h4>Test Output</h4>
-        <pre>npx wdio run wdio.conf.ts --spec ./test/specs/skills/lms.video.plays.e2e.ts
-
-PASSED: "Skills - Video - should play video content"
-
-  1 passing (80s)
-  0 failing
-
-  Exit code: 0
-
--> Fix validated locally. Proceeding to push.</pre>
-      </div>
-    </div>
-  </details>
-
-  <!-- 8.14 Push + PR -->
-  <details class="agent-step">
-    <summary>
-      <span class="badge badge-api">API</span>
-      <strong>Push Branch + Create PR #286</strong> &mdash; 19:16:35 (3s)
-    </summary>
-    <div class="agent-body">
-      <p class="agent-note">Only after the test passed locally did the agent push the fix branch and create a pull request.</p>
-      <div class="prompt-block">
-        <h4>Actions</h4>
-        <pre>1. git checkout -b fix/triage-agent/test-specs-skills-lms-video-plays-e2e-ts-20260331-839
-2. git add test/specs/skills/lms.video.plays.e2e.ts
-3. git commit -m "fix(test): re-establish frame context for video player interaction
-
-   - Switch to parent frame before starting video
-   - Use VideoPlayer.startVideo() helper for correct poster dismiss + play
-   - Fixes ELEMENT_VISIBILITY issue where poster overlay intercepted clicks
-   - Validated: test passes locally"
-4. git push origin fix/triage-agent/test-specs-skills-lms-video-plays-e2e-ts-20260331-839
-5. gh pr create --title "fix(test): video player frame context" --base feature/update-actions-node24
-
--> PR #286 created
--> Commit: 194f626</pre>
-      </div>
-    </div>
-  </details>
-
-  <!-- 8.15 Pipeline Summary -->
-  <details class="agent-step" open>
-    <summary>
-      <span class="badge badge-api">SUMMARY</span>
-      <strong>Pipeline Totals</strong> &mdash; this triage run
-    </summary>
-    <div class="agent-body">
-      <p class="agent-note">Total agent interactions across the full pipeline for run #23814878545.</p>
-      <div class="prompt-block">
-        <pre>Phase                         LLM Calls   Time     Notes
-────────────────────────────────────────────────────────────────
-Classification Agent          1           2s
-Clone + npm ci                0           18s      Local setup
-────────────────────────────────────────────────────────────────
-ITERATION 1 (FAILED)
-  AnalysisAgent               1           6s       ELEMENT_VISIBILITY 90%
-  CodeReadingAgent            0           —        4 files via GitHub API
-  InvestigationAgent          1           23s      5 findings
-  FixGenerationAgent          1           14s      93% confidence
-  ReviewAgent                 1           5s       APPROVED 91%
-  Local Test Run              0           80s      FAILED (poster overlay)
-────────────────────────────────────────────────────────────────
-ITERATION 2 (PASSED)
-  AnalysisAgent               1           7s       ELEMENT_VISIBILITY 93%
-  CodeReadingAgent            0           —        4 files via GitHub API
-  InvestigationAgent          1           20s      3 findings, frame context
-  FixGenerationAgent          2           —        iter 1: 89% REJECTED
-                                                   iter 2: 91% APPROVED
-  ReviewAgent                 2           8s       iter 1: REJECTED 62%
-                                                   iter 2: APPROVED 85%
-  Local Test Run              0           80s      PASSED
-────────────────────────────────────────────────────────────────
-Push + PR                     0           3s       PR #286 created
-Slack notification            0           —
-────────────────────────────────────────────────────────────────
-Total LLM Calls:              11
-Total Local Test Runs:        2           (80s + 80s)
-Total GitHub API Calls:       ~20
-Total Wall-Clock Time:        ~5 min
-Fix/Review Inner Loop:        3 iterations total (1 in iter 1, 2 in iter 2)
-Local Validation Iterations:  2 of 3 max (1 fail, 1 pass)</pre>
       </div>
     </div>
   </details>
 </div>
 
 <div style="padding: 2rem 3rem; text-align: center; color: var(--text-dim); font-size: 0.72rem; border-top: 1px solid var(--border);">
-  Generated from adept-triage-agent v1.26.0 source code analysis &middot; Run #23814878545 &middot; 2026-03-31
+  11 LLM calls &middot; 2 local test runs &middot; ~5 min total &middot; adept-triage-agent v1.26.0 &middot; Run #23814878545
 </div>
 
 </body>

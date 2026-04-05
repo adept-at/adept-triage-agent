@@ -42,6 +42,8 @@ export interface AgentResult<T = unknown> {
   apiCalls: number;
   /** Tokens used (input + output) */
   tokensUsed?: number;
+  /** OpenAI Responses API response ID for chaining */
+  responseId?: string;
 }
 
 /**
@@ -138,7 +140,8 @@ export abstract class BaseAgent<TInput, TOutput> {
    */
   abstract execute(
     input: TInput,
-    context: AgentContext
+    context: AgentContext,
+    previousResponseId?: string
   ): Promise<AgentResult<TOutput>>;
 
   /**
@@ -164,7 +167,8 @@ export abstract class BaseAgent<TInput, TOutput> {
    */
   protected async executeWithTimeout(
     input: TInput,
-    context: AgentContext
+    context: AgentContext,
+    previousResponseId?: string
   ): Promise<AgentResult<TOutput>> {
     const startTime = Date.now();
     let apiCalls = 0;
@@ -181,11 +185,11 @@ export abstract class BaseAgent<TInput, TOutput> {
       });
 
       // Execute the agent task
-      const taskPromise = this.runAgentTask(input, context);
+      const taskPromise = this.runAgentTask(input, context, previousResponseId);
       apiCalls++;
 
       // Race between task and timeout
-      const result = await Promise.race([taskPromise, timeoutPromise]);
+      const { data: result, responseId } = await Promise.race([taskPromise, timeoutPromise]);
       clearTimeout(timeoutId);
 
       const executionTimeMs = Date.now() - startTime;
@@ -196,6 +200,7 @@ export abstract class BaseAgent<TInput, TOutput> {
         data: result,
         executionTimeMs,
         apiCalls,
+        responseId,
       };
     } catch (error) {
       clearTimeout(timeoutId);
@@ -219,8 +224,9 @@ export abstract class BaseAgent<TInput, TOutput> {
    */
   private async runAgentTask(
     input: TInput,
-    context: AgentContext
-  ): Promise<TOutput> {
+    context: AgentContext,
+    previousResponseId?: string
+  ): Promise<{ data: TOutput; responseId: string }> {
     const systemPrompt = this.getSystemPrompt();
     const userPrompt = this.buildUserPrompt(input, context);
 
@@ -250,19 +256,20 @@ export abstract class BaseAgent<TInput, TOutput> {
       }
     }
 
-    const response = await this.openaiClient.generateWithCustomPrompt({
+    const { text, responseId } = await this.openaiClient.generateWithCustomPrompt({
       systemPrompt,
       userContent: content,
       temperature: this.config.temperature,
       responseAsJson: true,
+      previousResponseId,
     });
 
-    const parsed = this.parseResponse(response);
+    const parsed = this.parseResponse(text);
     if (!parsed) {
       throw new Error('Failed to parse agent response');
     }
 
-    return parsed;
+    return { data: parsed, responseId };
   }
 
   /**

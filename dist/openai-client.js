@@ -76,7 +76,7 @@ class OpenAIClient {
                 }
                 const result = this.parseResponse(content);
                 this.validateResponse(result);
-                return result;
+                return { ...result, responseId: response.id };
             }
             catch (error) {
                 core.warning(`OpenAI API attempt ${attempt} failed: ${error}`);
@@ -550,12 +550,13 @@ Changed Product Files:
             input,
             max_output_tokens: constants_1.OPENAI.MAX_COMPLETION_TOKENS,
             text: params.responseAsJson ? { format: { type: 'json_object' } } : undefined,
+            ...(params.previousResponseId ? { previous_response_id: params.previousResponseId } : {}),
         });
         const content = response.output_text;
         if (!content) {
             throw new Error('Empty response from OpenAI');
         }
-        return content;
+        return { text: content, responseId: response.id };
     }
 }
 exports.OpenAIClient = OpenAIClient;

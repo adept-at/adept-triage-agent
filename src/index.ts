@@ -175,13 +175,14 @@ async function run(): Promise<void> {
       autoFixResult = loopResult.autoFixResult;
     } else {
       // Original single-attempt flow (no validation loop)
-      fixRecommendation = await generateFixRecommendation(
+      const singleResult = await generateFixRecommendation(
         inputs,
         repoDetails,
         errorData,
         openaiClient,
         octokit
       );
+      fixRecommendation = singleResult?.fix ?? null;
       if (fixRecommendation && inputs.enableAutoFix) {
         const autoFixTargetRepo = resolveAutoFixTargetRepo(inputs);
         autoFixResult = await attemptAutoFix(
@@ -296,8 +297,9 @@ async function generateFixRecommendation(
     iteration: number;
     previousFix: FixRecommendation;
     validationLogs: string;
-  }
-): Promise<FixRecommendation | null> {
+  },
+  previousResponseId?: string
+): Promise<{ fix: FixRecommendation; lastResponseId?: string } | null> {
   try {
     const iterLabel = previousAttempt
       ? ` (iteration ${previousAttempt.iteration + 1})`
@@ -335,20 +337,21 @@ async function generateFixRecommendation(
         enableAgenticRepair: inputs.enableAgenticRepair,
       }
     );
-    const recommendation = await repairAgent.generateFixRecommendation(
+    const result = await repairAgent.generateFixRecommendation(
       repairContext,
       errorData as import('./types').ErrorData,
-      previousAttempt
+      previousAttempt,
+      previousResponseId
     );
 
-    if (recommendation) {
+    if (result) {
       core.info(
-        `✅ Fix recommendation generated with ${recommendation.confidence}% confidence`
+        `✅ Fix recommendation generated with ${result.fix.confidence}% confidence`
       );
     } else {
       core.info('❌ Could not generate fix recommendation');
     }
-    return recommendation;
+    return result;
   } catch (error) {
     core.warning(`Failed to generate fix recommendation: ${error}`);
     return null;
@@ -381,6 +384,7 @@ async function iterativeFixValidateLoop(
   const failedFixFingerprints = new Set<string>();
   const minConfidence = inputs.autoFixMinConfidence || AUTO_FIX.DEFAULT_MIN_CONFIDENCE;
   const baseBranch = inputs.branch || inputs.autoFixBaseBranch || 'main';
+  let lastResponseId: string | undefined;
 
   const validator = new LocalFixValidator(
     {
@@ -405,19 +409,24 @@ async function iterativeFixValidateLoop(
         `\n${'='.repeat(60)}\n🔄 Fix-Validate iteration ${iteration + 1}/${maxIterations}\n${'='.repeat(60)}`
       );
 
-      fixRecommendation = await generateFixRecommendation(
+      const fixResult = await generateFixRecommendation(
         inputs,
         repoDetails,
         errorData,
         openaiClient,
         octokit,
-        previousAttempt
+        previousAttempt,
+        lastResponseId
       );
 
-      if (!fixRecommendation) {
+      if (!fixResult) {
+        fixRecommendation = null;
         core.warning(`Iteration ${iteration + 1}: could not generate fix recommendation`);
         break;
       }
+
+      fixRecommendation = fixResult.fix;
+      lastResponseId = fixResult.lastResponseId ?? lastResponseId;
 
       if (
         fixRecommendation.confidence < minConfidence ||

@@ -63,7 +63,7 @@ class AgentOrchestrator {
         this.fixGenerationAgent = new fix_generation_agent_1.FixGenerationAgent(openaiClient);
         this.reviewAgent = new review_agent_1.ReviewAgent(openaiClient);
     }
-    async orchestrate(context, errorData) {
+    async orchestrate(context, errorData, previousResponseId) {
         const startTime = Date.now();
         const agentResults = {};
         let iterations = 0;
@@ -75,7 +75,7 @@ class AgentOrchestrator {
                     reject(new Error(`Orchestration timed out after ${this.config.totalTimeoutMs}ms`));
                 }, this.config.totalTimeoutMs);
             });
-            const pipelinePromise = this.runPipeline(context, errorData, agentResults);
+            const pipelinePromise = this.runPipeline(context, errorData, agentResults, previousResponseId);
             const result = await Promise.race([pipelinePromise, timeoutPromise]);
             clearTimeout(timeoutId);
             iterations = result.iterations;
@@ -88,6 +88,7 @@ class AgentOrchestrator {
                     totalTimeMs,
                     iterations,
                     approach: 'agentic',
+                    lastResponseId: result.lastResponseId,
                     agentResults,
                 };
             }
@@ -126,15 +127,18 @@ class AgentOrchestrator {
             };
         }
     }
-    async runPipeline(context, _errorData, agentResults) {
+    async runPipeline(context, _errorData, agentResults, previousResponseId) {
         let iterations = 0;
+        let lastResponseId = previousResponseId;
         core.info('📊 Step 1: Running Analysis Agent...');
-        const analysisResult = await this.analysisAgent.execute({}, context);
+        const analysisResult = await this.analysisAgent.execute({}, context, lastResponseId);
         agentResults.analysis = analysisResult;
+        lastResponseId = analysisResult.responseId ?? lastResponseId;
         if (!analysisResult.success || !analysisResult.data) {
             return {
                 error: `Analysis agent failed: ${analysisResult.error}`,
                 iterations,
+                lastResponseId,
             };
         }
         const analysis = analysisResult.data;
@@ -170,12 +174,14 @@ class AgentOrchestrator {
         const investigationResult = await this.investigationAgent.execute({
             analysis,
             codeContext: codeReadingResult.data,
-        }, context);
+        }, context, lastResponseId);
         agentResults.investigation = investigationResult;
+        lastResponseId = investigationResult.responseId ?? lastResponseId;
         if (!investigationResult.success || !investigationResult.data) {
             return {
                 error: `Investigation agent failed: ${investigationResult.error}`,
                 iterations,
+                lastResponseId,
             };
         }
         const investigation = investigationResult.data;
@@ -196,8 +202,9 @@ class AgentOrchestrator {
                 analysis,
                 investigation,
                 previousFeedback: reviewFeedback,
-            }, context);
+            }, context, lastResponseId);
             agentResults.fixGeneration = fixGenResult;
+            lastResponseId = fixGenResult.responseId ?? lastResponseId;
             if (!fixGenResult.success || !fixGenResult.data) {
                 core.warning(`Fix generation failed on iteration ${iterations}`);
                 continue;
@@ -257,8 +264,9 @@ class AgentOrchestrator {
                     proposedFix: lastFix,
                     analysis,
                     codeContext: codeReadingResult.data,
-                }, context);
+                }, context, lastResponseId);
                 agentResults.review = reviewResult;
+                lastResponseId = reviewResult.responseId ?? lastResponseId;
                 if (reviewResult.success && reviewResult.data) {
                     const review = reviewResult.data;
                     core.info(`   Approved: ${review.approved}`);
@@ -276,6 +284,7 @@ class AgentOrchestrator {
                         return {
                             fix: this.convertToFixRecommendation(lastFix),
                             iterations,
+                            lastResponseId,
                         };
                     }
                     else {
@@ -291,6 +300,7 @@ class AgentOrchestrator {
                 return {
                     fix: this.convertToFixRecommendation(lastFix),
                     iterations,
+                    lastResponseId,
                 };
             }
         }
@@ -301,12 +311,14 @@ class AgentOrchestrator {
             return {
                 fix: this.convertToFixRecommendation(lastFix),
                 iterations,
+                lastResponseId,
             };
         }
         core.error(`Max iterations (${this.config.maxIterations}) reached without a viable fix (last confidence: ${lastFix?.confidence ?? 'N/A'}%, threshold: ${this.config.minConfidence}%)`);
         return {
             error: `Max iterations (${this.config.maxIterations}) reached without valid fix`,
             iterations,
+            lastResponseId,
         };
     }
     convertToFixRecommendation(fix) {

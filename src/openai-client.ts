@@ -12,7 +12,7 @@ export class OpenAIClient {
     this.openai = new OpenAI({ apiKey });
   }
 
-  async analyze(errorData: ErrorData, examples: FewShotExample[]): Promise<OpenAIResponse> {
+  async analyze(errorData: ErrorData, examples: FewShotExample[]): Promise<OpenAIResponse & { responseId: string }> {
     const model = OPENAI.MODEL;
     core.info(`🧠 Using ${model} model for analysis (Responses API)`);
     
@@ -49,7 +49,7 @@ export class OpenAIClient {
         // Parse response - handle both JSON and text responses
         const result = this.parseResponse(content);
         this.validateResponse(result);
-        return result;
+        return { ...result, responseId: response.id };
 
       } catch (error) {
         core.warning(`OpenAI API attempt ${attempt} failed: ${error}`);
@@ -628,7 +628,8 @@ Changed Product Files:
     userContent: string | Array<OpenAI.Chat.Completions.ChatCompletionContentPartText | OpenAI.Chat.Completions.ChatCompletionContentPartImage>;
     responseAsJson?: boolean;
     temperature?: number;
-  }): Promise<string> {
+    previousResponseId?: string;
+  }): Promise<{ text: string; responseId: string }> {
     const model = OPENAI.MODEL;
     const userContent = params.responseAsJson
       ? this.ensureJsonMention(params.userContent)
@@ -641,12 +642,13 @@ Changed Product Files:
       input,
       max_output_tokens: OPENAI.MAX_COMPLETION_TOKENS,
       text: params.responseAsJson ? { format: { type: 'json_object' as const } } : undefined,
+      ...(params.previousResponseId ? { previous_response_id: params.previousResponseId } : {}),
     });
 
     const content = response.output_text;
     if (!content) {
       throw new Error('Empty response from OpenAI');
     }
-    return content;
+    return { text: content, responseId: response.id };
   }
 } 

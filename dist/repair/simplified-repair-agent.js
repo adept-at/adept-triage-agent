@@ -72,26 +72,27 @@ class SimplifiedRepairAgent {
             });
         }
     }
-    async generateFixRecommendation(repairContext, errorData, previousAttempt) {
+    async generateFixRecommendation(repairContext, errorData, previousAttempt, previousResponseId) {
         try {
             core.info('🔧 Generating fix recommendation...');
             if (this.config.enableAgenticRepair && this.orchestrator) {
                 core.info('🤖 Attempting agentic repair...');
-                const agenticResult = await this.tryAgenticRepair(repairContext, errorData, previousAttempt);
+                const agenticResult = await this.tryAgenticRepair(repairContext, errorData, previousAttempt, previousResponseId);
                 if (agenticResult) {
-                    core.info(`✅ Agentic repair succeeded with ${agenticResult.confidence}% confidence`);
+                    core.info(`✅ Agentic repair succeeded with ${agenticResult.fix.confidence}% confidence`);
                     return agenticResult;
                 }
                 core.info('🔄 Agentic repair did not produce a fix, falling back to single-shot...');
             }
-            return await this.singleShotRepair(repairContext, errorData, previousAttempt);
+            const singleShotFix = await this.singleShotRepair(repairContext, errorData, previousAttempt);
+            return singleShotFix ? { fix: singleShotFix } : null;
         }
         catch (error) {
             core.warning(`Failed to generate fix recommendation: ${error}`);
             return null;
         }
     }
-    async tryAgenticRepair(repairContext, errorData, previousAttempt) {
+    async tryAgenticRepair(repairContext, errorData, previousAttempt, previousResponseId) {
         if (!this.orchestrator) {
             return null;
         }
@@ -132,7 +133,7 @@ class SimplifiedRepairAgent {
                     : undefined,
                 framework: errorData?.framework,
             });
-            const result = await this.orchestrator.orchestrate(agentContext, errorData);
+            const result = await this.orchestrator.orchestrate(agentContext, errorData, previousResponseId);
             if (result.success && result.fix) {
                 core.info(`🤖 Agentic approach: ${result.approach}, iterations: ${result.iterations}, time: ${result.totalTimeMs}ms`);
                 for (const change of result.fix.proposedChanges) {
@@ -142,7 +143,7 @@ class SimplifiedRepairAgent {
                         change.file = cleaned;
                     }
                 }
-                return result.fix;
+                return { fix: result.fix, lastResponseId: result.lastResponseId };
             }
             core.info(`🤖 Agentic approach failed: ${result.error || 'No fix generated'}`);
             return null;
@@ -626,7 +627,7 @@ You MUST respond in strict JSON only with this schema:
                     }
                 }
             }
-            const content = await this.openaiClient.generateWithCustomPrompt({
+            const { text: content } = await this.openaiClient.generateWithCustomPrompt({
                 systemPrompt,
                 userContent: userParts,
                 responseAsJson: true,

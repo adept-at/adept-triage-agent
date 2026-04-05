@@ -344,7 +344,7 @@ describe('OpenAIClient', () => {
         })
       );
 
-      expect(result).toBe(JSON.stringify({
+      expect(result.text).toBe(JSON.stringify({
         confidence: 85,
         reasoning: 'Test fix identified',
         changes: [],
@@ -411,7 +411,7 @@ describe('OpenAIClient', () => {
         })
       );
 
-      expect(result).toBe('Analysis of images');
+      expect(result.text).toBe('Analysis of images');
     });
 
     it('should throw error when response is empty', async () => {

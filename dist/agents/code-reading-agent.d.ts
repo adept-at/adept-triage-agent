@@ -28,7 +28,7 @@ export interface CodeReadingInput {
 export declare class CodeReadingAgent extends BaseAgent<CodeReadingInput, CodeReadingOutput> {
     private sourceFetchContext?;
     constructor(openaiClient: OpenAIClient, sourceFetchContext?: SourceFetchContext, config?: Partial<AgentConfig>);
-    execute(input: CodeReadingInput, context: AgentContext): Promise<AgentResult<CodeReadingOutput>>;
+    execute(input: CodeReadingInput, context: AgentContext, _previousResponseId?: string): Promise<AgentResult<CodeReadingOutput>>;
     protected getSystemPrompt(): string;
     protected buildUserPrompt(_input: CodeReadingInput, _context: AgentContext): string;
     protected parseResponse(_response: string): CodeReadingOutput | null;
