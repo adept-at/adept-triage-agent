@@ -354,7 +354,7 @@ Handles all communication with the OpenAI API.
 | `buildPrompt()` | Build user prompt (includes `formatPRDiffSection` and `formatProductDiffSection` when diffs exist) | ErrorData, examples | string |
 | `formatProductDiffSection()` | Format product-repo diff for classification prompt | `PRDiff` | string |
 | `parseResponse()` | Parse API response | Content string | `OpenAIResponse` |
-| `generateWithCustomPrompt()` | Generic prompt call | Params object | string |
+| `generateWithCustomPrompt()` | Generic prompt call (optional `previousResponseId` chains to prior Responses API turn) | Params object | `{ text, responseId }` |
 
 #### Configuration
 - **Model**: `gpt-5.3-codex` (GPT-5.3 Codex)
@@ -498,7 +498,7 @@ interface FixApplierConfig {
 1. **Confidence Check**: Verify fix recommendation meets minimum confidence threshold
 2. **Clone test repo locally**: Check out the failing branch in a temporary directory
 3. **Install dependencies**: Run `npm ci` in the clone
-4. **Iterative loop** (up to 3 attempts): LLM generates a fix → apply changes on disk → run `VALIDATION_TEST_COMMAND` locally → on success, push and create a PR; on failure, reset working tree, feed test logs back to the next iteration
+4. **Iterative loop** (up to 3 attempts): LLM generates a fix → apply changes on disk → run `VALIDATION_TEST_COMMAND` locally → on success, push and create a PR; on failure, reset working tree, feed test logs back to the next iteration. **Outer iterations continue the same OpenAI conversation:** `lastResponseId` from the orchestrator is passed into the next pipeline run so agents see prior turns plus the new validation failure context (inner fix/review loops already chain within one orchestration via `previous_response_id`).
 5. **Cleanup**: Remove the temporary directory
 
 **Legacy path** (when `VALIDATION_TEST_COMMAND` is not set): create/update the fix branch and apply changes via the GitHub API, then optionally dispatch `validate-fix.yml` (or the configured validation workflow) via `workflow_dispatch` instead of running tests locally.
@@ -990,24 +990,26 @@ Fix generation uses a 5-agent pipeline by default (`ENABLE_AGENTIC_REPAIR` defau
 
 Steps 4 and 5 loop up to 3 times (configurable via `AGENT_CONFIG.MAX_AGENT_ITERATIONS`). If review rejects, feedback is passed back to the fix generator.
 
+**Conversation chaining (Responses API):** All LLM agents in this pipeline share one OpenAI conversation. Each agent call passes the previous turn’s response ID as `previous_response_id`; the API returns a new `response_id` that is forwarded to the next agent. That way Fix Generation and Review (and retries) see the full prior reasoning, not only the structured outputs the orchestrator also carries in `AgentContext`. `AgentResult` includes `responseId`; `OrchestrationResult` includes `lastResponseId` for the final turn.
+
 ### Orchestrator Flow
 
 ```
 AgentOrchestrator.orchestrate(context, errorData)
   → Start timeout timer (120s)
-  → AnalysisAgent.execute() → root cause, confidence, selectors
-  → CodeReadingAgent.execute() → source files + related files
-  → InvestigationAgent.execute() → findings, recommended approach
+  → AnalysisAgent.execute() → root cause, confidence, selectors; capture responseId → pass to next LLM call
+  → CodeReadingAgent.execute() → source files + related files (no LLM; previous_response_id unchanged for next LLM)
+  → InvestigationAgent.execute() → findings, recommended approach; chain responseId
   → Loop (max 3 iterations):
-      → FixGenerationAgent.execute() → code changes, confidence
-      → [if confidence < threshold] → retry with feedback
+      → FixGenerationAgent.execute() → code changes, confidence; chain responseId
+      → [if confidence < threshold] → retry with feedback (same conversation; full history visible)
       → autoCorrectOldCode() → validate/correct oldCode against source
       → [if all changes dropped] → retry with "copy oldCode exactly" feedback
-      → ReviewAgent.execute() → approved/rejected, issues
+      → ReviewAgent.execute() → approved/rejected, issues; chain responseId
       → [if approved] → return fix
-      → [if rejected] → retry with review feedback
+      → [if rejected] → retry with review feedback (Fix Gen’s next call continues the same thread)
   → [if max iterations reached and last fix confidence >= threshold] → return last fix as fallback
-  → Convert to FixRecommendation
+  → Convert to FixRecommendation; lastResponseId available on OrchestrationResult
 ```
 
 ### `autoCorrectOldCode` (v1.24.0)
@@ -1022,7 +1024,9 @@ Changes that cannot be matched are dropped. If all changes are dropped, feedback
 
 ### Agent Communication
 
-All agents receive an `AgentContext` (defined in `src/agents/base-agent.ts`):
+LLM agents are linked by **OpenAI `previous_response_id`**: each call receives the prior response ID so the model retains full multi-turn reasoning. Structured handoffs still use `AgentContext` (defined in `src/agents/base-agent.ts`); the conversation thread is complementary to those fields, not replaced by them.
+
+All agents receive an `AgentContext`:
 - Error message, test file, test name
 - Error type and failed selector (if applicable)
 - Screenshots (base64), logs, stack trace
@@ -1031,7 +1035,7 @@ All agents receive an `AgentContext` (defined in `src/agents/base-agent.ts`):
 - Related files map (helpers, page objects — added by CodeReadingAgent)
 - Framework identifier (cypress/webdriverio)
 
-Agents return `AgentResult<T>` with success/failure, typed output data, execution time, API call count, and optional token usage.
+Agents return `AgentResult<T>` with success/failure, typed output data, execution time, API call count, optional token usage, and **`responseId`** from the Responses API when an LLM ran.
 
 ### Fallback Behavior
 

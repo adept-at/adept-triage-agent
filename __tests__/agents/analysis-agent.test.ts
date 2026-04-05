@@ -122,7 +122,10 @@ describe('AnalysisAgent', () => {
     it('should handle malformed JSON response', async () => {
       mockOpenAIClient.generateWithCustomPrompt = jest
         .fn()
-        .mockResolvedValue('This is not valid JSON');
+        .mockResolvedValue({
+          text: 'This is not valid JSON',
+          responseId: 'mock-resp-id',
+        });
 
       const context = createAgentContext({
         errorMessage: 'Error',

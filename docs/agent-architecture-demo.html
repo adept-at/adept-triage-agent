@@ -50,6 +50,7 @@
 <div class="header">
   <h1>Agent Prompts and Data Flow</h1>
   <p>For each agent: the system prompt, the user prompt (showing exactly where the previous agent's JSON response is injected), and the JSON response that feeds the next agent.</p>
+  <p class="header-chain" style="margin-top:0.75rem;font-size:0.78rem;color:var(--teal);max-width:52rem;">All LLM agents in the repair pipeline share one OpenAI conversation: each call passes the prior turn&rsquo;s <code>response_id</code> as <code>previous_response_id</code>, so every step sees the full reasoning history from earlier agents (not only the curated JSON in prompts). <code>generateWithCustomPrompt()</code> returns <code>{ text, responseId }</code>; <code>AgentResult.responseId</code> and <code>OrchestrationResult.lastResponseId</code> carry the chain.</p>
 </div>
 
 <!-- ===== CLASSIFICATION AGENT ===== -->
@@ -107,7 +108,7 @@ Respond with your analysis as a JSON object.</pre>
 
 <div class="arrow">
   <div class="line">&#8595;</div>
-  <div class="label">verdict = TEST_ISSUE, so orchestrator starts the 5-agent repair pipeline</div>
+  <div class="label">verdict = TEST_ISSUE, so orchestrator starts the 5-agent repair pipeline (first LLM turn establishes response_id for chaining)</div>
 </div>
 
 <!-- ===== ANALYSIS AGENT ===== -->
@@ -157,7 +158,7 @@ Error: element ("mux-player") still not clickable after 15000ms
 
 <div class="arrow">
   <div class="line">&#8595;</div>
-  <div class="label">Orchestrator takes this JSON and passes it to the next two agents</div>
+  <div class="label">Continues same conversation via previous_response_id; orchestrator also passes this JSON to the next agents</div>
 </div>
 
 <!-- ===== CODE READING AGENT ===== -->
@@ -192,7 +193,7 @@ Orchestrator then does:
 
 <div class="arrow">
   <div class="line">&#8595;</div>
-  <div class="label">Orchestrator passes analysis JSON + code context to Investigation Agent</div>
+  <div class="label">Continues same conversation via previous_response_id (Code Reading has no LLM); orchestrator passes analysis JSON + code context to Investigation Agent</div>
 </div>
 
 <!-- ===== INVESTIGATION AGENT ===== -->
@@ -270,7 +271,7 @@ Respond with JSON:
 
 <div class="arrow">
   <div class="line">&#8595;</div>
-  <div class="label">Orchestrator passes analysis JSON + investigation JSON + code to Fix Gen</div>
+  <div class="label">Continues same conversation via previous_response_id; orchestrator passes analysis JSON + investigation JSON + code to Fix Gen</div>
 </div>
 
 <!-- ===== FIX GENERATION AGENT ===== -->
@@ -347,7 +348,7 @@ Respond with JSON:
 
 <div class="arrow">
   <div class="line">&#8595;</div>
-  <div class="label">Orchestrator passes analysis JSON + proposed fix JSON + source code to Review</div>
+  <div class="label">Continues same conversation via previous_response_id; orchestrator passes analysis JSON + proposed fix JSON + source code to Review</div>
 </div>
 
 <!-- ===== REVIEW AGENT ===== -->
@@ -423,8 +424,8 @@ New Code:                                           <-- from Fix Gen JSON
   "fixConfidence": 85
 }</pre>
   <div class="inject">
-    <strong>If rejected:</strong> The <code>issues</code> array becomes the <code>previousFeedback</code> string sent back to Fix Generation Agent's user prompt for the next iteration. The orchestrator does this at line 308:<br>
-    <code>fixGenerationAgent.execute({ analysis, investigation, previousFeedback: reviewFeedback })</code>
+    <strong>If rejected:</strong> The <code>issues</code> array becomes the <code>previousFeedback</code> string sent back to Fix Generation Agent's user prompt for the next iteration, and the next Fix Gen call uses <code>previous_response_id</code> so the model still sees the full prior thread. Example orchestrator call:<br>
+    <code>fixGenerationAgent.execute({ analysis, investigation, previousFeedback: reviewFeedback }, context, lastResponseId)</code>
   </div>
 </div>
 
@@ -445,7 +446,7 @@ New Code:                                           <-- from Fix Gen JSON
     The approved <code>changes</code> array from Fix Generation Agent:<br>
     <code>changes[0].oldCode</code> &rarr; find this in the local file<br>
     <code>changes[0].newCode</code> &rarr; replace with this<br><br>
-    If the test fails, <code>testResult.logs</code> (last 20K chars of stdout/stderr) are fed back to the repair agent as <code>previousAttempt.validationLogs</code>, and the entire 5-agent pipeline runs again.
+    If the test fails, <code>testResult.logs</code> (last 20K chars of stdout/stderr) are fed back to the repair agent as <code>previousAttempt.validationLogs</code>, and the entire 5-agent pipeline runs again with <code>lastResponseId</code> so the next outer iteration continues the same OpenAI conversation with the new failure context.
   </div>
 
   <pre>1. Find oldCode in local file &rarr; replace with newCode

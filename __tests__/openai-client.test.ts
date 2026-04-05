@@ -319,6 +319,7 @@ describe('OpenAIClient', () => {
   describe('generateWithCustomPrompt', () => {
     it('should call OpenAI Responses API with custom system and user prompts', async () => {
       const mockResponse = {
+        id: 'resp_mock_1',
         output_text: JSON.stringify({
           confidence: 85,
           reasoning: 'Test fix identified',
@@ -344,24 +345,33 @@ describe('OpenAIClient', () => {
         })
       );
 
-      expect(result.text).toBe(JSON.stringify({
-        confidence: 85,
-        reasoning: 'Test fix identified',
-        changes: [],
-      }));
+      expect(result).toEqual({
+        text: JSON.stringify({
+          confidence: 85,
+          reasoning: 'Test fix identified',
+          changes: [],
+        }),
+        responseId: 'resp_mock_1',
+      });
     });
 
     it('should accept temperature parameter for backward compatibility', async () => {
       const mockResponse = {
+        id: 'resp_mock_temp',
         output_text: 'Creative response',
       };
 
       mockCreate.mockResolvedValueOnce(mockResponse);
 
-      await client.generateWithCustomPrompt({
+      const tempResult = await client.generateWithCustomPrompt({
         systemPrompt: 'Be creative',
         userContent: 'Generate something',
         temperature: 0.8,
+      });
+
+      expect(tempResult).toEqual({
+        text: 'Creative response',
+        responseId: 'resp_mock_temp',
       });
 
       expect(mockCreate).toHaveBeenCalledWith(
@@ -376,6 +386,7 @@ describe('OpenAIClient', () => {
 
     it('should handle multimodal content with images', async () => {
       const mockResponse = {
+        id: 'resp_mock_mm',
         output_text: 'Analysis of images',
       };
 
@@ -412,6 +423,7 @@ describe('OpenAIClient', () => {
       );
 
       expect(result.text).toBe('Analysis of images');
+      expect(result.responseId).toBe('resp_mock_mm');
     });
 
     it('should throw error when response is empty', async () => {
@@ -425,12 +437,13 @@ describe('OpenAIClient', () => {
 
     it('should not include text format when responseAsJson is false', async () => {
       const mockResponse = {
+        id: 'resp_mock_plain',
         output_text: 'Plain text response',
       };
 
       mockCreate.mockResolvedValueOnce(mockResponse);
 
-      await client.generateWithCustomPrompt({
+      const out = await client.generateWithCustomPrompt({
         systemPrompt: 'Test',
         userContent: 'Test',
         responseAsJson: false,
@@ -441,6 +454,7 @@ describe('OpenAIClient', () => {
           text: undefined,
         })
       );
+      expect(out).toEqual({ text: 'Plain text response', responseId: 'resp_mock_plain' });
     });
   });
 });

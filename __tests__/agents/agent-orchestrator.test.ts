@@ -216,7 +216,12 @@ describe('AgentOrchestrator', () => {
         .fn()
         .mockImplementation(
           () =>
-            new Promise((resolve) => setTimeout(() => resolve('{}'), 200000))
+            new Promise((resolve) =>
+              setTimeout(
+                () => resolve({ text: '{}', responseId: 'mock-timeout-resp' }),
+                200000
+              )
+            )
         );
 
       const orchestrator = createOrchestrator(mockOpenAIClient, {

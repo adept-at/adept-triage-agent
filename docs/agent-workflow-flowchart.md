@@ -62,9 +62,12 @@ flowchart TB
 
 ## Multi-Agent Orchestration Pipeline
 
+All LLM steps (Analysis, Investigation, Fix Generation, Review) share **one OpenAI conversation**: each call passes the prior turn’s `response_id` as `previous_response_id`, so retries and review feedback accumulate in the same thread. Outer validation iterations (test fails after an approved fix) resume that thread with additional context, not a fresh chat.
+
 ```mermaid
 flowchart TB
-    START["AgentOrchestrator.orchestrate()<br/>agent-orchestrator.ts"] --> TIMEOUT["Start Timeout Timer<br/>(120s default)"]
+    START["AgentOrchestrator.orchestrate()<br/>agent-orchestrator.ts"] --> CONV["Single conversation chain<br/>previous_response_id per LLM turn"]
+    CONV --> TIMEOUT["Start Timeout Timer<br/>(120s default)"]
 
     TIMEOUT --> STEP1
 
@@ -269,6 +272,8 @@ flowchart LR
         PROMPT["Structured Prompt<br/>error + logs + screenshots + diff<br/>+ structured summary header"]
         MODEL["gpt-5.3-codex<br/>Responses API<br/>JSON output format<br/>max 16384 tokens"]
         RESPONSE["Structured JSON Response<br/>verdict + reasoning + indicators"]
+        AGENT_CHAIN["Multi-agent repair:<br/>generateWithCustomPrompt(previousResponseId)<br/>→ { text, responseId }<br/>OrchestrationResult.lastResponseId"]
+        MODEL -.-> AGENT_CHAIN
     end
 
     subgraph OUTPUT_LAYER["Outputs"]
@@ -287,6 +292,8 @@ flowchart LR
     COLLECTION --> AI_LAYER
     AI_LAYER --> OUTPUT_LAYER
 ```
+
+**`previous_response_id`:** Initial triage analysis uses the Responses API independently; the **agent repair pipeline** chains turns so each agent’s `responseId` becomes the next call’s `previousResponseId`. `AgentResult.responseId` captures per-step IDs; `OrchestrationResult.lastResponseId` is the final turn for downstream use (e.g. the next outer validation iteration).
 
 ## Sub-Agent Architecture
 
@@ -331,9 +338,9 @@ flowchart TB
         end
     end
 
-    A1 -->|analysis| A2
-    A2 -->|code context| A3
-    A3 -->|investigation| A4
-    A4 -->|proposed fix| A5
-    A5 -->|"rejected + feedback"| A4
+    A1 -->|"analysis + continues conversation<br/>(previous_response_id)"| A2
+    A2 -->|"code context (no LLM)"| A3
+    A3 -->|"investigation + continues conversation"| A4
+    A4 -->|"proposed fix + continues conversation"| A5
+    A5 -->|"rejected + feedback + same thread"| A4
 ```

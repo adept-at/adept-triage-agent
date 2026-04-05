@@ -514,9 +514,10 @@ export function helperB() {
         errorSelector: undefined
       };
 
-      mockGenerateWithCustomPrompt.mockResolvedValue(
-        'Element is loading slowly, suggest adding wait'
-      );
+      mockGenerateWithCustomPrompt.mockResolvedValue({
+        text: 'Element is loading slowly, suggest adding wait',
+        responseId: 'mock-resp-id',
+      });
 
       const result = await agent.generateFixRecommendation(timeoutContext);
 
