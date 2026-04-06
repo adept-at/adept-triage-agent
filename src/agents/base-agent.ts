@@ -91,6 +91,8 @@ export interface AgentContext {
   sourceFileContent?: string;
   /** Related files content */
   relatedFiles?: Map<string, string>;
+  /** Pre-formatted skills text for prompt injection (set by orchestrator) */
+  skillsPrompt?: string;
 }
 
 /**
@@ -145,9 +147,10 @@ export abstract class BaseAgent<TInput, TOutput> {
   ): Promise<AgentResult<TOutput>>;
 
   /**
-   * Get the system prompt for this agent
+   * Get the system prompt for this agent.
+   * Framework is passed so agents can specialize their prompts.
    */
-  protected abstract getSystemPrompt(): string;
+  protected abstract getSystemPrompt(framework?: string): string;
 
   /**
    * Build the user prompt from input and context
@@ -227,7 +230,7 @@ export abstract class BaseAgent<TInput, TOutput> {
     context: AgentContext,
     previousResponseId?: string
   ): Promise<{ data: TOutput; responseId: string }> {
-    const systemPrompt = this.getSystemPrompt();
+    const systemPrompt = this.getSystemPrompt(context.framework);
     const userPrompt = this.buildUserPrompt(input, context);
 
     if (this.config.verbose) {

@@ -41,6 +41,7 @@ const code_reading_agent_1 = require("./code-reading-agent");
 const investigation_agent_1 = require("./investigation-agent");
 const fix_generation_agent_1 = require("./fix-generation-agent");
 const review_agent_1 = require("./review-agent");
+const skill_store_1 = require("../services/skill-store");
 exports.DEFAULT_ORCHESTRATOR_CONFIG = {
     maxIterations: 3,
     totalTimeoutMs: 120000,
@@ -63,7 +64,7 @@ class AgentOrchestrator {
         this.fixGenerationAgent = new fix_generation_agent_1.FixGenerationAgent(openaiClient);
         this.reviewAgent = new review_agent_1.ReviewAgent(openaiClient);
     }
-    async orchestrate(context, errorData, previousResponseId) {
+    async orchestrate(context, errorData, previousResponseId, skills) {
         const startTime = Date.now();
         const agentResults = {};
         let iterations = 0;
@@ -75,7 +76,7 @@ class AgentOrchestrator {
                     reject(new Error(`Orchestration timed out after ${this.config.totalTimeoutMs}ms`));
                 }, this.config.totalTimeoutMs);
             });
-            const pipelinePromise = this.runPipeline(context, errorData, agentResults, previousResponseId);
+            const pipelinePromise = this.runPipeline(context, errorData, agentResults, previousResponseId, skills);
             const result = await Promise.race([pipelinePromise, timeoutPromise]);
             clearTimeout(timeoutId);
             iterations = result.iterations;
@@ -127,7 +128,7 @@ class AgentOrchestrator {
             };
         }
     }
-    async runPipeline(context, _errorData, agentResults, previousResponseId) {
+    async runPipeline(context, _errorData, agentResults, previousResponseId, skills) {
         let iterations = 0;
         let lastResponseId = previousResponseId;
         core.info('📊 Step 1: Running Analysis Agent...');
@@ -170,7 +171,16 @@ class AgentOrchestrator {
         else {
             core.info('📦 No product diff available — agents will treat failure as test-side issue');
         }
+        if (skills && skills.relevant.length > 0) {
+            core.info(`📝 ${skills.relevant.length} skill(s) available from prior runs`);
+            if (skills.flakiness?.isFlaky) {
+                core.warning(`⚠️ ${skills.flakiness.message}`);
+            }
+        }
         core.info('🔍 Step 3: Running Investigation Agent...');
+        context.skillsPrompt = skills
+            ? (0, skill_store_1.formatSkillsForPrompt)(skills.relevant, 'investigation', skills.flakiness)
+            : '';
         const investigationResult = await this.investigationAgent.execute({
             analysis,
             codeContext: codeReadingResult.data,
@@ -192,6 +202,9 @@ class AgentOrchestrator {
         while (iterations < this.config.maxIterations) {
             iterations++;
             core.info(`🔧 Step 4: Running Fix Generation Agent (iteration ${iterations})...`);
+            context.skillsPrompt = skills
+                ? (0, skill_store_1.formatSkillsForPrompt)(skills.relevant, 'fix_generation', skills.flakiness)
+                : '';
             if (reviewFeedback) {
                 core.info(`   📨 Sending previous review feedback to Fix Gen Agent:`);
                 for (const line of reviewFeedback.split('\n')) {
@@ -260,6 +273,9 @@ class AgentOrchestrator {
             }
             if (this.config.requireReview) {
                 core.info('✅ Step 5: Running Review Agent...');
+                context.skillsPrompt = skills
+                    ? (0, skill_store_1.formatSkillsForPrompt)(skills.relevant, 'review', skills.flakiness)
+                    : '';
                 const reviewResult = await this.reviewAgent.execute({
                     proposedFix: lastFix,
                     analysis,

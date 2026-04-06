@@ -101,7 +101,7 @@ class BaseAgent {
         }
     }
     async runAgentTask(input, context, previousResponseId) {
-        const systemPrompt = this.getSystemPrompt();
+        const systemPrompt = this.getSystemPrompt(context.framework);
         const userPrompt = this.buildUserPrompt(input, context);
         if (this.config.verbose) {
             core.debug(`[${this.agentName}] System prompt: ${systemPrompt.slice(0, 200)}...`);

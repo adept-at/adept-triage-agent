@@ -41,12 +41,14 @@ flowchart TB
 
     AI_CALL --> VERDICT{Verdict?}
 
-    VERDICT -->|TEST_ISSUE| PATH_CHECK{Local validation?<br/>enableAutoFix +<br/>enableValidation +<br/>testCommand}
+    VERDICT -->|TEST_ISSUE| SKILLS["Load SkillStore<br/>(triage-data branch)<br/>+ detect flakiness"]
     VERDICT -->|PRODUCT_ISSUE| CONFIDENCE_CHECK
     VERDICT -->|INCONCLUSIVE| CONFIDENCE_CHECK
 
-    PATH_CHECK -->|Yes| LOCAL_LOOP["Local Fix-Validate Loop<br/>iterativeFixValidateLoop()<br/><br/>1. Clone failing branch + npm ci<br/>2. Generate fix (agentic or single-shot)<br/>3. Apply to local files<br/>4. Run test command in container<br/>5. If pass → push branch + create PR<br/>6. If fail → reset, iterate (up to 3x)"]
-    PATH_CHECK -->|No| FIX_REC["Generate Fix Recommendation<br/>SimplifiedRepairAgent"]
+    SKILLS --> PATH_CHECK{Local validation?<br/>enableAutoFix +<br/>enableValidation +<br/>testCommand}
+
+    PATH_CHECK -->|Yes| LOCAL_LOOP["Local Fix-Validate Loop<br/>iterativeFixValidateLoop()<br/><br/>1. Clone failing branch + npm ci<br/>2. Generate fix (agentic or single-shot)<br/>   with skills injected into prompts<br/>3. Apply to local files<br/>4. Run test command in container<br/>5. If pass → push branch + create PR<br/>   + save skill to triage-data branch<br/>6. If fail → reset, iterate (up to 3x)<br/>   (fix fingerprinting deduplicates)"]
+    PATH_CHECK -->|No| FIX_REC["Generate Fix Recommendation<br/>SimplifiedRepairAgent<br/>(with skills injected)"]
 
     FIX_REC --> AUTO_FIX_CHECK{Auto-Fix<br/>Enabled?}
     AUTO_FIX_CHECK -->|Yes| APPLY_FIX["Apply Fix via GitHub API<br/>fix-applier.ts<br/>Create branch + commit"]
@@ -63,6 +65,8 @@ flowchart TB
 ## Multi-Agent Orchestration Pipeline
 
 All LLM steps (Analysis, Investigation, Fix Generation, Review) share **one OpenAI conversation**: each call passes the prior turn’s `response_id` as `previous_response_id`, so retries and review feedback accumulate in the same thread. Outer validation iterations (test fails after an approved fix) resume that thread with additional context, not a fresh chat.
+
+When skill memory is available, relevant skills are injected into `context.skillsPrompt` before the Investigation, Fix Generation, and Review steps — each with role-appropriate framing to avoid anchoring bias.
 
 ```mermaid
 flowchart TB
@@ -340,7 +344,7 @@ flowchart TB
 
     A1 -->|"analysis + continues conversation<br/>(previous_response_id)"| A2
     A2 -->|"code context (no LLM)"| A3
-    A3 -->|"investigation + continues conversation"| A4
-    A4 -->|"proposed fix + continues conversation"| A5
-    A5 -->|"rejected + feedback + same thread"| A4
+    A3 -->|"investigation + continues conversation<br/>+ skills (investigation framing)"| A4
+    A4 -->|"proposed fix + continues conversation<br/>+ skills (fix_generation framing)"| A5
+    A5 -->|"rejected + feedback + same thread<br/>+ skills (review framing)"| A4
 ```

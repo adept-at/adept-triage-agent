@@ -113,6 +113,9 @@ You MUST respond with a JSON object matching this schema:
         if (context.screenshots && context.screenshots.length > 0) {
             parts.push('', '### Screenshots', `${context.screenshots.length} screenshot(s) are attached. Analyze them to see:`, '- What elements are visible', '- What the actual DOM state looks like', '- Any visual clues about the failure');
         }
+        if (context.skillsPrompt) {
+            parts.push('', context.skillsPrompt);
+        }
         parts.push('', '## Instructions', 'Based on all the information above:', '1. Identify all findings that explain or contribute to the failure', '2. Determine the primary cause', '3. Check if the issue can be fixed in test code', '4. List any selectors that need to be updated', '5. Provide a recommended fix approach', '', 'Respond with the JSON object as specified in the system prompt.');
         return parts.join('\n');
     }

@@ -16,6 +16,7 @@ import {
 } from './fix-generation-agent';
 import { ReviewAgent, ReviewOutput } from './review-agent';
 import { FixRecommendation, ErrorData, SourceFetchContext } from '../types';
+import { TriageSkill, FlakinessSignal, formatSkillsForPrompt } from '../services/skill-store';
 
 /**
  * Configuration for the orchestrator
@@ -110,7 +111,8 @@ export class AgentOrchestrator {
   async orchestrate(
     context: AgentContext,
     errorData?: ErrorData,
-    previousResponseId?: string
+    previousResponseId?: string,
+    skills?: { relevant: TriageSkill[]; flakiness?: FlakinessSignal }
   ): Promise<OrchestrationResult> {
     const startTime = Date.now();
     const agentResults: OrchestrationResult['agentResults'] = {};
@@ -137,7 +139,8 @@ export class AgentOrchestrator {
         context,
         errorData,
         agentResults,
-        previousResponseId
+        previousResponseId,
+        skills
       );
 
       const result = await Promise.race([pipelinePromise, timeoutPromise]);
@@ -209,7 +212,8 @@ export class AgentOrchestrator {
     context: AgentContext,
     _errorData: ErrorData | undefined,
     agentResults: OrchestrationResult['agentResults'],
-    previousResponseId?: string
+    previousResponseId?: string,
+    skills?: { relevant: TriageSkill[]; flakiness?: FlakinessSignal }
   ): Promise<{ fix?: FixRecommendation; error?: string; iterations: number; lastResponseId?: string }> {
     let iterations = 0;
     let lastResponseId: string | undefined = previousResponseId;
@@ -271,8 +275,19 @@ export class AgentOrchestrator {
       core.info('📦 No product diff available — agents will treat failure as test-side issue');
     }
 
+    // Inject skills into context for Investigation, Fix Gen, and Review agents
+    if (skills && skills.relevant.length > 0) {
+      core.info(`📝 ${skills.relevant.length} skill(s) available from prior runs`);
+      if (skills.flakiness?.isFlaky) {
+        core.warning(`⚠️ ${skills.flakiness.message}`);
+      }
+    }
+
     // Step 3: Investigation Agent
     core.info('🔍 Step 3: Running Investigation Agent...');
+    context.skillsPrompt = skills
+      ? formatSkillsForPrompt(skills.relevant, 'investigation', skills.flakiness)
+      : '';
     const investigationResult = await this.investigationAgent.execute(
       {
         analysis,
@@ -305,6 +320,10 @@ export class AgentOrchestrator {
       core.info(
         `🔧 Step 4: Running Fix Generation Agent (iteration ${iterations})...`
       );
+
+      context.skillsPrompt = skills
+        ? formatSkillsForPrompt(skills.relevant, 'fix_generation', skills.flakiness)
+        : '';
 
       if (reviewFeedback) {
         core.info(`   📨 Sending previous review feedback to Fix Gen Agent:`);
@@ -386,6 +405,9 @@ export class AgentOrchestrator {
       // Step 5: Review Agent (if required)
       if (this.config.requireReview) {
         core.info('✅ Step 5: Running Review Agent...');
+        context.skillsPrompt = skills
+          ? formatSkillsForPrompt(skills.relevant, 'review', skills.flakiness)
+          : '';
         const reviewResult = await this.reviewAgent.execute(
           {
             proposedFix: lastFix,

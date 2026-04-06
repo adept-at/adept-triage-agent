@@ -11,6 +11,7 @@ import {
   OrchestratorConfig,
 } from '../agents';
 import { getFrameworkLabel } from '../agents/base-agent';
+import { TriageSkill, FlakinessSignal, formatSkillsForPrompt } from '../services/skill-store';
 
 /**
  * Configuration for the repair agent
@@ -91,7 +92,8 @@ export class SimplifiedRepairAgent {
       previousFix: FixRecommendation;
       validationLogs: string;
     },
-    previousResponseId?: string
+    previousResponseId?: string,
+    skills?: { relevant: TriageSkill[]; flakiness?: FlakinessSignal }
   ): Promise<{ fix: FixRecommendation; lastResponseId?: string } | null> {
     try {
       core.info('🔧 Generating fix recommendation...');
@@ -103,7 +105,8 @@ export class SimplifiedRepairAgent {
           repairContext,
           errorData,
           previousAttempt,
-          previousResponseId
+          previousResponseId,
+          skills
         );
 
         if (agenticResult) {
@@ -119,7 +122,7 @@ export class SimplifiedRepairAgent {
       }
 
       // Single-shot repair (original logic, no conversation chaining)
-      const singleShotFix = await this.singleShotRepair(repairContext, errorData, previousAttempt);
+      const singleShotFix = await this.singleShotRepair(repairContext, errorData, previousAttempt, skills);
       return singleShotFix ? { fix: singleShotFix } : null;
     } catch (error) {
       core.warning(`Failed to generate fix recommendation: ${error}`);
@@ -138,7 +141,8 @@ export class SimplifiedRepairAgent {
       previousFix: FixRecommendation;
       validationLogs: string;
     },
-    previousResponseId?: string
+    previousResponseId?: string,
+    skills?: { relevant: TriageSkill[]; flakiness?: FlakinessSignal }
   ): Promise<{ fix: FixRecommendation; lastResponseId?: string } | null> {
     if (!this.orchestrator) {
       return null;
@@ -188,7 +192,8 @@ export class SimplifiedRepairAgent {
       const result = await this.orchestrator.orchestrate(
         agentContext,
         errorData,
-        previousResponseId
+        previousResponseId,
+        skills
       );
 
       if (result.success && result.fix) {
@@ -226,7 +231,8 @@ export class SimplifiedRepairAgent {
       iteration: number;
       previousFix: FixRecommendation;
       validationLogs: string;
-    }
+    },
+    skills?: { relevant: TriageSkill[]; flakiness?: FlakinessSignal }
   ): Promise<FixRecommendation | null> {
     // Try to fetch the actual source file content
     let sourceFileContent: string | null = null;
@@ -247,7 +253,8 @@ export class SimplifiedRepairAgent {
       errorData,
       sourceFileContent,
       cleanFilePath,
-      previousAttempt
+      previousAttempt,
+      skills
     );
 
     // Save prompt for debugging (optional)
@@ -528,7 +535,8 @@ export class SimplifiedRepairAgent {
       iteration: number;
       previousFix: FixRecommendation;
       validationLogs: string;
-    }
+    },
+    skills?: { relevant: TriageSkill[]; flakiness?: FlakinessSignal }
   ): string {
     let contextInfo = `## Test Failure Context
 - **Test File:** ${this.sanitizeForPrompt(context.testFile)}
@@ -703,6 +711,13 @@ ${lines.length > 150 ? `\n... (${lines.length - 150} more lines)` : ''}
       }
     } else {
       core.info('⚠️  No ErrorData provided - using minimal context');
+    }
+
+    if (skills && skills.relevant.length > 0) {
+      const skillsText = formatSkillsForPrompt(skills.relevant, 'fix_generation', skills.flakiness);
+      contextInfo += `\n\n${skillsText}`;
+    } else if (skills?.flakiness?.isFlaky) {
+      contextInfo += `\n\n⚠️ FLAKINESS SIGNAL: ${skills.flakiness.message}`;
     }
 
     if (previousAttempt) {

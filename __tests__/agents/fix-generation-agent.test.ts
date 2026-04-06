@@ -394,4 +394,117 @@ describe('FixGenerationAgent', () => {
       });
     });
   });
+
+  describe('framework-specialized prompts', () => {
+    it('should include Cypress-specific patterns for cypress framework', async () => {
+      const cypressContext = createAgentContext({
+        errorMessage: 'cy.get timeout',
+        testFile: 'cypress/e2e/login.cy.ts',
+        testName: 'should login',
+        framework: 'cypress',
+      });
+
+      const mockFixResponse = JSON.stringify({
+        changes: [{
+          file: 'login.cy.ts', line: 10, oldCode: 'old', newCode: 'new',
+          justification: 'fix', changeType: 'WAIT_ADDITION',
+        }],
+        confidence: 80, summary: 'fix', reasoning: 'reason', evidence: [], risks: [],
+      });
+
+      mockOpenAIClient.generateWithCustomPrompt.mockResolvedValueOnce({
+        text: mockFixResponse, responseId: 'r1',
+      });
+
+      await agent.execute({ analysis: mockAnalysis, investigation: mockInvestigation }, cypressContext);
+
+      const call = mockOpenAIClient.generateWithCustomPrompt.mock.calls[0][0];
+      expect(call.systemPrompt).toContain('Cypress Fix Patterns');
+      expect(call.systemPrompt).toContain('cy.intercept');
+      expect(call.systemPrompt).not.toContain('WebDriverIO Fix Patterns');
+    });
+
+    it('should include WDIO-specific patterns for webdriverio framework', async () => {
+      const wdioContext = createAgentContext({
+        errorMessage: 'element not clickable',
+        testFile: 'test/specs/login.e2e.ts',
+        testName: 'should login',
+        framework: 'webdriverio',
+      });
+
+      const mockFixResponse = JSON.stringify({
+        changes: [{
+          file: 'login.e2e.ts', line: 10, oldCode: 'old', newCode: 'new',
+          justification: 'fix', changeType: 'WAIT_ADDITION',
+        }],
+        confidence: 80, summary: 'fix', reasoning: 'reason', evidence: [], risks: [],
+      });
+
+      mockOpenAIClient.generateWithCustomPrompt.mockResolvedValueOnce({
+        text: mockFixResponse, responseId: 'r2',
+      });
+
+      await agent.execute({ analysis: mockAnalysis, investigation: mockInvestigation }, wdioContext);
+
+      const call = mockOpenAIClient.generateWithCustomPrompt.mock.calls[0][0];
+      expect(call.systemPrompt).toContain('WebDriverIO Fix Patterns');
+      expect(call.systemPrompt).toContain('waitForClickable');
+      expect(call.systemPrompt).not.toContain('Cypress Fix Patterns');
+    });
+
+    it('should include both patterns when framework is unknown', async () => {
+      const unknownContext = createAgentContext({
+        errorMessage: 'test failed',
+        testFile: 'test.ts',
+        testName: 'should work',
+      });
+
+      const mockFixResponse = JSON.stringify({
+        changes: [{
+          file: 'test.ts', line: 10, oldCode: 'old', newCode: 'new',
+          justification: 'fix', changeType: 'OTHER',
+        }],
+        confidence: 80, summary: 'fix', reasoning: 'reason', evidence: [], risks: [],
+      });
+
+      mockOpenAIClient.generateWithCustomPrompt.mockResolvedValueOnce({
+        text: mockFixResponse, responseId: 'r3',
+      });
+
+      await agent.execute({ analysis: mockAnalysis, investigation: mockInvestigation }, unknownContext);
+
+      const call = mockOpenAIClient.generateWithCustomPrompt.mock.calls[0][0];
+      expect(call.systemPrompt).toContain('Cypress Fix Patterns');
+      expect(call.systemPrompt).toContain('WebDriverIO Fix Patterns');
+    });
+
+    it('should inject skillsPrompt into user prompt when present', async () => {
+      const contextWithSkills = createAgentContext({
+        errorMessage: 'element not found',
+        testFile: 'test.ts',
+        testName: 'should work',
+        framework: 'webdriverio',
+      });
+      contextWithSkills.skillsPrompt = '### Agent Memory: Proven Fix Patterns\nFix 1: added waitForClickable';
+
+      const mockFixResponse = JSON.stringify({
+        changes: [{
+          file: 'test.ts', line: 10, oldCode: 'old', newCode: 'new',
+          justification: 'fix', changeType: 'WAIT_ADDITION',
+        }],
+        confidence: 80, summary: 'fix', reasoning: 'reason', evidence: [], risks: [],
+      });
+
+      mockOpenAIClient.generateWithCustomPrompt.mockResolvedValueOnce({
+        text: mockFixResponse, responseId: 'r4',
+      });
+
+      await agent.execute({ analysis: mockAnalysis, investigation: mockInvestigation }, contextWithSkills);
+
+      const call = mockOpenAIClient.generateWithCustomPrompt.mock.calls[0][0];
+      const userContent = (call.userContent as Array<{ text: string }>)[0].text;
+      expect(userContent).toContain('Agent Memory: Proven Fix Patterns');
+      expect(userContent).toContain('added waitForClickable');
+    });
+  });
 });

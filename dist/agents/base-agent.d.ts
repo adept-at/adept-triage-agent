@@ -38,6 +38,7 @@ export interface AgentContext {
     framework?: string;
     sourceFileContent?: string;
     relatedFiles?: Map<string, string>;
+    skillsPrompt?: string;
 }
 export interface AgentConfig {
     timeoutMs: number;
@@ -52,7 +53,7 @@ export declare abstract class BaseAgent<TInput, TOutput> {
     protected agentName: string;
     constructor(openaiClient: OpenAIClient, agentName: string, config?: Partial<AgentConfig>);
     abstract execute(input: TInput, context: AgentContext, previousResponseId?: string): Promise<AgentResult<TOutput>>;
-    protected abstract getSystemPrompt(): string;
+    protected abstract getSystemPrompt(framework?: string): string;
     protected abstract buildUserPrompt(input: TInput, context: AgentContext): string;
     protected abstract parseResponse(response: string): TOutput | null;
     protected executeWithTimeout(input: TInput, context: AgentContext, previousResponseId?: string): Promise<AgentResult<TOutput>>;

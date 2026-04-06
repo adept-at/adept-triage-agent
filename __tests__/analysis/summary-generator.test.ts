@@ -109,6 +109,8 @@ describe('summary-generator', () => {
       errorType: 'ELEMENT_NOT_FOUND',
       workflowRunId: '12345',
       jobName: 'cypress-tests',
+      commitSha: 'abc1234',
+      branch: 'main',
       repository: 'owner/repo',
     };
 

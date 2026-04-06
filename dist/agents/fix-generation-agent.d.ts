@@ -27,7 +27,7 @@ export interface FixGenerationInput {
 export declare class FixGenerationAgent extends BaseAgent<FixGenerationInput, FixGenerationOutput> {
     constructor(openaiClient: OpenAIClient, config?: Partial<AgentConfig>);
     execute(input: FixGenerationInput, context: AgentContext, previousResponseId?: string): Promise<AgentResult<FixGenerationOutput>>;
-    protected getSystemPrompt(): string;
+    protected getSystemPrompt(framework?: string): string;
     protected buildUserPrompt(input: FixGenerationInput, context: AgentContext): string;
     private findErrorLineInFile;
     private findEnclosingFunction;

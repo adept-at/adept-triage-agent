@@ -1,6 +1,7 @@
 import { OpenAIClient } from '../openai-client';
 import { RepairContext, ErrorData, FixRecommendation, SourceFetchContext } from '../types';
 import { OrchestratorConfig } from '../agents';
+import { TriageSkill, FlakinessSignal } from '../services/skill-store';
 export interface RepairAgentConfig {
     enableAgenticRepair?: boolean;
     orchestratorConfig?: Partial<OrchestratorConfig>;
@@ -15,7 +16,10 @@ export declare class SimplifiedRepairAgent {
         iteration: number;
         previousFix: FixRecommendation;
         validationLogs: string;
-    }, previousResponseId?: string): Promise<{
+    }, previousResponseId?: string, skills?: {
+        relevant: TriageSkill[];
+        flakiness?: FlakinessSignal;
+    }): Promise<{
         fix: FixRecommendation;
         lastResponseId?: string;
     } | null>;

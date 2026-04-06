@@ -203,6 +203,7 @@ If you point the action at the current in-progress job, it can still do a best-e
 | `VALIDATION_SPEC` | No | - | Replaces `{spec}` in `VALIDATION_TEST_COMMAND`. |
 | `VALIDATION_TEST_COMMAND` | No | - | Local test command template; `{spec}` and `{url}` placeholders. Primary validation path when set. |
 | `ENABLE_AGENTIC_REPAIR` | No | `true` | Enable multi-agent repair pipeline (enabled by default; set `'false'` to use single-shot) |
+| `NPM_TOKEN` | No | - | NPM token for private registry authentication during local validation `npm ci` |
 | **Cursor Validation Inputs** | | | |
 | `ENABLE_CURSOR_VALIDATION` | No | `false` | Enable Cursor-based fix validation. Mutually exclusive with `ENABLE_VALIDATION` (GitHub Actions validation takes precedence if both are true). |
 | `CURSOR_API_KEY` | No | - | API key for Cursor validation |
@@ -491,13 +492,13 @@ Even if some data collection fails (e.g., screenshots unavailable), the agent wi
 
 ## How It Works
 
-1. **Log Collection**: The action fetches all logs from the failed job(s)
-2. **Artifact Analysis**: Downloads and analyzes screenshots and test artifacts
-3. **Structured Error Extraction**: Automatically extracts and categorizes error information
-4. **Change Diff Analysis**: Always attempts a recent product-repo diff (default `adept-at/learn-webapp`); if PR, branch, or commit context is provided, also analyzes the test-repo diff for relevance. Both diffs are included in the classification prompt when available.
-5. **AI Analysis**: Sends structured summary + logs + screenshots to GPT-5.3 Codex for multimodal analysis
-6. **Verdict Generation**: Determines if the failure is a test or product issue
-7. **Confidence Scoring**: Provides a confidence score based on evidence
+1. **Data Collection**: Fetches workflow logs, screenshots, test artifacts, test-repo PR/branch/commit diff, and recent product-repo diff (default `adept-at/learn-webapp`) in parallel
+2. **Infrastructure Check**: Short-circuits to `INCONCLUSIVE` if a browser crash or session termination is detected (no LLM call)
+3. **AI Classification**: Sends structured error summary, logs, screenshots, and diffs to GPT-5.3 Codex via the Responses API to classify as `TEST_ISSUE`, `PRODUCT_ISSUE`, or `INCONCLUSIVE`
+4. **Confidence Gating**: If confidence is below `CONFIDENCE_THRESHOLD`, returns `INCONCLUSIVE` without attempting repair
+5. **Skill Memory Loading**: For `TEST_ISSUE` verdicts, loads historical fix patterns from the `triage-data` branch of the test repo and checks for flakiness signals
+6. **Fix Generation**: Uses either the multi-agent pipeline (Analysis → Code Reading → Investigation → Fix/Review loop with skill memory injected) or single-shot repair
+7. **Fix Application**: Depending on configuration, applies the fix via the local validation loop (clone → apply → test → push/PR) or via the GitHub API (legacy path). Validated fixes are saved as skills for future runs.
 
 ### Structured Error Summary (v1.5.0+)
 
@@ -510,6 +511,18 @@ The triage agent automatically creates a structured summary of the error before 
 - **Key Metrics**: Screenshot availability, last command, log size
 
 This pre-analysis helps GPT-5.3 Codex make more accurate determinations between test issues and product bugs.
+
+### Skill Memory and Flakiness Detection
+
+When `AUTO_FIX_TARGET_REPO` is set, the agent loads historical fix patterns from a `triage-data` branch in the test repo. These "skills" are injected into agent prompts so the multi-agent pipeline can reuse proven patterns rather than re-deriving fixes from scratch. Skills are loaded for all `TEST_ISSUE` verdicts regardless of whether auto-fix is enabled.
+
+Skills are only saved after a successful iterative fix-validate loop — the local test must pass and the branch must be pushed. This ensures only validated patterns enter the memory.
+
+The agent also detects **flakiness** by counting how many times a given spec has been auto-fixed recently:
+- **>1 fix in 3 days**: flagged as chronically flaky
+- **>2 fixes in 7 days**: flagged as recurring instability
+
+Flakiness signals are included in the `triage_json` output and injected into agent prompts so the pipeline can account for known instability.
 
 ## Best Practices
 
@@ -541,7 +554,9 @@ This pre-analysis helps GPT-5.3 Codex make more accurate determinations between 
 ### API Rate Limits
 
 - The action uses GPT-5.3 Codex which has generous rate limits
-- Each analysis typically uses 1-2 API calls
+- Classification typically uses 1 API call
+- Agentic repair adds 4-15 API calls depending on fix/review iterations
+- Local validation iterations multiply the repair call count (up to 3x)
 
 ## Support
 

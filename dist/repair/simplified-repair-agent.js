@@ -41,6 +41,7 @@ const summary_generator_1 = require("../analysis/summary-generator");
 const constants_1 = require("../config/constants");
 const agents_1 = require("../agents");
 const base_agent_1 = require("../agents/base-agent");
+const skill_store_1 = require("../services/skill-store");
 class SimplifiedRepairAgent {
     openaiClient;
     sourceFetchContext;
@@ -72,19 +73,19 @@ class SimplifiedRepairAgent {
             });
         }
     }
-    async generateFixRecommendation(repairContext, errorData, previousAttempt, previousResponseId) {
+    async generateFixRecommendation(repairContext, errorData, previousAttempt, previousResponseId, skills) {
         try {
             core.info('🔧 Generating fix recommendation...');
             if (this.config.enableAgenticRepair && this.orchestrator) {
                 core.info('🤖 Attempting agentic repair...');
-                const agenticResult = await this.tryAgenticRepair(repairContext, errorData, previousAttempt, previousResponseId);
+                const agenticResult = await this.tryAgenticRepair(repairContext, errorData, previousAttempt, previousResponseId, skills);
                 if (agenticResult) {
                     core.info(`✅ Agentic repair succeeded with ${agenticResult.fix.confidence}% confidence`);
                     return agenticResult;
                 }
                 core.info('🔄 Agentic repair did not produce a fix, falling back to single-shot...');
             }
-            const singleShotFix = await this.singleShotRepair(repairContext, errorData, previousAttempt);
+            const singleShotFix = await this.singleShotRepair(repairContext, errorData, previousAttempt, skills);
             return singleShotFix ? { fix: singleShotFix } : null;
         }
         catch (error) {
@@ -92,7 +93,7 @@ class SimplifiedRepairAgent {
             return null;
         }
     }
-    async tryAgenticRepair(repairContext, errorData, previousAttempt, previousResponseId) {
+    async tryAgenticRepair(repairContext, errorData, previousAttempt, previousResponseId, skills) {
         if (!this.orchestrator) {
             return null;
         }
@@ -133,7 +134,7 @@ class SimplifiedRepairAgent {
                     : undefined,
                 framework: errorData?.framework,
             });
-            const result = await this.orchestrator.orchestrate(agentContext, errorData, previousResponseId);
+            const result = await this.orchestrator.orchestrate(agentContext, errorData, previousResponseId, skills);
             if (result.success && result.fix) {
                 core.info(`🤖 Agentic approach: ${result.approach}, iterations: ${result.iterations}, time: ${result.totalTimeMs}ms`);
                 for (const change of result.fix.proposedChanges) {
@@ -154,7 +155,7 @@ class SimplifiedRepairAgent {
             return null;
         }
     }
-    async singleShotRepair(repairContext, errorData, previousAttempt) {
+    async singleShotRepair(repairContext, errorData, previousAttempt, skills) {
         let sourceFileContent = null;
         const cleanFilePath = this.extractFilePath(repairContext.testFile);
         if (this.sourceFetchContext && cleanFilePath) {
@@ -163,7 +164,7 @@ class SimplifiedRepairAgent {
                 core.info(`  ✅ Fetched source file: ${cleanFilePath} (${sourceFileContent.length} chars)`);
             }
         }
-        const prompt = this.buildPrompt(repairContext, errorData, sourceFileContent, cleanFilePath, previousAttempt);
+        const prompt = this.buildPrompt(repairContext, errorData, sourceFileContent, cleanFilePath, previousAttempt, skills);
         if (process.env.DEBUG_FIX_RECOMMENDATION) {
             const promptFile = `fix-prompt-${Date.now()}.md`;
             fs.writeFileSync(promptFile, prompt);
@@ -342,7 +343,7 @@ class SimplifiedRepairAgent {
         }
         return sanitized;
     }
-    buildPrompt(context, errorData, sourceFileContent, cleanFilePath, previousAttempt) {
+    buildPrompt(context, errorData, sourceFileContent, cleanFilePath, previousAttempt, skills) {
         let contextInfo = `## Test Failure Context
 - **Test File:** ${this.sanitizeForPrompt(context.testFile)}
 - **Test Name:** ${this.sanitizeForPrompt(context.testName)}
@@ -466,6 +467,13 @@ ${lines.length > 150 ? `\n... (${lines.length - 150} more lines)` : ''}
         }
         else {
             core.info('⚠️  No ErrorData provided - using minimal context');
+        }
+        if (skills && skills.relevant.length > 0) {
+            const skillsText = (0, skill_store_1.formatSkillsForPrompt)(skills.relevant, 'fix_generation', skills.flakiness);
+            contextInfo += `\n\n${skillsText}`;
+        }
+        else if (skills?.flakiness?.isFlaky) {
+            contextInfo += `\n\n⚠️ FLAKINESS SIGNAL: ${skills.flakiness.message}`;
         }
         if (previousAttempt) {
             const prevChanges = previousAttempt.previousFix.proposedChanges

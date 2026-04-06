@@ -3,22 +3,11 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.FixGenerationAgent = void 0;
 const base_agent_1 = require("./base-agent");
 const constants_1 = require("../config/constants");
-class FixGenerationAgent extends base_agent_1.BaseAgent {
-    constructor(openaiClient, config) {
-        super(openaiClient, 'FixGenerationAgent', {
-            ...config,
-            maxTokens: 6000,
-        });
-    }
-    async execute(input, context, previousResponseId) {
-        return this.executeWithTimeout(input, context, previousResponseId);
-    }
-    getSystemPrompt() {
-        return `You are an expert test engineer who specializes in fixing failing E2E tests (Cypress or WebDriverIO).
+const COMMON_PREAMBLE = `You are an expert test engineer who specializes in fixing failing E2E tests.
 
 ## Your Task
 
-Generate precise, working code changes to fix the failing test based on the analysis and investigation provided. Match the framework used in the source (Cypress vs WebDriverIO).
+Generate precise, working code changes to fix the failing test based on the analysis and investigation provided.
 
 ## Code Change Requirements
 
@@ -33,17 +22,21 @@ Generate precise, working code changes to fix the failing test based on the anal
 
 4. **Preserve Style**: Match the existing code style (quotes, semicolons, indentation).
 
-## Common Fix Patterns (Cypress)
+`;
+const CYPRESS_PATTERNS = `## Cypress Fix Patterns
+
+### Chaining & Retry-ability
+Cypress commands auto-retry, but \`.then()\` callbacks do not. Prefer assertion-based waits over arbitrary waits.
 
 ### Selector Updates
 \`\`\`javascript
-// OLD: Specific class that changed
+// OLD: Fragile class selector
 cy.get('.old-button-class')
 
-// NEW: Use data-testid or more stable selector
+// NEW: Prefer data-testid, aria-label, or cy.contains
 cy.get('[data-testid="submit-button"]')
-// or
 cy.get('button').contains('Submit')
+cy.findByRole('button', { name: 'Submit' })
 \`\`\`
 
 ### Visibility/Existence Checks
@@ -51,8 +44,10 @@ cy.get('button').contains('Submit')
 // OLD: Click without checking visibility
 cy.get('#element').click()
 
-// NEW: Wait for visibility first
+// NEW: Assert visible, then act
 cy.get('#element').should('be.visible').click()
+// For conditional elements:
+cy.get('#element').should('exist').and('be.visible').click()
 \`\`\`
 
 ### Timing/Wait Issues
@@ -60,10 +55,13 @@ cy.get('#element').should('be.visible').click()
 // OLD: No wait for async operation
 cy.get('#result')
 
-// NEW: Wait for element or intercept
+// BEST: Intercept the API call
 cy.intercept('GET', '/api/data').as('getData')
 cy.wait('@getData')
 cy.get('#result')
+
+// ALT: Increase assertion timeout for slow renders
+cy.get('#result', { timeout: 15000 }).should('contain', 'Expected')
 \`\`\`
 
 ### Overflow/Responsive Menu
@@ -71,7 +69,7 @@ cy.get('#result')
 // OLD: Direct click on element that might be in overflow menu
 cy.get('[aria-label="Action"]').click()
 
-// NEW: Check if in overflow menu first
+// NEW: Conditional interaction
 cy.get('body').then($body => {
   if ($body.find('[aria-label="Action"]:visible').length > 0) {
     cy.get('[aria-label="Action"]').click()
@@ -82,42 +80,110 @@ cy.get('body').then($body => {
 })
 \`\`\`
 
-## Common Fix Patterns (WebDriverIO)
-
-### Selector and visibility
+### cy.session for Login
 \`\`\`javascript
-// OLD: Click without waiting for display
+// Cache login across tests
+cy.session('user', () => {
+  cy.visit('/login')
+  cy.get('#email').type(user.email)
+  cy.get('#password').type(user.password)
+  cy.get('button[type="submit"]').click()
+  cy.url().should('not.include', '/login')
+})
+\`\`\`
+
+### Iframe & Shadow DOM
+\`\`\`javascript
+// Access shadow DOM
+cy.get('my-component').shadow().find('.inner-element')
+
+// Switch into iframe
+cy.get('iframe#editor').its('0.contentDocument.body').then(cy.wrap)
+\`\`\`
+
+`;
+const WDIO_PATTERNS = `## WebDriverIO Fix Patterns
+
+### Selector Strategy
+\`\`\`javascript
+// OLD: Fragile class selector
 await $('.old-button-class').click()
 
-// NEW: Use data-testid and wait for displayed
-await $('[data-testid="submit-button"]').waitForDisplayed();
+// NEW: Prefer data-testid or aria selectors
 await $('[data-testid="submit-button"]').click()
+await $('aria/Submit')  // WDIO aria selector strategy
 \`\`\`
 
-### Wait for element
+### waitForDisplayed / waitForClickable / waitForExist
 \`\`\`javascript
-// OLD: No wait
-await $('#result').getText()
-
-// NEW: Wait for displayed or exist
-await $('#result').waitForDisplayed({ timeout: 10000 });
-await $('#result').getText()
-// or browser.waitUntil
-await browser.waitUntil(async () => (await $('#result').isDisplayed()), { timeout: 10000 });
-\`\`\`
-
-### Multi-remote / browser scope
-\`\`\`javascript
-// OLD: Direct selector
+// OLD: Click without waiting
 await $('button').click()
 
-// NEW: Ensure correct browser instance and wait
-const browser = await this.getBrowser(); // or context-specific
-await browser.$('button').waitForClickable();
-await browser.$('button').click();
+// NEW: Wait for clickable state
+await $('button').waitForClickable({ timeout: 15000 })
+await $('button').click()
+
+// For elements that load asynchronously
+await $('[data-testid="result"]').waitForDisplayed({ timeout: 10000 })
+const text = await $('[data-testid="result"]').getText()
+
+// For elements that may not be in DOM yet
+await $('[data-testid="modal"]').waitForExist({ timeout: 10000 })
 \`\`\`
 
-## Output Format
+### browser.waitUntil for Complex Conditions
+\`\`\`javascript
+// OLD: Simple wait
+await browser.pause(3000)
+
+// NEW: Condition-based wait
+await browser.waitUntil(
+  async () => (await $('[data-testid="status"]').getText()) === 'Ready',
+  { timeout: 15000, timeoutMsg: 'Status never became Ready' }
+)
+\`\`\`
+
+### Multi-remote / Browser Scope
+\`\`\`javascript
+// OLD: Ambiguous browser reference in multi-remote
+await $('button').click()
+
+// NEW: Explicit browser instance
+const elem = await browserA.$('[data-testid="start"]')
+await elem.waitForClickable()
+await elem.click()
+\`\`\`
+
+### Shadow DOM & Custom Elements
+\`\`\`javascript
+// Access shadow root
+const host = await $('mux-player')
+const shadowBtn = await host.shadow$('button.play')
+await shadowBtn.waitForClickable({ timeout: 15000 })
+await shadowBtn.click()
+\`\`\`
+
+### browser.execute for DOM Interaction
+\`\`\`javascript
+// Scroll element into view
+await browser.execute((el) => el.scrollIntoView({ block: 'center' }), await $('button'))
+await $('button').waitForClickable()
+await $('button').click()
+\`\`\`
+
+### Stale Element Recovery
+\`\`\`javascript
+// OLD: Direct action on potentially stale element
+const el = await $('button')
+await el.click()
+
+// NEW: Re-query before action
+await $('button').waitForClickable({ timeout: 10000 })
+await $('button').click()
+\`\`\`
+
+`;
+const COMMON_SUFFIX = `## Output Format
 
 You MUST respond with a JSON object matching this schema:
 {
@@ -168,6 +234,25 @@ When recent product repo changes are provided (e.g. from the learn-webapp), you 
    - A combination of both
 4. **Adapt selectors and assertions**: If a product change renamed an aria-label, CSS class, or restructured DOM, update the test selectors to match the NEW product code — do NOT add fragile workarounds.
 5. If no product diff is provided or the diff is unrelated, state that explicitly in your reasoning.`;
+class FixGenerationAgent extends base_agent_1.BaseAgent {
+    constructor(openaiClient, config) {
+        super(openaiClient, 'FixGenerationAgent', {
+            ...config,
+            maxTokens: 6000,
+        });
+    }
+    async execute(input, context, previousResponseId) {
+        return this.executeWithTimeout(input, context, previousResponseId);
+    }
+    getSystemPrompt(framework) {
+        switch (framework) {
+            case 'cypress':
+                return COMMON_PREAMBLE + CYPRESS_PATTERNS + COMMON_SUFFIX;
+            case 'webdriverio':
+                return COMMON_PREAMBLE + WDIO_PATTERNS + COMMON_SUFFIX;
+            default:
+                return COMMON_PREAMBLE + CYPRESS_PATTERNS + WDIO_PATTERNS + COMMON_SUFFIX;
+        }
     }
     buildUserPrompt(input, context) {
         const frameworkLabel = (0, base_agent_1.getFrameworkLabel)(context.framework);
@@ -260,6 +345,9 @@ When recent product repo changes are provided (e.g. from the learn-webapp), you 
         }
         if (input.previousFeedback) {
             parts.push('', '### Previous Review Feedback', '⚠️ The previous fix attempt was rejected. Please address these issues:', '```', input.previousFeedback, '```');
+        }
+        if (context.skillsPrompt) {
+            parts.push('', context.skillsPrompt);
         }
         parts.push('', '## Instructions', '1. Review the product repo diff (if provided) FIRST — determine whether a product change caused this failure', '2. Based on the analysis, investigation, and product diff, generate the necessary code changes', '3. Ensure oldCode matches EXACTLY what appears in the test file', '4. Make minimal, targeted changes', '5. Provide clear justification for each change, explicitly noting if it adapts to a product change', '', 'Respond with the JSON object as specified in the system prompt.');
         return parts.filter(Boolean).join('\n');

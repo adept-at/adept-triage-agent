@@ -57,6 +57,7 @@ graph TB
             FIX[generateFixRecommendation]
             RC[buildRepairContext]
             RA[SimplifiedRepairAgent]
+            SK[SkillStore - triage-data branch]
         end
 
         subgraph "Output"
@@ -97,6 +98,8 @@ graph TB
 
     ANALYZE --> |TEST_ISSUE| FIX
     FIX --> RC
+    FIX --> SK
+    SK --> |skills + flakiness| RA
     FIX --> RA
     RA --> OAI
 
@@ -199,7 +202,8 @@ flowchart TD
     CHECK_THRESHOLD --> |No| SET_INCONCLUSIVE[setInconclusiveOutput]
     CHECK_THRESHOLD --> |Yes| CHECK_TEST_ISSUE{Is TEST_ISSUE?}
     CHECK_TEST_ISSUE --> |No| SET_SUCCESS[setSuccessOutput]
-    CHECK_TEST_ISSUE --> |Yes| GEN_FIX[generateFixRecommendation]
+    CHECK_TEST_ISSUE --> |Yes| LOAD_SKILLS[Load SkillStore + Detect Flakiness]
+    LOAD_SKILLS --> GEN_FIX[generateFixRecommendation]
 
     subgraph "Fix Recommendation Phase"
         GEN_FIX --> BUILD_REPAIR[buildRepairContext]
@@ -507,6 +511,72 @@ For either path, **cleanup on failure** still applies: if a step fails, delete t
 
 ---
 
+### Skill Store (`src/services/skill-store.ts`)
+
+Stores and retrieves historical fix patterns (skills) via the GitHub Contents API. Skills live in a dedicated `triage-data` branch of each test repo as a single `skills.json` file — zero external dependencies.
+
+#### How It Works
+
+1. **Loading**: On every `TEST_ISSUE` verdict (regardless of `enableAutoFix`), the entrypoint `run()` in `index.ts` creates a `SkillStore` for the target repo and calls `load()`, which fetches `skills.json` from the `triage-data` branch. If the branch or file doesn't exist, skills start empty. The orchestrator then receives pre-loaded skills via its `orchestrate()` parameter.
+2. **Relevance Matching**: `findRelevant()` scores skills by exact spec match (highest) then error-message similarity (Jaccard token overlap). Skills are filtered by framework (cypress/webdriverio/unknown).
+3. **Prompt Injection**: Relevant skills are formatted differently per agent role via `formatSkillsForPrompt()`:
+   - **Investigation**: "Use as background context. Base findings on CURRENT evidence."
+   - **Fix Generation**: "PREFER proven approaches over novel ones."
+   - **Review**: "Flag if fix contradicts a proven approach without justification."
+4. **Flakiness Detection**: `detectFlakiness()` checks if a spec has been auto-fixed >1 time in 3 days or >2 times in 7 days. The signal is injected into agent prompts and included in the `triage_json` output.
+5. **Saving**: A skill is saved **only** after `iterativeFixValidateLoop` success — the local test passed AND the branch was pushed. This ensures only validated patterns enter the memory. The save creates the `triage-data` branch if needed and handles SHA-based conflict resolution for concurrent writes.
+
+#### Key Functions
+
+| Function | Purpose | Inputs | Outputs |
+|----------|---------|--------|---------|
+| `SkillStore.load()` | Fetch skills from `triage-data` branch | None | `TriageSkill[]` |
+| `SkillStore.save()` | Append a skill to `skills.json` | `TriageSkill` | void |
+| `SkillStore.findRelevant()` | Score and return matching skills | framework, spec, errorMessage | `TriageSkill[]` |
+| `SkillStore.detectFlakiness()` | Check if spec is chronically flaky | spec name | `FlakinessSignal` |
+| `buildSkill()` | Factory for creating a `TriageSkill` | fix result params | `TriageSkill` |
+| `formatSkillsForPrompt()` | Format skills for a specific agent role | skills, role, flakiness | string |
+
+#### TriageSkill Structure
+
+```typescript
+interface TriageSkill {
+  id: string;
+  createdAt: string;
+  repo: string;
+  spec: string;
+  testName: string;
+  framework: 'cypress' | 'webdriverio' | 'unknown';
+  errorPattern: string;        // Normalized error message
+  rootCauseCategory: string;
+  fix: {
+    file: string;
+    changeType: string;
+    summary: string;
+    pattern: string;           // Reusable description of the fix
+  };
+  confidence: number;
+  iterations: number;          // How many fix-validate iterations it took
+  prUrl: string;
+  validatedLocally: boolean;
+  priorSkillCount: number;     // How many skills existed for this spec before this one
+}
+```
+
+#### Configuration Constants
+
+| Constant | Value | Description |
+|----------|-------|-------------|
+| `SKILLS_BRANCH` | `triage-data` | Branch where skills are stored |
+| `SKILLS_FILE` | `skills.json` | File name within the branch |
+| `MAX_SKILLS` | `100` | Maximum skills per repo — enforced on `save()`, oldest entries dropped when exceeded |
+| `FLAKY_THRESHOLDS.SHORT_WINDOW_DAYS` | `3` | Short flakiness window |
+| `FLAKY_THRESHOLDS.SHORT_WINDOW_MAX` | `1` | Max fixes before flagging (short) |
+| `FLAKY_THRESHOLDS.LONG_WINDOW_DAYS` | `7` | Long flakiness window |
+| `FLAKY_THRESHOLDS.LONG_WINDOW_MAX` | `2` | Max fixes before flagging (long) |
+
+---
+
 ### Error Classifier (`src/analysis/error-classifier.ts`)
 
 Classifies and categorizes test errors.
@@ -583,6 +653,12 @@ Centralized configuration values.
 | `MAX_RETRIES` | 3 | Retry attempts |
 | `RETRY_DELAY_MS` | 1,000 | Base retry delay |
 
+#### Fix-Validate Loop
+| Constant | Value | Description |
+|----------|-------|-------------|
+| `FIX_VALIDATE_LOOP.MAX_ITERATIONS` | `3` | Maximum fix-validate attempts |
+| `FIX_VALIDATE_LOOP.TEST_TIMEOUT_MS` | `300000` | Maximum time for a single local test run (5 min) |
+
 ---
 
 ## Data Types (`src/types.ts`)
@@ -643,6 +719,7 @@ interface ActionInputs {
   validationPreviewUrl?: string;
   validationSpec?: string;
   validationTestCommand?: string;
+  npmToken?: string;
   enableAgenticRepair?: boolean;   // Defaults to true (action.yml default: 'true')
   enableCursorValidation?: boolean;
   cursorApiKey?: string;
@@ -995,19 +1072,22 @@ Steps 4 and 5 loop up to 3 times (configurable via `AGENT_CONFIG.MAX_AGENT_ITERA
 ### Orchestrator Flow
 
 ```
-AgentOrchestrator.orchestrate(context, errorData)
+AgentOrchestrator.orchestrate(context, errorData, previousResponseId?, skills?)
   → Start timeout timer (120s)
-  → AnalysisAgent.execute() → root cause, confidence, selectors; capture responseId → pass to next LLM call
-  → CodeReadingAgent.execute() → source files + related files (no LLM; previous_response_id unchanged for next LLM)
+  → AnalysisAgent.execute() → root cause, confidence, selectors; capture responseId
+  → CodeReadingAgent.execute() → source files + related files (no LLM; responseId unchanged)
+  → [if skills] inject skills into context.skillsPrompt (investigation framing)
   → InvestigationAgent.execute() → findings, recommended approach; chain responseId
   → Loop (max 3 iterations):
+      → [if skills] inject skills into context.skillsPrompt (fix_generation framing)
       → FixGenerationAgent.execute() → code changes, confidence; chain responseId
-      → [if confidence < threshold] → retry with feedback (same conversation; full history visible)
+      → [if confidence < threshold] → retry with feedback (same conversation)
       → autoCorrectOldCode() → validate/correct oldCode against source
       → [if all changes dropped] → retry with "copy oldCode exactly" feedback
+      → [if skills] inject skills into context.skillsPrompt (review framing)
       → ReviewAgent.execute() → approved/rejected, issues; chain responseId
       → [if approved] → return fix
-      → [if rejected] → retry with review feedback (Fix Gen’s next call continues the same thread)
+      → [if rejected] → retry with review feedback
   → [if max iterations reached and last fix confidence >= threshold] → return last fix as fallback
   → Convert to FixRecommendation; lastResponseId available on OrchestrationResult
 ```
@@ -1034,8 +1114,19 @@ All agents receive an `AgentContext`:
 - Source file content (added by CodeReadingAgent, with line numbers for the LLM)
 - Related files map (helpers, page objects — added by CodeReadingAgent)
 - Framework identifier (cypress/webdriverio)
+- `skillsPrompt` — formatted skill memory text, set by the orchestrator before each agent step (Investigation, Fix Generation, Review) using `formatSkillsForPrompt()` with role-appropriate framing
 
 Agents return `AgentResult<T>` with success/failure, typed output data, execution time, API call count, optional token usage, and **`responseId`** from the Responses API when an LLM ran.
+
+### Skill Memory Integration
+
+Skills are loaded before the orchestrator runs and injected at three points:
+
+1. **Before Investigation Agent** — skills formatted with "use as background context" framing
+2. **Before Fix Generation Agent** (each iteration) — skills formatted with "prefer proven approaches" framing
+3. **Before Review Agent** (each iteration) — skills formatted with "flag contradictions with proven patterns" framing
+
+If a flakiness signal is detected (spec auto-fixed too frequently), a warning is appended to the skill prompt and also included in the action's `triage_json` output.
 
 ### Fallback Behavior
 

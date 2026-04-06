@@ -6,6 +6,7 @@ import { InvestigationOutput } from './investigation-agent';
 import { FixGenerationOutput } from './fix-generation-agent';
 import { ReviewOutput } from './review-agent';
 import { FixRecommendation, ErrorData, SourceFetchContext } from '../types';
+import { TriageSkill, FlakinessSignal } from '../services/skill-store';
 export interface OrchestratorConfig {
     maxIterations: number;
     totalTimeoutMs: number;
@@ -38,7 +39,10 @@ export declare class AgentOrchestrator {
     private fixGenerationAgent;
     private reviewAgent;
     constructor(openaiClient: OpenAIClient, config?: Partial<OrchestratorConfig>, sourceFetchContext?: SourceFetchContext);
-    orchestrate(context: AgentContext, errorData?: ErrorData, previousResponseId?: string): Promise<OrchestrationResult>;
+    orchestrate(context: AgentContext, errorData?: ErrorData, previousResponseId?: string, skills?: {
+        relevant: TriageSkill[];
+        flakiness?: FlakinessSignal;
+    }): Promise<OrchestrationResult>;
     private runPipeline;
     private convertToFixRecommendation;
 }

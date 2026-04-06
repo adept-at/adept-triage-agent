@@ -235,6 +235,10 @@ You MUST respond with a JSON object matching this schema:
       );
     }
 
+    if (context.skillsPrompt) {
+      parts.push('', context.skillsPrompt);
+    }
+
     parts.push(
       '',
       '## Review Instructions',

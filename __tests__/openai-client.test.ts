@@ -50,6 +50,7 @@ describe('OpenAIClient', () => {
   describe('analyze', () => {
     it('should successfully analyze error and return response', async () => {
       const mockResponse = {
+        id: 'resp-abc',
         output_text: JSON.stringify({
           verdict: 'TEST_ISSUE',
           reasoning: 'This is a test synchronization issue',
@@ -65,6 +66,7 @@ describe('OpenAIClient', () => {
         verdict: 'TEST_ISSUE',
         reasoning: 'This is a test synchronization issue',
         indicators: ['timeout', 'element not found'],
+        responseId: 'resp-abc',
       });
 
       expect(mockCreate).toHaveBeenCalledWith(
@@ -132,6 +134,7 @@ describe('OpenAIClient', () => {
       };
 
       const mockResponse = {
+        id: 'resp-vision',
         output_text: 'Verdict: TEST_ISSUE\nReasoning: The test is using wrong selectors\nIndicators: wrong selector, element exists',
       };
 
@@ -139,15 +142,17 @@ describe('OpenAIClient', () => {
 
       const result = await client.analyze(errorDataWithScreenshots, mockExamples);
 
-      expect(result).toEqual({
+      expect(result).toEqual(expect.objectContaining({
         verdict: 'TEST_ISSUE',
         reasoning: 'The test is using wrong selectors',
         indicators: ['wrong selector', 'element exists'],
-      });
+        responseId: 'resp-vision',
+      }));
     });
 
     it('should retry on failure and succeed', async () => {
       const mockResponse = {
+        id: 'resp-retry',
         output_text: JSON.stringify({
           verdict: 'PRODUCT_ISSUE',
           reasoning: 'Database connection error',

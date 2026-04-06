@@ -48,6 +48,7 @@ const code_reading_agent_1 = __nccwpck_require__(8410);
 const investigation_agent_1 = __nccwpck_require__(7581);
 const fix_generation_agent_1 = __nccwpck_require__(9302);
 const review_agent_1 = __nccwpck_require__(1218);
+const skill_store_1 = __nccwpck_require__(215);
 exports.DEFAULT_ORCHESTRATOR_CONFIG = {
     maxIterations: 3,
     totalTimeoutMs: 120000,
@@ -70,7 +71,7 @@ class AgentOrchestrator {
         this.fixGenerationAgent = new fix_generation_agent_1.FixGenerationAgent(openaiClient);
         this.reviewAgent = new review_agent_1.ReviewAgent(openaiClient);
     }
-    async orchestrate(context, errorData, previousResponseId) {
+    async orchestrate(context, errorData, previousResponseId, skills) {
         const startTime = Date.now();
         const agentResults = {};
         let iterations = 0;
@@ -82,7 +83,7 @@ class AgentOrchestrator {
                     reject(new Error(`Orchestration timed out after ${this.config.totalTimeoutMs}ms`));
                 }, this.config.totalTimeoutMs);
             });
-            const pipelinePromise = this.runPipeline(context, errorData, agentResults, previousResponseId);
+            const pipelinePromise = this.runPipeline(context, errorData, agentResults, previousResponseId, skills);
             const result = await Promise.race([pipelinePromise, timeoutPromise]);
             clearTimeout(timeoutId);
             iterations = result.iterations;
@@ -134,7 +135,7 @@ class AgentOrchestrator {
             };
         }
     }
-    async runPipeline(context, _errorData, agentResults, previousResponseId) {
+    async runPipeline(context, _errorData, agentResults, previousResponseId, skills) {
         let iterations = 0;
         let lastResponseId = previousResponseId;
         core.info('📊 Step 1: Running Analysis Agent...');
@@ -177,7 +178,16 @@ class AgentOrchestrator {
         else {
             core.info('📦 No product diff available — agents will treat failure as test-side issue');
         }
+        if (skills && skills.relevant.length > 0) {
+            core.info(`📝 ${skills.relevant.length} skill(s) available from prior runs`);
+            if (skills.flakiness?.isFlaky) {
+                core.warning(`⚠️ ${skills.flakiness.message}`);
+            }
+        }
         core.info('🔍 Step 3: Running Investigation Agent...');
+        context.skillsPrompt = skills
+            ? (0, skill_store_1.formatSkillsForPrompt)(skills.relevant, 'investigation', skills.flakiness)
+            : '';
         const investigationResult = await this.investigationAgent.execute({
             analysis,
             codeContext: codeReadingResult.data,
@@ -199,6 +209,9 @@ class AgentOrchestrator {
         while (iterations < this.config.maxIterations) {
             iterations++;
             core.info(`🔧 Step 4: Running Fix Generation Agent (iteration ${iterations})...`);
+            context.skillsPrompt = skills
+                ? (0, skill_store_1.formatSkillsForPrompt)(skills.relevant, 'fix_generation', skills.flakiness)
+                : '';
             if (reviewFeedback) {
                 core.info(`   📨 Sending previous review feedback to Fix Gen Agent:`);
                 for (const line of reviewFeedback.split('\n')) {
@@ -267,6 +280,9 @@ class AgentOrchestrator {
             }
             if (this.config.requireReview) {
                 core.info('✅ Step 5: Running Review Agent...');
+                context.skillsPrompt = skills
+                    ? (0, skill_store_1.formatSkillsForPrompt)(skills.relevant, 'review', skills.flakiness)
+                    : '';
                 const reviewResult = await this.reviewAgent.execute({
                     proposedFix: lastFix,
                     analysis,
@@ -828,7 +844,7 @@ class BaseAgent {
         }
     }
     async runAgentTask(input, context, previousResponseId) {
-        const systemPrompt = this.getSystemPrompt();
+        const systemPrompt = this.getSystemPrompt(context.framework);
         const userPrompt = this.buildUserPrompt(input, context);
         if (this.config.verbose) {
             core.debug(`[${this.agentName}] System prompt: ${systemPrompt.slice(0, 200)}...`);
@@ -1375,22 +1391,11 @@ Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.FixGenerationAgent = void 0;
 const base_agent_1 = __nccwpck_require__(6575);
 const constants_1 = __nccwpck_require__(8361);
-class FixGenerationAgent extends base_agent_1.BaseAgent {
-    constructor(openaiClient, config) {
-        super(openaiClient, 'FixGenerationAgent', {
-            ...config,
-            maxTokens: 6000,
-        });
-    }
-    async execute(input, context, previousResponseId) {
-        return this.executeWithTimeout(input, context, previousResponseId);
-    }
-    getSystemPrompt() {
-        return `You are an expert test engineer who specializes in fixing failing E2E tests (Cypress or WebDriverIO).
+const COMMON_PREAMBLE = `You are an expert test engineer who specializes in fixing failing E2E tests.
 
 ## Your Task
 
-Generate precise, working code changes to fix the failing test based on the analysis and investigation provided. Match the framework used in the source (Cypress vs WebDriverIO).
+Generate precise, working code changes to fix the failing test based on the analysis and investigation provided.
 
 ## Code Change Requirements
 
@@ -1405,17 +1410,21 @@ Generate precise, working code changes to fix the failing test based on the anal
 
 4. **Preserve Style**: Match the existing code style (quotes, semicolons, indentation).
 
-## Common Fix Patterns (Cypress)
+`;
+const CYPRESS_PATTERNS = `## Cypress Fix Patterns
+
+### Chaining & Retry-ability
+Cypress commands auto-retry, but \`.then()\` callbacks do not. Prefer assertion-based waits over arbitrary waits.
 
 ### Selector Updates
 \`\`\`javascript
-// OLD: Specific class that changed
+// OLD: Fragile class selector
 cy.get('.old-button-class')
 
-// NEW: Use data-testid or more stable selector
+// NEW: Prefer data-testid, aria-label, or cy.contains
 cy.get('[data-testid="submit-button"]')
-// or
 cy.get('button').contains('Submit')
+cy.findByRole('button', { name: 'Submit' })
 \`\`\`
 
 ### Visibility/Existence Checks
@@ -1423,8 +1432,10 @@ cy.get('button').contains('Submit')
 // OLD: Click without checking visibility
 cy.get('#element').click()
 
-// NEW: Wait for visibility first
+// NEW: Assert visible, then act
 cy.get('#element').should('be.visible').click()
+// For conditional elements:
+cy.get('#element').should('exist').and('be.visible').click()
 \`\`\`
 
 ### Timing/Wait Issues
@@ -1432,10 +1443,13 @@ cy.get('#element').should('be.visible').click()
 // OLD: No wait for async operation
 cy.get('#result')
 
-// NEW: Wait for element or intercept
+// BEST: Intercept the API call
 cy.intercept('GET', '/api/data').as('getData')
 cy.wait('@getData')
 cy.get('#result')
+
+// ALT: Increase assertion timeout for slow renders
+cy.get('#result', { timeout: 15000 }).should('contain', 'Expected')
 \`\`\`
 
 ### Overflow/Responsive Menu
@@ -1443,7 +1457,7 @@ cy.get('#result')
 // OLD: Direct click on element that might be in overflow menu
 cy.get('[aria-label="Action"]').click()
 
-// NEW: Check if in overflow menu first
+// NEW: Conditional interaction
 cy.get('body').then($body => {
   if ($body.find('[aria-label="Action"]:visible').length > 0) {
     cy.get('[aria-label="Action"]').click()
@@ -1454,42 +1468,110 @@ cy.get('body').then($body => {
 })
 \`\`\`
 
-## Common Fix Patterns (WebDriverIO)
-
-### Selector and visibility
+### cy.session for Login
 \`\`\`javascript
-// OLD: Click without waiting for display
+// Cache login across tests
+cy.session('user', () => {
+  cy.visit('/login')
+  cy.get('#email').type(user.email)
+  cy.get('#password').type(user.password)
+  cy.get('button[type="submit"]').click()
+  cy.url().should('not.include', '/login')
+})
+\`\`\`
+
+### Iframe & Shadow DOM
+\`\`\`javascript
+// Access shadow DOM
+cy.get('my-component').shadow().find('.inner-element')
+
+// Switch into iframe
+cy.get('iframe#editor').its('0.contentDocument.body').then(cy.wrap)
+\`\`\`
+
+`;
+const WDIO_PATTERNS = `## WebDriverIO Fix Patterns
+
+### Selector Strategy
+\`\`\`javascript
+// OLD: Fragile class selector
 await $('.old-button-class').click()
 
-// NEW: Use data-testid and wait for displayed
-await $('[data-testid="submit-button"]').waitForDisplayed();
+// NEW: Prefer data-testid or aria selectors
 await $('[data-testid="submit-button"]').click()
+await $('aria/Submit')  // WDIO aria selector strategy
 \`\`\`
 
-### Wait for element
+### waitForDisplayed / waitForClickable / waitForExist
 \`\`\`javascript
-// OLD: No wait
-await $('#result').getText()
-
-// NEW: Wait for displayed or exist
-await $('#result').waitForDisplayed({ timeout: 10000 });
-await $('#result').getText()
-// or browser.waitUntil
-await browser.waitUntil(async () => (await $('#result').isDisplayed()), { timeout: 10000 });
-\`\`\`
-
-### Multi-remote / browser scope
-\`\`\`javascript
-// OLD: Direct selector
+// OLD: Click without waiting
 await $('button').click()
 
-// NEW: Ensure correct browser instance and wait
-const browser = await this.getBrowser(); // or context-specific
-await browser.$('button').waitForClickable();
-await browser.$('button').click();
+// NEW: Wait for clickable state
+await $('button').waitForClickable({ timeout: 15000 })
+await $('button').click()
+
+// For elements that load asynchronously
+await $('[data-testid="result"]').waitForDisplayed({ timeout: 10000 })
+const text = await $('[data-testid="result"]').getText()
+
+// For elements that may not be in DOM yet
+await $('[data-testid="modal"]').waitForExist({ timeout: 10000 })
 \`\`\`
 
-## Output Format
+### browser.waitUntil for Complex Conditions
+\`\`\`javascript
+// OLD: Simple wait
+await browser.pause(3000)
+
+// NEW: Condition-based wait
+await browser.waitUntil(
+  async () => (await $('[data-testid="status"]').getText()) === 'Ready',
+  { timeout: 15000, timeoutMsg: 'Status never became Ready' }
+)
+\`\`\`
+
+### Multi-remote / Browser Scope
+\`\`\`javascript
+// OLD: Ambiguous browser reference in multi-remote
+await $('button').click()
+
+// NEW: Explicit browser instance
+const elem = await browserA.$('[data-testid="start"]')
+await elem.waitForClickable()
+await elem.click()
+\`\`\`
+
+### Shadow DOM & Custom Elements
+\`\`\`javascript
+// Access shadow root
+const host = await $('mux-player')
+const shadowBtn = await host.shadow$('button.play')
+await shadowBtn.waitForClickable({ timeout: 15000 })
+await shadowBtn.click()
+\`\`\`
+
+### browser.execute for DOM Interaction
+\`\`\`javascript
+// Scroll element into view
+await browser.execute((el) => el.scrollIntoView({ block: 'center' }), await $('button'))
+await $('button').waitForClickable()
+await $('button').click()
+\`\`\`
+
+### Stale Element Recovery
+\`\`\`javascript
+// OLD: Direct action on potentially stale element
+const el = await $('button')
+await el.click()
+
+// NEW: Re-query before action
+await $('button').waitForClickable({ timeout: 10000 })
+await $('button').click()
+\`\`\`
+
+`;
+const COMMON_SUFFIX = `## Output Format
 
 You MUST respond with a JSON object matching this schema:
 {
@@ -1540,6 +1622,25 @@ When recent product repo changes are provided (e.g. from the learn-webapp), you 
    - A combination of both
 4. **Adapt selectors and assertions**: If a product change renamed an aria-label, CSS class, or restructured DOM, update the test selectors to match the NEW product code — do NOT add fragile workarounds.
 5. If no product diff is provided or the diff is unrelated, state that explicitly in your reasoning.`;
+class FixGenerationAgent extends base_agent_1.BaseAgent {
+    constructor(openaiClient, config) {
+        super(openaiClient, 'FixGenerationAgent', {
+            ...config,
+            maxTokens: 6000,
+        });
+    }
+    async execute(input, context, previousResponseId) {
+        return this.executeWithTimeout(input, context, previousResponseId);
+    }
+    getSystemPrompt(framework) {
+        switch (framework) {
+            case 'cypress':
+                return COMMON_PREAMBLE + CYPRESS_PATTERNS + COMMON_SUFFIX;
+            case 'webdriverio':
+                return COMMON_PREAMBLE + WDIO_PATTERNS + COMMON_SUFFIX;
+            default:
+                return COMMON_PREAMBLE + CYPRESS_PATTERNS + WDIO_PATTERNS + COMMON_SUFFIX;
+        }
     }
     buildUserPrompt(input, context) {
         const frameworkLabel = (0, base_agent_1.getFrameworkLabel)(context.framework);
@@ -1632,6 +1733,9 @@ When recent product repo changes are provided (e.g. from the learn-webapp), you 
         }
         if (input.previousFeedback) {
             parts.push('', '### Previous Review Feedback', '⚠️ The previous fix attempt was rejected. Please address these issues:', '```', input.previousFeedback, '```');
+        }
+        if (context.skillsPrompt) {
+            parts.push('', context.skillsPrompt);
         }
         parts.push('', '## Instructions', '1. Review the product repo diff (if provided) FIRST — determine whether a product change caused this failure', '2. Based on the analysis, investigation, and product diff, generate the necessary code changes', '3. Ensure oldCode matches EXACTLY what appears in the test file', '4. Make minimal, targeted changes', '5. Provide clear justification for each change, explicitly noting if it adapts to a product change', '', 'Respond with the JSON object as specified in the system prompt.');
         return parts.filter(Boolean).join('\n');
@@ -1882,6 +1986,9 @@ You MUST respond with a JSON object matching this schema:
         if (context.screenshots && context.screenshots.length > 0) {
             parts.push('', '### Screenshots', `${context.screenshots.length} screenshot(s) are attached. Analyze them to see:`, '- What elements are visible', '- What the actual DOM state looks like', '- Any visual clues about the failure');
         }
+        if (context.skillsPrompt) {
+            parts.push('', context.skillsPrompt);
+        }
         parts.push('', '## Instructions', 'Based on all the information above:', '1. Identify all findings that explain or contribute to the failure', '2. Determine the primary cause', '3. Check if the issue can be fixed in test code', '4. List any selectors that need to be updated', '5. Provide a recommended fix approach', '', 'Respond with the JSON object as specified in the system prompt.');
         return parts.join('\n');
     }
@@ -2051,6 +2158,9 @@ You MUST respond with a JSON object matching this schema:
         }
         if (input.proposedFix.risks.length > 0) {
             parts.push('', '### Identified Risks', input.proposedFix.risks.map((r) => `- ${r}`).join('\n'));
+        }
+        if (context.skillsPrompt) {
+            parts.push('', context.skillsPrompt);
         }
         parts.push('', '## Review Instructions', '1. For each change, verify oldCode appears EXACTLY in the file', '2. Check that newCode is syntactically valid', '3. Verify the fix addresses the root cause', '4. Look for potential side effects', '5. Assess overall likelihood of success', '6. CRITICAL: If PR changes are provided, verify the fix reasoning is consistent with the diff — if the fix claims code was "changed" or "updated" but the diff does NOT show that change, flag as CRITICAL issue', '', 'Respond with the JSON object as specified in the system prompt.');
         return parts.join('\n');
@@ -3128,6 +3238,7 @@ const local_fix_validator_1 = __nccwpck_require__(5168);
 const constants_1 = __nccwpck_require__(8361);
 const repo_utils_1 = __nccwpck_require__(4843);
 const cursor_cloud_validator_1 = __nccwpck_require__(1697);
+const skill_store_1 = __nccwpck_require__(215);
 async function run() {
     try {
         const inputs = getInputs();
@@ -3222,24 +3333,38 @@ async function run() {
         }
         let fixRecommendation = null;
         let autoFixResult = null;
-        if (inputs.enableAutoFix && inputs.enableValidation && inputs.validationTestCommand) {
-            const autoFixTargetRepo = resolveAutoFixTargetRepo(inputs);
-            const loopResult = await iterativeFixValidateLoop(inputs, repoDetails, autoFixTargetRepo, errorData, openaiClient, octokit);
+        const autoFixTargetRepo = inputs.autoFixTargetRepo
+            ? resolveAutoFixTargetRepo(inputs)
+            : null;
+        let skillStore;
+        if (autoFixTargetRepo) {
+            skillStore = new skill_store_1.SkillStore(octokit, autoFixTargetRepo.owner, autoFixTargetRepo.repo);
+            await skillStore.load().catch((err) => {
+                core.warning(`Skill store load failed (non-fatal): ${err}`);
+            });
+        }
+        const flakinessSignal = skillStore
+            ? skillStore.detectFlakiness(errorData.fileName || 'unknown')
+            : undefined;
+        if (flakinessSignal?.isFlaky) {
+            core.warning(`⚠️ FLAKINESS DETECTED: ${flakinessSignal.message}`);
+        }
+        if (inputs.enableAutoFix && inputs.enableValidation && inputs.validationTestCommand && autoFixTargetRepo) {
+            const loopResult = await iterativeFixValidateLoop(inputs, repoDetails, autoFixTargetRepo, errorData, openaiClient, octokit, skillStore);
             fixRecommendation = loopResult.fixRecommendation;
             autoFixResult = loopResult.autoFixResult;
         }
         else {
-            const singleResult = await generateFixRecommendation(inputs, repoDetails, errorData, openaiClient, octokit);
+            const singleResult = await generateFixRecommendation(inputs, repoDetails, errorData, openaiClient, octokit, undefined, undefined, skillStore);
             fixRecommendation = singleResult?.fix ?? null;
-            if (fixRecommendation && inputs.enableAutoFix) {
-                const autoFixTargetRepo = resolveAutoFixTargetRepo(inputs);
+            if (fixRecommendation && inputs.enableAutoFix && autoFixTargetRepo) {
                 autoFixResult = await attemptAutoFix(inputs, fixRecommendation, octokit, autoFixTargetRepo, errorData);
             }
         }
         if (fixRecommendation) {
             result.fixRecommendation = fixRecommendation;
         }
-        setSuccessOutput(result, errorData, autoFixResult);
+        setSuccessOutput(result, errorData, autoFixResult, flakinessSignal);
     }
     catch (error) {
         const errorMsg = error instanceof Error ? error.message : 'An unknown error occurred';
@@ -3297,7 +3422,7 @@ function resolveRepository(inputs) {
 function resolveAutoFixTargetRepo(inputs) {
     return (0, repo_utils_1.parseRepoString)(inputs.autoFixTargetRepo, 'AUTO_FIX_TARGET_REPO');
 }
-async function generateFixRecommendation(inputs, repoDetails, errorData, openaiClient, octokit, previousAttempt, previousResponseId) {
+async function generateFixRecommendation(inputs, repoDetails, errorData, openaiClient, octokit, previousAttempt, previousResponseId, skillStore) {
     try {
         const iterLabel = previousAttempt
             ? ` (iteration ${previousAttempt.iteration + 1})`
@@ -3324,7 +3449,17 @@ async function generateFixRecommendation(inputs, repoDetails, errorData, openaiC
         }, {
             enableAgenticRepair: inputs.enableAgenticRepair,
         });
-        const result = await repairAgent.generateFixRecommendation(repairContext, errorData, previousAttempt, previousResponseId);
+        const skills = skillStore
+            ? {
+                relevant: skillStore.findRelevant({
+                    framework: errorData.framework || 'unknown',
+                    spec: errorData.fileName,
+                    errorMessage: errorData.message,
+                }),
+                flakiness: skillStore.detectFlakiness(errorData.fileName || 'unknown'),
+            }
+            : undefined;
+        const result = await repairAgent.generateFixRecommendation(repairContext, errorData, previousAttempt, previousResponseId, skills);
         if (result) {
             core.info(`✅ Fix recommendation generated with ${result.fix.confidence}% confidence`);
         }
@@ -3338,7 +3473,7 @@ async function generateFixRecommendation(inputs, repoDetails, errorData, openaiC
         return null;
     }
 }
-async function iterativeFixValidateLoop(inputs, repoDetails, autoFixTargetRepo, errorData, openaiClient, octokit) {
+async function iterativeFixValidateLoop(inputs, repoDetails, autoFixTargetRepo, errorData, openaiClient, octokit, skillStore) {
     const maxIterations = constants_1.FIX_VALIDATE_LOOP.MAX_ITERATIONS;
     let fixRecommendation = null;
     let autoFixResult = null;
@@ -3362,7 +3497,7 @@ async function iterativeFixValidateLoop(inputs, repoDetails, autoFixTargetRepo, 
         await validator.setup();
         for (let iteration = 0; iteration < maxIterations; iteration++) {
             core.info(`\n${'='.repeat(60)}\n🔄 Fix-Validate iteration ${iteration + 1}/${maxIterations}\n${'='.repeat(60)}`);
-            const fixResult = await generateFixRecommendation(inputs, repoDetails, errorData, openaiClient, octokit, previousAttempt, lastResponseId);
+            const fixResult = await generateFixRecommendation(inputs, repoDetails, errorData, openaiClient, octokit, previousAttempt, lastResponseId, skillStore);
             if (!fixResult) {
                 fixRecommendation = null;
                 core.warning(`Iteration ${iteration + 1}: could not generate fix recommendation`);
@@ -3408,6 +3543,33 @@ async function iterativeFixValidateLoop(inputs, repoDetails, autoFixTargetRepo, 
                         branchName: pushResult.branchName,
                         validationStatus: 'passed',
                     };
+                    if (skillStore && fixRecommendation) {
+                        const repoFullName = `${autoFixTargetRepo.owner}/${autoFixTargetRepo.repo}`;
+                        const firstChange = fixRecommendation.proposedChanges[0];
+                        const changeType = firstChange?.changeType || 'OTHER';
+                        const skill = (0, skill_store_1.buildSkill)({
+                            repo: repoFullName,
+                            spec: errorData.fileName || 'unknown',
+                            testName: errorData.testName || 'unknown',
+                            framework: errorData.framework || 'unknown',
+                            errorMessage: errorData.message,
+                            rootCauseCategory: changeType,
+                            fix: {
+                                file: firstChange.file,
+                                changeType,
+                                summary: fixRecommendation.summary,
+                                pattern: (0, skill_store_1.describeFixPattern)(fixRecommendation.proposedChanges),
+                            },
+                            confidence: fixRecommendation.confidence,
+                            iterations: iteration + 1,
+                            prUrl: pushResult.prUrl || '',
+                            validatedLocally: true,
+                            priorSkillCount: skillStore.countForSpec(errorData.fileName || 'unknown'),
+                        });
+                        await skillStore.save(skill).catch((err) => {
+                            core.warning(`Failed to save skill: ${err}`);
+                        });
+                    }
                 }
                 catch (pushError) {
                     core.warning(`Test passed but push/PR creation failed: ${pushError}`);
@@ -3624,7 +3786,7 @@ function setErrorOutput(reason) {
     }));
     core.setFailed(reason);
 }
-function setSuccessOutput(result, errorData, autoFixResult) {
+function setSuccessOutput(result, errorData, autoFixResult, flakiness) {
     const triageJson = {
         verdict: result.verdict,
         confidence: result.confidence,
@@ -3649,6 +3811,16 @@ function setSuccessOutput(result, errorData, autoFixResult) {
                         runId: autoFixResult.validationRunId,
                         url: autoFixResult.validationUrl,
                     },
+                },
+            }
+            : {}),
+        ...(flakiness?.isFlaky
+            ? {
+                flakiness: {
+                    isFlaky: true,
+                    fixCount: flakiness.fixCount,
+                    windowDays: flakiness.windowDays,
+                    message: flakiness.message,
                 },
             }
             : {}),
@@ -5001,6 +5173,7 @@ const summary_generator_1 = __nccwpck_require__(8220);
 const constants_1 = __nccwpck_require__(8361);
 const agents_1 = __nccwpck_require__(9796);
 const base_agent_1 = __nccwpck_require__(6575);
+const skill_store_1 = __nccwpck_require__(215);
 class SimplifiedRepairAgent {
     openaiClient;
     sourceFetchContext;
@@ -5032,19 +5205,19 @@ class SimplifiedRepairAgent {
             });
         }
     }
-    async generateFixRecommendation(repairContext, errorData, previousAttempt, previousResponseId) {
+    async generateFixRecommendation(repairContext, errorData, previousAttempt, previousResponseId, skills) {
         try {
             core.info('🔧 Generating fix recommendation...');
             if (this.config.enableAgenticRepair && this.orchestrator) {
                 core.info('🤖 Attempting agentic repair...');
-                const agenticResult = await this.tryAgenticRepair(repairContext, errorData, previousAttempt, previousResponseId);
+                const agenticResult = await this.tryAgenticRepair(repairContext, errorData, previousAttempt, previousResponseId, skills);
                 if (agenticResult) {
                     core.info(`✅ Agentic repair succeeded with ${agenticResult.fix.confidence}% confidence`);
                     return agenticResult;
                 }
                 core.info('🔄 Agentic repair did not produce a fix, falling back to single-shot...');
             }
-            const singleShotFix = await this.singleShotRepair(repairContext, errorData, previousAttempt);
+            const singleShotFix = await this.singleShotRepair(repairContext, errorData, previousAttempt, skills);
             return singleShotFix ? { fix: singleShotFix } : null;
         }
         catch (error) {
@@ -5052,7 +5225,7 @@ class SimplifiedRepairAgent {
             return null;
         }
     }
-    async tryAgenticRepair(repairContext, errorData, previousAttempt, previousResponseId) {
+    async tryAgenticRepair(repairContext, errorData, previousAttempt, previousResponseId, skills) {
         if (!this.orchestrator) {
             return null;
         }
@@ -5093,7 +5266,7 @@ class SimplifiedRepairAgent {
                     : undefined,
                 framework: errorData?.framework,
             });
-            const result = await this.orchestrator.orchestrate(agentContext, errorData, previousResponseId);
+            const result = await this.orchestrator.orchestrate(agentContext, errorData, previousResponseId, skills);
             if (result.success && result.fix) {
                 core.info(`🤖 Agentic approach: ${result.approach}, iterations: ${result.iterations}, time: ${result.totalTimeMs}ms`);
                 for (const change of result.fix.proposedChanges) {
@@ -5114,7 +5287,7 @@ class SimplifiedRepairAgent {
             return null;
         }
     }
-    async singleShotRepair(repairContext, errorData, previousAttempt) {
+    async singleShotRepair(repairContext, errorData, previousAttempt, skills) {
         let sourceFileContent = null;
         const cleanFilePath = this.extractFilePath(repairContext.testFile);
         if (this.sourceFetchContext && cleanFilePath) {
@@ -5123,7 +5296,7 @@ class SimplifiedRepairAgent {
                 core.info(`  ✅ Fetched source file: ${cleanFilePath} (${sourceFileContent.length} chars)`);
             }
         }
-        const prompt = this.buildPrompt(repairContext, errorData, sourceFileContent, cleanFilePath, previousAttempt);
+        const prompt = this.buildPrompt(repairContext, errorData, sourceFileContent, cleanFilePath, previousAttempt, skills);
         if (process.env.DEBUG_FIX_RECOMMENDATION) {
             const promptFile = `fix-prompt-${Date.now()}.md`;
             fs.writeFileSync(promptFile, prompt);
@@ -5302,7 +5475,7 @@ class SimplifiedRepairAgent {
         }
         return sanitized;
     }
-    buildPrompt(context, errorData, sourceFileContent, cleanFilePath, previousAttempt) {
+    buildPrompt(context, errorData, sourceFileContent, cleanFilePath, previousAttempt, skills) {
         let contextInfo = `## Test Failure Context
 - **Test File:** ${this.sanitizeForPrompt(context.testFile)}
 - **Test Name:** ${this.sanitizeForPrompt(context.testName)}
@@ -5426,6 +5599,13 @@ ${lines.length > 150 ? `\n... (${lines.length - 150} more lines)` : ''}
         }
         else {
             core.info('⚠️  No ErrorData provided - using minimal context');
+        }
+        if (skills && skills.relevant.length > 0) {
+            const skillsText = (0, skill_store_1.formatSkillsForPrompt)(skills.relevant, 'fix_generation', skills.flakiness);
+            contextInfo += `\n\n${skillsText}`;
+        }
+        else if (skills?.flakiness?.isFlaky) {
+            contextInfo += `\n\n⚠️ FLAKINESS SIGNAL: ${skills.flakiness.message}`;
         }
         if (previousAttempt) {
             const prevChanges = previousAttempt.previousFix.proposedChanges
@@ -6586,6 +6766,341 @@ function buildStructuredSummary(err) {
     };
 }
 //# sourceMappingURL=log-processor.js.map
+
+/***/ }),
+
+/***/ 215:
+/***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
+
+"use strict";
+
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.SkillStore = void 0;
+exports.normalizeFramework = normalizeFramework;
+exports.buildSkill = buildSkill;
+exports.describeFixPattern = describeFixPattern;
+exports.normalizeError = normalizeError;
+exports.formatSkillsForPrompt = formatSkillsForPrompt;
+const core = __importStar(__nccwpck_require__(7484));
+const crypto = __importStar(__nccwpck_require__(6982));
+const SKILLS_BRANCH = 'triage-data';
+const SKILLS_FILE = 'skills.json';
+const MAX_SKILLS = 100;
+const FLAKY_THRESHOLDS = {
+    SHORT_WINDOW_DAYS: 3,
+    SHORT_WINDOW_MAX: 1,
+    LONG_WINDOW_DAYS: 7,
+    LONG_WINDOW_MAX: 2,
+};
+class SkillStore {
+    skills = [];
+    loaded = false;
+    fileSha;
+    octokit;
+    owner;
+    repo;
+    constructor(octokit, owner, repo) {
+        this.octokit = octokit;
+        this.owner = owner;
+        this.repo = repo;
+    }
+    async load() {
+        if (this.loaded)
+            return this.skills;
+        try {
+            const { data } = await this.octokit.repos.getContent({
+                owner: this.owner,
+                repo: this.repo,
+                path: SKILLS_FILE,
+                ref: SKILLS_BRANCH,
+            });
+            if ('content' in data && data.content) {
+                const raw = Buffer.from(data.content, 'base64').toString('utf-8');
+                this.skills = JSON.parse(raw);
+                this.fileSha = data.sha;
+                core.info(`📝 Loaded ${this.skills.length} skill(s) from ${this.owner}/${this.repo}@${SKILLS_BRANCH}`);
+            }
+            this.loaded = true;
+        }
+        catch (err) {
+            const status = err.status;
+            if (status === 404) {
+                this.loaded = true;
+                core.info(`📝 No existing skills found for ${this.owner}/${this.repo} — starting fresh`);
+            }
+            else {
+                core.warning(`Failed to load skills (will retry on next call): ${err}`);
+            }
+        }
+        return this.skills;
+    }
+    async save(skill) {
+        if (!this.loaded) {
+            await this.load();
+        }
+        this.skills.push(skill);
+        if (this.skills.length > MAX_SKILLS) {
+            this.skills = this.skills.slice(-MAX_SKILLS);
+        }
+        const write = async () => {
+            await this.ensureBranch();
+            const content = Buffer.from(JSON.stringify(this.skills, null, 2)).toString('base64');
+            const { data } = await this.octokit.repos.createOrUpdateFileContents({
+                owner: this.owner,
+                repo: this.repo,
+                path: SKILLS_FILE,
+                message: `chore: update triage skills (${skill.spec})`,
+                content,
+                branch: SKILLS_BRANCH,
+                ...(this.fileSha ? { sha: this.fileSha } : {}),
+            });
+            this.fileSha = data.content?.sha;
+            core.info(`📝 Saved skill ${skill.id} (${this.skills.length} total for ${this.owner}/${this.repo})`);
+        };
+        try {
+            await write();
+        }
+        catch (err) {
+            const status = err.status;
+            if (status === 409) {
+                try {
+                    const { data } = await this.octokit.repos.getContent({
+                        owner: this.owner,
+                        repo: this.repo,
+                        path: SKILLS_FILE,
+                        ref: SKILLS_BRANCH,
+                    });
+                    if (!('content' in data) || !data.content) {
+                        throw new Error('Unexpected empty skills file');
+                    }
+                    const raw = Buffer.from(data.content, 'base64').toString('utf-8');
+                    const remoteSkills = JSON.parse(raw);
+                    this.skills = [...remoteSkills, skill];
+                    this.fileSha = data.sha;
+                    await write();
+                }
+                catch (retryErr) {
+                    this.skills.pop();
+                    core.warning(`Failed to save skill: ${retryErr}`);
+                }
+            }
+            else {
+                this.skills.pop();
+                core.warning(`Failed to save skill: ${err}`);
+            }
+        }
+    }
+    findRelevant(opts) {
+        const limit = opts.limit ?? 5;
+        const normalized = normalizeFramework(opts.framework);
+        const frameworkSkills = this.skills.filter((s) => s.framework === normalized || s.framework === 'unknown');
+        if (frameworkSkills.length === 0)
+            return [];
+        const scored = frameworkSkills.map((skill) => {
+            let score = 0;
+            if (opts.spec && skill.spec === opts.spec)
+                score += 10;
+            if (opts.errorMessage) {
+                score += errorSimilarity(skill.errorPattern, normalizeError(opts.errorMessage)) * 5;
+            }
+            return { skill, score };
+        });
+        return scored
+            .filter((s) => s.score > 0)
+            .sort((a, b) => b.score - a.score)
+            .slice(0, limit)
+            .map((s) => s.skill);
+    }
+    detectFlakiness(spec) {
+        const now = Date.now();
+        const specSkills = this.skills.filter((s) => s.spec === spec);
+        const inShortWindow = specSkills.filter((s) => now - new Date(s.createdAt).getTime() < FLAKY_THRESHOLDS.SHORT_WINDOW_DAYS * 86_400_000);
+        const inLongWindow = specSkills.filter((s) => now - new Date(s.createdAt).getTime() < FLAKY_THRESHOLDS.LONG_WINDOW_DAYS * 86_400_000);
+        if (inShortWindow.length > FLAKY_THRESHOLDS.SHORT_WINDOW_MAX) {
+            return {
+                isFlaky: true,
+                fixCount: inShortWindow.length,
+                windowDays: FLAKY_THRESHOLDS.SHORT_WINDOW_DAYS,
+                message: `This spec has been auto-fixed ${inShortWindow.length} times in ${FLAKY_THRESHOLDS.SHORT_WINDOW_DAYS} days — likely chronically flaky.`,
+            };
+        }
+        if (inLongWindow.length > FLAKY_THRESHOLDS.LONG_WINDOW_MAX) {
+            return {
+                isFlaky: true,
+                fixCount: inLongWindow.length,
+                windowDays: FLAKY_THRESHOLDS.LONG_WINDOW_DAYS,
+                message: `This spec has been auto-fixed ${inLongWindow.length} times in ${FLAKY_THRESHOLDS.LONG_WINDOW_DAYS} days — recurring instability.`,
+            };
+        }
+        return {
+            isFlaky: false,
+            fixCount: specSkills.length,
+            windowDays: FLAKY_THRESHOLDS.LONG_WINDOW_DAYS,
+            message: '',
+        };
+    }
+    countForSpec(spec) {
+        return this.skills.filter((s) => s.spec === spec).length;
+    }
+    async ensureBranch() {
+        try {
+            await this.octokit.repos.getBranch({
+                owner: this.owner,
+                repo: this.repo,
+                branch: SKILLS_BRANCH,
+            });
+        }
+        catch (err) {
+            if (err.status !== 404)
+                throw err;
+            const { data: defaultBranch } = await this.octokit.repos.get({
+                owner: this.owner,
+                repo: this.repo,
+            });
+            const { data: ref } = await this.octokit.git.getRef({
+                owner: this.owner,
+                repo: this.repo,
+                ref: `heads/${defaultBranch.default_branch}`,
+            });
+            await this.octokit.git.createRef({
+                owner: this.owner,
+                repo: this.repo,
+                ref: `refs/heads/${SKILLS_BRANCH}`,
+                sha: ref.object.sha,
+            });
+            core.info(`📝 Created ${SKILLS_BRANCH} branch in ${this.owner}/${this.repo}`);
+        }
+    }
+}
+exports.SkillStore = SkillStore;
+function normalizeFramework(raw) {
+    switch (raw?.toLowerCase()) {
+        case 'cypress':
+            return 'cypress';
+        case 'webdriverio':
+            return 'webdriverio';
+        default:
+            return 'unknown';
+    }
+}
+function buildSkill(params) {
+    return {
+        id: crypto.randomUUID(),
+        createdAt: new Date().toISOString(),
+        repo: params.repo,
+        spec: params.spec,
+        testName: params.testName,
+        framework: normalizeFramework(params.framework),
+        errorPattern: normalizeError(params.errorMessage),
+        rootCauseCategory: params.rootCauseCategory,
+        fix: params.fix,
+        confidence: params.confidence,
+        iterations: params.iterations,
+        prUrl: params.prUrl,
+        validatedLocally: params.validatedLocally,
+        priorSkillCount: params.priorSkillCount,
+    };
+}
+function describeFixPattern(changes) {
+    return changes
+        .map((c) => c.justification || `Modified ${c.file}`)
+        .join('; ');
+}
+function normalizeError(msg) {
+    return msg
+        .replace(/after \d+ms/g, 'after {timeout}ms')
+        .replace(/:\d+:\d+/g, ':{line}:{col}')
+        .replace(/\b[0-9a-f]{7,40}\b/g, '{sha}')
+        .replace(/\d{4}-\d{2}-\d{2}T[\d:.Z]+/g, '{timestamp}')
+        .replace(/\s+/g, ' ')
+        .trim()
+        .slice(0, 300);
+}
+function errorSimilarity(a, b) {
+    const tokensA = new Set(a.toLowerCase().split(/\s+/));
+    const tokensB = new Set(b.toLowerCase().split(/\s+/));
+    if (tokensA.size === 0 || tokensB.size === 0)
+        return 0;
+    let intersection = 0;
+    for (const t of tokensA) {
+        if (tokensB.has(t))
+            intersection++;
+    }
+    const union = tokensA.size + tokensB.size - intersection;
+    return union === 0 ? 0 : intersection / union;
+}
+function formatSkillsForPrompt(skills, role, flakiness) {
+    if (skills.length === 0 && !flakiness?.isFlaky)
+        return '';
+    const headers = {
+        investigation: [
+            '### Agent Memory: Prior Fixes for This Spec',
+            '',
+            'These patterns have been applied before. Use them as background context.',
+            'Your findings should be based on the CURRENT evidence — do NOT anchor on prior patterns.',
+            'If your findings match a prior pattern, note that. If they differ, explain why.',
+        ].join('\n'),
+        fix_generation: [
+            '### Agent Memory: Proven Fix Patterns',
+            '',
+            'The following fixes were previously applied successfully and validated locally.',
+            'If the current failure matches a prior pattern, PREFER the proven approach over a novel one.',
+        ].join('\n'),
+        review: [
+            '### Agent Memory: Prior Successful Fixes',
+            '',
+            'Check if the proposed fix aligns with patterns that have worked before.',
+            'Flag if the fix contradicts a proven approach without justification.',
+        ].join('\n'),
+    };
+    const entries = skills.map((s, i) => [
+        `**Fix ${i + 1}** (${s.createdAt.split('T')[0]}, ${s.confidence}% confidence, ${s.iterations} iteration${s.iterations !== 1 ? 's' : ''})`,
+        `- Spec: ${s.spec}`,
+        `- Error: ${s.errorPattern}`,
+        `- Root cause: ${s.rootCauseCategory}`,
+        `- Pattern: ${s.fix.pattern}`,
+        `- Change type: ${s.fix.changeType} in ${s.fix.file}`,
+    ].join('\n'));
+    const parts = [headers[role], '', ...entries];
+    if (flakiness?.isFlaky) {
+        parts.push('', `⚠️ FLAKINESS SIGNAL: ${flakiness.message}`);
+    }
+    return parts.join('\n');
+}
+//# sourceMappingURL=skill-store.js.map
 
 /***/ }),
 

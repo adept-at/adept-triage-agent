@@ -1,0 +1,77 @@
+import { Octokit } from '@octokit/rest';
+export interface TriageSkill {
+    id: string;
+    createdAt: string;
+    repo: string;
+    spec: string;
+    testName: string;
+    framework: 'cypress' | 'webdriverio' | 'unknown';
+    errorPattern: string;
+    rootCauseCategory: string;
+    fix: {
+        file: string;
+        changeType: string;
+        summary: string;
+        pattern: string;
+    };
+    confidence: number;
+    iterations: number;
+    prUrl: string;
+    validatedLocally: boolean;
+    priorSkillCount: number;
+}
+export interface FlakinessSignal {
+    isFlaky: boolean;
+    fixCount: number;
+    windowDays: number;
+    message: string;
+}
+export declare class SkillStore {
+    private skills;
+    private loaded;
+    private fileSha;
+    private octokit;
+    private owner;
+    private repo;
+    constructor(octokit: Octokit, owner: string, repo: string);
+    load(): Promise<TriageSkill[]>;
+    save(skill: TriageSkill): Promise<void>;
+    findRelevant(opts: {
+        framework: string;
+        spec?: string;
+        errorMessage?: string;
+        limit?: number;
+    }): TriageSkill[];
+    detectFlakiness(spec: string): FlakinessSignal;
+    countForSpec(spec: string): number;
+    private ensureBranch;
+}
+export declare function normalizeFramework(raw?: string): TriageSkill['framework'];
+export declare function buildSkill(params: {
+    repo: string;
+    spec: string;
+    testName: string;
+    framework: string;
+    errorMessage: string;
+    rootCauseCategory: string;
+    fix: {
+        file: string;
+        changeType: string;
+        summary: string;
+        pattern: string;
+    };
+    confidence: number;
+    iterations: number;
+    prUrl: string;
+    validatedLocally: boolean;
+    priorSkillCount: number;
+}): TriageSkill;
+export declare function describeFixPattern(changes: Array<{
+    file: string;
+    oldCode: string;
+    newCode: string;
+    justification?: string;
+}>): string;
+export declare function normalizeError(msg: string): string;
+export declare function formatSkillsForPrompt(skills: TriageSkill[], role: 'investigation' | 'fix_generation' | 'review', flakiness?: FlakinessSignal): string;
+//# sourceMappingURL=skill-store.d.ts.map

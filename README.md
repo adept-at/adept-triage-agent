@@ -18,6 +18,8 @@ AI-powered GitHub Action that automatically triages test failures to determine i
 - 📊 **Confidence Scoring**: Provides confidence levels for each verdict
 - 🔄 **Flexible Integration**: Works with various CI/CD workflows
 - 📝 **Change Diff Analysis**: Analyzes test-repo PR, branch, or commit diffs when provided, and recent commits in the default product repo (`adept-at/learn-webapp`) for classification
+- 🧠 **Skill Memory**: Remembers successful fix patterns in a Git-backed store (`triage-data` branch) and reuses them on future failures for faster, more accurate repairs
+- ⚠️ **Flakiness Detection**: Flags specs that have been auto-fixed repeatedly (>1 fix in 3 days, or >2 in 7 days) as chronically flaky
 
 ### Auto-Fix Feature
 
@@ -75,6 +77,12 @@ The agents iterate up to 3 times, with the review agent providing feedback for i
 | Agentic | 4-15 | Better | ~30-60s |
 
 The agentic pipeline falls back to single-shot if it fails to produce a valid fix.
+
+The Analysis, Investigation, Fix Generation, and Review agents share one OpenAI conversation via `previous_response_id` chaining, so the Review Agent sees the full reasoning chain — not just structured handoff fields. Code Reading runs as a separate step (file fetching, not an LLM call in the same thread).
+
+#### Skill Memory
+
+When the iterative fix-validate loop produces a validated fix (local test passes), the agent saves the fix pattern to a `triage-data` branch in the test repo. On future runs, these skills are loaded and injected into agent prompts so the pipeline can reuse proven patterns. Skills are loaded for all `TEST_ISSUE` verdicts regardless of whether auto-fix is enabled.
 
 #### Fix Validation (Optional)
 
@@ -301,6 +309,7 @@ This approach triggers automatically when the specified workflow completes with 
 | `AUTO_FIX_MIN_CONFIDENCE` | Minimum fix confidence required to apply auto-fix (0-100)                                                                                                                                                                   | No       | `70`                       |
 | `AUTO_FIX_TARGET_REPO` | Repository where repair source files are fetched and fix branches are created (owner/repo format)                                                                                                                             | No       | `${{ github.repository }}` |
 | `ENABLE_AGENTIC_REPAIR` | Enable multi-agent repair pipeline for higher quality fixes (uses more API calls). Enabled by default; set to `'false'` to use single-shot repair instead.                                                                   | No       | `true`                     |
+| `NPM_TOKEN`           | NPM token for private registry authentication during local validation `npm ci`.                                                                                                                                                   | No       | -                          |
 | **Validation Inputs** | | | |
 | `ENABLE_VALIDATION`    | Enable local validation before push when used with `VALIDATION_TEST_COMMAND`: clone repo, apply fix, run tests locally, push branch and open PR on success (up to 3 iterations on failure).                                                                                                        | No       | `false`                    |
 | `VALIDATION_WORKFLOW`  | Validation workflow filename; used by the legacy remote path when `VALIDATION_TEST_COMMAND` is unset.                                                                                                                                                                                           | No       | `validate-fix.yml`         |
@@ -379,11 +388,13 @@ This approach triggers automatically when the specified workflow completes with 
 
 ## How It Works
 
-1. **Error Extraction**: The action extracts error messages, stack traces, and relevant context from test logs
-2. **AI Analysis**: Uses GPT-5.3 Codex with carefully crafted prompts to analyze the failure
-3. **Classification**: Determines whether the failure is a test issue or product issue
-4. **Confidence Scoring**: Calculates confidence based on the clarity of indicators
-5. **Output Generation**: Provides structured output with verdict, confidence, and reasoning
+1. **Data Collection**: Fetches workflow logs, screenshots, test artifacts, test-repo PR/branch/commit diff, and recent product-repo diff in parallel
+2. **Infrastructure Check**: Short-circuits to `INCONCLUSIVE` if a browser crash or session termination is detected (no LLM call)
+3. **AI Classification**: Sends structured error summary, logs, screenshots, and diffs to GPT-5.3 Codex via the Responses API to classify as `TEST_ISSUE`, `PRODUCT_ISSUE`, or `INCONCLUSIVE`
+4. **Confidence Gating**: If confidence is below `CONFIDENCE_THRESHOLD`, returns `INCONCLUSIVE` without attempting repair
+5. **Skill Memory Loading**: For `TEST_ISSUE` verdicts, loads historical fix patterns from the `triage-data` branch of the test repo (if `AUTO_FIX_TARGET_REPO` is set) and checks for flakiness signals
+6. **Fix Generation**: Uses either the multi-agent pipeline (Analysis → Code Reading → Investigation → Fix/Review loop) or single-shot repair, with skill memory injected into prompts
+7. **Fix Application**: Depending on configuration, applies the fix via the local validation loop (clone → apply → test → push/PR) or via the GitHub API (legacy path)
 
 ## Example Classifications
 

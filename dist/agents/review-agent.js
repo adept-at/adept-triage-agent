@@ -116,6 +116,9 @@ You MUST respond with a JSON object matching this schema:
         if (input.proposedFix.risks.length > 0) {
             parts.push('', '### Identified Risks', input.proposedFix.risks.map((r) => `- ${r}`).join('\n'));
         }
+        if (context.skillsPrompt) {
+            parts.push('', context.skillsPrompt);
+        }
         parts.push('', '## Review Instructions', '1. For each change, verify oldCode appears EXACTLY in the file', '2. Check that newCode is syntactically valid', '3. Verify the fix addresses the root cause', '4. Look for potential side effects', '5. Assess overall likelihood of success', '6. CRITICAL: If PR changes are provided, verify the fix reasoning is consistent with the diff — if the fix claims code was "changed" or "updated" but the diff does NOT show that change, flag as CRITICAL issue', '', 'Respond with the JSON object as specified in the system prompt.');
         return parts.join('\n');
     }

@@ -13,6 +13,7 @@ import { LocalFixValidator } from './services/local-fix-validator';
 import { AUTO_FIX, CURSOR_CLOUD, FIX_VALIDATE_LOOP, DEFAULT_PRODUCT_REPO, DEFAULT_PRODUCT_URL } from './config/constants';
 import { parseRepoString } from './utils/repo-utils';
 import { CursorCloudValidator, CursorValidationParams } from './services/cursor-cloud-validator';
+import { SkillStore, buildSkill, describeFixPattern } from './services/skill-store';
 
 async function run(): Promise<void> {
   try {
@@ -160,31 +161,55 @@ async function run(): Promise<void> {
     let fixRecommendation: FixRecommendation | null = null;
     let autoFixResult: ApplyResult | null = null;
 
-    if (inputs.enableAutoFix && inputs.enableValidation && inputs.validationTestCommand) {
+    // Resolve test repo and load skill memory.
+    // Skills are loaded regardless of enableAutoFix — even analysis-only runs
+    // benefit from historical fix patterns and flakiness detection.
+    const autoFixTargetRepo = inputs.autoFixTargetRepo
+      ? resolveAutoFixTargetRepo(inputs)
+      : null;
+
+    let skillStore: SkillStore | undefined;
+    if (autoFixTargetRepo) {
+      skillStore = new SkillStore(octokit, autoFixTargetRepo.owner, autoFixTargetRepo.repo);
+      await skillStore.load().catch((err) => {
+        core.warning(`Skill store load failed (non-fatal): ${err}`);
+      });
+    }
+
+    const flakinessSignal = skillStore
+      ? skillStore.detectFlakiness(errorData.fileName || 'unknown')
+      : undefined;
+    if (flakinessSignal?.isFlaky) {
+      core.warning(`⚠️ FLAKINESS DETECTED: ${flakinessSignal.message}`);
+    }
+
+    if (inputs.enableAutoFix && inputs.enableValidation && inputs.validationTestCommand && autoFixTargetRepo) {
       // Local fix-validate loop: clone, apply, test, iterate up to 3x
-      const autoFixTargetRepo = resolveAutoFixTargetRepo(inputs);
       const loopResult = await iterativeFixValidateLoop(
         inputs,
         repoDetails,
         autoFixTargetRepo,
         errorData,
         openaiClient,
-        octokit
+        octokit,
+        skillStore
       );
       fixRecommendation = loopResult.fixRecommendation;
       autoFixResult = loopResult.autoFixResult;
     } else {
-      // Original single-attempt flow (no validation loop)
+      // Single-attempt flow (no validation loop) — still benefits from skill memory
       const singleResult = await generateFixRecommendation(
         inputs,
         repoDetails,
         errorData,
         openaiClient,
-        octokit
+        octokit,
+        undefined,
+        undefined,
+        skillStore
       );
       fixRecommendation = singleResult?.fix ?? null;
-      if (fixRecommendation && inputs.enableAutoFix) {
-        const autoFixTargetRepo = resolveAutoFixTargetRepo(inputs);
+      if (fixRecommendation && inputs.enableAutoFix && autoFixTargetRepo) {
         autoFixResult = await attemptAutoFix(
           inputs,
           fixRecommendation,
@@ -200,7 +225,7 @@ async function run(): Promise<void> {
     }
 
     // Set successful outputs
-    setSuccessOutput(result, errorData, autoFixResult);
+    setSuccessOutput(result, errorData, autoFixResult, flakinessSignal);
   } catch (error) {
     const errorMsg = error instanceof Error ? error.message : 'An unknown error occurred';
     core.setOutput('verdict', 'ERROR');
@@ -298,7 +323,8 @@ async function generateFixRecommendation(
     previousFix: FixRecommendation;
     validationLogs: string;
   },
-  previousResponseId?: string
+  previousResponseId?: string,
+  skillStore?: SkillStore
 ): Promise<{ fix: FixRecommendation; lastResponseId?: string } | null> {
   try {
     const iterLabel = previousAttempt
@@ -337,11 +363,23 @@ async function generateFixRecommendation(
         enableAgenticRepair: inputs.enableAgenticRepair,
       }
     );
+    const skills = skillStore
+      ? {
+          relevant: skillStore.findRelevant({
+            framework: (errorData as import('./types').ErrorData).framework || 'unknown',
+            spec: errorData.fileName,
+            errorMessage: errorData.message,
+          }),
+          flakiness: skillStore.detectFlakiness(errorData.fileName || 'unknown'),
+        }
+      : undefined;
+
     const result = await repairAgent.generateFixRecommendation(
       repairContext,
       errorData as import('./types').ErrorData,
       previousAttempt,
-      previousResponseId
+      previousResponseId,
+      skills
     );
 
     if (result) {
@@ -368,9 +406,10 @@ async function iterativeFixValidateLoop(
   inputs: ActionInputs,
   repoDetails: { owner: string; repo: string },
   autoFixTargetRepo: { owner: string; repo: string },
-  errorData: { message: string; testName?: string; fileName?: string },
+  errorData: { message: string; testName?: string; fileName?: string; framework?: string },
   openaiClient: OpenAIClient,
-  octokit: Octokit
+  octokit: Octokit,
+  skillStore?: SkillStore
 ): Promise<{
   fixRecommendation: FixRecommendation | null;
   autoFixResult: ApplyResult | null;
@@ -416,7 +455,8 @@ async function iterativeFixValidateLoop(
         openaiClient,
         octokit,
         previousAttempt,
-        lastResponseId
+        lastResponseId,
+        skillStore
       );
 
       if (!fixResult) {
@@ -485,6 +525,34 @@ async function iterativeFixValidateLoop(
             branchName: pushResult.branchName,
             validationStatus: 'passed',
           };
+
+          if (skillStore && fixRecommendation) {
+            const repoFullName = `${autoFixTargetRepo.owner}/${autoFixTargetRepo.repo}`;
+            const firstChange = fixRecommendation.proposedChanges[0];
+            const changeType = (firstChange as { changeType?: string })?.changeType || 'OTHER';
+            const skill = buildSkill({
+              repo: repoFullName,
+              spec: errorData.fileName || 'unknown',
+              testName: errorData.testName || 'unknown',
+              framework: errorData.framework || 'unknown',
+              errorMessage: errorData.message,
+              rootCauseCategory: changeType,
+              fix: {
+                file: firstChange.file,
+                changeType,
+                summary: fixRecommendation.summary,
+                pattern: describeFixPattern(fixRecommendation.proposedChanges),
+              },
+              confidence: fixRecommendation.confidence,
+              iterations: iteration + 1,
+              prUrl: pushResult.prUrl || '',
+              validatedLocally: true,
+              priorSkillCount: skillStore.countForSpec(errorData.fileName || 'unknown'),
+            });
+            await skillStore.save(skill).catch((err) => {
+              core.warning(`Failed to save skill: ${err}`);
+            });
+          }
         } catch (pushError) {
           core.warning(`Test passed but push/PR creation failed: ${pushError}`);
           autoFixResult = {
@@ -801,7 +869,8 @@ function setSuccessOutput(
     fixRecommendation?: FixRecommendation;
   },
   errorData: { screenshots?: Array<{ name: string }>; logs?: string[] },
-  autoFixResult?: ApplyResult | null
+  autoFixResult?: ApplyResult | null,
+  flakiness?: { isFlaky: boolean; fixCount: number; windowDays: number; message: string }
 ): void {
   const triageJson = {
     verdict: result.verdict,
@@ -827,6 +896,16 @@ function setSuccessOutput(
               runId: autoFixResult.validationRunId,
               url: autoFixResult.validationUrl,
             },
+          },
+        }
+      : {}),
+    ...(flakiness?.isFlaky
+      ? {
+          flakiness: {
+            isFlaky: true,
+            fixCount: flakiness.fixCount,
+            windowDays: flakiness.windowDays,
+            message: flakiness.message,
           },
         }
       : {}),
