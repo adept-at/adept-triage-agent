@@ -184,6 +184,21 @@ describe('describeFixPattern', () => {
     ]);
     expect(result).toBe('Fix A; Fix B');
   });
+
+  it('prefixes with [changeType] when provided', () => {
+    const result = describeFixPattern([
+      { file: 'a.ts', oldCode: 'o', newCode: 'n', justification: 'Added wait', changeType: 'WAIT_ADDITION' },
+    ]);
+    expect(result).toBe('[WAIT_ADDITION] Added wait');
+  });
+
+  it('handles mixed entries with and without changeType', () => {
+    const result = describeFixPattern([
+      { file: 'a.ts', oldCode: 'o', newCode: 'n', justification: 'Fix selector', changeType: 'SELECTOR_UPDATE' },
+      { file: 'b.ts', oldCode: 'o', newCode: 'n', justification: 'Add timeout' },
+    ]);
+    expect(result).toBe('[SELECTOR_UPDATE] Fix selector; Add timeout');
+  });
 });
 
 // ---------------------------------------------------------------------------

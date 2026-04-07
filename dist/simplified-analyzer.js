@@ -161,7 +161,8 @@ async function analyzeFailure(client, errorData) {
             reasoning: response.reasoning,
             summary,
             indicators: response.indicators || [],
-            suggestedSourceLocations: response.suggestedSourceLocations
+            suggestedSourceLocations: response.suggestedSourceLocations,
+            responseId: response.responseId,
         };
         if (response.verdict === 'TEST_ISSUE') {
             result.evidence = (0, error_classifier_1.extractTestIssueEvidence)(errorData.message);

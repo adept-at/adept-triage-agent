@@ -1388,10 +1388,10 @@ exports.CodeReadingAgent = CodeReadingAgent;
 "use strict";
 
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.FixGenerationAgent = void 0;
+exports.FixGenerationAgent = exports.WDIO_PATTERNS = exports.CYPRESS_PATTERNS = exports.COMMON_PREAMBLE = void 0;
 const base_agent_1 = __nccwpck_require__(6575);
 const constants_1 = __nccwpck_require__(8361);
-const COMMON_PREAMBLE = `You are an expert test engineer who specializes in fixing failing E2E tests.
+exports.COMMON_PREAMBLE = `You are an expert test engineer who specializes in fixing failing E2E tests.
 
 ## Your Task
 
@@ -1411,7 +1411,7 @@ Generate precise, working code changes to fix the failing test based on the anal
 4. **Preserve Style**: Match the existing code style (quotes, semicolons, indentation).
 
 `;
-const CYPRESS_PATTERNS = `## Cypress Fix Patterns
+exports.CYPRESS_PATTERNS = `## Cypress Fix Patterns
 
 ### Chaining & Retry-ability
 Cypress commands auto-retry, but \`.then()\` callbacks do not. Prefer assertion-based waits over arbitrary waits.
@@ -1490,7 +1490,7 @@ cy.get('iframe#editor').its('0.contentDocument.body').then(cy.wrap)
 \`\`\`
 
 `;
-const WDIO_PATTERNS = `## WebDriverIO Fix Patterns
+exports.WDIO_PATTERNS = `## WebDriverIO Fix Patterns
 
 ### Selector Strategy
 \`\`\`javascript
@@ -1635,11 +1635,11 @@ class FixGenerationAgent extends base_agent_1.BaseAgent {
     getSystemPrompt(framework) {
         switch (framework) {
             case 'cypress':
-                return COMMON_PREAMBLE + CYPRESS_PATTERNS + COMMON_SUFFIX;
+                return exports.COMMON_PREAMBLE + exports.CYPRESS_PATTERNS + COMMON_SUFFIX;
             case 'webdriverio':
-                return COMMON_PREAMBLE + WDIO_PATTERNS + COMMON_SUFFIX;
+                return exports.COMMON_PREAMBLE + exports.WDIO_PATTERNS + COMMON_SUFFIX;
             default:
-                return COMMON_PREAMBLE + CYPRESS_PATTERNS + WDIO_PATTERNS + COMMON_SUFFIX;
+                return exports.COMMON_PREAMBLE + exports.CYPRESS_PATTERNS + exports.WDIO_PATTERNS + COMMON_SUFFIX;
         }
     }
     buildUserPrompt(input, context) {
@@ -3321,18 +3321,6 @@ async function run() {
             setErrorOutput('No error data found to analyze');
             return;
         }
-        const result = await (0, simplified_analyzer_1.analyzeFailure)(openaiClient, errorData);
-        if (result.confidence < inputs.confidenceThreshold) {
-            core.warning(`Confidence ${result.confidence}% is below threshold ${inputs.confidenceThreshold}%`);
-            setInconclusiveOutput(result, inputs, errorData);
-            return;
-        }
-        if (result.verdict !== 'TEST_ISSUE') {
-            setSuccessOutput(result, errorData, null);
-            return;
-        }
-        let fixRecommendation = null;
-        let autoFixResult = null;
         const autoFixTargetRepo = inputs.autoFixTargetRepo
             ? resolveAutoFixTargetRepo(inputs)
             : null;
@@ -3349,13 +3337,26 @@ async function run() {
         if (flakinessSignal?.isFlaky) {
             core.warning(`⚠️ FLAKINESS DETECTED: ${flakinessSignal.message}`);
         }
+        const result = await (0, simplified_analyzer_1.analyzeFailure)(openaiClient, errorData);
+        const classificationResponseId = result.responseId;
+        if (result.confidence < inputs.confidenceThreshold) {
+            core.warning(`Confidence ${result.confidence}% is below threshold ${inputs.confidenceThreshold}%`);
+            setInconclusiveOutput(result, inputs, errorData);
+            return;
+        }
+        if (result.verdict !== 'TEST_ISSUE') {
+            setSuccessOutput(result, errorData, null, flakinessSignal);
+            return;
+        }
+        let fixRecommendation = null;
+        let autoFixResult = null;
         if (inputs.enableAutoFix && inputs.enableValidation && inputs.validationTestCommand && autoFixTargetRepo) {
-            const loopResult = await iterativeFixValidateLoop(inputs, repoDetails, autoFixTargetRepo, errorData, openaiClient, octokit, skillStore);
+            const loopResult = await iterativeFixValidateLoop(inputs, repoDetails, autoFixTargetRepo, errorData, openaiClient, octokit, skillStore, classificationResponseId);
             fixRecommendation = loopResult.fixRecommendation;
             autoFixResult = loopResult.autoFixResult;
         }
         else {
-            const singleResult = await generateFixRecommendation(inputs, repoDetails, errorData, openaiClient, octokit, undefined, undefined, skillStore);
+            const singleResult = await generateFixRecommendation(inputs, repoDetails, errorData, openaiClient, octokit, undefined, classificationResponseId, skillStore);
             fixRecommendation = singleResult?.fix ?? null;
             if (fixRecommendation && inputs.enableAutoFix && autoFixTargetRepo) {
                 autoFixResult = await attemptAutoFix(inputs, fixRecommendation, octokit, autoFixTargetRepo, errorData);
@@ -3473,7 +3474,7 @@ async function generateFixRecommendation(inputs, repoDetails, errorData, openaiC
         return null;
     }
 }
-async function iterativeFixValidateLoop(inputs, repoDetails, autoFixTargetRepo, errorData, openaiClient, octokit, skillStore) {
+async function iterativeFixValidateLoop(inputs, repoDetails, autoFixTargetRepo, errorData, openaiClient, octokit, skillStore, classificationResponseId) {
     const maxIterations = constants_1.FIX_VALIDATE_LOOP.MAX_ITERATIONS;
     let fixRecommendation = null;
     let autoFixResult = null;
@@ -3481,7 +3482,7 @@ async function iterativeFixValidateLoop(inputs, repoDetails, autoFixTargetRepo, 
     const failedFixFingerprints = new Set();
     const minConfidence = inputs.autoFixMinConfidence || constants_1.AUTO_FIX.DEFAULT_MIN_CONFIDENCE;
     const baseBranch = inputs.branch || inputs.autoFixBaseBranch || 'main';
-    let lastResponseId;
+    let lastResponseId = classificationResponseId;
     const validator = new local_fix_validator_1.LocalFixValidator({
         owner: autoFixTargetRepo.owner,
         repo: autoFixTargetRepo.repo,
@@ -5173,6 +5174,7 @@ const summary_generator_1 = __nccwpck_require__(8220);
 const constants_1 = __nccwpck_require__(8361);
 const agents_1 = __nccwpck_require__(9796);
 const base_agent_1 = __nccwpck_require__(6575);
+const fix_generation_agent_1 = __nccwpck_require__(9302);
 const skill_store_1 = __nccwpck_require__(215);
 class SimplifiedRepairAgent {
     openaiClient;
@@ -5625,9 +5627,16 @@ ${previousAttempt.validationLogs.slice(0, 6000)}
 
 **CRITICAL: You MUST try a DIFFERENT approach.** Analyze WHY the previous fix failed and address the root cause. Do NOT repeat the same change.`;
         }
+        const frameworkPatterns = errorData?.framework === 'cypress'
+            ? fix_generation_agent_1.CYPRESS_PATTERNS
+            : errorData?.framework === 'webdriverio'
+                ? fix_generation_agent_1.WDIO_PATTERNS
+                : fix_generation_agent_1.CYPRESS_PATTERNS + fix_generation_agent_1.WDIO_PATTERNS;
         return `You are a test repair expert. Analyze this test failure and provide a fix recommendation.
 
 ${contextInfo}
+
+${frameworkPatterns}
 
 ## Your Task
 Based on the error type and message, provide a fix recommendation. Focus on the most likely cause and solution.
@@ -7036,7 +7045,10 @@ function buildSkill(params) {
 }
 function describeFixPattern(changes) {
     return changes
-        .map((c) => c.justification || `Modified ${c.file}`)
+        .map((c) => {
+        const prefix = c.changeType ? `[${c.changeType}] ` : '';
+        return `${prefix}${c.justification || `Modified ${c.file}`}`;
+    })
         .join('; ');
 }
 function normalizeError(msg) {
@@ -7271,7 +7283,8 @@ async function analyzeFailure(client, errorData) {
             reasoning: response.reasoning,
             summary,
             indicators: response.indicators || [],
-            suggestedSourceLocations: response.suggestedSourceLocations
+            suggestedSourceLocations: response.suggestedSourceLocations,
+            responseId: response.responseId,
         };
         if (response.verdict === 'TEST_ISSUE') {
             result.evidence = (0, error_classifier_1.extractTestIssueEvidence)(errorData.message);

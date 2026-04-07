@@ -11,6 +11,7 @@ import {
   OrchestratorConfig,
 } from '../agents';
 import { getFrameworkLabel } from '../agents/base-agent';
+import { CYPRESS_PATTERNS, WDIO_PATTERNS } from '../agents/fix-generation-agent';
 import { TriageSkill, FlakinessSignal, formatSkillsForPrompt } from '../services/skill-store';
 
 /**
@@ -743,9 +744,17 @@ ${previousAttempt.validationLogs.slice(0, 6000)}
 **CRITICAL: You MUST try a DIFFERENT approach.** Analyze WHY the previous fix failed and address the root cause. Do NOT repeat the same change.`;
     }
 
+    const frameworkPatterns = errorData?.framework === 'cypress'
+      ? CYPRESS_PATTERNS
+      : errorData?.framework === 'webdriverio'
+        ? WDIO_PATTERNS
+        : CYPRESS_PATTERNS + WDIO_PATTERNS;
+
     return `You are a test repair expert. Analyze this test failure and provide a fix recommendation.
 
 ${contextInfo}
+
+${frameworkPatterns}
 
 ## Your Task
 Based on the error type and message, provide a fix recommendation. Focus on the most likely cause and solution.

@@ -1,9 +1,9 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.FixGenerationAgent = void 0;
+exports.FixGenerationAgent = exports.WDIO_PATTERNS = exports.CYPRESS_PATTERNS = exports.COMMON_PREAMBLE = void 0;
 const base_agent_1 = require("./base-agent");
 const constants_1 = require("../config/constants");
-const COMMON_PREAMBLE = `You are an expert test engineer who specializes in fixing failing E2E tests.
+exports.COMMON_PREAMBLE = `You are an expert test engineer who specializes in fixing failing E2E tests.
 
 ## Your Task
 
@@ -23,7 +23,7 @@ Generate precise, working code changes to fix the failing test based on the anal
 4. **Preserve Style**: Match the existing code style (quotes, semicolons, indentation).
 
 `;
-const CYPRESS_PATTERNS = `## Cypress Fix Patterns
+exports.CYPRESS_PATTERNS = `## Cypress Fix Patterns
 
 ### Chaining & Retry-ability
 Cypress commands auto-retry, but \`.then()\` callbacks do not. Prefer assertion-based waits over arbitrary waits.
@@ -102,7 +102,7 @@ cy.get('iframe#editor').its('0.contentDocument.body').then(cy.wrap)
 \`\`\`
 
 `;
-const WDIO_PATTERNS = `## WebDriverIO Fix Patterns
+exports.WDIO_PATTERNS = `## WebDriverIO Fix Patterns
 
 ### Selector Strategy
 \`\`\`javascript
@@ -247,11 +247,11 @@ class FixGenerationAgent extends base_agent_1.BaseAgent {
     getSystemPrompt(framework) {
         switch (framework) {
             case 'cypress':
-                return COMMON_PREAMBLE + CYPRESS_PATTERNS + COMMON_SUFFIX;
+                return exports.COMMON_PREAMBLE + exports.CYPRESS_PATTERNS + COMMON_SUFFIX;
             case 'webdriverio':
-                return COMMON_PREAMBLE + WDIO_PATTERNS + COMMON_SUFFIX;
+                return exports.COMMON_PREAMBLE + exports.WDIO_PATTERNS + COMMON_SUFFIX;
             default:
-                return COMMON_PREAMBLE + CYPRESS_PATTERNS + WDIO_PATTERNS + COMMON_SUFFIX;
+                return exports.COMMON_PREAMBLE + exports.CYPRESS_PATTERNS + exports.WDIO_PATTERNS + COMMON_SUFFIX;
         }
     }
     buildUserPrompt(input, context) {

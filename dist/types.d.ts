@@ -67,6 +67,7 @@ export interface AnalysisResult {
     evidence?: string[];
     category?: string;
     fixRecommendation?: FixRecommendation;
+    responseId?: string;
 }
 export interface FixRecommendation {
     confidence: number;

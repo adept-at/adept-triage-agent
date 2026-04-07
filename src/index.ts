@@ -138,32 +138,8 @@ async function run(): Promise<void> {
       return;
     }
 
-    // Analyze with AI
-    const result = await analyzeFailure(openaiClient, errorData);
-
-    // Short-circuit before any repair attempt when the verdict is not actionable
-    // or confidence is too low.  This prevents wasted API calls and avoids creating
-    // auto-fix branches that would later be overridden to INCONCLUSIVE.
-    if (result.confidence < inputs.confidenceThreshold) {
-      core.warning(
-        `Confidence ${result.confidence}% is below threshold ${inputs.confidenceThreshold}%`
-      );
-      setInconclusiveOutput(result, inputs, errorData);
-      return;
-    }
-
-    if (result.verdict !== 'TEST_ISSUE') {
-      setSuccessOutput(result, errorData, null);
-      return;
-    }
-
-    // Generate fix recommendation for TEST_ISSUE verdicts
-    let fixRecommendation: FixRecommendation | null = null;
-    let autoFixResult: ApplyResult | null = null;
-
-    // Resolve test repo and load skill memory.
-    // Skills are loaded regardless of enableAutoFix — even analysis-only runs
-    // benefit from historical fix patterns and flakiness detection.
+    // Load skill memory BEFORE classification so the classifier benefits from
+    // flakiness history and the responseId chains into the repair pipeline.
     const autoFixTargetRepo = inputs.autoFixTargetRepo
       ? resolveAutoFixTargetRepo(inputs)
       : null;
@@ -183,6 +159,30 @@ async function run(): Promise<void> {
       core.warning(`⚠️ FLAKINESS DETECTED: ${flakinessSignal.message}`);
     }
 
+    // Analyze with AI
+    const result = await analyzeFailure(openaiClient, errorData);
+    const classificationResponseId = result.responseId;
+
+    // Short-circuit before any repair attempt when the verdict is not actionable
+    // or confidence is too low.  This prevents wasted API calls and avoids creating
+    // auto-fix branches that would later be overridden to INCONCLUSIVE.
+    if (result.confidence < inputs.confidenceThreshold) {
+      core.warning(
+        `Confidence ${result.confidence}% is below threshold ${inputs.confidenceThreshold}%`
+      );
+      setInconclusiveOutput(result, inputs, errorData);
+      return;
+    }
+
+    if (result.verdict !== 'TEST_ISSUE') {
+      setSuccessOutput(result, errorData, null, flakinessSignal);
+      return;
+    }
+
+    // Generate fix recommendation for TEST_ISSUE verdicts
+    let fixRecommendation: FixRecommendation | null = null;
+    let autoFixResult: ApplyResult | null = null;
+
     if (inputs.enableAutoFix && inputs.enableValidation && inputs.validationTestCommand && autoFixTargetRepo) {
       // Local fix-validate loop: clone, apply, test, iterate up to 3x
       const loopResult = await iterativeFixValidateLoop(
@@ -192,7 +192,8 @@ async function run(): Promise<void> {
         errorData,
         openaiClient,
         octokit,
-        skillStore
+        skillStore,
+        classificationResponseId
       );
       fixRecommendation = loopResult.fixRecommendation;
       autoFixResult = loopResult.autoFixResult;
@@ -205,7 +206,7 @@ async function run(): Promise<void> {
         openaiClient,
         octokit,
         undefined,
-        undefined,
+        classificationResponseId,
         skillStore
       );
       fixRecommendation = singleResult?.fix ?? null;
@@ -409,7 +410,8 @@ async function iterativeFixValidateLoop(
   errorData: { message: string; testName?: string; fileName?: string; framework?: string },
   openaiClient: OpenAIClient,
   octokit: Octokit,
-  skillStore?: SkillStore
+  skillStore?: SkillStore,
+  classificationResponseId?: string
 ): Promise<{
   fixRecommendation: FixRecommendation | null;
   autoFixResult: ApplyResult | null;
@@ -423,7 +425,7 @@ async function iterativeFixValidateLoop(
   const failedFixFingerprints = new Set<string>();
   const minConfidence = inputs.autoFixMinConfidence || AUTO_FIX.DEFAULT_MIN_CONFIDENCE;
   const baseBranch = inputs.branch || inputs.autoFixBaseBranch || 'main';
-  let lastResponseId: string | undefined;
+  let lastResponseId: string | undefined = classificationResponseId;
 
   const validator = new LocalFixValidator(
     {

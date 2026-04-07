@@ -160,7 +160,8 @@ export async function analyzeFailure(client: OpenAIClient, errorData: ErrorData)
       reasoning: response.reasoning,
       summary,
       indicators: response.indicators || [],
-      suggestedSourceLocations: response.suggestedSourceLocations
+      suggestedSourceLocations: response.suggestedSourceLocations,
+      responseId: response.responseId,
     };
 
     // Add enhanced metadata for TEST_ISSUE (helps with fix recommendations)

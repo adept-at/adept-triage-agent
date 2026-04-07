@@ -71,6 +71,7 @@ export declare function describeFixPattern(changes: Array<{
     oldCode: string;
     newCode: string;
     justification?: string;
+    changeType?: string;
 }>): string;
 export declare function normalizeError(msg: string): string;
 export declare function formatSkillsForPrompt(skills: TriageSkill[], role: 'investigation' | 'fix_generation' | 'review', flakiness?: FlakinessSignal): string;

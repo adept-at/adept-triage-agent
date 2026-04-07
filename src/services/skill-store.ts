@@ -338,9 +338,13 @@ export function describeFixPattern(changes: Array<{
   oldCode: string;
   newCode: string;
   justification?: string;
+  changeType?: string;
 }>): string {
   return changes
-    .map((c) => c.justification || `Modified ${c.file}`)
+    .map((c) => {
+      const prefix = c.changeType ? `[${c.changeType}] ` : '';
+      return `${prefix}${c.justification || `Modified ${c.file}`}`;
+    })
     .join('; ');
 }
 

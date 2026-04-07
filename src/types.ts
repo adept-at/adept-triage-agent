@@ -95,6 +95,8 @@ export interface AnalysisResult {
   evidence?: string[];
   category?: string;
   fixRecommendation?: FixRecommendation;
+  /** OpenAI Responses API ID from the classification call — threads into repair pipeline */
+  responseId?: string;
 }
 
 export interface FixRecommendation {

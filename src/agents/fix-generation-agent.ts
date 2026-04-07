@@ -19,7 +19,7 @@ import { InvestigationOutput } from './investigation-agent';
 // Framework-specialized system prompt sections
 // ---------------------------------------------------------------------------
 
-const COMMON_PREAMBLE = `You are an expert test engineer who specializes in fixing failing E2E tests.
+export const COMMON_PREAMBLE = `You are an expert test engineer who specializes in fixing failing E2E tests.
 
 ## Your Task
 
@@ -40,7 +40,7 @@ Generate precise, working code changes to fix the failing test based on the anal
 
 `;
 
-const CYPRESS_PATTERNS = `## Cypress Fix Patterns
+export const CYPRESS_PATTERNS = `## Cypress Fix Patterns
 
 ### Chaining & Retry-ability
 Cypress commands auto-retry, but \`.then()\` callbacks do not. Prefer assertion-based waits over arbitrary waits.
@@ -120,7 +120,7 @@ cy.get('iframe#editor').its('0.contentDocument.body').then(cy.wrap)
 
 `;
 
-const WDIO_PATTERNS = `## WebDriverIO Fix Patterns
+export const WDIO_PATTERNS = `## WebDriverIO Fix Patterns
 
 ### Selector Strategy
 \`\`\`javascript

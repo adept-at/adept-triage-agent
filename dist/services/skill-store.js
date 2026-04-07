@@ -261,7 +261,10 @@ function buildSkill(params) {
 }
 function describeFixPattern(changes) {
     return changes
-        .map((c) => c.justification || `Modified ${c.file}`)
+        .map((c) => {
+        const prefix = c.changeType ? `[${c.changeType}] ` : '';
+        return `${prefix}${c.justification || `Modified ${c.file}`}`;
+    })
         .join('; ');
 }
 function normalizeError(msg) {

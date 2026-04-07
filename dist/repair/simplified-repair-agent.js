@@ -41,6 +41,7 @@ const summary_generator_1 = require("../analysis/summary-generator");
 const constants_1 = require("../config/constants");
 const agents_1 = require("../agents");
 const base_agent_1 = require("../agents/base-agent");
+const fix_generation_agent_1 = require("../agents/fix-generation-agent");
 const skill_store_1 = require("../services/skill-store");
 class SimplifiedRepairAgent {
     openaiClient;
@@ -493,9 +494,16 @@ ${previousAttempt.validationLogs.slice(0, 6000)}
 
 **CRITICAL: You MUST try a DIFFERENT approach.** Analyze WHY the previous fix failed and address the root cause. Do NOT repeat the same change.`;
         }
+        const frameworkPatterns = errorData?.framework === 'cypress'
+            ? fix_generation_agent_1.CYPRESS_PATTERNS
+            : errorData?.framework === 'webdriverio'
+                ? fix_generation_agent_1.WDIO_PATTERNS
+                : fix_generation_agent_1.CYPRESS_PATTERNS + fix_generation_agent_1.WDIO_PATTERNS;
         return `You are a test repair expert. Analyze this test failure and provide a fix recommendation.
 
 ${contextInfo}
+
+${frameworkPatterns}
 
 ## Your Task
 Based on the error type and message, provide a fix recommendation. Focus on the most likely cause and solution.
