@@ -93,6 +93,8 @@ export interface AgentContext {
   relatedFiles?: Map<string, string>;
   /** Pre-formatted skills text for prompt injection (set by orchestrator) */
   skillsPrompt?: string;
+  /** Context-aware briefing from the orchestrator for the current agent stage */
+  delegationContext?: string;
 }
 
 /**

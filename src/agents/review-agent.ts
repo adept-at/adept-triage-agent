@@ -140,7 +140,13 @@ You MUST respond with a JSON object matching this schema:
    * Build the user prompt
    */
   protected buildUserPrompt(input: ReviewInput, context: AgentContext): string {
-    const parts: string[] = [
+    const parts: string[] = [];
+
+    if (context.delegationContext) {
+      parts.push('### Orchestrator Briefing', context.delegationContext, '');
+    }
+
+    parts.push(
       '## Fix Review Request',
       '',
       '### Root Cause Being Fixed',
@@ -153,7 +159,7 @@ You MUST respond with a JSON object matching this schema:
       `- **Reasoning:** ${input.proposedFix.reasoning}`,
       '',
       '### Code Changes',
-    ];
+    );
 
     // Add each change
     for (let i = 0; i < input.proposedFix.changes.length; i++) {

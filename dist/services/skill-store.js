@@ -193,6 +193,62 @@ class SkillStore {
             .slice(0, limit)
             .map((s) => s.skill);
     }
+    findForClassifier(opts) {
+        const normalized = normalizeFramework(opts.framework);
+        const candidates = this.skills.filter((s) => (s.framework === normalized || s.framework === 'unknown') &&
+            !s.retired &&
+            s.validatedLocally === true);
+        if (candidates.length === 0)
+            return [];
+        const now = Date.now();
+        const SEVEN_DAYS = 7 * 86_400_000;
+        const scored = candidates.map((skill) => {
+            let score = 0;
+            if (opts.spec && skill.spec === opts.spec)
+                score += 15;
+            if (opts.errorMessage) {
+                score +=
+                    errorSimilarity(skill.errorPattern, normalizeError(opts.errorMessage)) * 5;
+            }
+            if (now - new Date(skill.lastUsedAt).getTime() < SEVEN_DAYS)
+                score += 3;
+            return { skill, score };
+        });
+        return scored
+            .filter((s) => s.score > 0)
+            .sort((a, b) => b.score - a.score)
+            .slice(0, 3)
+            .map((s) => s.skill);
+    }
+    findForRepair(opts) {
+        const normalized = normalizeFramework(opts.framework);
+        const candidates = this.skills.filter((s) => (s.framework === normalized || s.framework === 'unknown') && !s.retired);
+        if (candidates.length === 0)
+            return [];
+        const scored = candidates.map((skill) => {
+            let score = 0;
+            if (opts.rootCauseCategory && skill.rootCauseCategory === opts.rootCauseCategory)
+                score += 10;
+            if (opts.spec && skill.spec === opts.spec)
+                score += 8;
+            if (opts.errorMessage) {
+                score +=
+                    errorSimilarity(skill.errorPattern, normalizeError(opts.errorMessage)) * 5;
+            }
+            if (skill.confidence > 80)
+                score += 2;
+            const repairSkill = {
+                ...skill,
+                wasSuccessful: skill.validatedLocally,
+            };
+            return { skill: repairSkill, score };
+        });
+        return scored
+            .filter((s) => s.score > 0)
+            .sort((a, b) => b.score - a.score)
+            .slice(0, 5)
+            .map((s) => s.skill);
+    }
     detectFlakiness(spec) {
         const now = Date.now();
         const specSkills = this.skills.filter((s) => s.spec === spec);
@@ -225,8 +281,7 @@ class SkillStore {
         return this.skills.filter((s) => s.spec === spec).length;
     }
     formatForClassifier(opts) {
-        const relevant = this.findRelevant({ ...opts, limit: 3 })
-            .filter((s) => s.validatedLocally !== false);
+        const relevant = this.findForClassifier(opts);
         if (relevant.length === 0)
             return '';
         return relevant
@@ -234,6 +289,20 @@ class SkillStore {
             `   rootCauseCategory: ${s.rootCauseCategory}\n` +
             `   fix: ${s.fix.summary}\n` +
             `   confidence: ${s.confidence}%`)
+            .join('\n');
+    }
+    formatForRepair(opts) {
+        const relevant = this.findForRepair(opts);
+        if (relevant.length === 0)
+            return '';
+        return relevant
+            .map((s, i) => {
+            const tag = s.wasSuccessful ? 'SUCCESS' : 'FAILED';
+            const suffix = s.wasSuccessful ? '' : ' (this approach did NOT work)';
+            return (`${i + 1}. [${tag}] errorPattern: ${s.errorPattern}\n` +
+                `   rootCause: ${s.rootCauseCategory}\n` +
+                `   fix: ${s.fix.summary}${suffix}`);
+        })
             .join('\n');
     }
     async persist(commitMessage) {

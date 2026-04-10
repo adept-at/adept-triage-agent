@@ -356,7 +356,13 @@ export class FixGenerationAgent extends BaseAgent<
     context: AgentContext
   ): string {
     const frameworkLabel = getFrameworkLabel(context.framework);
-    const parts: string[] = [
+    const parts: string[] = [];
+
+    if (context.delegationContext) {
+      parts.push('### Orchestrator Briefing', context.delegationContext, '');
+    }
+
+    parts.push(
       '## Fix Generation Request',
       '',
       '### Test Information',
@@ -376,7 +382,7 @@ export class FixGenerationAgent extends BaseAgent<
       }`,
       `- **Is Test Code Fixable:** ${input.investigation.isTestCodeFixable}`,
       `- **Recommended Approach:** ${input.investigation.recommendedApproach}`,
-    ];
+    );
 
     // Add selectors that need updating
     if (input.investigation.selectorsToUpdate.length > 0) {

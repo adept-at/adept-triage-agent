@@ -285,6 +285,10 @@ export class AgentOrchestrator {
 
     // Step 3: Investigation Agent
     core.info('🔍 Step 3: Running Investigation Agent...');
+    const productDiffSummary = context.productDiff && context.productDiff.files.length > 0
+      ? `${context.productDiff.files.length} files changed (${context.productDiff.files.slice(0, 3).map(f => f.filename).join(', ')}${context.productDiff.files.length > 3 ? '...' : ''})`
+      : '';
+    context.delegationContext = this.buildDelegationContext('investigation', { analysis, productDiffSummary });
     context.skillsPrompt = skills
       ? formatSkillsForPrompt(skills.relevant, 'investigation', skills.flakiness)
       : '';
@@ -381,6 +385,12 @@ export class AgentOrchestrator {
         `🔧 Step 4: Running Fix Generation Agent (iteration ${iterations})...`
       );
 
+      context.delegationContext = this.buildDelegationContext('fix_generation', {
+        analysis,
+        investigation,
+        codeContext: codeReadingResult.data,
+        productDiffSummary,
+      });
       context.skillsPrompt = skills
         ? formatSkillsForPrompt(skills.relevant, 'fix_generation', skills.flakiness)
         : '';
@@ -465,6 +475,11 @@ export class AgentOrchestrator {
       // Step 5: Review Agent (if required)
       if (this.config.requireReview) {
         core.info('✅ Step 5: Running Review Agent...');
+        context.delegationContext = this.buildDelegationContext('review', {
+          analysis,
+          investigation,
+          productDiffSummary,
+        });
         context.skillsPrompt = skills
           ? formatSkillsForPrompt(skills.relevant, 'review', skills.flakiness)
           : '';
@@ -535,6 +550,95 @@ export class AgentOrchestrator {
       iterations,
       lastResponseId,
     };
+  }
+
+  /**
+   * Build a focused briefing for each agent stage based on what prior stages discovered.
+   */
+  private buildDelegationContext(
+    stage: 'investigation' | 'fix_generation' | 'review',
+    priorResults: {
+      analysis?: AnalysisOutput;
+      investigation?: InvestigationOutput;
+      codeContext?: CodeReadingOutput;
+      productDiffSummary?: string;
+    }
+  ): string {
+    const lines: string[] = [];
+
+    switch (stage) {
+      case 'investigation': {
+        const a = priorResults.analysis;
+        if (!a) break;
+        lines.push(
+          `Root cause category: ${a.rootCauseCategory} (${a.confidence}% confidence)`,
+          `Issue location: ${a.issueLocation}`,
+        );
+        if (a.selectors.length > 0) {
+          lines.push(`Selectors found: ${a.selectors.join(', ')}`);
+        }
+        if (priorResults.productDiffSummary) {
+          lines.push(`Product diff: ${priorResults.productDiffSummary}`);
+        } else {
+          lines.push('No product diff available — assume test-side issue.');
+        }
+        if (a.issueLocation === 'APP_CODE') {
+          lines.push(
+            'The analysis flagged APP_CODE as the issue location. Pay special attention to whether this is truly a product regression or if the test can be adapted.'
+          );
+        }
+        break;
+      }
+
+      case 'fix_generation': {
+        const inv = priorResults.investigation;
+        const a = priorResults.analysis;
+        if (inv) {
+          lines.push(
+            `Primary finding: ${inv.primaryFinding?.description ?? 'none'}`,
+            `Recommended approach: ${inv.recommendedApproach}`,
+          );
+          if (inv.selectorsToUpdate.length > 0) {
+            const sels = inv.selectorsToUpdate
+              .map(s => `${s.current} → ${s.suggestedReplacement ?? '?'} (${s.reason})`)
+              .join('; ');
+            lines.push(`Selectors to update: ${sels}`);
+          }
+        }
+        if (priorResults.productDiffSummary) {
+          lines.push(
+            `Product diff: ${priorResults.productDiffSummary}`,
+            'The product changed intentionally — the fix should ADAPT the test to new behavior, not work around it.'
+          );
+        }
+        if (a && a.rootCauseCategory) {
+          lines.push(`Analysis root cause: ${a.rootCauseCategory}`);
+        }
+        break;
+      }
+
+      case 'review': {
+        const a = priorResults.analysis;
+        const inv = priorResults.investigation;
+        if (a) {
+          lines.push(`Analysis root cause: ${a.rootCauseCategory}`);
+          if (priorResults.productDiffSummary) {
+            lines.push(`Product diff is present: ${priorResults.productDiffSummary}`);
+          } else {
+            lines.push('No product diff — failure is expected to be test-side only.');
+          }
+        }
+        if (inv) {
+          lines.push(`Investigation says test-code-fixable: ${inv.isTestCodeFixable}`);
+        }
+        lines.push(
+          'Verify that the proposed fix is consistent with the PR diff and does not fabricate changes that the diff does not support.'
+        );
+        break;
+      }
+    }
+
+    return lines.length > 0 ? lines.join('\n') : '';
   }
 
   /**

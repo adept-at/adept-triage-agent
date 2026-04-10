@@ -67,20 +67,11 @@ You MUST respond with a JSON object matching this schema:
 - CRITICAL issues automatically mean rejection`;
     }
     buildUserPrompt(input, context) {
-        const parts = [
-            '## Fix Review Request',
-            '',
-            '### Root Cause Being Fixed',
-            `- **Category:** ${input.analysis.rootCauseCategory}`,
-            `- **Explanation:** ${input.analysis.explanation}`,
-            '',
-            '### Proposed Fix',
-            `- **Summary:** ${input.proposedFix.summary}`,
-            `- **Confidence:** ${input.proposedFix.confidence}%`,
-            `- **Reasoning:** ${input.proposedFix.reasoning}`,
-            '',
-            '### Code Changes',
-        ];
+        const parts = [];
+        if (context.delegationContext) {
+            parts.push('### Orchestrator Briefing', context.delegationContext, '');
+        }
+        parts.push('## Fix Review Request', '', '### Root Cause Being Fixed', `- **Category:** ${input.analysis.rootCauseCategory}`, `- **Explanation:** ${input.analysis.explanation}`, '', '### Proposed Fix', `- **Summary:** ${input.proposedFix.summary}`, `- **Confidence:** ${input.proposedFix.confidence}%`, `- **Reasoning:** ${input.proposedFix.reasoning}`, '', '### Code Changes');
         for (let i = 0; i < input.proposedFix.changes.length; i++) {
             const change = input.proposedFix.changes[i];
             parts.push('', `#### Change ${i + 1}: ${change.file}`, `Line: ${change.line}`, `Type: ${change.changeType}`, `Justification: ${change.justification}`, '', '**Old Code:**', '```', change.oldCode, '```', '', '**New Code:**', '```', change.newCode, '```');

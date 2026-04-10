@@ -159,7 +159,13 @@ You MUST respond with a JSON object matching this schema:
     context: AgentContext
   ): string {
     const frameworkLabel = getFrameworkLabel(context.framework);
-    const parts: string[] = [
+    const parts: string[] = [];
+
+    if (context.delegationContext) {
+      parts.push('### Orchestrator Briefing', context.delegationContext, '');
+    }
+
+    parts.push(
       '## Investigation Request',
       '',
       `**Test framework:** ${frameworkLabel}`,
@@ -182,7 +188,7 @@ You MUST respond with a JSON object matching this schema:
       `- State Assertion: ${input.analysis.patterns.hasStateAssertion}`,
       `- Dynamic Content: ${input.analysis.patterns.hasDynamicContent}`,
       `- Responsive Issue: ${input.analysis.patterns.hasResponsiveIssue}`,
-    ];
+    );
 
     // Add code context if available
     if (input.codeContext) {

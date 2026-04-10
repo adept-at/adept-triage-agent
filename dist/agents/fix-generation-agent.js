@@ -256,25 +256,11 @@ class FixGenerationAgent extends base_agent_1.BaseAgent {
     }
     buildUserPrompt(input, context) {
         const frameworkLabel = (0, base_agent_1.getFrameworkLabel)(context.framework);
-        const parts = [
-            '## Fix Generation Request',
-            '',
-            '### Test Information',
-            `- **File:** ${context.testFile}`,
-            `- **Test Name:** ${context.testName}`,
-            `- **Test framework:** ${frameworkLabel}`,
-            '',
-            '### Analysis Summary',
-            `- **Root Cause:** ${input.analysis.rootCauseCategory}`,
-            `- **Confidence:** ${input.analysis.confidence}%`,
-            `- **Explanation:** ${input.analysis.explanation}`,
-            `- **Suggested Approach:** ${input.analysis.suggestedApproach}`,
-            '',
-            '### Investigation Findings',
-            `- **Primary Finding:** ${input.investigation.primaryFinding?.description || 'None'}`,
-            `- **Is Test Code Fixable:** ${input.investigation.isTestCodeFixable}`,
-            `- **Recommended Approach:** ${input.investigation.recommendedApproach}`,
-        ];
+        const parts = [];
+        if (context.delegationContext) {
+            parts.push('### Orchestrator Briefing', context.delegationContext, '');
+        }
+        parts.push('## Fix Generation Request', '', '### Test Information', `- **File:** ${context.testFile}`, `- **Test Name:** ${context.testName}`, `- **Test framework:** ${frameworkLabel}`, '', '### Analysis Summary', `- **Root Cause:** ${input.analysis.rootCauseCategory}`, `- **Confidence:** ${input.analysis.confidence}%`, `- **Explanation:** ${input.analysis.explanation}`, `- **Suggested Approach:** ${input.analysis.suggestedApproach}`, '', '### Investigation Findings', `- **Primary Finding:** ${input.investigation.primaryFinding?.description || 'None'}`, `- **Is Test Code Fixable:** ${input.investigation.isTestCodeFixable}`, `- **Recommended Approach:** ${input.investigation.recommendedApproach}`);
         if (input.investigation.selectorsToUpdate.length > 0) {
             parts.push('', '### Selectors to Update');
             for (const selector of input.investigation.selectorsToUpdate) {

@@ -36,6 +36,10 @@ export interface TriageSkill {
   retired: boolean;
 }
 
+export interface RepairSkill extends TriageSkill {
+  wasSuccessful: boolean;
+}
+
 export interface FlakinessSignal {
   isFlaky: boolean;
   fixCount: number;
@@ -232,6 +236,86 @@ export class SkillStore {
   }
 
   /**
+   * Find skills most relevant for classification decisions.
+   * Only includes validated skills; heavily weights spec match and recency.
+   */
+  findForClassifier(opts: {
+    framework: string;
+    spec?: string;
+    errorMessage?: string;
+  }): TriageSkill[] {
+    const normalized = normalizeFramework(opts.framework);
+    const candidates = this.skills.filter(
+      (s) =>
+        (s.framework === normalized || s.framework === 'unknown') &&
+        !s.retired &&
+        s.validatedLocally === true
+    );
+    if (candidates.length === 0) return [];
+
+    const now = Date.now();
+    const SEVEN_DAYS = 7 * 86_400_000;
+
+    const scored = candidates.map((skill) => {
+      let score = 0;
+      if (opts.spec && skill.spec === opts.spec) score += 15;
+      if (opts.errorMessage) {
+        score +=
+          errorSimilarity(skill.errorPattern, normalizeError(opts.errorMessage)) * 5;
+      }
+      if (now - new Date(skill.lastUsedAt).getTime() < SEVEN_DAYS) score += 3;
+      return { skill, score };
+    });
+
+    return scored
+      .filter((s) => s.score > 0)
+      .sort((a, b) => b.score - a.score)
+      .slice(0, 3)
+      .map((s) => s.skill);
+  }
+
+  /**
+   * Find skills most relevant for fix generation.
+   * Includes both validated and failed trajectories so the repair agent
+   * can learn what NOT to do as well as what worked.
+   */
+  findForRepair(opts: {
+    framework: string;
+    spec?: string;
+    errorMessage?: string;
+    rootCauseCategory?: string;
+  }): RepairSkill[] {
+    const normalized = normalizeFramework(opts.framework);
+    const candidates = this.skills.filter(
+      (s) => (s.framework === normalized || s.framework === 'unknown') && !s.retired
+    );
+    if (candidates.length === 0) return [];
+
+    const scored = candidates.map((skill) => {
+      let score = 0;
+      if (opts.rootCauseCategory && skill.rootCauseCategory === opts.rootCauseCategory)
+        score += 10;
+      if (opts.spec && skill.spec === opts.spec) score += 8;
+      if (opts.errorMessage) {
+        score +=
+          errorSimilarity(skill.errorPattern, normalizeError(opts.errorMessage)) * 5;
+      }
+      if (skill.confidence > 80) score += 2;
+      const repairSkill: RepairSkill = {
+        ...skill,
+        wasSuccessful: skill.validatedLocally,
+      };
+      return { skill: repairSkill, score };
+    });
+
+    return scored
+      .filter((s) => s.score > 0)
+      .sort((a, b) => b.score - a.score)
+      .slice(0, 5)
+      .map((s) => s.skill);
+  }
+
+  /**
    * Detect flakiness for a given spec based on skill history.
    */
   detectFlakiness(spec: string): FlakinessSignal {
@@ -280,8 +364,7 @@ export class SkillStore {
     spec?: string;
     errorMessage?: string;
   }): string {
-    const relevant = this.findRelevant({ ...opts, limit: 3 })
-      .filter((s) => s.validatedLocally !== false);
+    const relevant = this.findForClassifier(opts);
     if (relevant.length === 0) return '';
 
     return relevant
@@ -292,6 +375,28 @@ export class SkillStore {
           `   fix: ${s.fix.summary}\n` +
           `   confidence: ${s.confidence}%`
       )
+      .join('\n');
+  }
+
+  formatForRepair(opts: {
+    framework: string;
+    spec?: string;
+    errorMessage?: string;
+    rootCauseCategory?: string;
+  }): string {
+    const relevant = this.findForRepair(opts);
+    if (relevant.length === 0) return '';
+
+    return relevant
+      .map((s, i) => {
+        const tag = s.wasSuccessful ? 'SUCCESS' : 'FAILED';
+        const suffix = s.wasSuccessful ? '' : ' (this approach did NOT work)';
+        return (
+          `${i + 1}. [${tag}] errorPattern: ${s.errorPattern}\n` +
+          `   rootCause: ${s.rootCauseCategory}\n` +
+          `   fix: ${s.fix.summary}${suffix}`
+        );
+      })
       .join('\n');
   }
 

@@ -62,30 +62,13 @@ You MUST respond with a JSON object matching this schema:
     }
     buildUserPrompt(input, context) {
         const frameworkLabel = (0, base_agent_1.getFrameworkLabel)(context.framework);
-        const parts = [
-            '## Investigation Request',
-            '',
-            `**Test framework:** ${frameworkLabel}`,
-            '',
-            '### Error Analysis Results',
-            `- **Root Cause Category:** ${input.analysis.rootCauseCategory}`,
-            `- **Analysis Confidence:** ${input.analysis.confidence}%`,
-            `- **Issue Location:** ${input.analysis.issueLocation}`,
-            `- **Explanation:** ${input.analysis.explanation}`,
-            '',
-            '### Identified Selectors',
-            input.analysis.selectors.length > 0
-                ? input.analysis.selectors.map((s) => `- \`${s}\``).join('\n')
-                : '- No selectors identified',
-            '',
-            '### Detected Patterns',
-            `- Timeout: ${input.analysis.patterns.hasTimeout}`,
-            `- Visibility Issue: ${input.analysis.patterns.hasVisibilityIssue}`,
-            `- Network Call: ${input.analysis.patterns.hasNetworkCall}`,
-            `- State Assertion: ${input.analysis.patterns.hasStateAssertion}`,
-            `- Dynamic Content: ${input.analysis.patterns.hasDynamicContent}`,
-            `- Responsive Issue: ${input.analysis.patterns.hasResponsiveIssue}`,
-        ];
+        const parts = [];
+        if (context.delegationContext) {
+            parts.push('### Orchestrator Briefing', context.delegationContext, '');
+        }
+        parts.push('## Investigation Request', '', `**Test framework:** ${frameworkLabel}`, '', '### Error Analysis Results', `- **Root Cause Category:** ${input.analysis.rootCauseCategory}`, `- **Analysis Confidence:** ${input.analysis.confidence}%`, `- **Issue Location:** ${input.analysis.issueLocation}`, `- **Explanation:** ${input.analysis.explanation}`, '', '### Identified Selectors', input.analysis.selectors.length > 0
+            ? input.analysis.selectors.map((s) => `- \`${s}\``).join('\n')
+            : '- No selectors identified', '', '### Detected Patterns', `- Timeout: ${input.analysis.patterns.hasTimeout}`, `- Visibility Issue: ${input.analysis.patterns.hasVisibilityIssue}`, `- Network Call: ${input.analysis.patterns.hasNetworkCall}`, `- State Assertion: ${input.analysis.patterns.hasStateAssertion}`, `- Dynamic Content: ${input.analysis.patterns.hasDynamicContent}`, `- Responsive Issue: ${input.analysis.patterns.hasResponsiveIssue}`);
         if (input.codeContext) {
             parts.push('', '### Test File Content', '```javascript', input.codeContext.testFileContent.slice(0, 4000), '```');
             if (input.codeContext.relatedFiles.length > 0) {

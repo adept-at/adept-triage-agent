@@ -44,6 +44,7 @@ export declare class AgentOrchestrator {
         flakiness?: FlakinessSignal;
     }): Promise<OrchestrationResult>;
     private runPipeline;
+    private buildDelegationContext;
     private convertToFixRecommendation;
 }
 export declare function createOrchestrator(openaiClient: OpenAIClient, config?: Partial<OrchestratorConfig>, sourceFetchContext?: SourceFetchContext): AgentOrchestrator;
