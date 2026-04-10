@@ -552,5 +552,73 @@ describe('AgentOrchestrator', () => {
       expect(getPromptText(capturedCalls[0]?.userContent ?? '')).not.toContain('Cypress');
       expect(getPromptText(capturedCalls[0]?.userContent ?? '')).not.toContain('WebDriverIO');
     });
+
+    it('should abort repair when investigation says issue is not test-code-fixable', async () => {
+      const analysisResponse = {
+        rootCauseCategory: 'RENDERING_CHANGE',
+        contributingFactors: [],
+        confidence: 85,
+        explanation: 'Video player no longer mounts until scrolled into view',
+        selectors: ['mux-player'],
+        elements: [],
+        issueLocation: 'APP_CODE',
+        patterns: {
+          hasTimeout: true,
+          hasVisibilityIssue: false,
+          hasNetworkCall: false,
+          hasStateAssertion: false,
+          hasDynamicContent: true,
+          hasResponsiveIssue: false,
+        },
+        suggestedApproach: 'Product regression — video lazy loading broke element presence',
+      };
+
+      const investigationResponse = {
+        findings: [
+          {
+            type: 'PRODUCT_CHANGE',
+            severity: 'HIGH',
+            description: 'Video elements are now lazy-mounted via IntersectionObserver',
+            evidence: ['Product diff shows useIsElementVisible hook controls mounting'],
+            relationToError: 'Direct cause',
+          },
+        ],
+        isTestCodeFixable: false,
+        recommendedApproach: 'Product needs to fix the video mounting or the feature is intentional and tests need a different approach',
+        selectorsToUpdate: [],
+        confidence: 90,
+      };
+
+      let callCount = 0;
+      mockOpenAIClient.generateWithCustomPrompt = jest
+        .fn()
+        .mockImplementation(() => {
+          callCount++;
+          const wrap = (obj: unknown) => ({ text: JSON.stringify(obj), responseId: `mock-${callCount}` });
+          switch (callCount) {
+            case 1:
+              return Promise.resolve(wrap(analysisResponse));
+            case 2:
+              return Promise.resolve(wrap(investigationResponse));
+            default:
+              return Promise.resolve(wrap({}));
+          }
+        });
+
+      const orchestrator = createOrchestrator(mockOpenAIClient, {
+        fallbackToSingleShot: false,
+      });
+      const context = createAgentContext({
+        errorMessage: 'Expected to find element: mux-player, but never found it',
+        testFile: 'skill.video.speed.ts',
+        testName: 'should play video with varied speed settings',
+      });
+
+      const result = await orchestrator.orchestrate(context);
+
+      expect(result.success).toBe(false);
+      expect(result.error).toContain('not test-code-fixable');
+      expect(mockOpenAIClient.generateWithCustomPrompt).toHaveBeenCalledTimes(2);
+    });
   });
 });

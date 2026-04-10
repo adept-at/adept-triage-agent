@@ -1203,4 +1203,52 @@ describe('GitHub Action', () => {
       expect(mockCore.getInput).toHaveBeenCalledWith('AUTO_FIX_MIN_CONFIDENCE');
     });
   });
+
+  describe('early verdict output for TEST_ISSUE', () => {
+    beforeEach(() => {
+      mockOctokit.actions!.getWorkflowRun = jest.fn().mockResolvedValue({
+        data: { status: 'completed' }
+      }) as any;
+
+      mockOctokit.actions!.listJobsForWorkflowRun = jest.fn().mockResolvedValue({
+        data: {
+          jobs: [{
+            id: 1,
+            name: 'test-job',
+            conclusion: 'failure',
+            html_url: 'https://github.com/test/test/runs/1',
+            steps: [{ name: 'Run tests', conclusion: 'failure' }]
+          }]
+        }
+      }) as any;
+    });
+
+    it('should emit verdict before entering repair loop', async () => {
+      mockCore.getInput.mockImplementation((name: string) => {
+        const inputs: Record<string, string> = {
+          'GITHUB_TOKEN': 'github-token',
+          'OPENAI_API_KEY': 'openai-key',
+          'ERROR_MESSAGE': 'Element not found',
+          'CONFIDENCE_THRESHOLD': '70',
+        };
+        return inputs[name] || '';
+      });
+
+      mockAnalyzeFailure.mockResolvedValueOnce({
+        verdict: 'TEST_ISSUE',
+        confidence: 85,
+        reasoning: 'Test selector issue',
+        summary: 'Test issue detected',
+        indicators: ['selector not found'],
+      });
+
+      await run();
+
+      const verdictCalls = mockCore.setOutput.mock.calls.filter(
+        call => call[0] === 'verdict'
+      );
+      expect(verdictCalls.length).toBeGreaterThanOrEqual(1);
+      expect(verdictCalls[0][1]).toBe('TEST_ISSUE');
+    });
+  });
 }); 
