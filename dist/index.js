@@ -195,7 +195,7 @@ class AgentOrchestrator {
         const investigationResult = await this.investigationAgent.execute({
             analysis,
             codeContext: codeReadingResult.data,
-        }, context, lastResponseId);
+        }, context, undefined);
         agentResults.investigation = investigationResult;
         lastResponseId = investigationResult.responseId ?? lastResponseId;
         if (!investigationResult.success || !investigationResult.data) {
@@ -209,53 +209,28 @@ class AgentOrchestrator {
         core.info(`   Findings: ${investigation.findings.length}`);
         core.info(`   Test code fixable: ${investigation.isTestCodeFixable}`);
         core.info(`   Recommended approach: ${investigation.recommendedApproach}`);
-        const needsReclassification = !investigation.isTestCodeFixable || analysis.issueLocation === 'APP_CODE';
-        if (needsReclassification) {
-            core.warning('🔄 Evidence contradicts initial TEST_ISSUE classification — reclassifying...');
-            const findingsSummary = investigation.findings
-                .map((f, i) => `${i + 1}. ${typeof f === 'string' ? f : JSON.stringify(f)}`)
-                .join('\n');
-            const additionalContext = [
-                'RECLASSIFICATION: The investigation agent has completed its analysis and produced evidence that contradicts the initial classification.',
-                `isTestCodeFixable: ${investigation.isTestCodeFixable}`,
-                `recommendedApproach: ${investigation.recommendedApproach}`,
-                `Original issueLocation: ${analysis.issueLocation}`,
-                'Investigation findings:',
-                findingsSummary,
-                '',
-                'Re-evaluate with this new evidence. Pay special attention to whether the failure is caused by a product-side regression vs a test-side issue.',
-            ].join('\n');
-            core.info('   Re-running Analysis Agent with investigation evidence...');
-            const reclassifyResult = await this.analysisAgent.execute({ additionalContext }, context, lastResponseId);
-            lastResponseId = reclassifyResult.responseId ?? lastResponseId;
-            if (reclassifyResult.success && reclassifyResult.data) {
-                const reclassified = reclassifyResult.data;
-                core.info(`   Reclassification result: issueLocation=${reclassified.issueLocation}, confidence=${reclassified.confidence}%`);
-                core.info(`   Reclassified root cause: ${reclassified.rootCauseCategory}`);
-                if (reclassified.issueLocation === 'APP_CODE') {
-                    core.warning('🛑 Reclassification confirmed product-side regression after investigation evidence');
-                    return {
-                        error: 'Reclassification confirmed product-side regression after investigation evidence',
-                        iterations,
-                        lastResponseId,
-                    };
-                }
-                core.info('   Reclassification still indicates test-side issue — proceeding with fix generation');
-            }
-            else {
-                core.warning('   Reclassification failed — falling back to original investigation signal');
-                if (!investigation.isTestCodeFixable) {
-                    core.warning('🛑 Investigation agent determined the issue is NOT fixable in test code — aborting repair pipeline');
-                    return {
-                        error: 'Investigation determined issue is not test-code-fixable (likely product regression)',
-                        iterations,
-                        lastResponseId,
-                    };
-                }
-            }
+        if (investigation.verdictOverride &&
+            investigation.verdictOverride.suggestedLocation === 'APP_CODE' &&
+            investigation.verdictOverride.confidence > analysis.confidence) {
+            core.warning(`🛑 Investigation override: APP_CODE (${investigation.verdictOverride.confidence}% confidence) > Analysis (${analysis.confidence}%). Aborting repair.`);
+            core.info(`   Evidence: ${investigation.verdictOverride.evidence.join('; ')}`);
+            return {
+                error: 'Investigation verdict override: product-side regression confirmed with higher confidence than initial classification',
+                iterations,
+                lastResponseId: investigationResult.responseId ?? lastResponseId,
+            };
+        }
+        if (!investigation.isTestCodeFixable && !investigation.verdictOverride) {
+            core.warning('🛑 Investigation says not test-code-fixable but no verdict override — aborting conservatively');
+            return {
+                error: 'Investigation determined issue is not test-code-fixable',
+                iterations,
+                lastResponseId: investigationResult.responseId ?? lastResponseId,
+            };
         }
         let lastFix = null;
         let reviewFeedback = null;
+        let fixReviewChainId;
         while (iterations < this.config.maxIterations) {
             iterations++;
             core.info(`🔧 Step 4: Running Fix Generation Agent (iteration ${iterations})...`);
@@ -278,8 +253,9 @@ class AgentOrchestrator {
                 analysis,
                 investigation,
                 previousFeedback: reviewFeedback,
-            }, context, lastResponseId);
+            }, context, fixReviewChainId);
             agentResults.fixGeneration = fixGenResult;
+            fixReviewChainId = fixGenResult.responseId ?? fixReviewChainId;
             lastResponseId = fixGenResult.responseId ?? lastResponseId;
             if (!fixGenResult.success || !fixGenResult.data) {
                 core.warning(`Fix generation failed on iteration ${iterations}`);
@@ -348,8 +324,9 @@ class AgentOrchestrator {
                     proposedFix: lastFix,
                     analysis,
                     codeContext: codeReadingResult.data,
-                }, context, lastResponseId);
+                }, context, fixReviewChainId);
                 agentResults.review = reviewResult;
+                fixReviewChainId = reviewResult.responseId ?? fixReviewChainId;
                 lastResponseId = reviewResult.responseId ?? lastResponseId;
                 if (reviewResult.success && reviewResult.data) {
                     const review = reviewResult.data;
@@ -2040,7 +2017,8 @@ You MUST respond with a JSON object matching this schema:
       "suggestedReplacement": "<suggested new selector if known>"
     }
   ],
-  "confidence": <0-100>
+  "confidence": <0-100>,
+  "verdictOverride": <optional object — ONLY include if your investigation reveals the failure is NOT fixable in test code. Include { "suggestedLocation": "APP_CODE"|"TEST_CODE"|"BOTH", "confidence": <0-100>, "evidence": ["reason1", "reason2"] }>
 }`;
     }
     buildUserPrompt(input, context) {
@@ -2110,6 +2088,13 @@ You MUST respond with a JSON object matching this schema:
                     suggestedReplacement: s.suggestedReplacement,
                 }))
                 : [];
+            const verdictOverride = parsed.verdictOverride
+                ? {
+                    suggestedLocation: parsed.verdictOverride.suggestedLocation || 'APP_CODE',
+                    confidence: typeof parsed.verdictOverride.confidence === 'number' ? parsed.verdictOverride.confidence : 50,
+                    evidence: Array.isArray(parsed.verdictOverride.evidence) ? parsed.verdictOverride.evidence : [],
+                }
+                : undefined;
             return {
                 findings,
                 primaryFinding: parsed.primaryFinding || findings[0],
@@ -2117,6 +2102,7 @@ You MUST respond with a JSON object matching this schema:
                 recommendedApproach: parsed.recommendedApproach || '',
                 selectorsToUpdate,
                 confidence: typeof parsed.confidence === 'number' ? parsed.confidence : 50,
+                verdictOverride,
             };
         }
         catch (error) {
@@ -3306,14 +3292,9 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.fixFingerprint = void 0;
-exports.resolveAutoFixTargetRepo = resolveAutoFixTargetRepo;
-exports.setInconclusiveOutput = setInconclusiveOutput;
-exports.setErrorOutput = setErrorOutput;
-exports.setSuccessOutput = setSuccessOutput;
+exports.resolveAutoFixTargetRepo = exports.setErrorOutput = exports.setInconclusiveOutput = exports.setSuccessOutput = exports.fixFingerprint = void 0;
 exports.run = run;
 const core = __importStar(__nccwpck_require__(7484));
-const github = __importStar(__nccwpck_require__(3228));
 const rest_1 = __nccwpck_require__(5772);
 const openai_client_1 = __nccwpck_require__(191);
 const artifact_fetcher_1 = __nccwpck_require__(5853);
@@ -3322,6 +3303,11 @@ const repo_utils_1 = __nccwpck_require__(4843);
 const coordinator_1 = __nccwpck_require__(334);
 var validator_1 = __nccwpck_require__(4670);
 Object.defineProperty(exports, "fixFingerprint", ({ enumerable: true, get: function () { return validator_1.fixFingerprint; } }));
+var output_1 = __nccwpck_require__(2639);
+Object.defineProperty(exports, "setSuccessOutput", ({ enumerable: true, get: function () { return output_1.setSuccessOutput; } }));
+Object.defineProperty(exports, "setInconclusiveOutput", ({ enumerable: true, get: function () { return output_1.setInconclusiveOutput; } }));
+Object.defineProperty(exports, "setErrorOutput", ({ enumerable: true, get: function () { return output_1.setErrorOutput; } }));
+Object.defineProperty(exports, "resolveAutoFixTargetRepo", ({ enumerable: true, get: function () { return output_1.resolveAutoFixTargetRepo; } }));
 async function run() {
     try {
         const inputs = getInputs();
@@ -3386,166 +3372,6 @@ function getInputs() {
 }
 function resolveRepository(inputs) {
     return (0, repo_utils_1.parseRepoString)(inputs.repository, 'REPOSITORY');
-}
-function resolveAutoFixTargetRepo(inputs) {
-    return (0, repo_utils_1.parseRepoString)(inputs.autoFixTargetRepo, 'AUTO_FIX_TARGET_REPO');
-}
-function setInconclusiveOutput(result, inputs, errorData) {
-    const inconclusiveTriageJson = {
-        verdict: 'INCONCLUSIVE',
-        confidence: result.confidence,
-        reasoning: `Low confidence: ${result.reasoning}`,
-        summary: 'Analysis inconclusive due to low confidence',
-        indicators: result.indicators || [],
-        metadata: {
-            analyzedAt: new Date().toISOString(),
-            confidenceThreshold: inputs.confidenceThreshold,
-            hasScreenshots: (errorData.screenshots && errorData.screenshots.length > 0) || false,
-            logSize: errorData.logs?.reduce((sum, l) => sum + l.length, 0) ?? 0,
-        },
-    };
-    core.setOutput('verdict', 'INCONCLUSIVE');
-    core.setOutput('confidence', result.confidence.toString());
-    core.setOutput('reasoning', `Low confidence: ${result.reasoning}`);
-    core.setOutput('summary', 'Analysis inconclusive due to low confidence');
-    core.setOutput('triage_json', JSON.stringify(inconclusiveTriageJson));
-}
-function setErrorOutput(reason) {
-    core.setOutput('verdict', 'ERROR');
-    core.setOutput('confidence', '0');
-    core.setOutput('reasoning', reason);
-    core.setOutput('summary', `Triage failed: ${reason}`);
-    core.setOutput('triage_json', JSON.stringify({
-        verdict: 'ERROR',
-        confidence: 0,
-        reasoning: reason,
-        summary: `Triage failed: ${reason}`,
-        indicators: [],
-        metadata: { analyzedAt: new Date().toISOString(), error: true },
-    }));
-    core.setFailed(reason);
-}
-function setSuccessOutput(result, errorData, autoFixResult, flakiness) {
-    const triageJson = {
-        verdict: result.verdict,
-        confidence: result.confidence,
-        reasoning: result.reasoning,
-        summary: result.summary,
-        indicators: result.indicators || [],
-        ...(result.verdict === 'PRODUCT_ISSUE' && result.suggestedSourceLocations
-            ? { suggestedSourceLocations: result.suggestedSourceLocations }
-            : {}),
-        ...(result.verdict === 'TEST_ISSUE' && result.fixRecommendation
-            ? { fixRecommendation: result.fixRecommendation }
-            : {}),
-        ...(autoFixResult?.success
-            ? {
-                autoFix: {
-                    applied: true,
-                    branch: autoFixResult.branchName,
-                    commit: autoFixResult.commitSha,
-                    files: autoFixResult.modifiedFiles,
-                    validation: {
-                        status: autoFixResult.validationStatus || 'skipped',
-                        runId: autoFixResult.validationRunId,
-                        url: autoFixResult.validationUrl,
-                    },
-                },
-            }
-            : {}),
-        ...(flakiness?.isFlaky
-            ? {
-                flakiness: {
-                    isFlaky: true,
-                    fixCount: flakiness.fixCount,
-                    windowDays: flakiness.windowDays,
-                    message: flakiness.message,
-                },
-            }
-            : {}),
-        metadata: {
-            analyzedAt: new Date().toISOString(),
-            hasScreenshots: (errorData.screenshots && errorData.screenshots.length > 0) || false,
-            logSize: errorData.logs?.reduce((sum, l) => sum + l.length, 0) ?? 0,
-            hasFixRecommendation: !!result.fixRecommendation,
-            autoFixApplied: autoFixResult?.success || false,
-        },
-    };
-    core.setOutput('verdict', result.verdict);
-    core.setOutput('confidence', result.confidence.toString());
-    core.setOutput('reasoning', result.reasoning);
-    core.setOutput('summary', result.summary);
-    core.setOutput('triage_json', JSON.stringify(triageJson));
-    if (result.fixRecommendation) {
-        core.setOutput('has_fix_recommendation', 'true');
-        core.setOutput('fix_recommendation', JSON.stringify(result.fixRecommendation));
-        core.setOutput('fix_summary', result.fixRecommendation.summary);
-        core.setOutput('fix_confidence', result.fixRecommendation.confidence.toString());
-    }
-    else {
-        core.setOutput('has_fix_recommendation', 'false');
-    }
-    if (autoFixResult?.success) {
-        core.setOutput('auto_fix_applied', 'true');
-        core.setOutput('auto_fix_branch', autoFixResult.branchName || '');
-        core.setOutput('auto_fix_commit', autoFixResult.commitSha || '');
-        core.setOutput('auto_fix_files', JSON.stringify(autoFixResult.modifiedFiles));
-        if (autoFixResult.validationRunId) {
-            core.setOutput('validation_run_id', autoFixResult.validationRunId.toString());
-            core.setOutput('validation_status', autoFixResult.validationStatus || 'pending');
-            core.setOutput('validation_url', autoFixResult.validationUrl ||
-                `https://github.com/${github.context.repo.owner}/${github.context.repo.repo}/actions/runs/${autoFixResult.validationRunId}`);
-        }
-        else if (autoFixResult.validationStatus === 'pending') {
-            core.setOutput('validation_status', 'pending');
-            if (autoFixResult.validationUrl) {
-                core.setOutput('validation_url', autoFixResult.validationUrl);
-            }
-        }
-        else {
-            core.setOutput('validation_status', autoFixResult.validationStatus || 'skipped');
-        }
-    }
-    else {
-        core.setOutput('auto_fix_applied', 'false');
-        core.setOutput('validation_status', autoFixResult?.validationStatus || 'skipped');
-    }
-    core.info(`Verdict: ${result.verdict}`);
-    core.info(`Confidence: ${result.confidence}%`);
-    core.info(`Summary: ${result.summary}`);
-    if (result.verdict === 'PRODUCT_ISSUE' &&
-        result.suggestedSourceLocations &&
-        result.suggestedSourceLocations.length > 0) {
-        core.info('\n🎯 Suggested Source Locations to Investigate:');
-        result.suggestedSourceLocations.forEach((location, index) => {
-            core.info(`  ${index + 1}. ${location.file} (lines ${location.lines})`);
-            core.info(`     Reason: ${location.reason}`);
-        });
-    }
-    if (result.verdict === 'TEST_ISSUE' && result.fixRecommendation) {
-        core.info('\n🔧 Fix Recommendation Generated:');
-        core.info(`  Confidence: ${result.fixRecommendation.confidence}%`);
-        core.info(`  Changes: ${result.fixRecommendation.proposedChanges.length} file(s)`);
-        core.info(`  Evidence: ${result.fixRecommendation.evidence.length} item(s)`);
-        core.info('\n📝 Fix Summary:');
-        core.info(result.fixRecommendation.summary);
-        if (autoFixResult?.success) {
-            core.info('\n✅ Auto-Fix Applied:');
-            core.info(`  Branch: ${autoFixResult.branchName}`);
-            core.info(`  Commit: ${autoFixResult.commitSha}`);
-            core.info(`  Files: ${autoFixResult.modifiedFiles.join(', ')}`);
-            if (autoFixResult.validationStatus === 'passed') {
-                core.info('\n🧪 Validation: passed (locally validated before push)');
-            }
-            else if (autoFixResult.validationRunId) {
-                core.info(`\n🧪 Validation: ${autoFixResult.validationStatus}`);
-                core.info(`  Run ID: ${autoFixResult.validationRunId}`);
-            }
-            else {
-                core.info(`\n🧪 Validation: ${autoFixResult.validationStatus || 'skipped'}`);
-            }
-        }
-    }
 }
 function safeParseInt(value, defaultValue) {
     if (!value || value.trim() === '')
@@ -4184,7 +4010,7 @@ const github = __importStar(__nccwpck_require__(3228));
 const simplified_analyzer_1 = __nccwpck_require__(78);
 const log_processor_1 = __nccwpck_require__(5833);
 const skill_store_1 = __nccwpck_require__(215);
-const index_1 = __nccwpck_require__(137);
+const output_1 = __nccwpck_require__(2639);
 const validator_1 = __nccwpck_require__(4670);
 class PipelineCoordinator {
     octokit;
@@ -4218,11 +4044,11 @@ class PipelineCoordinator {
             : await (0, simplified_analyzer_1.analyzeFailure)(this.openaiClient, errorData);
         if (result.confidence < this.inputs.confidenceThreshold) {
             core.warning(`Confidence ${result.confidence}% is below threshold ${this.inputs.confidenceThreshold}%`);
-            (0, index_1.setInconclusiveOutput)(result, this.inputs, errorData);
+            (0, output_1.setInconclusiveOutput)(result, this.inputs, errorData);
             return { ...result, responseId: result.responseId };
         }
         if (result.verdict !== 'TEST_ISSUE') {
-            (0, index_1.setSuccessOutput)(result, errorData, null, flakinessSignal);
+            (0, output_1.setSuccessOutput)(result, errorData, null, flakinessSignal);
             return { ...result, responseId: result.responseId };
         }
         core.setOutput('verdict', result.verdict);
@@ -4233,7 +4059,7 @@ class PipelineCoordinator {
     }
     async repair(classification, errorData, skillStore) {
         const autoFixTargetRepo = this.inputs.autoFixTargetRepo
-            ? (0, index_1.resolveAutoFixTargetRepo)(this.inputs)
+            ? (0, output_1.resolveAutoFixTargetRepo)(this.inputs)
             : null;
         let fixRecommendation = null;
         let autoFixResult = null;
@@ -4261,7 +4087,7 @@ class PipelineCoordinator {
             return;
         }
         const autoFixTargetRepo = this.inputs.autoFixTargetRepo
-            ? (0, index_1.resolveAutoFixTargetRepo)(this.inputs)
+            ? (0, output_1.resolveAutoFixTargetRepo)(this.inputs)
             : null;
         let skillStore;
         if (autoFixTargetRepo) {
@@ -4283,7 +4109,7 @@ class PipelineCoordinator {
         const flakinessSignal = skillStore
             ? skillStore.detectFlakiness(errorData.fileName || 'unknown')
             : undefined;
-        (0, index_1.setSuccessOutput)(result, errorData, autoFixResult, flakinessSignal);
+        (0, output_1.setSuccessOutput)(result, errorData, autoFixResult, flakinessSignal);
     }
     async handleNoErrorData() {
         const context = github.context;
@@ -4356,11 +4182,221 @@ class PipelineCoordinator {
         catch (error) {
             core.debug(`Error checking workflow status: ${error}`);
         }
-        (0, index_1.setErrorOutput)('No error data found to analyze');
+        (0, output_1.setErrorOutput)('No error data found to analyze');
     }
 }
 exports.PipelineCoordinator = PipelineCoordinator;
 //# sourceMappingURL=coordinator.js.map
+
+/***/ }),
+
+/***/ 2639:
+/***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
+
+"use strict";
+
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.resolveAutoFixTargetRepo = resolveAutoFixTargetRepo;
+exports.setInconclusiveOutput = setInconclusiveOutput;
+exports.setErrorOutput = setErrorOutput;
+exports.setSuccessOutput = setSuccessOutput;
+const core = __importStar(__nccwpck_require__(7484));
+const github = __importStar(__nccwpck_require__(3228));
+const repo_utils_1 = __nccwpck_require__(4843);
+function resolveAutoFixTargetRepo(inputs) {
+    return (0, repo_utils_1.parseRepoString)(inputs.autoFixTargetRepo, 'AUTO_FIX_TARGET_REPO');
+}
+function setInconclusiveOutput(result, inputs, errorData) {
+    const inconclusiveTriageJson = {
+        verdict: 'INCONCLUSIVE',
+        confidence: result.confidence,
+        reasoning: `Low confidence: ${result.reasoning}`,
+        summary: 'Analysis inconclusive due to low confidence',
+        indicators: result.indicators || [],
+        metadata: {
+            analyzedAt: new Date().toISOString(),
+            confidenceThreshold: inputs.confidenceThreshold,
+            hasScreenshots: (errorData.screenshots && errorData.screenshots.length > 0) || false,
+            logSize: errorData.logs?.reduce((sum, l) => sum + l.length, 0) ?? 0,
+        },
+    };
+    core.setOutput('verdict', 'INCONCLUSIVE');
+    core.setOutput('confidence', result.confidence.toString());
+    core.setOutput('reasoning', `Low confidence: ${result.reasoning}`);
+    core.setOutput('summary', 'Analysis inconclusive due to low confidence');
+    core.setOutput('triage_json', JSON.stringify(inconclusiveTriageJson));
+}
+function setErrorOutput(reason) {
+    core.setOutput('verdict', 'ERROR');
+    core.setOutput('confidence', '0');
+    core.setOutput('reasoning', reason);
+    core.setOutput('summary', `Triage failed: ${reason}`);
+    core.setOutput('triage_json', JSON.stringify({
+        verdict: 'ERROR',
+        confidence: 0,
+        reasoning: reason,
+        summary: `Triage failed: ${reason}`,
+        indicators: [],
+        metadata: { analyzedAt: new Date().toISOString(), error: true },
+    }));
+    core.setFailed(reason);
+}
+function setSuccessOutput(result, errorData, autoFixResult, flakiness) {
+    const triageJson = {
+        verdict: result.verdict,
+        confidence: result.confidence,
+        reasoning: result.reasoning,
+        summary: result.summary,
+        indicators: result.indicators || [],
+        ...(result.verdict === 'PRODUCT_ISSUE' && result.suggestedSourceLocations
+            ? { suggestedSourceLocations: result.suggestedSourceLocations }
+            : {}),
+        ...(result.verdict === 'TEST_ISSUE' && result.fixRecommendation
+            ? { fixRecommendation: result.fixRecommendation }
+            : {}),
+        ...(autoFixResult?.success
+            ? {
+                autoFix: {
+                    applied: true,
+                    branch: autoFixResult.branchName,
+                    commit: autoFixResult.commitSha,
+                    files: autoFixResult.modifiedFiles,
+                    validation: {
+                        status: autoFixResult.validationStatus || 'skipped',
+                        runId: autoFixResult.validationRunId,
+                        url: autoFixResult.validationUrl,
+                    },
+                },
+            }
+            : {}),
+        ...(flakiness?.isFlaky
+            ? {
+                flakiness: {
+                    isFlaky: true,
+                    fixCount: flakiness.fixCount,
+                    windowDays: flakiness.windowDays,
+                    message: flakiness.message,
+                },
+            }
+            : {}),
+        metadata: {
+            analyzedAt: new Date().toISOString(),
+            hasScreenshots: (errorData.screenshots && errorData.screenshots.length > 0) || false,
+            logSize: errorData.logs?.reduce((sum, l) => sum + l.length, 0) ?? 0,
+            hasFixRecommendation: !!result.fixRecommendation,
+            autoFixApplied: autoFixResult?.success || false,
+        },
+    };
+    core.setOutput('verdict', result.verdict);
+    core.setOutput('confidence', result.confidence.toString());
+    core.setOutput('reasoning', result.reasoning);
+    core.setOutput('summary', result.summary);
+    core.setOutput('triage_json', JSON.stringify(triageJson));
+    if (result.fixRecommendation) {
+        core.setOutput('has_fix_recommendation', 'true');
+        core.setOutput('fix_recommendation', JSON.stringify(result.fixRecommendation));
+        core.setOutput('fix_summary', result.fixRecommendation.summary);
+        core.setOutput('fix_confidence', result.fixRecommendation.confidence.toString());
+    }
+    else {
+        core.setOutput('has_fix_recommendation', 'false');
+    }
+    if (autoFixResult?.success) {
+        core.setOutput('auto_fix_applied', 'true');
+        core.setOutput('auto_fix_branch', autoFixResult.branchName || '');
+        core.setOutput('auto_fix_commit', autoFixResult.commitSha || '');
+        core.setOutput('auto_fix_files', JSON.stringify(autoFixResult.modifiedFiles));
+        if (autoFixResult.validationRunId) {
+            core.setOutput('validation_run_id', autoFixResult.validationRunId.toString());
+            core.setOutput('validation_status', autoFixResult.validationStatus || 'pending');
+            core.setOutput('validation_url', autoFixResult.validationUrl ||
+                `https://github.com/${github.context.repo.owner}/${github.context.repo.repo}/actions/runs/${autoFixResult.validationRunId}`);
+        }
+        else if (autoFixResult.validationStatus === 'pending') {
+            core.setOutput('validation_status', 'pending');
+            if (autoFixResult.validationUrl) {
+                core.setOutput('validation_url', autoFixResult.validationUrl);
+            }
+        }
+        else {
+            core.setOutput('validation_status', autoFixResult.validationStatus || 'skipped');
+        }
+    }
+    else {
+        core.setOutput('auto_fix_applied', 'false');
+        core.setOutput('validation_status', autoFixResult?.validationStatus || 'skipped');
+    }
+    core.info(`Verdict: ${result.verdict}`);
+    core.info(`Confidence: ${result.confidence}%`);
+    core.info(`Summary: ${result.summary}`);
+    if (result.verdict === 'PRODUCT_ISSUE' &&
+        result.suggestedSourceLocations &&
+        result.suggestedSourceLocations.length > 0) {
+        core.info('\n🎯 Suggested Source Locations to Investigate:');
+        result.suggestedSourceLocations.forEach((location, index) => {
+            core.info(`  ${index + 1}. ${location.file} (lines ${location.lines})`);
+            core.info(`     Reason: ${location.reason}`);
+        });
+    }
+    if (result.verdict === 'TEST_ISSUE' && result.fixRecommendation) {
+        core.info('\n🔧 Fix Recommendation Generated:');
+        core.info(`  Confidence: ${result.fixRecommendation.confidence}%`);
+        core.info(`  Changes: ${result.fixRecommendation.proposedChanges.length} file(s)`);
+        core.info(`  Evidence: ${result.fixRecommendation.evidence.length} item(s)`);
+        core.info('\n📝 Fix Summary:');
+        core.info(result.fixRecommendation.summary);
+        if (autoFixResult?.success) {
+            core.info('\n✅ Auto-Fix Applied:');
+            core.info(`  Branch: ${autoFixResult.branchName}`);
+            core.info(`  Commit: ${autoFixResult.commitSha}`);
+            core.info(`  Files: ${autoFixResult.modifiedFiles.join(', ')}`);
+            if (autoFixResult.validationStatus === 'passed') {
+                core.info('\n🧪 Validation: passed (locally validated before push)');
+            }
+            else if (autoFixResult.validationRunId) {
+                core.info(`\n🧪 Validation: ${autoFixResult.validationStatus}`);
+                core.info(`  Run ID: ${autoFixResult.validationRunId}`);
+            }
+            else {
+                core.info(`\n🧪 Validation: ${autoFixResult.validationStatus || 'skipped'}`);
+            }
+        }
+    }
+}
+//# sourceMappingURL=output.js.map
 
 /***/ }),
 
@@ -7297,11 +7333,51 @@ class SkillStore {
             skill.retired = true;
             core.warning(`⚠️ Skill ${skillId} retired — too many failures (${skill.failCount} fail vs ${skill.successCount} success)`);
         }
+        const commitMsg = `chore: record ${success ? 'success' : 'failure'} for skill ${skillId}`;
         try {
-            await this.persist(`chore: record ${success ? 'success' : 'failure'} for skill ${skillId}`);
+            await this.persist(commitMsg);
         }
         catch (err) {
-            core.warning(`Failed to persist skill outcome: ${err}`);
+            const status = err.status;
+            if (status === 409) {
+                try {
+                    const { data } = await this.octokit.repos.getContent({
+                        owner: this.owner,
+                        repo: this.repo,
+                        path: SKILLS_FILE,
+                        ref: SKILLS_BRANCH,
+                    });
+                    if (!('content' in data) || !data.content) {
+                        throw new Error('Unexpected empty skills file');
+                    }
+                    const raw = Buffer.from(data.content, 'base64').toString('utf-8');
+                    const remoteSkills = JSON.parse(raw).map(backfillDefaults);
+                    const remoteSkill = remoteSkills.find(s => s.id === skillId);
+                    if (!remoteSkill) {
+                        core.warning(`Skill ${skillId} not found in remote data — skipping outcome persist`);
+                        return;
+                    }
+                    if (success) {
+                        remoteSkill.successCount++;
+                    }
+                    else {
+                        remoteSkill.failCount++;
+                    }
+                    remoteSkill.lastUsedAt = skill.lastUsedAt;
+                    if (remoteSkill.failCount > remoteSkill.successCount + 2) {
+                        remoteSkill.retired = true;
+                    }
+                    this.skills = remoteSkills;
+                    this.fileSha = data.sha;
+                    await this.persist(commitMsg);
+                }
+                catch (retryErr) {
+                    core.warning(`Failed to persist skill outcome: ${retryErr}`);
+                }
+            }
+            else {
+                core.warning(`Failed to persist skill outcome: ${err}`);
+            }
         }
     }
     findRelevant(opts) {

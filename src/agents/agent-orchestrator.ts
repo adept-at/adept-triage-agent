@@ -298,7 +298,7 @@ export class AgentOrchestrator {
         codeContext: codeReadingResult.data,
       },
       context,
-      lastResponseId
+      undefined
     );
     agentResults.investigation = investigationResult;
     lastResponseId = investigationResult.responseId ?? lastResponseId;
@@ -316,68 +316,33 @@ export class AgentOrchestrator {
     core.info(`   Test code fixable: ${investigation.isTestCodeFixable}`);
     core.info(`   Recommended approach: ${investigation.recommendedApproach}`);
 
-    // Reclassification checkpoint: if investigation contradicts the initial TEST_ISSUE classification,
-    // re-run analysis with the new evidence before deciding whether to abort or proceed.
-    const needsReclassification =
-      !investigation.isTestCodeFixable || analysis.issueLocation === 'APP_CODE';
+    // Verdict override: if investigation contradicts the initial classification,
+    // compare confidence levels directly instead of re-running the analysis agent.
+    if (investigation.verdictOverride &&
+        investigation.verdictOverride.suggestedLocation === 'APP_CODE' &&
+        investigation.verdictOverride.confidence > analysis.confidence) {
+      core.warning(`🛑 Investigation override: APP_CODE (${investigation.verdictOverride.confidence}% confidence) > Analysis (${analysis.confidence}%). Aborting repair.`);
+      core.info(`   Evidence: ${investigation.verdictOverride.evidence.join('; ')}`);
+      return {
+        error: 'Investigation verdict override: product-side regression confirmed with higher confidence than initial classification',
+        iterations,
+        lastResponseId: investigationResult.responseId ?? lastResponseId,
+      };
+    }
 
-    if (needsReclassification) {
-      core.warning('🔄 Evidence contradicts initial TEST_ISSUE classification — reclassifying...');
-
-      const findingsSummary = investigation.findings
-        .map((f, i) => `${i + 1}. ${typeof f === 'string' ? f : JSON.stringify(f)}`)
-        .join('\n');
-      const additionalContext = [
-        'RECLASSIFICATION: The investigation agent has completed its analysis and produced evidence that contradicts the initial classification.',
-        `isTestCodeFixable: ${investigation.isTestCodeFixable}`,
-        `recommendedApproach: ${investigation.recommendedApproach}`,
-        `Original issueLocation: ${analysis.issueLocation}`,
-        'Investigation findings:',
-        findingsSummary,
-        '',
-        'Re-evaluate with this new evidence. Pay special attention to whether the failure is caused by a product-side regression vs a test-side issue.',
-      ].join('\n');
-
-      core.info('   Re-running Analysis Agent with investigation evidence...');
-      const reclassifyResult = await this.analysisAgent.execute(
-        { additionalContext },
-        context,
-        lastResponseId
-      );
-      lastResponseId = reclassifyResult.responseId ?? lastResponseId;
-
-      if (reclassifyResult.success && reclassifyResult.data) {
-        const reclassified = reclassifyResult.data;
-        core.info(`   Reclassification result: issueLocation=${reclassified.issueLocation}, confidence=${reclassified.confidence}%`);
-        core.info(`   Reclassified root cause: ${reclassified.rootCauseCategory}`);
-
-        if (reclassified.issueLocation === 'APP_CODE') {
-          core.warning('🛑 Reclassification confirmed product-side regression after investigation evidence');
-          return {
-            error: 'Reclassification confirmed product-side regression after investigation evidence',
-            iterations,
-            lastResponseId,
-          };
-        }
-
-        // Reclassification still says test code — proceed with fix generation
-        core.info('   Reclassification still indicates test-side issue — proceeding with fix generation');
-      } else {
-        core.warning('   Reclassification failed — falling back to original investigation signal');
-        if (!investigation.isTestCodeFixable) {
-          core.warning('🛑 Investigation agent determined the issue is NOT fixable in test code — aborting repair pipeline');
-          return {
-            error: 'Investigation determined issue is not test-code-fixable (likely product regression)',
-            iterations,
-            lastResponseId,
-          };
-        }
-      }
+    if (!investigation.isTestCodeFixable && !investigation.verdictOverride) {
+      core.warning('🛑 Investigation says not test-code-fixable but no verdict override — aborting conservatively');
+      return {
+        error: 'Investigation determined issue is not test-code-fixable',
+        iterations,
+        lastResponseId: investigationResult.responseId ?? lastResponseId,
+      };
     }
 
     // Step 4 & 5: Fix Generation and Review Loop
     let lastFix: FixGenerationOutput | null = null;
     let reviewFeedback: string | null = null;
+    let fixReviewChainId: string | undefined;
 
     while (iterations < this.config.maxIterations) {
       iterations++;
@@ -409,9 +374,10 @@ export class AgentOrchestrator {
           previousFeedback: reviewFeedback,
         },
         context,
-        lastResponseId
+        fixReviewChainId
       );
       agentResults.fixGeneration = fixGenResult;
+      fixReviewChainId = fixGenResult.responseId ?? fixReviewChainId;
       lastResponseId = fixGenResult.responseId ?? lastResponseId;
 
       if (!fixGenResult.success || !fixGenResult.data) {
@@ -490,9 +456,10 @@ export class AgentOrchestrator {
             codeContext: codeReadingResult.data,
           },
           context,
-          lastResponseId
+          fixReviewChainId
         );
         agentResults.review = reviewResult;
+        fixReviewChainId = reviewResult.responseId ?? fixReviewChainId;
         lastResponseId = reviewResult.responseId ?? lastResponseId;
 
         if (reviewResult.success && reviewResult.data) {

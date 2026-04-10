@@ -62,6 +62,12 @@ export interface InvestigationOutput {
   }>;
   /** Confidence in the investigation */
   confidence: number;
+  /** Override the initial verdict when investigation contradicts analysis */
+  verdictOverride?: {
+    suggestedLocation: 'TEST_CODE' | 'APP_CODE' | 'BOTH';
+    confidence: number;
+    evidence: string[];
+  };
 }
 
 /**
@@ -147,7 +153,8 @@ You MUST respond with a JSON object matching this schema:
       "suggestedReplacement": "<suggested new selector if known>"
     }
   ],
-  "confidence": <0-100>
+  "confidence": <0-100>,
+  "verdictOverride": <optional object — ONLY include if your investigation reveals the failure is NOT fixable in test code. Include { "suggestedLocation": "APP_CODE"|"TEST_CODE"|"BOTH", "confidence": <0-100>, "evidence": ["reason1", "reason2"] }>
 }`;
   }
 
@@ -309,6 +316,14 @@ You MUST respond with a JSON object matching this schema:
           )
         : [];
 
+      const verdictOverride = parsed.verdictOverride
+        ? {
+            suggestedLocation: parsed.verdictOverride.suggestedLocation || 'APP_CODE',
+            confidence: typeof parsed.verdictOverride.confidence === 'number' ? parsed.verdictOverride.confidence : 50,
+            evidence: Array.isArray(parsed.verdictOverride.evidence) ? parsed.verdictOverride.evidence : [],
+          }
+        : undefined;
+
       return {
         findings,
         primaryFinding: parsed.primaryFinding || findings[0],
@@ -317,6 +332,7 @@ You MUST respond with a JSON object matching this schema:
         selectorsToUpdate,
         confidence:
           typeof parsed.confidence === 'number' ? parsed.confidence : 50,
+        verdictOverride,
       };
     } catch (error) {
       this.log(`Failed to parse response: ${error}`, 'warning');

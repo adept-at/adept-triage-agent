@@ -57,7 +57,8 @@ You MUST respond with a JSON object matching this schema:
       "suggestedReplacement": "<suggested new selector if known>"
     }
   ],
-  "confidence": <0-100>
+  "confidence": <0-100>,
+  "verdictOverride": <optional object — ONLY include if your investigation reveals the failure is NOT fixable in test code. Include { "suggestedLocation": "APP_CODE"|"TEST_CODE"|"BOTH", "confidence": <0-100>, "evidence": ["reason1", "reason2"] }>
 }`;
     }
     buildUserPrompt(input, context) {
@@ -127,6 +128,13 @@ You MUST respond with a JSON object matching this schema:
                     suggestedReplacement: s.suggestedReplacement,
                 }))
                 : [];
+            const verdictOverride = parsed.verdictOverride
+                ? {
+                    suggestedLocation: parsed.verdictOverride.suggestedLocation || 'APP_CODE',
+                    confidence: typeof parsed.verdictOverride.confidence === 'number' ? parsed.verdictOverride.confidence : 50,
+                    evidence: Array.isArray(parsed.verdictOverride.evidence) ? parsed.verdictOverride.evidence : [],
+                }
+                : undefined;
             return {
                 findings,
                 primaryFinding: parsed.primaryFinding || findings[0],
@@ -134,6 +142,7 @@ You MUST respond with a JSON object matching this schema:
                 recommendedApproach: parsed.recommendedApproach || '',
                 selectorsToUpdate,
                 confidence: typeof parsed.confidence === 'number' ? parsed.confidence : 50,
+                verdictOverride,
             };
         }
         catch (error) {

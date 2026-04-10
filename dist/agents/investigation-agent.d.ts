@@ -25,6 +25,11 @@ export interface InvestigationOutput {
         suggestedReplacement?: string;
     }>;
     confidence: number;
+    verdictOverride?: {
+        suggestedLocation: 'TEST_CODE' | 'APP_CODE' | 'BOTH';
+        confidence: number;
+        evidence: string[];
+    };
 }
 export interface InvestigationInput {
     analysis: AnalysisOutput;

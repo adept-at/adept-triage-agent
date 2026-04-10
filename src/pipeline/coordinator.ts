@@ -13,7 +13,7 @@ import {
   setSuccessOutput,
   setInconclusiveOutput,
   setErrorOutput,
-} from '../index';
+} from './output';
 import {
   generateFixRecommendation,
   iterativeFixValidateLoop,

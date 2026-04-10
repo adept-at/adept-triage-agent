@@ -39,7 +39,7 @@ const github = __importStar(require("@actions/github"));
 const simplified_analyzer_1 = require("../simplified-analyzer");
 const log_processor_1 = require("../services/log-processor");
 const skill_store_1 = require("../services/skill-store");
-const index_1 = require("../index");
+const output_1 = require("./output");
 const validator_1 = require("./validator");
 class PipelineCoordinator {
     octokit;
@@ -73,11 +73,11 @@ class PipelineCoordinator {
             : await (0, simplified_analyzer_1.analyzeFailure)(this.openaiClient, errorData);
         if (result.confidence < this.inputs.confidenceThreshold) {
             core.warning(`Confidence ${result.confidence}% is below threshold ${this.inputs.confidenceThreshold}%`);
-            (0, index_1.setInconclusiveOutput)(result, this.inputs, errorData);
+            (0, output_1.setInconclusiveOutput)(result, this.inputs, errorData);
             return { ...result, responseId: result.responseId };
         }
         if (result.verdict !== 'TEST_ISSUE') {
-            (0, index_1.setSuccessOutput)(result, errorData, null, flakinessSignal);
+            (0, output_1.setSuccessOutput)(result, errorData, null, flakinessSignal);
             return { ...result, responseId: result.responseId };
         }
         core.setOutput('verdict', result.verdict);
@@ -88,7 +88,7 @@ class PipelineCoordinator {
     }
     async repair(classification, errorData, skillStore) {
         const autoFixTargetRepo = this.inputs.autoFixTargetRepo
-            ? (0, index_1.resolveAutoFixTargetRepo)(this.inputs)
+            ? (0, output_1.resolveAutoFixTargetRepo)(this.inputs)
             : null;
         let fixRecommendation = null;
         let autoFixResult = null;
@@ -116,7 +116,7 @@ class PipelineCoordinator {
             return;
         }
         const autoFixTargetRepo = this.inputs.autoFixTargetRepo
-            ? (0, index_1.resolveAutoFixTargetRepo)(this.inputs)
+            ? (0, output_1.resolveAutoFixTargetRepo)(this.inputs)
             : null;
         let skillStore;
         if (autoFixTargetRepo) {
@@ -138,7 +138,7 @@ class PipelineCoordinator {
         const flakinessSignal = skillStore
             ? skillStore.detectFlakiness(errorData.fileName || 'unknown')
             : undefined;
-        (0, index_1.setSuccessOutput)(result, errorData, autoFixResult, flakinessSignal);
+        (0, output_1.setSuccessOutput)(result, errorData, autoFixResult, flakinessSignal);
     }
     async handleNoErrorData() {
         const context = github.context;
@@ -211,7 +211,7 @@ class PipelineCoordinator {
         catch (error) {
             core.debug(`Error checking workflow status: ${error}`);
         }
-        (0, index_1.setErrorOutput)('No error data found to analyze');
+        (0, output_1.setErrorOutput)('No error data found to analyze');
     }
 }
 exports.PipelineCoordinator = PipelineCoordinator;

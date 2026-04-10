@@ -165,11 +165,51 @@ class SkillStore {
             skill.retired = true;
             core.warning(`⚠️ Skill ${skillId} retired — too many failures (${skill.failCount} fail vs ${skill.successCount} success)`);
         }
+        const commitMsg = `chore: record ${success ? 'success' : 'failure'} for skill ${skillId}`;
         try {
-            await this.persist(`chore: record ${success ? 'success' : 'failure'} for skill ${skillId}`);
+            await this.persist(commitMsg);
         }
         catch (err) {
-            core.warning(`Failed to persist skill outcome: ${err}`);
+            const status = err.status;
+            if (status === 409) {
+                try {
+                    const { data } = await this.octokit.repos.getContent({
+                        owner: this.owner,
+                        repo: this.repo,
+                        path: SKILLS_FILE,
+                        ref: SKILLS_BRANCH,
+                    });
+                    if (!('content' in data) || !data.content) {
+                        throw new Error('Unexpected empty skills file');
+                    }
+                    const raw = Buffer.from(data.content, 'base64').toString('utf-8');
+                    const remoteSkills = JSON.parse(raw).map(backfillDefaults);
+                    const remoteSkill = remoteSkills.find(s => s.id === skillId);
+                    if (!remoteSkill) {
+                        core.warning(`Skill ${skillId} not found in remote data — skipping outcome persist`);
+                        return;
+                    }
+                    if (success) {
+                        remoteSkill.successCount++;
+                    }
+                    else {
+                        remoteSkill.failCount++;
+                    }
+                    remoteSkill.lastUsedAt = skill.lastUsedAt;
+                    if (remoteSkill.failCount > remoteSkill.successCount + 2) {
+                        remoteSkill.retired = true;
+                    }
+                    this.skills = remoteSkills;
+                    this.fileSha = data.sha;
+                    await this.persist(commitMsg);
+                }
+                catch (retryErr) {
+                    core.warning(`Failed to persist skill outcome: ${retryErr}`);
+                }
+            }
+            else {
+                core.warning(`Failed to persist skill outcome: ${err}`);
+            }
         }
     }
     findRelevant(opts) {
