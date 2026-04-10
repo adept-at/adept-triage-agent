@@ -205,14 +205,52 @@ class AgentOrchestrator {
         core.info(`   Findings: ${investigation.findings.length}`);
         core.info(`   Test code fixable: ${investigation.isTestCodeFixable}`);
         core.info(`   Recommended approach: ${investigation.recommendedApproach}`);
-        if (!investigation.isTestCodeFixable) {
-            core.warning('🛑 Investigation agent determined the issue is NOT fixable in test code — aborting repair pipeline');
-            core.info('   This likely indicates a product-side regression that the test is correctly detecting.');
-            return {
-                error: 'Investigation determined issue is not test-code-fixable (likely product regression)',
-                iterations,
-                lastResponseId,
-            };
+        let reclassificationCount = 0;
+        const needsReclassification = !investigation.isTestCodeFixable || analysis.issueLocation === 'APP_CODE';
+        if (needsReclassification && reclassificationCount < 1) {
+            reclassificationCount++;
+            core.warning('🔄 Evidence contradicts initial TEST_ISSUE classification — reclassifying...');
+            const findingsSummary = investigation.findings
+                .map((f, i) => `${i + 1}. ${typeof f === 'string' ? f : JSON.stringify(f)}`)
+                .join('\n');
+            const additionalContext = [
+                'RECLASSIFICATION: The investigation agent has completed its analysis and produced evidence that contradicts the initial classification.',
+                `isTestCodeFixable: ${investigation.isTestCodeFixable}`,
+                `recommendedApproach: ${investigation.recommendedApproach}`,
+                `Original issueLocation: ${analysis.issueLocation}`,
+                'Investigation findings:',
+                findingsSummary,
+                '',
+                'Re-evaluate with this new evidence. Pay special attention to whether the failure is caused by a product-side regression vs a test-side issue.',
+            ].join('\n');
+            core.info('   Re-running Analysis Agent with investigation evidence...');
+            const reclassifyResult = await this.analysisAgent.execute({ additionalContext }, context, lastResponseId);
+            lastResponseId = reclassifyResult.responseId ?? lastResponseId;
+            if (reclassifyResult.success && reclassifyResult.data) {
+                const reclassified = reclassifyResult.data;
+                core.info(`   Reclassification result: issueLocation=${reclassified.issueLocation}, confidence=${reclassified.confidence}%`);
+                core.info(`   Reclassified root cause: ${reclassified.rootCauseCategory}`);
+                if (reclassified.issueLocation === 'APP_CODE') {
+                    core.warning('🛑 Reclassification confirmed product-side regression after investigation evidence');
+                    return {
+                        error: 'Reclassification confirmed product-side regression after investigation evidence',
+                        iterations,
+                        lastResponseId,
+                    };
+                }
+                core.info('   Reclassification still indicates test-side issue — proceeding with fix generation');
+            }
+            else {
+                core.warning('   Reclassification failed — falling back to original investigation signal');
+                if (!investigation.isTestCodeFixable) {
+                    core.warning('🛑 Investigation agent determined the issue is NOT fixable in test code — aborting repair pipeline');
+                    return {
+                        error: 'Investigation determined issue is not test-code-fixable (likely product regression)',
+                        iterations,
+                        lastResponseId,
+                    };
+                }
+            }
         }
         let lastFix = null;
         let reviewFeedback = null;
@@ -3347,7 +3385,16 @@ async function run() {
         if (flakinessSignal?.isFlaky) {
             core.warning(`⚠️ FLAKINESS DETECTED: ${flakinessSignal.message}`);
         }
-        const result = await (0, simplified_analyzer_1.analyzeFailure)(openaiClient, errorData);
+        const skillContext = skillStore
+            ? skillStore.formatForClassifier({
+                framework: errorData.framework || 'unknown',
+                spec: errorData.fileName,
+                errorMessage: errorData.message,
+            })
+            : '';
+        const result = skillContext
+            ? await (0, simplified_analyzer_1.analyzeFailure)(openaiClient, errorData, skillContext)
+            : await (0, simplified_analyzer_1.analyzeFailure)(openaiClient, errorData);
         const classificationResponseId = result.responseId;
         if (result.confidence < inputs.confidenceThreshold) {
             core.warning(`Confidence ${result.confidence}% is below threshold ${inputs.confidenceThreshold}%`);
@@ -3588,6 +3635,7 @@ async function iterativeFixValidateLoop(inputs, repoDetails, autoFixTargetRepo, 
                         await skillStore.save(skill).catch((err) => {
                             core.warning(`Failed to save skill: ${err}`);
                         });
+                        await skillStore.recordOutcome(skill.id, true).catch(() => { });
                     }
                 }
                 catch (pushError) {
@@ -3614,6 +3662,33 @@ async function iterativeFixValidateLoop(inputs, repoDetails, autoFixTargetRepo, 
             }
             else {
                 core.warning(`\n🛑 All ${maxIterations} fix attempts exhausted. Giving up.`);
+                if (skillStore && fixRecommendation) {
+                    const repoFullName = `${autoFixTargetRepo.owner}/${autoFixTargetRepo.repo}`;
+                    const firstChange = fixRecommendation.proposedChanges?.[0];
+                    const changeType = firstChange?.changeType || 'OTHER';
+                    const failedSkill = (0, skill_store_1.buildSkill)({
+                        repo: repoFullName,
+                        spec: errorData.fileName || 'unknown',
+                        testName: errorData.testName || 'unknown',
+                        framework: errorData.framework || 'unknown',
+                        errorMessage: errorData.message,
+                        rootCauseCategory: changeType,
+                        fix: {
+                            file: firstChange?.file || 'unknown',
+                            changeType,
+                            summary: fixRecommendation.summary,
+                            pattern: (0, skill_store_1.describeFixPattern)(fixRecommendation.proposedChanges || []),
+                        },
+                        confidence: fixRecommendation.confidence,
+                        iterations: maxIterations,
+                        prUrl: '',
+                        validatedLocally: false,
+                        priorSkillCount: skillStore.countForSpec(errorData.fileName || 'unknown'),
+                    });
+                    await skillStore.save(failedSkill).catch(() => { });
+                    await skillStore.recordOutcome(failedSkill.id, false).catch(() => { });
+                    core.info(`📝 Saved failed fix trajectory as negative skill example (${failedSkill.id})`);
+                }
             }
         }
     }
@@ -3998,11 +4073,11 @@ class OpenAIClient {
     constructor(apiKey) {
         this.openai = new openai_1.default({ apiKey });
     }
-    async analyze(errorData, examples) {
+    async analyze(errorData, examples, skillContext) {
         const model = constants_1.OPENAI.MODEL;
         core.info(`🧠 Using ${model} model for analysis (Responses API)`);
         const systemPrompt = this.getSystemPrompt();
-        const userContent = this.buildUserContent(errorData, examples);
+        const userContent = this.buildUserContent(errorData, examples, skillContext);
         const screenshotCount = errorData.screenshots?.length || 0;
         if (screenshotCount > 0) {
             core.info(`📸 Sending multimodal content to ${model}: ${screenshotCount} screenshot(s)`);
@@ -4059,12 +4134,12 @@ class OpenAIClient {
         });
         return [{ role: 'user', content: convertedParts }];
     }
-    buildUserContent(errorData, examples) {
+    buildUserContent(errorData, examples, skillContext) {
         if (errorData.screenshots && errorData.screenshots.length > 0) {
             const content = [];
             content.push({
                 type: 'text',
-                text: this.buildPrompt(errorData, examples)
+                text: this.buildPrompt(errorData, examples, skillContext)
             });
             for (const screenshot of errorData.screenshots) {
                 if (screenshot.base64Data) {
@@ -4083,7 +4158,7 @@ class OpenAIClient {
             }
             return content;
         }
-        return this.buildPrompt(errorData, examples);
+        return this.buildPrompt(errorData, examples, skillContext);
     }
     getSystemPrompt() {
         const basePrompt = `You are an expert at analyzing test failures and determining whether they are caused by issues in the test code itself (TEST_ISSUE), actual bugs in the product code (PRODUCT_ISSUE), or external execution/provider failures where the evidence is insufficient to blame either side (INCONCLUSIVE).
@@ -4218,7 +4293,7 @@ Always respond with a JSON object containing:
 - suggestedSourceLocations: (ONLY for PRODUCT_ISSUE) array of objects with {file: "path/to/file", lines: "line range", reason: "why this location is suspicious"}. Return an empty array or omit this field for TEST_ISSUE and INCONCLUSIVE.`;
         return basePrompt;
     }
-    buildPrompt(errorData, examples) {
+    buildPrompt(errorData, examples, skillContext) {
         let summaryHeader = '';
         if (errorData.structuredSummary) {
             const summary = errorData.structuredSummary;
@@ -4327,6 +4402,9 @@ ${errorData.screenshots?.length ? `\nScreenshots Available: ${errorData.screensh
 Based on ALL the information provided (especially the PR changes if available), determine if this is a TEST_ISSUE, PRODUCT_ISSUE, or INCONCLUSIVE and explain your reasoning. Look carefully through the logs to find the actual error message and stack trace.
 
 Respond with your analysis as a JSON object.`;
+        if (skillContext) {
+            return prompt + `\n\n### Prior Fix Patterns (from skill store)\nThese patterns were learned from previous successful fixes on similar failures. Use them to inform your classification — if a pattern shows this type of failure was previously a TEST_ISSUE that was successfully fixed by adapting the test, lean toward TEST_ISSUE.\n${skillContext}`;
+        }
         return prompt;
     }
     capLogsForPrompt(logs) {
@@ -6292,7 +6370,81 @@ class LocalFixValidator {
         }
         core.info('✅ Setup complete');
     }
+    async preValidateFix(changes) {
+        for (const change of changes) {
+            const cleanPath = change.file
+                .replace(/^\.\//, '')
+                .replace(/^\/home\/runner\/work\/[^/]+\/[^/]+\//, '');
+            const filePath = path.join(this._workDir, cleanPath);
+            if (!fs.existsSync(filePath)) {
+                return { valid: false, reason: `File not found: ${cleanPath}` };
+            }
+            const content = fs.readFileSync(filePath, 'utf-8');
+            if (content.indexOf(change.oldCode) === -1) {
+                return { valid: false, reason: `oldCode not found in ${cleanPath}` };
+            }
+            const idx = content.indexOf(change.oldCode);
+            const simulated = content.slice(0, idx) +
+                change.newCode +
+                content.slice(idx + change.oldCode.length);
+            const pairs = [
+                ['{', '}'],
+                ['[', ']'],
+                ['(', ')'],
+            ];
+            for (const [open, close] of pairs) {
+                const openCount = simulated.split(open).length - 1;
+                const closeCount = simulated.split(close).length - 1;
+                if (openCount !== closeCount) {
+                    return {
+                        valid: false,
+                        reason: `Unmatched '${open}${close}' in ${cleanPath}: ${openCount} openers vs ${closeCount} closers`,
+                    };
+                }
+            }
+            if (/\.tsx?$/.test(cleanPath)) {
+                const typeCheck = this.quickTypeCheck(filePath);
+                if (!typeCheck.passed) {
+                    return {
+                        valid: false,
+                        reason: `TypeScript compilation failed: ${typeCheck.error}`,
+                    };
+                }
+            }
+        }
+        return { valid: true };
+    }
+    quickTypeCheck(filePath) {
+        const tscPath = path.join(this._workDir, 'node_modules', '.bin', 'tsc');
+        if (!fs.existsSync(tscPath)) {
+            return { passed: true };
+        }
+        try {
+            (0, child_process_1.execSync)(`npx tsc --noEmit --pretty false ${filePath}`, {
+                cwd: this._workDir,
+                timeout: 30000,
+                stdio: 'pipe',
+                encoding: 'utf-8',
+            });
+            return { passed: true };
+        }
+        catch (err) {
+            const execErr = err;
+            if (execErr.killed) {
+                return { passed: true };
+            }
+            const output = execErr.stdout || execErr.stderr || String(err);
+            const firstLine = output
+                .split('\n')
+                .find(l => l.trim()) || 'Unknown error';
+            return { passed: false, error: firstLine };
+        }
+    }
     async applyFix(changes) {
+        const preCheck = await this.preValidateFix(changes);
+        if (!preCheck.valid) {
+            throw new Error(`Pre-validation failed: ${preCheck.reason}`);
+        }
         for (const change of changes) {
             const cleanPath = change.file
                 .replace(/^\.\//, '')
@@ -6857,6 +7009,15 @@ const FLAKY_THRESHOLDS = {
     LONG_WINDOW_DAYS: 7,
     LONG_WINDOW_MAX: 2,
 };
+function backfillDefaults(skill) {
+    return {
+        ...skill,
+        successCount: skill.successCount ?? 0,
+        failCount: skill.failCount ?? 0,
+        lastUsedAt: skill.lastUsedAt ?? skill.createdAt,
+        retired: skill.retired ?? false,
+    };
+}
 class SkillStore {
     skills = [];
     loaded = false;
@@ -6881,7 +7042,7 @@ class SkillStore {
             });
             if ('content' in data && data.content) {
                 const raw = Buffer.from(data.content, 'base64').toString('utf-8');
-                this.skills = JSON.parse(raw);
+                this.skills = JSON.parse(raw).map(backfillDefaults);
                 this.fileSha = data.sha;
                 core.info(`📝 Loaded ${this.skills.length} skill(s) from ${this.owner}/${this.repo}@${SKILLS_BRANCH}`);
             }
@@ -6907,23 +7068,10 @@ class SkillStore {
         if (this.skills.length > MAX_SKILLS) {
             this.skills = this.skills.slice(-MAX_SKILLS);
         }
-        const write = async () => {
-            await this.ensureBranch();
-            const content = Buffer.from(JSON.stringify(this.skills, null, 2)).toString('base64');
-            const { data } = await this.octokit.repos.createOrUpdateFileContents({
-                owner: this.owner,
-                repo: this.repo,
-                path: SKILLS_FILE,
-                message: `chore: update triage skills (${skill.spec})`,
-                content,
-                branch: SKILLS_BRANCH,
-                ...(this.fileSha ? { sha: this.fileSha } : {}),
-            });
-            this.fileSha = data.content?.sha;
-            core.info(`📝 Saved skill ${skill.id} (${this.skills.length} total for ${this.owner}/${this.repo})`);
-        };
+        const commitMsg = `chore: update triage skills (${skill.spec})`;
         try {
-            await write();
+            await this.persist(commitMsg);
+            core.info(`📝 Saved skill ${skill.id} (${this.skills.length} total for ${this.owner}/${this.repo})`);
         }
         catch (err) {
             const status = err.status;
@@ -6939,10 +7087,11 @@ class SkillStore {
                         throw new Error('Unexpected empty skills file');
                     }
                     const raw = Buffer.from(data.content, 'base64').toString('utf-8');
-                    const remoteSkills = JSON.parse(raw);
+                    const remoteSkills = JSON.parse(raw).map(backfillDefaults);
                     this.skills = [...remoteSkills, skill];
                     this.fileSha = data.sha;
-                    await write();
+                    await this.persist(commitMsg);
+                    core.info(`📝 Saved skill ${skill.id} (${this.skills.length} total for ${this.owner}/${this.repo})`);
                 }
                 catch (retryErr) {
                     this.skills.pop();
@@ -6955,10 +7104,37 @@ class SkillStore {
             }
         }
     }
+    async recordOutcome(skillId, success) {
+        if (!this.loaded) {
+            await this.load();
+        }
+        const skill = this.skills.find(s => s.id === skillId);
+        if (!skill) {
+            core.warning(`Skill ${skillId} not found — cannot record outcome`);
+            return;
+        }
+        if (success) {
+            skill.successCount++;
+        }
+        else {
+            skill.failCount++;
+        }
+        skill.lastUsedAt = new Date().toISOString();
+        if (skill.failCount > skill.successCount + 2) {
+            skill.retired = true;
+            core.warning(`⚠️ Skill ${skillId} retired — too many failures (${skill.failCount} fail vs ${skill.successCount} success)`);
+        }
+        try {
+            await this.persist(`chore: record ${success ? 'success' : 'failure'} for skill ${skillId}`);
+        }
+        catch (err) {
+            core.warning(`Failed to persist skill outcome: ${err}`);
+        }
+    }
     findRelevant(opts) {
         const limit = opts.limit ?? 5;
         const normalized = normalizeFramework(opts.framework);
-        const frameworkSkills = this.skills.filter((s) => s.framework === normalized || s.framework === 'unknown');
+        const frameworkSkills = this.skills.filter((s) => (s.framework === normalized || s.framework === 'unknown') && !s.retired);
         if (frameworkSkills.length === 0)
             return [];
         const scored = frameworkSkills.map((skill) => {
@@ -7006,6 +7182,35 @@ class SkillStore {
     }
     countForSpec(spec) {
         return this.skills.filter((s) => s.spec === spec).length;
+    }
+    countForPattern(errorPattern) {
+        const normalized = normalizeError(errorPattern);
+        return this.skills.filter((s) => !s.retired && errorSimilarity(s.errorPattern, normalized) > 0.5).length;
+    }
+    formatForClassifier(opts) {
+        const relevant = this.findRelevant({ ...opts, limit: 3 });
+        if (relevant.length === 0)
+            return '';
+        return relevant
+            .map((s, i) => `${i + 1}. errorPattern: ${s.errorPattern}\n` +
+            `   rootCauseCategory: ${s.rootCauseCategory}\n` +
+            `   fix: ${s.fix.summary}\n` +
+            `   confidence: ${s.confidence}%`)
+            .join('\n');
+    }
+    async persist(commitMessage) {
+        await this.ensureBranch();
+        const content = Buffer.from(JSON.stringify(this.skills, null, 2)).toString('base64');
+        const { data } = await this.octokit.repos.createOrUpdateFileContents({
+            owner: this.owner,
+            repo: this.repo,
+            path: SKILLS_FILE,
+            message: commitMessage,
+            content,
+            branch: SKILLS_BRANCH,
+            ...(this.fileSha ? { sha: this.fileSha } : {}),
+        });
+        this.fileSha = data.content?.sha;
     }
     async ensureBranch() {
         try {
@@ -7064,6 +7269,10 @@ function buildSkill(params) {
         prUrl: params.prUrl,
         validatedLocally: params.validatedLocally,
         priorSkillCount: params.priorSkillCount,
+        successCount: 0,
+        failCount: 0,
+        lastUsedAt: new Date().toISOString(),
+        retired: false,
     };
 }
 function describeFixPattern(changes) {
@@ -7283,7 +7492,7 @@ const STRONG_PRODUCT_SIGNAL_PATTERNS = [
     /\bnet::ERR_/i,
     /\bCORS\b.*\berror\b/i
 ];
-async function analyzeFailure(client, errorData) {
+async function analyzeFailure(client, errorData, skillContext) {
     try {
         core.info(`Analyzing error: ${errorData.message.substring(0, 100)}...`);
         const infrastructureHeuristic = detectInfrastructureFailure(errorData);
@@ -7297,7 +7506,7 @@ async function analyzeFailure(client, errorData) {
                 indicators: infrastructureHeuristic.indicators
             };
         }
-        const response = await client.analyze(errorData, FEW_SHOT_EXAMPLES);
+        const response = await client.analyze(errorData, FEW_SHOT_EXAMPLES, skillContext);
         const confidence = calculateConfidence(response, errorData);
         const summary = generateSummary(response, errorData);
         const result = {

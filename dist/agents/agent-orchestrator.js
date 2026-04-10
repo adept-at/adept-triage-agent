@@ -198,14 +198,52 @@ class AgentOrchestrator {
         core.info(`   Findings: ${investigation.findings.length}`);
         core.info(`   Test code fixable: ${investigation.isTestCodeFixable}`);
         core.info(`   Recommended approach: ${investigation.recommendedApproach}`);
-        if (!investigation.isTestCodeFixable) {
-            core.warning('🛑 Investigation agent determined the issue is NOT fixable in test code — aborting repair pipeline');
-            core.info('   This likely indicates a product-side regression that the test is correctly detecting.');
-            return {
-                error: 'Investigation determined issue is not test-code-fixable (likely product regression)',
-                iterations,
-                lastResponseId,
-            };
+        let reclassificationCount = 0;
+        const needsReclassification = !investigation.isTestCodeFixable || analysis.issueLocation === 'APP_CODE';
+        if (needsReclassification && reclassificationCount < 1) {
+            reclassificationCount++;
+            core.warning('🔄 Evidence contradicts initial TEST_ISSUE classification — reclassifying...');
+            const findingsSummary = investigation.findings
+                .map((f, i) => `${i + 1}. ${typeof f === 'string' ? f : JSON.stringify(f)}`)
+                .join('\n');
+            const additionalContext = [
+                'RECLASSIFICATION: The investigation agent has completed its analysis and produced evidence that contradicts the initial classification.',
+                `isTestCodeFixable: ${investigation.isTestCodeFixable}`,
+                `recommendedApproach: ${investigation.recommendedApproach}`,
+                `Original issueLocation: ${analysis.issueLocation}`,
+                'Investigation findings:',
+                findingsSummary,
+                '',
+                'Re-evaluate with this new evidence. Pay special attention to whether the failure is caused by a product-side regression vs a test-side issue.',
+            ].join('\n');
+            core.info('   Re-running Analysis Agent with investigation evidence...');
+            const reclassifyResult = await this.analysisAgent.execute({ additionalContext }, context, lastResponseId);
+            lastResponseId = reclassifyResult.responseId ?? lastResponseId;
+            if (reclassifyResult.success && reclassifyResult.data) {
+                const reclassified = reclassifyResult.data;
+                core.info(`   Reclassification result: issueLocation=${reclassified.issueLocation}, confidence=${reclassified.confidence}%`);
+                core.info(`   Reclassified root cause: ${reclassified.rootCauseCategory}`);
+                if (reclassified.issueLocation === 'APP_CODE') {
+                    core.warning('🛑 Reclassification confirmed product-side regression after investigation evidence');
+                    return {
+                        error: 'Reclassification confirmed product-side regression after investigation evidence',
+                        iterations,
+                        lastResponseId,
+                    };
+                }
+                core.info('   Reclassification still indicates test-side issue — proceeding with fix generation');
+            }
+            else {
+                core.warning('   Reclassification failed — falling back to original investigation signal');
+                if (!investigation.isTestCodeFixable) {
+                    core.warning('🛑 Investigation agent determined the issue is NOT fixable in test code — aborting repair pipeline');
+                    return {
+                        error: 'Investigation determined issue is not test-code-fixable (likely product regression)',
+                        iterations,
+                        lastResponseId,
+                    };
+                }
+            }
         }
         let lastFix = null;
         let reviewFeedback = null;

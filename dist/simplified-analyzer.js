@@ -138,7 +138,7 @@ const STRONG_PRODUCT_SIGNAL_PATTERNS = [
     /\bnet::ERR_/i,
     /\bCORS\b.*\berror\b/i
 ];
-async function analyzeFailure(client, errorData) {
+async function analyzeFailure(client, errorData, skillContext) {
     try {
         core.info(`Analyzing error: ${errorData.message.substring(0, 100)}...`);
         const infrastructureHeuristic = detectInfrastructureFailure(errorData);
@@ -152,7 +152,7 @@ async function analyzeFailure(client, errorData) {
                 indicators: infrastructureHeuristic.indicators
             };
         }
-        const response = await client.analyze(errorData, FEW_SHOT_EXAMPLES);
+        const response = await client.analyze(errorData, FEW_SHOT_EXAMPLES, skillContext);
         const confidence = calculateConfidence(response, errorData);
         const summary = generateSummary(response, errorData);
         const result = {

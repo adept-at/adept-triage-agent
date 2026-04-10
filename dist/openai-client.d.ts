@@ -5,7 +5,7 @@ export declare class OpenAIClient {
     private maxRetries;
     private retryDelay;
     constructor(apiKey: string);
-    analyze(errorData: ErrorData, examples: FewShotExample[]): Promise<OpenAIResponse & {
+    analyze(errorData: ErrorData, examples: FewShotExample[], skillContext?: string): Promise<OpenAIResponse & {
         responseId: string;
     }>;
     private convertToResponsesInput;

@@ -127,7 +127,7 @@ const STRONG_PRODUCT_SIGNAL_PATTERNS = [
 /**
  * Main analysis function - simplified version
  */
-export async function analyzeFailure(client: OpenAIClient, errorData: ErrorData): Promise<AnalysisResult> {
+export async function analyzeFailure(client: OpenAIClient, errorData: ErrorData, skillContext?: string): Promise<AnalysisResult> {
   try {
     core.info(`Analyzing error: ${errorData.message.substring(0, 100)}...`);
 
@@ -145,7 +145,7 @@ export async function analyzeFailure(client: OpenAIClient, errorData: ErrorData)
     }
     
     // Get AI analysis
-    const response = await client.analyze(errorData, FEW_SHOT_EXAMPLES);
+    const response = await client.analyze(errorData, FEW_SHOT_EXAMPLES, skillContext);
     
     // Calculate confidence
     const confidence = calculateConfidence(response, errorData);

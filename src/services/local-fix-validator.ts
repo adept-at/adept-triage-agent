@@ -107,7 +107,103 @@ export class LocalFixValidator {
     core.info('✅ Setup complete');
   }
 
+  async preValidateFix(
+    changes: Array<{ file: string; oldCode: string; newCode: string }>
+  ): Promise<{ valid: boolean; reason?: string }> {
+    for (const change of changes) {
+      const cleanPath = change.file
+        .replace(/^\.\//, '')
+        .replace(/^\/home\/runner\/work\/[^/]+\/[^/]+\//, '');
+
+      const filePath = path.join(this._workDir, cleanPath);
+
+      if (!fs.existsSync(filePath)) {
+        return { valid: false, reason: `File not found: ${cleanPath}` };
+      }
+
+      const content = fs.readFileSync(filePath, 'utf-8');
+
+      if (content.indexOf(change.oldCode) === -1) {
+        return { valid: false, reason: `oldCode not found in ${cleanPath}` };
+      }
+
+      const idx = content.indexOf(change.oldCode);
+      const simulated =
+        content.slice(0, idx) +
+        change.newCode +
+        content.slice(idx + change.oldCode.length);
+
+      const pairs: Array<[string, string]> = [
+        ['{', '}'],
+        ['[', ']'],
+        ['(', ')'],
+      ];
+      for (const [open, close] of pairs) {
+        const openCount = simulated.split(open).length - 1;
+        const closeCount = simulated.split(close).length - 1;
+        if (openCount !== closeCount) {
+          return {
+            valid: false,
+            reason: `Unmatched '${open}${close}' in ${cleanPath}: ${openCount} openers vs ${closeCount} closers`,
+          };
+        }
+      }
+
+      if (/\.tsx?$/.test(cleanPath)) {
+        const typeCheck = this.quickTypeCheck(filePath);
+        if (!typeCheck.passed) {
+          return {
+            valid: false,
+            reason: `TypeScript compilation failed: ${typeCheck.error}`,
+          };
+        }
+      }
+    }
+
+    return { valid: true };
+  }
+
+  private quickTypeCheck(filePath: string): {
+    passed: boolean;
+    error?: string;
+  } {
+    const tscPath = path.join(this._workDir, 'node_modules', '.bin', 'tsc');
+    if (!fs.existsSync(tscPath)) {
+      return { passed: true };
+    }
+
+    try {
+      execSync(`npx tsc --noEmit --pretty false ${filePath}`, {
+        cwd: this._workDir,
+        timeout: 30000,
+        stdio: 'pipe',
+        encoding: 'utf-8',
+      });
+      return { passed: true };
+    } catch (err: unknown) {
+      const execErr = err as {
+        stdout?: string;
+        stderr?: string;
+        killed?: boolean;
+      };
+      if (execErr.killed) {
+        return { passed: true };
+      }
+      const output = execErr.stdout || execErr.stderr || String(err);
+      const firstLine =
+        output
+          .split('\n')
+          .find(l => l.trim()) || 'Unknown error';
+      return { passed: false, error: firstLine };
+    }
+  }
+
   async applyFix(changes: Array<{ file: string; oldCode: string; newCode: string }>): Promise<void> {
+    const preCheck = await this.preValidateFix(changes);
+    if (!preCheck.valid) {
+      throw new Error(`Pre-validation failed: ${preCheck.reason}`);
+    }
+
     for (const change of changes) {
       const cleanPath = change.file
         .replace(/^\.\//, '')

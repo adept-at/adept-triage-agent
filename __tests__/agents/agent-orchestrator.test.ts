@@ -589,6 +589,13 @@ describe('AgentOrchestrator', () => {
         confidence: 90,
       };
 
+      const reclassificationResponse = {
+        ...analysisResponse,
+        issueLocation: 'APP_CODE',
+        confidence: 92,
+        explanation: 'Reclassification confirms product-side regression after investigation evidence',
+      };
+
       let callCount = 0;
       mockOpenAIClient.generateWithCustomPrompt = jest
         .fn()
@@ -600,6 +607,8 @@ describe('AgentOrchestrator', () => {
               return Promise.resolve(wrap(analysisResponse));
             case 2:
               return Promise.resolve(wrap(investigationResponse));
+            case 3:
+              return Promise.resolve(wrap(reclassificationResponse));
             default:
               return Promise.resolve(wrap({}));
           }
@@ -617,8 +626,8 @@ describe('AgentOrchestrator', () => {
       const result = await orchestrator.orchestrate(context);
 
       expect(result.success).toBe(false);
-      expect(result.error).toContain('not test-code-fixable');
-      expect(mockOpenAIClient.generateWithCustomPrompt).toHaveBeenCalledTimes(2);
+      expect(result.error).toContain('product-side regression');
+      expect(mockOpenAIClient.generateWithCustomPrompt).toHaveBeenCalledTimes(3);
     });
   });
 });

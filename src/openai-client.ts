@@ -12,12 +12,12 @@ export class OpenAIClient {
     this.openai = new OpenAI({ apiKey });
   }
 
-  async analyze(errorData: ErrorData, examples: FewShotExample[]): Promise<OpenAIResponse & { responseId: string }> {
+  async analyze(errorData: ErrorData, examples: FewShotExample[], skillContext?: string): Promise<OpenAIResponse & { responseId: string }> {
     const model = OPENAI.MODEL;
     core.info(`🧠 Using ${model} model for analysis (Responses API)`);
     
     const systemPrompt = this.getSystemPrompt();
-    const userContent = this.buildUserContent(errorData, examples);
+    const userContent = this.buildUserContent(errorData, examples, skillContext);
     
     // Log what we're sending (concise)
     const screenshotCount = errorData.screenshots?.length || 0;
@@ -102,7 +102,7 @@ export class OpenAIClient {
     return [{ role: 'user' as const, content: convertedParts }];
   }
 
-  private buildUserContent(errorData: ErrorData, examples: FewShotExample[]): string | Array<OpenAI.Chat.Completions.ChatCompletionContentPartText | OpenAI.Chat.Completions.ChatCompletionContentPartImage> {
+  private buildUserContent(errorData: ErrorData, examples: FewShotExample[], skillContext?: string): string | Array<OpenAI.Chat.Completions.ChatCompletionContentPartText | OpenAI.Chat.Completions.ChatCompletionContentPartImage> {
     // If we have screenshots, build multimodal content
     if (errorData.screenshots && errorData.screenshots.length > 0) {
       const content: Array<OpenAI.Chat.Completions.ChatCompletionContentPartText | OpenAI.Chat.Completions.ChatCompletionContentPartImage> = [];
@@ -110,7 +110,7 @@ export class OpenAIClient {
       // Add text content
       content.push({
         type: 'text',
-        text: this.buildPrompt(errorData, examples)
+        text: this.buildPrompt(errorData, examples, skillContext)
       });
 
       // Add screenshots (analysis instructions are in the system prompt)
@@ -136,7 +136,7 @@ export class OpenAIClient {
     }
     
     // Otherwise, return simple text prompt
-    return this.buildPrompt(errorData, examples);
+    return this.buildPrompt(errorData, examples, skillContext);
   }
 
   private getSystemPrompt(): string {
@@ -274,7 +274,7 @@ Always respond with a JSON object containing:
     return basePrompt;
   }
 
-  private buildPrompt(errorData: ErrorData, examples: FewShotExample[]): string {
+  private buildPrompt(errorData: ErrorData, examples: FewShotExample[], skillContext?: string): string {
     // Build summary header if structured summary is available
     let summaryHeader = '';
     if (errorData.structuredSummary) {
@@ -386,6 +386,10 @@ ${errorData.screenshots?.length ? `\nScreenshots Available: ${errorData.screensh
 Based on ALL the information provided (especially the PR changes if available), determine if this is a TEST_ISSUE, PRODUCT_ISSUE, or INCONCLUSIVE and explain your reasoning. Look carefully through the logs to find the actual error message and stack trace.
 
 Respond with your analysis as a JSON object.`;
+
+    if (skillContext) {
+      return prompt + `\n\n### Prior Fix Patterns (from skill store)\nThese patterns were learned from previous successful fixes on similar failures. Use them to inform your classification — if a pattern shows this type of failure was previously a TEST_ISSUE that was successfully fixed by adapting the test, lean toward TEST_ISSUE.\n${skillContext}`;
+    }
 
     return prompt;
   }

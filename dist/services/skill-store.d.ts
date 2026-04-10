@@ -19,6 +19,10 @@ export interface TriageSkill {
     prUrl: string;
     validatedLocally: boolean;
     priorSkillCount: number;
+    successCount: number;
+    failCount: number;
+    lastUsedAt: string;
+    retired: boolean;
 }
 export interface FlakinessSignal {
     isFlaky: boolean;
@@ -36,6 +40,7 @@ export declare class SkillStore {
     constructor(octokit: Octokit, owner: string, repo: string);
     load(): Promise<TriageSkill[]>;
     save(skill: TriageSkill): Promise<void>;
+    recordOutcome(skillId: string, success: boolean): Promise<void>;
     findRelevant(opts: {
         framework: string;
         spec?: string;
@@ -44,6 +49,13 @@ export declare class SkillStore {
     }): TriageSkill[];
     detectFlakiness(spec: string): FlakinessSignal;
     countForSpec(spec: string): number;
+    countForPattern(errorPattern: string): number;
+    formatForClassifier(opts: {
+        framework: string;
+        spec?: string;
+        errorMessage?: string;
+    }): string;
+    private persist;
     private ensureBranch;
 }
 export declare function normalizeFramework(raw?: string): TriageSkill['framework'];

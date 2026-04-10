@@ -159,8 +159,18 @@ async function run(): Promise<void> {
       core.warning(`⚠️ FLAKINESS DETECTED: ${flakinessSignal.message}`);
     }
 
+    const skillContext = skillStore
+      ? skillStore.formatForClassifier({
+          framework: errorData.framework || 'unknown',
+          spec: errorData.fileName,
+          errorMessage: errorData.message,
+        })
+      : '';
+
     // Analyze with AI
-    const result = await analyzeFailure(openaiClient, errorData);
+    const result = skillContext
+      ? await analyzeFailure(openaiClient, errorData, skillContext)
+      : await analyzeFailure(openaiClient, errorData);
     const classificationResponseId = result.responseId;
 
     // Short-circuit before any repair attempt when the verdict is not actionable
@@ -564,6 +574,7 @@ async function iterativeFixValidateLoop(
             await skillStore.save(skill).catch((err) => {
               core.warning(`Failed to save skill: ${err}`);
             });
+            await skillStore.recordOutcome(skill.id, true).catch(() => {});
           }
         } catch (pushError) {
           core.warning(`Test passed but push/PR creation failed: ${pushError}`);
@@ -593,6 +604,34 @@ async function iterativeFixValidateLoop(
         };
       } else {
         core.warning(`\n🛑 All ${maxIterations} fix attempts exhausted. Giving up.`);
+
+        if (skillStore && fixRecommendation) {
+          const repoFullName = `${autoFixTargetRepo.owner}/${autoFixTargetRepo.repo}`;
+          const firstChange = fixRecommendation.proposedChanges?.[0];
+          const changeType = (firstChange as { changeType?: string })?.changeType || 'OTHER';
+          const failedSkill = buildSkill({
+            repo: repoFullName,
+            spec: errorData.fileName || 'unknown',
+            testName: errorData.testName || 'unknown',
+            framework: errorData.framework || 'unknown',
+            errorMessage: errorData.message,
+            rootCauseCategory: changeType,
+            fix: {
+              file: firstChange?.file || 'unknown',
+              changeType,
+              summary: fixRecommendation.summary,
+              pattern: describeFixPattern(fixRecommendation.proposedChanges || []),
+            },
+            confidence: fixRecommendation.confidence,
+            iterations: maxIterations,
+            prUrl: '',
+            validatedLocally: false,
+            priorSkillCount: skillStore.countForSpec(errorData.fileName || 'unknown'),
+          });
+          await skillStore.save(failedSkill).catch(() => {});
+          await skillStore.recordOutcome(failedSkill.id, false).catch(() => {});
+          core.info(`📝 Saved failed fix trajectory as negative skill example (${failedSkill.id})`);
+        }
       }
     }
   } finally {

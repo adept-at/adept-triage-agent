@@ -47,11 +47,11 @@ class OpenAIClient {
     constructor(apiKey) {
         this.openai = new openai_1.default({ apiKey });
     }
-    async analyze(errorData, examples) {
+    async analyze(errorData, examples, skillContext) {
         const model = constants_1.OPENAI.MODEL;
         core.info(`🧠 Using ${model} model for analysis (Responses API)`);
         const systemPrompt = this.getSystemPrompt();
-        const userContent = this.buildUserContent(errorData, examples);
+        const userContent = this.buildUserContent(errorData, examples, skillContext);
         const screenshotCount = errorData.screenshots?.length || 0;
         if (screenshotCount > 0) {
             core.info(`📸 Sending multimodal content to ${model}: ${screenshotCount} screenshot(s)`);
@@ -108,12 +108,12 @@ class OpenAIClient {
         });
         return [{ role: 'user', content: convertedParts }];
     }
-    buildUserContent(errorData, examples) {
+    buildUserContent(errorData, examples, skillContext) {
         if (errorData.screenshots && errorData.screenshots.length > 0) {
             const content = [];
             content.push({
                 type: 'text',
-                text: this.buildPrompt(errorData, examples)
+                text: this.buildPrompt(errorData, examples, skillContext)
             });
             for (const screenshot of errorData.screenshots) {
                 if (screenshot.base64Data) {
@@ -132,7 +132,7 @@ class OpenAIClient {
             }
             return content;
         }
-        return this.buildPrompt(errorData, examples);
+        return this.buildPrompt(errorData, examples, skillContext);
     }
     getSystemPrompt() {
         const basePrompt = `You are an expert at analyzing test failures and determining whether they are caused by issues in the test code itself (TEST_ISSUE), actual bugs in the product code (PRODUCT_ISSUE), or external execution/provider failures where the evidence is insufficient to blame either side (INCONCLUSIVE).
@@ -267,7 +267,7 @@ Always respond with a JSON object containing:
 - suggestedSourceLocations: (ONLY for PRODUCT_ISSUE) array of objects with {file: "path/to/file", lines: "line range", reason: "why this location is suspicious"}. Return an empty array or omit this field for TEST_ISSUE and INCONCLUSIVE.`;
         return basePrompt;
     }
-    buildPrompt(errorData, examples) {
+    buildPrompt(errorData, examples, skillContext) {
         let summaryHeader = '';
         if (errorData.structuredSummary) {
             const summary = errorData.structuredSummary;
@@ -376,6 +376,9 @@ ${errorData.screenshots?.length ? `\nScreenshots Available: ${errorData.screensh
 Based on ALL the information provided (especially the PR changes if available), determine if this is a TEST_ISSUE, PRODUCT_ISSUE, or INCONCLUSIVE and explain your reasoning. Look carefully through the logs to find the actual error message and stack trace.
 
 Respond with your analysis as a JSON object.`;
+        if (skillContext) {
+            return prompt + `\n\n### Prior Fix Patterns (from skill store)\nThese patterns were learned from previous successful fixes on similar failures. Use them to inform your classification — if a pattern shows this type of failure was previously a TEST_ISSUE that was successfully fixed by adapting the test, lean toward TEST_ISSUE.\n${skillContext}`;
+        }
         return prompt;
     }
     capLogsForPrompt(logs) {

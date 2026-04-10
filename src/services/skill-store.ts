@@ -29,6 +29,11 @@ export interface TriageSkill {
   prUrl: string;
   validatedLocally: boolean;
   priorSkillCount: number;
+
+  successCount: number;
+  failCount: number;
+  lastUsedAt: string;
+  retired: boolean;
 }
 
 export interface FlakinessSignal {
@@ -49,6 +54,16 @@ const FLAKY_THRESHOLDS = {
   LONG_WINDOW_DAYS: 7,
   LONG_WINDOW_MAX: 2,
 } as const;
+
+function backfillDefaults(skill: TriageSkill): TriageSkill {
+  return {
+    ...skill,
+    successCount: skill.successCount ?? 0,
+    failCount: skill.failCount ?? 0,
+    lastUsedAt: skill.lastUsedAt ?? skill.createdAt,
+    retired: skill.retired ?? false,
+  };
+}
 
 /**
  * Stores and retrieves triage skills via the GitHub Contents API.
@@ -86,7 +101,7 @@ export class SkillStore {
 
       if ('content' in data && data.content) {
         const raw = Buffer.from(data.content, 'base64').toString('utf-8');
-        this.skills = JSON.parse(raw) as TriageSkill[];
+        this.skills = (JSON.parse(raw) as TriageSkill[]).map(backfillDefaults);
         this.fileSha = data.sha;
         core.info(`📝 Loaded ${this.skills.length} skill(s) from ${this.owner}/${this.repo}@${SKILLS_BRANCH}`);
       }
@@ -118,24 +133,11 @@ export class SkillStore {
       this.skills = this.skills.slice(-MAX_SKILLS);
     }
 
-    const write = async (): Promise<void> => {
-      await this.ensureBranch();
-      const content = Buffer.from(JSON.stringify(this.skills, null, 2)).toString('base64');
-      const { data } = await this.octokit.repos.createOrUpdateFileContents({
-        owner: this.owner,
-        repo: this.repo,
-        path: SKILLS_FILE,
-        message: `chore: update triage skills (${skill.spec})`,
-        content,
-        branch: SKILLS_BRANCH,
-        ...(this.fileSha ? { sha: this.fileSha } : {}),
-      });
-      this.fileSha = data.content?.sha;
-      core.info(`📝 Saved skill ${skill.id} (${this.skills.length} total for ${this.owner}/${this.repo})`);
-    };
+    const commitMsg = `chore: update triage skills (${skill.spec})`;
 
     try {
-      await write();
+      await this.persist(commitMsg);
+      core.info(`📝 Saved skill ${skill.id} (${this.skills.length} total for ${this.owner}/${this.repo})`);
     } catch (err) {
       const status = (err as { status?: number }).status;
       if (status === 409) {
@@ -150,19 +152,49 @@ export class SkillStore {
             throw new Error('Unexpected empty skills file');
           }
           const raw = Buffer.from(data.content, 'base64').toString('utf-8');
-          const remoteSkills = JSON.parse(raw) as TriageSkill[];
+          const remoteSkills = (JSON.parse(raw) as TriageSkill[]).map(backfillDefaults);
           this.skills = [...remoteSkills, skill];
           this.fileSha = data.sha;
-          await write();
+          await this.persist(commitMsg);
+          core.info(`📝 Saved skill ${skill.id} (${this.skills.length} total for ${this.owner}/${this.repo})`);
         } catch (retryErr) {
           this.skills.pop();
           core.warning(`Failed to save skill: ${retryErr}`);
         }
       } else {
-        // Roll back the in-memory append so local state doesn't diverge from GitHub
         this.skills.pop();
         core.warning(`Failed to save skill: ${err}`);
       }
+    }
+  }
+
+  async recordOutcome(skillId: string, success: boolean): Promise<void> {
+    if (!this.loaded) {
+      await this.load();
+    }
+
+    const skill = this.skills.find(s => s.id === skillId);
+    if (!skill) {
+      core.warning(`Skill ${skillId} not found — cannot record outcome`);
+      return;
+    }
+
+    if (success) {
+      skill.successCount++;
+    } else {
+      skill.failCount++;
+    }
+    skill.lastUsedAt = new Date().toISOString();
+
+    if (skill.failCount > skill.successCount + 2) {
+      skill.retired = true;
+      core.warning(`⚠️ Skill ${skillId} retired — too many failures (${skill.failCount} fail vs ${skill.successCount} success)`);
+    }
+
+    try {
+      await this.persist(`chore: record ${success ? 'success' : 'failure'} for skill ${skillId}`);
+    } catch (err) {
+      core.warning(`Failed to persist skill outcome: ${err}`);
     }
   }
 
@@ -179,7 +211,7 @@ export class SkillStore {
     const limit = opts.limit ?? 5;
     const normalized = normalizeFramework(opts.framework);
     const frameworkSkills = this.skills.filter(
-      (s) => s.framework === normalized || s.framework === 'unknown'
+      (s) => (s.framework === normalized || s.framework === 'unknown') && !s.retired
     );
     if (frameworkSkills.length === 0) return [];
 
@@ -241,6 +273,47 @@ export class SkillStore {
 
   countForSpec(spec: string): number {
     return this.skills.filter((s) => s.spec === spec).length;
+  }
+
+  countForPattern(errorPattern: string): number {
+    const normalized = normalizeError(errorPattern);
+    return this.skills.filter(
+      (s) => !s.retired && errorSimilarity(s.errorPattern, normalized) > 0.5
+    ).length;
+  }
+
+  formatForClassifier(opts: {
+    framework: string;
+    spec?: string;
+    errorMessage?: string;
+  }): string {
+    const relevant = this.findRelevant({ ...opts, limit: 3 });
+    if (relevant.length === 0) return '';
+
+    return relevant
+      .map(
+        (s, i) =>
+          `${i + 1}. errorPattern: ${s.errorPattern}\n` +
+          `   rootCauseCategory: ${s.rootCauseCategory}\n` +
+          `   fix: ${s.fix.summary}\n` +
+          `   confidence: ${s.confidence}%`
+      )
+      .join('\n');
+  }
+
+  private async persist(commitMessage: string): Promise<void> {
+    await this.ensureBranch();
+    const content = Buffer.from(JSON.stringify(this.skills, null, 2)).toString('base64');
+    const { data } = await this.octokit.repos.createOrUpdateFileContents({
+      owner: this.owner,
+      repo: this.repo,
+      path: SKILLS_FILE,
+      message: commitMessage,
+      content,
+      branch: SKILLS_BRANCH,
+      ...(this.fileSha ? { sha: this.fileSha } : {}),
+    });
+    this.fileSha = data.content?.sha;
   }
 
   private async ensureBranch(): Promise<void> {
@@ -327,6 +400,10 @@ export function buildSkill(params: {
     prUrl: params.prUrl,
     validatedLocally: params.validatedLocally,
     priorSkillCount: params.priorSkillCount,
+    successCount: 0,
+    failCount: 0,
+    lastUsedAt: new Date().toISOString(),
+    retired: false,
   };
 }
 
