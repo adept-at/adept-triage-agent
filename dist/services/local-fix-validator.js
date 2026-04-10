@@ -105,31 +105,15 @@ class LocalFixValidator {
                 .replace(/^\.\//, '')
                 .replace(/^\/home\/runner\/work\/[^/]+\/[^/]+\//, '');
             const filePath = path.join(this._workDir, cleanPath);
+            if (!filePath.startsWith(this._workDir)) {
+                return { valid: false, reason: `Path traversal rejected: ${cleanPath}` };
+            }
             if (!fs.existsSync(filePath)) {
                 return { valid: false, reason: `File not found: ${cleanPath}` };
             }
             const content = fs.readFileSync(filePath, 'utf-8');
             if (content.indexOf(change.oldCode) === -1) {
                 return { valid: false, reason: `oldCode not found in ${cleanPath}` };
-            }
-            const idx = content.indexOf(change.oldCode);
-            const simulated = content.slice(0, idx) +
-                change.newCode +
-                content.slice(idx + change.oldCode.length);
-            const pairs = [
-                ['{', '}'],
-                ['[', ']'],
-                ['(', ')'],
-            ];
-            for (const [open, close] of pairs) {
-                const openCount = simulated.split(open).length - 1;
-                const closeCount = simulated.split(close).length - 1;
-                if (openCount !== closeCount) {
-                    return {
-                        valid: false,
-                        reason: `Unmatched '${open}${close}' in ${cleanPath}: ${openCount} openers vs ${closeCount} closers`,
-                    };
-                }
             }
             if (/\.tsx?$/.test(cleanPath)) {
                 const typeCheck = this.quickTypeCheck(filePath);
@@ -149,7 +133,7 @@ class LocalFixValidator {
             return { passed: true };
         }
         try {
-            (0, child_process_1.execSync)(`npx tsc --noEmit --pretty false ${filePath}`, {
+            (0, child_process_1.execFileSync)(tscPath, ['--noEmit', '--pretty', 'false', filePath], {
                 cwd: this._workDir,
                 timeout: 30000,
                 stdio: 'pipe',
@@ -160,6 +144,7 @@ class LocalFixValidator {
         catch (err) {
             const execErr = err;
             if (execErr.killed) {
+                core.warning(`tsc type-check timed out for ${filePath} — skipping`);
                 return { passed: true };
             }
             const output = execErr.stdout || execErr.stderr || String(err);

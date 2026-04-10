@@ -205,10 +205,8 @@ class AgentOrchestrator {
         core.info(`   Findings: ${investigation.findings.length}`);
         core.info(`   Test code fixable: ${investigation.isTestCodeFixable}`);
         core.info(`   Recommended approach: ${investigation.recommendedApproach}`);
-        let reclassificationCount = 0;
         const needsReclassification = !investigation.isTestCodeFixable || analysis.issueLocation === 'APP_CODE';
-        if (needsReclassification && reclassificationCount < 1) {
-            reclassificationCount++;
+        if (needsReclassification) {
             core.warning('🔄 Evidence contradicts initial TEST_ISSUE classification — reclassifying...');
             const findingsSummary = investigation.findings
                 .map((f, i) => `${i + 1}. ${typeof f === 'string' ? f : JSON.stringify(f)}`)
@@ -4403,7 +4401,7 @@ Based on ALL the information provided (especially the PR changes if available), 
 
 Respond with your analysis as a JSON object.`;
         if (skillContext) {
-            return prompt + `\n\n### Prior Fix Patterns (from skill store)\nThese patterns were learned from previous successful fixes on similar failures. Use them to inform your classification — if a pattern shows this type of failure was previously a TEST_ISSUE that was successfully fixed by adapting the test, lean toward TEST_ISSUE.\n${skillContext}`;
+            return prompt + `\n\n### Prior Fix Patterns (from skill store)\nThese patterns were learned from previous fixes on similar failures. Consider them as additional evidence but do not let them override the current failure context. Each pattern shows the error, root cause category, fix approach, and confidence.\n${skillContext}`;
         }
         return prompt;
     }
@@ -6376,31 +6374,15 @@ class LocalFixValidator {
                 .replace(/^\.\//, '')
                 .replace(/^\/home\/runner\/work\/[^/]+\/[^/]+\//, '');
             const filePath = path.join(this._workDir, cleanPath);
+            if (!filePath.startsWith(this._workDir)) {
+                return { valid: false, reason: `Path traversal rejected: ${cleanPath}` };
+            }
             if (!fs.existsSync(filePath)) {
                 return { valid: false, reason: `File not found: ${cleanPath}` };
             }
             const content = fs.readFileSync(filePath, 'utf-8');
             if (content.indexOf(change.oldCode) === -1) {
                 return { valid: false, reason: `oldCode not found in ${cleanPath}` };
-            }
-            const idx = content.indexOf(change.oldCode);
-            const simulated = content.slice(0, idx) +
-                change.newCode +
-                content.slice(idx + change.oldCode.length);
-            const pairs = [
-                ['{', '}'],
-                ['[', ']'],
-                ['(', ')'],
-            ];
-            for (const [open, close] of pairs) {
-                const openCount = simulated.split(open).length - 1;
-                const closeCount = simulated.split(close).length - 1;
-                if (openCount !== closeCount) {
-                    return {
-                        valid: false,
-                        reason: `Unmatched '${open}${close}' in ${cleanPath}: ${openCount} openers vs ${closeCount} closers`,
-                    };
-                }
             }
             if (/\.tsx?$/.test(cleanPath)) {
                 const typeCheck = this.quickTypeCheck(filePath);
@@ -6420,7 +6402,7 @@ class LocalFixValidator {
             return { passed: true };
         }
         try {
-            (0, child_process_1.execSync)(`npx tsc --noEmit --pretty false ${filePath}`, {
+            (0, child_process_1.execFileSync)(tscPath, ['--noEmit', '--pretty', 'false', filePath], {
                 cwd: this._workDir,
                 timeout: 30000,
                 stdio: 'pipe',
@@ -6431,6 +6413,7 @@ class LocalFixValidator {
         catch (err) {
             const execErr = err;
             if (execErr.killed) {
+                core.warning(`tsc type-check timed out for ${filePath} — skipping`);
                 return { passed: true };
             }
             const output = execErr.stdout || execErr.stderr || String(err);
@@ -7183,12 +7166,9 @@ class SkillStore {
     countForSpec(spec) {
         return this.skills.filter((s) => s.spec === spec).length;
     }
-    countForPattern(errorPattern) {
-        const normalized = normalizeError(errorPattern);
-        return this.skills.filter((s) => !s.retired && errorSimilarity(s.errorPattern, normalized) > 0.5).length;
-    }
     formatForClassifier(opts) {
-        const relevant = this.findRelevant({ ...opts, limit: 3 });
+        const relevant = this.findRelevant({ ...opts, limit: 3 })
+            .filter((s) => s.validatedLocally !== false);
         if (relevant.length === 0)
             return '';
         return relevant

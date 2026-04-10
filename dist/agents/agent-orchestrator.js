@@ -198,10 +198,8 @@ class AgentOrchestrator {
         core.info(`   Findings: ${investigation.findings.length}`);
         core.info(`   Test code fixable: ${investigation.isTestCodeFixable}`);
         core.info(`   Recommended approach: ${investigation.recommendedApproach}`);
-        let reclassificationCount = 0;
         const needsReclassification = !investigation.isTestCodeFixable || analysis.issueLocation === 'APP_CODE';
-        if (needsReclassification && reclassificationCount < 1) {
-            reclassificationCount++;
+        if (needsReclassification) {
             core.warning('🔄 Evidence contradicts initial TEST_ISSUE classification — reclassifying...');
             const findingsSummary = investigation.findings
                 .map((f, i) => `${i + 1}. ${typeof f === 'string' ? f : JSON.stringify(f)}`)

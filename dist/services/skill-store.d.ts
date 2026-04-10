@@ -49,7 +49,6 @@ export declare class SkillStore {
     }): TriageSkill[];
     detectFlakiness(spec: string): FlakinessSignal;
     countForSpec(spec: string): number;
-    countForPattern(errorPattern: string): number;
     formatForClassifier(opts: {
         framework: string;
         spec?: string;

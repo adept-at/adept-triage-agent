@@ -224,12 +224,9 @@ class SkillStore {
     countForSpec(spec) {
         return this.skills.filter((s) => s.spec === spec).length;
     }
-    countForPattern(errorPattern) {
-        const normalized = normalizeError(errorPattern);
-        return this.skills.filter((s) => !s.retired && errorSimilarity(s.errorPattern, normalized) > 0.5).length;
-    }
     formatForClassifier(opts) {
-        const relevant = this.findRelevant({ ...opts, limit: 3 });
+        const relevant = this.findRelevant({ ...opts, limit: 3 })
+            .filter((s) => s.validatedLocally !== false);
         if (relevant.length === 0)
             return '';
         return relevant

@@ -388,7 +388,7 @@ Based on ALL the information provided (especially the PR changes if available), 
 Respond with your analysis as a JSON object.`;
 
     if (skillContext) {
-      return prompt + `\n\n### Prior Fix Patterns (from skill store)\nThese patterns were learned from previous successful fixes on similar failures. Use them to inform your classification — if a pattern shows this type of failure was previously a TEST_ISSUE that was successfully fixed by adapting the test, lean toward TEST_ISSUE.\n${skillContext}`;
+      return prompt + `\n\n### Prior Fix Patterns (from skill store)\nThese patterns were learned from previous fixes on similar failures. Consider them as additional evidence but do not let them override the current failure context. Each pattern shows the error, root cause category, fix approach, and confidence.\n${skillContext}`;
     }
 
     return prompt;

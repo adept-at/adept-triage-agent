@@ -117,6 +117,10 @@ export class LocalFixValidator {
 
       const filePath = path.join(this._workDir, cleanPath);
 
+      if (!filePath.startsWith(this._workDir)) {
+        return { valid: false, reason: `Path traversal rejected: ${cleanPath}` };
+      }
+
       if (!fs.existsSync(filePath)) {
         return { valid: false, reason: `File not found: ${cleanPath}` };
       }
@@ -125,28 +129,6 @@ export class LocalFixValidator {
 
       if (content.indexOf(change.oldCode) === -1) {
         return { valid: false, reason: `oldCode not found in ${cleanPath}` };
-      }
-
-      const idx = content.indexOf(change.oldCode);
-      const simulated =
-        content.slice(0, idx) +
-        change.newCode +
-        content.slice(idx + change.oldCode.length);
-
-      const pairs: Array<[string, string]> = [
-        ['{', '}'],
-        ['[', ']'],
-        ['(', ')'],
-      ];
-      for (const [open, close] of pairs) {
-        const openCount = simulated.split(open).length - 1;
-        const closeCount = simulated.split(close).length - 1;
-        if (openCount !== closeCount) {
-          return {
-            valid: false,
-            reason: `Unmatched '${open}${close}' in ${cleanPath}: ${openCount} openers vs ${closeCount} closers`,
-          };
-        }
       }
 
       if (/\.tsx?$/.test(cleanPath)) {
@@ -173,7 +155,7 @@ export class LocalFixValidator {
     }
 
     try {
-      execSync(`npx tsc --noEmit --pretty false ${filePath}`, {
+      execFileSync(tscPath, ['--noEmit', '--pretty', 'false', filePath], {
         cwd: this._workDir,
         timeout: 30000,
         stdio: 'pipe',
@@ -187,6 +169,7 @@ export class LocalFixValidator {
         killed?: boolean;
       };
       if (execErr.killed) {
+        core.warning(`tsc type-check timed out for ${filePath} — skipping`);
         return { passed: true };
       }
       const output = execErr.stdout || execErr.stderr || String(err);

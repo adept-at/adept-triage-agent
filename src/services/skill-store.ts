@@ -275,19 +275,13 @@ export class SkillStore {
     return this.skills.filter((s) => s.spec === spec).length;
   }
 
-  countForPattern(errorPattern: string): number {
-    const normalized = normalizeError(errorPattern);
-    return this.skills.filter(
-      (s) => !s.retired && errorSimilarity(s.errorPattern, normalized) > 0.5
-    ).length;
-  }
-
   formatForClassifier(opts: {
     framework: string;
     spec?: string;
     errorMessage?: string;
   }): string {
-    const relevant = this.findRelevant({ ...opts, limit: 3 });
+    const relevant = this.findRelevant({ ...opts, limit: 3 })
+      .filter((s) => s.validatedLocally !== false);
     if (relevant.length === 0) return '';
 
     return relevant

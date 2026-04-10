@@ -314,12 +314,10 @@ export class AgentOrchestrator {
 
     // Reclassification checkpoint: if investigation contradicts the initial TEST_ISSUE classification,
     // re-run analysis with the new evidence before deciding whether to abort or proceed.
-    let reclassificationCount = 0;
     const needsReclassification =
       !investigation.isTestCodeFixable || analysis.issueLocation === 'APP_CODE';
 
-    if (needsReclassification && reclassificationCount < 1) {
-      reclassificationCount++;
+    if (needsReclassification) {
       core.warning('🔄 Evidence contradicts initial TEST_ISSUE classification — reclassifying...');
 
       const findingsSummary = investigation.findings
