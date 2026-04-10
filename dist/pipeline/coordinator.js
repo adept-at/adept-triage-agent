@@ -86,7 +86,7 @@ class PipelineCoordinator {
         core.setOutput('summary', result.summary || '');
         return { ...result, responseId: result.responseId };
     }
-    async repair(classification, errorData, skillStore) {
+    async repair(_classification, errorData, skillStore) {
         const autoFixTargetRepo = this.inputs.autoFixTargetRepo
             ? (0, output_1.resolveAutoFixTargetRepo)(this.inputs)
             : null;
@@ -96,12 +96,12 @@ class PipelineCoordinator {
             this.inputs.enableValidation &&
             this.inputs.validationTestCommand &&
             autoFixTargetRepo) {
-            const loopResult = await (0, validator_1.iterativeFixValidateLoop)(this.inputs, this.repoDetails, autoFixTargetRepo, errorData, this.openaiClient, this.octokit, skillStore, classification.responseId);
+            const loopResult = await (0, validator_1.iterativeFixValidateLoop)(this.inputs, this.repoDetails, autoFixTargetRepo, errorData, this.openaiClient, this.octokit, skillStore, undefined);
             fixRecommendation = loopResult.fixRecommendation;
             autoFixResult = loopResult.autoFixResult;
         }
         else {
-            const singleResult = await (0, validator_1.generateFixRecommendation)(this.inputs, this.repoDetails, errorData, this.openaiClient, this.octokit, undefined, classification.responseId, skillStore);
+            const singleResult = await (0, validator_1.generateFixRecommendation)(this.inputs, this.repoDetails, errorData, this.openaiClient, this.octokit, undefined, undefined, skillStore);
             fixRecommendation = singleResult?.fix ?? null;
             if (fixRecommendation && this.inputs.enableAutoFix && autoFixTargetRepo) {
                 autoFixResult = await (0, validator_1.attemptAutoFix)(this.inputs, fixRecommendation, this.octokit, autoFixTargetRepo, errorData);

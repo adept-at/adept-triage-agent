@@ -190,9 +190,11 @@ export class SkillStore {
     }
     skill.lastUsedAt = new Date().toISOString();
 
-    if (skill.failCount > skill.successCount + 2) {
+    const totalAttempts = (skill.successCount || 0) + (skill.failCount || 0);
+    const failRate = totalAttempts > 0 ? (skill.failCount || 0) / totalAttempts : 0;
+    if (failRate > 0.4 && (skill.failCount || 0) >= 3) {
       skill.retired = true;
-      core.warning(`⚠️ Skill ${skillId} retired — too many failures (${skill.failCount} fail vs ${skill.successCount} success)`);
+      core.warning(`⚠️ Skill ${skillId} retired — ${Math.round(failRate * 100)}% failure rate (${skill.failCount} failures in ${totalAttempts} attempts)`);
     }
 
     const commitMsg = `chore: record ${success ? 'success' : 'failure'} for skill ${skillId}`;
@@ -225,7 +227,9 @@ export class SkillStore {
             remoteSkill.failCount++;
           }
           remoteSkill.lastUsedAt = skill.lastUsedAt;
-          if (remoteSkill.failCount > remoteSkill.successCount + 2) {
+          const remoteTotalAttempts = (remoteSkill.successCount || 0) + (remoteSkill.failCount || 0);
+          const remoteFailRate = remoteTotalAttempts > 0 ? (remoteSkill.failCount || 0) / remoteTotalAttempts : 0;
+          if (remoteFailRate > 0.4 && (remoteSkill.failCount || 0) >= 3) {
             remoteSkill.retired = true;
           }
           this.skills = remoteSkills;
@@ -618,7 +622,7 @@ export function formatSkillsForPrompt(
       '### Agent Memory: Proven Fix Patterns',
       '',
       'The following fixes were previously applied successfully and validated locally.',
-      'If the current failure matches a prior pattern, PREFER the proven approach over a novel one.',
+      'CONSIDER these proven approaches as starting points. If you see a better approach than the prior pattern, explain why and use the better approach instead.',
     ].join('\n'),
     review: [
       '### Agent Memory: Prior Successful Fixes',

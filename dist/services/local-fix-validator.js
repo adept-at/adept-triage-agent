@@ -39,6 +39,9 @@ const fs = __importStar(require("fs"));
 const os = __importStar(require("os"));
 const path = __importStar(require("path"));
 const child_process_1 = require("child_process");
+function shellEscape(s) {
+    return "'" + s.replace(/'/g, "'\\''") + "'";
+}
 const DEFAULT_TEST_TIMEOUT_MS = 300_000;
 const MAX_LOG_CHARS = 20_000;
 const MAX_BUFFER = 10 * 1024 * 1024;
@@ -61,7 +64,10 @@ class LocalFixValidator {
         const maskedUrl = cloneUrl.replace(this.config.githubToken, '***');
         core.info(`📂 Cloning ${this.config.owner}/${this.config.repo}@${this.config.branch} into ${this._workDir}`);
         core.info(`  git clone --branch ${this.config.branch} --depth 50 ${maskedUrl}`);
-        (0, child_process_1.execSync)(`git clone --branch ${this.config.branch} --depth 50 ${cloneUrl} ${this._workDir}`, { encoding: 'utf-8', stdio: 'pipe' });
+        (0, child_process_1.execFileSync)('git', ['clone', '--branch', this.config.branch, '--depth', '50', cloneUrl, this._workDir], {
+            encoding: 'utf-8',
+            stdio: 'pipe',
+        });
         core.info('📦 Installing dependencies...');
         const npmrcPath = path.join(this._workDir, '.npmrc');
         if (!fs.existsSync(npmrcPath)) {
@@ -75,6 +81,7 @@ class LocalFixValidator {
                 stdio: 'pipe',
                 maxBuffer: MAX_BUFFER,
                 env: npmEnv,
+                timeout: 300_000,
             });
         }
         catch (ciErr) {
@@ -89,6 +96,7 @@ class LocalFixValidator {
                     stdio: 'pipe',
                     maxBuffer: MAX_BUFFER,
                     env: npmEnv,
+                    timeout: 300_000,
                 });
             }
             catch (installErr) {
@@ -186,10 +194,10 @@ class LocalFixValidator {
         }
         let cmd = this.config.testCommand;
         if (this.config.spec) {
-            cmd = cmd.replace('{spec}', this.config.spec);
+            cmd = cmd.replace('{spec}', shellEscape(this.config.spec));
         }
         if (this.config.previewUrl) {
-            cmd = cmd.replace('{url}', this.config.previewUrl);
+            cmd = cmd.replace('{url}', shellEscape(this.config.previewUrl));
         }
         const timeout = this.config.testTimeoutMs || DEFAULT_TEST_TIMEOUT_MS;
         const start = Date.now();

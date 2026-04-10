@@ -332,31 +332,14 @@ Always respond with a JSON object containing:
             summaryHeader += `- Log Size: ${summary.keyMetrics.logSize} characters\n`;
             summaryHeader += `\n---\n\n`;
         }
-        const prompt = `${summaryHeader}You are an expert test failure analyzer. Your task is to determine whether a test failure is a TEST_ISSUE (problem with the test code), a PRODUCT_ISSUE (bug in the product being tested), or INCONCLUSIVE (the evidence points to external execution/provider failure or is insufficient to blame either side).
-
-IMPORTANT: Carefully analyze the FULL LOGS provided to find the actual error. Look for patterns like:
-- TypeError: Cannot read properties of null (reading 'isValid')
-- ReferenceError: variable is not defined
-- AssertionError: expected X but got Y
-- Network errors, timeouts, connection issues
-- GraphQL errors or API failures
-- Any stack traces or error messages
-
-The error message field may just say "see full context" - you MUST examine the logs section to find the real error.
-
-Guidelines:
-- TEST_ISSUE: Flaky tests, timing issues, incorrect selectors, mock/stub problems, test environment issues
-- PRODUCT_ISSUE: Actual bugs, crashes, network failures, incorrect behavior, data issues
-- INCONCLUSIVE: Remote browser/session termination, browser renderer crashes, provider instability, runner force-kills, or ambiguous evidence where auto-fix would be unsafe
-
-Examples to learn from:
+        const prompt = `${summaryHeader}Examples to learn from:
 ${examples.map(ex => `
 Error: ${ex.error}
 Verdict: ${ex.verdict}
 Reasoning: ${ex.reasoning}
 `).join('\n')}
 
-Now analyze this test failure:
+Analyze the following test failure:
 
 Error Context:
 - Framework: ${errorData.framework || 'unknown'}

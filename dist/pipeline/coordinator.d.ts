@@ -40,7 +40,7 @@ export declare class PipelineCoordinator {
     private repoDetails;
     constructor(deps: PipelineCoordinatorDeps);
     classify(errorData: ErrorData, skillStore?: SkillStore): Promise<ClassificationResult>;
-    repair(classification: ClassificationResult, errorData: ErrorData, skillStore?: SkillStore): Promise<RepairResult>;
+    repair(_classification: ClassificationResult, errorData: ErrorData, skillStore?: SkillStore): Promise<RepairResult>;
     execute(): Promise<void>;
     private handleNoErrorData;
 }

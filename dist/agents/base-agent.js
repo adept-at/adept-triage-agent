@@ -108,7 +108,7 @@ class BaseAgent {
             core.debug(`[${this.agentName}] User prompt: ${userPrompt.slice(0, 200)}...`);
         }
         const content = [{ type: 'text', text: userPrompt }];
-        if (context.screenshots && context.screenshots.length > 0) {
+        if (context.includeScreenshots !== false && context.screenshots && context.screenshots.length > 0) {
             for (const screenshot of context.screenshots) {
                 if (screenshot.base64Data) {
                     content.push({

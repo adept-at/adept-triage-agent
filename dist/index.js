@@ -152,6 +152,7 @@ class AgentOrchestrator {
         const analysis = analysisResult.data;
         core.info(`   Root cause: ${analysis.rootCauseCategory}`);
         core.info(`   Confidence: ${analysis.confidence}%`);
+        context.includeScreenshots = false;
         core.info('📖 Step 2: Running Code Reading Agent...');
         const codeReadingResult = await this.codeReadingAgent.execute({
             testFile: context.testFile,
@@ -405,39 +406,21 @@ class AgentOrchestrator {
                 break;
             }
             case 'fix_generation': {
-                const inv = priorResults.investigation;
-                const a = priorResults.analysis;
-                if (inv) {
-                    lines.push(`Primary finding: ${inv.primaryFinding?.description ?? 'none'}`, `Recommended approach: ${inv.recommendedApproach}`);
-                    if (inv.selectorsToUpdate.length > 0) {
-                        const sels = inv.selectorsToUpdate
-                            .map(s => `${s.current} → ${s.suggestedReplacement ?? '?'} (${s.reason})`)
-                            .join('; ');
-                        lines.push(`Selectors to update: ${sels}`);
-                    }
-                }
                 if (priorResults.productDiffSummary) {
                     lines.push(`Product diff: ${priorResults.productDiffSummary}`, 'The product changed intentionally — the fix should ADAPT the test to new behavior, not work around it.');
                 }
-                if (a && a.rootCauseCategory) {
-                    lines.push(`Analysis root cause: ${a.rootCauseCategory}`);
+                const a = priorResults.analysis;
+                if (a && a.confidence < 80) {
+                    lines.push(`⚠️ Analysis confidence is only ${a.confidence}% — proceed carefully.`);
                 }
                 break;
             }
             case 'review': {
-                const a = priorResults.analysis;
-                const inv = priorResults.investigation;
-                if (a) {
-                    lines.push(`Analysis root cause: ${a.rootCauseCategory}`);
-                    if (priorResults.productDiffSummary) {
-                        lines.push(`Product diff is present: ${priorResults.productDiffSummary}`);
-                    }
-                    else {
-                        lines.push('No product diff — failure is expected to be test-side only.');
-                    }
+                if (priorResults.productDiffSummary) {
+                    lines.push(`Product diff is present: ${priorResults.productDiffSummary}`);
                 }
-                if (inv) {
-                    lines.push(`Investigation says test-code-fixable: ${inv.isTestCodeFixable}`);
+                else {
+                    lines.push('No product diff — failure is expected to be test-side only.');
                 }
                 lines.push('Verify that the proposed fix is consistent with the PR diff and does not fabricate changes that the diff does not support.');
                 break;
@@ -952,7 +935,7 @@ class BaseAgent {
             core.debug(`[${this.agentName}] User prompt: ${userPrompt.slice(0, 200)}...`);
         }
         const content = [{ type: 'text', text: userPrompt }];
-        if (context.screenshots && context.screenshots.length > 0) {
+        if (context.includeScreenshots !== false && context.screenshots && context.screenshots.length > 0) {
             for (const screenshot of context.screenshots) {
                 if (screenshot.base64Data) {
                     content.push({
@@ -3727,31 +3710,14 @@ Always respond with a JSON object containing:
             summaryHeader += `- Log Size: ${summary.keyMetrics.logSize} characters\n`;
             summaryHeader += `\n---\n\n`;
         }
-        const prompt = `${summaryHeader}You are an expert test failure analyzer. Your task is to determine whether a test failure is a TEST_ISSUE (problem with the test code), a PRODUCT_ISSUE (bug in the product being tested), or INCONCLUSIVE (the evidence points to external execution/provider failure or is insufficient to blame either side).
-
-IMPORTANT: Carefully analyze the FULL LOGS provided to find the actual error. Look for patterns like:
-- TypeError: Cannot read properties of null (reading 'isValid')
-- ReferenceError: variable is not defined
-- AssertionError: expected X but got Y
-- Network errors, timeouts, connection issues
-- GraphQL errors or API failures
-- Any stack traces or error messages
-
-The error message field may just say "see full context" - you MUST examine the logs section to find the real error.
-
-Guidelines:
-- TEST_ISSUE: Flaky tests, timing issues, incorrect selectors, mock/stub problems, test environment issues
-- PRODUCT_ISSUE: Actual bugs, crashes, network failures, incorrect behavior, data issues
-- INCONCLUSIVE: Remote browser/session termination, browser renderer crashes, provider instability, runner force-kills, or ambiguous evidence where auto-fix would be unsafe
-
-Examples to learn from:
+        const prompt = `${summaryHeader}Examples to learn from:
 ${examples.map(ex => `
 Error: ${ex.error}
 Verdict: ${ex.verdict}
 Reasoning: ${ex.reasoning}
 `).join('\n')}
 
-Now analyze this test failure:
+Analyze the following test failure:
 
 Error Context:
 - Framework: ${errorData.framework || 'unknown'}
@@ -4057,7 +4023,7 @@ class PipelineCoordinator {
         core.setOutput('summary', result.summary || '');
         return { ...result, responseId: result.responseId };
     }
-    async repair(classification, errorData, skillStore) {
+    async repair(_classification, errorData, skillStore) {
         const autoFixTargetRepo = this.inputs.autoFixTargetRepo
             ? (0, output_1.resolveAutoFixTargetRepo)(this.inputs)
             : null;
@@ -4067,12 +4033,12 @@ class PipelineCoordinator {
             this.inputs.enableValidation &&
             this.inputs.validationTestCommand &&
             autoFixTargetRepo) {
-            const loopResult = await (0, validator_1.iterativeFixValidateLoop)(this.inputs, this.repoDetails, autoFixTargetRepo, errorData, this.openaiClient, this.octokit, skillStore, classification.responseId);
+            const loopResult = await (0, validator_1.iterativeFixValidateLoop)(this.inputs, this.repoDetails, autoFixTargetRepo, errorData, this.openaiClient, this.octokit, skillStore, undefined);
             fixRecommendation = loopResult.fixRecommendation;
             autoFixResult = loopResult.autoFixResult;
         }
         else {
-            const singleResult = await (0, validator_1.generateFixRecommendation)(this.inputs, this.repoDetails, errorData, this.openaiClient, this.octokit, undefined, classification.responseId, skillStore);
+            const singleResult = await (0, validator_1.generateFixRecommendation)(this.inputs, this.repoDetails, errorData, this.openaiClient, this.octokit, undefined, undefined, skillStore);
             fixRecommendation = singleResult?.fix ?? null;
             if (fixRecommendation && this.inputs.enableAutoFix && autoFixTargetRepo) {
                 autoFixResult = await (0, validator_1.attemptAutoFix)(this.inputs, fixRecommendation, this.octokit, autoFixTargetRepo, errorData);
@@ -6534,6 +6500,9 @@ const fs = __importStar(__nccwpck_require__(9896));
 const os = __importStar(__nccwpck_require__(857));
 const path = __importStar(__nccwpck_require__(6928));
 const child_process_1 = __nccwpck_require__(5317);
+function shellEscape(s) {
+    return "'" + s.replace(/'/g, "'\\''") + "'";
+}
 const DEFAULT_TEST_TIMEOUT_MS = 300_000;
 const MAX_LOG_CHARS = 20_000;
 const MAX_BUFFER = 10 * 1024 * 1024;
@@ -6556,7 +6525,10 @@ class LocalFixValidator {
         const maskedUrl = cloneUrl.replace(this.config.githubToken, '***');
         core.info(`📂 Cloning ${this.config.owner}/${this.config.repo}@${this.config.branch} into ${this._workDir}`);
         core.info(`  git clone --branch ${this.config.branch} --depth 50 ${maskedUrl}`);
-        (0, child_process_1.execSync)(`git clone --branch ${this.config.branch} --depth 50 ${cloneUrl} ${this._workDir}`, { encoding: 'utf-8', stdio: 'pipe' });
+        (0, child_process_1.execFileSync)('git', ['clone', '--branch', this.config.branch, '--depth', '50', cloneUrl, this._workDir], {
+            encoding: 'utf-8',
+            stdio: 'pipe',
+        });
         core.info('📦 Installing dependencies...');
         const npmrcPath = path.join(this._workDir, '.npmrc');
         if (!fs.existsSync(npmrcPath)) {
@@ -6570,6 +6542,7 @@ class LocalFixValidator {
                 stdio: 'pipe',
                 maxBuffer: MAX_BUFFER,
                 env: npmEnv,
+                timeout: 300_000,
             });
         }
         catch (ciErr) {
@@ -6584,6 +6557,7 @@ class LocalFixValidator {
                     stdio: 'pipe',
                     maxBuffer: MAX_BUFFER,
                     env: npmEnv,
+                    timeout: 300_000,
                 });
             }
             catch (installErr) {
@@ -6681,10 +6655,10 @@ class LocalFixValidator {
         }
         let cmd = this.config.testCommand;
         if (this.config.spec) {
-            cmd = cmd.replace('{spec}', this.config.spec);
+            cmd = cmd.replace('{spec}', shellEscape(this.config.spec));
         }
         if (this.config.previewUrl) {
-            cmd = cmd.replace('{url}', this.config.previewUrl);
+            cmd = cmd.replace('{url}', shellEscape(this.config.previewUrl));
         }
         const timeout = this.config.testTimeoutMs || DEFAULT_TEST_TIMEOUT_MS;
         const start = Date.now();
@@ -7329,9 +7303,11 @@ class SkillStore {
             skill.failCount++;
         }
         skill.lastUsedAt = new Date().toISOString();
-        if (skill.failCount > skill.successCount + 2) {
+        const totalAttempts = (skill.successCount || 0) + (skill.failCount || 0);
+        const failRate = totalAttempts > 0 ? (skill.failCount || 0) / totalAttempts : 0;
+        if (failRate > 0.4 && (skill.failCount || 0) >= 3) {
             skill.retired = true;
-            core.warning(`⚠️ Skill ${skillId} retired — too many failures (${skill.failCount} fail vs ${skill.successCount} success)`);
+            core.warning(`⚠️ Skill ${skillId} retired — ${Math.round(failRate * 100)}% failure rate (${skill.failCount} failures in ${totalAttempts} attempts)`);
         }
         const commitMsg = `chore: record ${success ? 'success' : 'failure'} for skill ${skillId}`;
         try {
@@ -7364,7 +7340,9 @@ class SkillStore {
                         remoteSkill.failCount++;
                     }
                     remoteSkill.lastUsedAt = skill.lastUsedAt;
-                    if (remoteSkill.failCount > remoteSkill.successCount + 2) {
+                    const remoteTotalAttempts = (remoteSkill.successCount || 0) + (remoteSkill.failCount || 0);
+                    const remoteFailRate = remoteTotalAttempts > 0 ? (remoteSkill.failCount || 0) / remoteTotalAttempts : 0;
+                    if (remoteFailRate > 0.4 && (remoteSkill.failCount || 0) >= 3) {
                         remoteSkill.retired = true;
                     }
                     this.skills = remoteSkills;
@@ -7636,7 +7614,7 @@ function formatSkillsForPrompt(skills, role, flakiness) {
             '### Agent Memory: Proven Fix Patterns',
             '',
             'The following fixes were previously applied successfully and validated locally.',
-            'If the current failure matches a prior pattern, PREFER the proven approach over a novel one.',
+            'CONSIDER these proven approaches as starting points. If you see a better approach than the prior pattern, explain why and use the better approach instead.',
         ].join('\n'),
         review: [
             '### Agent Memory: Prior Successful Fixes',

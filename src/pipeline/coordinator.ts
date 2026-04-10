@@ -104,7 +104,7 @@ export class PipelineCoordinator {
   }
 
   async repair(
-    classification: ClassificationResult,
+    _classification: ClassificationResult,
     errorData: ErrorData,
     skillStore?: SkillStore
   ): Promise<RepairResult> {
@@ -129,7 +129,7 @@ export class PipelineCoordinator {
         this.openaiClient,
         this.octokit,
         skillStore,
-        classification.responseId
+        undefined
       );
       fixRecommendation = loopResult.fixRecommendation;
       autoFixResult = loopResult.autoFixResult;
@@ -141,7 +141,7 @@ export class PipelineCoordinator {
         this.openaiClient,
         this.octokit,
         undefined,
-        classification.responseId,
+        undefined,
         skillStore
       );
       fixRecommendation = singleResult?.fix ?? null;

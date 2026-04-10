@@ -145,6 +145,7 @@ class AgentOrchestrator {
         const analysis = analysisResult.data;
         core.info(`   Root cause: ${analysis.rootCauseCategory}`);
         core.info(`   Confidence: ${analysis.confidence}%`);
+        context.includeScreenshots = false;
         core.info('📖 Step 2: Running Code Reading Agent...');
         const codeReadingResult = await this.codeReadingAgent.execute({
             testFile: context.testFile,
@@ -398,39 +399,21 @@ class AgentOrchestrator {
                 break;
             }
             case 'fix_generation': {
-                const inv = priorResults.investigation;
-                const a = priorResults.analysis;
-                if (inv) {
-                    lines.push(`Primary finding: ${inv.primaryFinding?.description ?? 'none'}`, `Recommended approach: ${inv.recommendedApproach}`);
-                    if (inv.selectorsToUpdate.length > 0) {
-                        const sels = inv.selectorsToUpdate
-                            .map(s => `${s.current} → ${s.suggestedReplacement ?? '?'} (${s.reason})`)
-                            .join('; ');
-                        lines.push(`Selectors to update: ${sels}`);
-                    }
-                }
                 if (priorResults.productDiffSummary) {
                     lines.push(`Product diff: ${priorResults.productDiffSummary}`, 'The product changed intentionally — the fix should ADAPT the test to new behavior, not work around it.');
                 }
-                if (a && a.rootCauseCategory) {
-                    lines.push(`Analysis root cause: ${a.rootCauseCategory}`);
+                const a = priorResults.analysis;
+                if (a && a.confidence < 80) {
+                    lines.push(`⚠️ Analysis confidence is only ${a.confidence}% — proceed carefully.`);
                 }
                 break;
             }
             case 'review': {
-                const a = priorResults.analysis;
-                const inv = priorResults.investigation;
-                if (a) {
-                    lines.push(`Analysis root cause: ${a.rootCauseCategory}`);
-                    if (priorResults.productDiffSummary) {
-                        lines.push(`Product diff is present: ${priorResults.productDiffSummary}`);
-                    }
-                    else {
-                        lines.push('No product diff — failure is expected to be test-side only.');
-                    }
+                if (priorResults.productDiffSummary) {
+                    lines.push(`Product diff is present: ${priorResults.productDiffSummary}`);
                 }
-                if (inv) {
-                    lines.push(`Investigation says test-code-fixable: ${inv.isTestCodeFixable}`);
+                else {
+                    lines.push('No product diff — failure is expected to be test-side only.');
                 }
                 lines.push('Verify that the proposed fix is consistent with the PR diff and does not fabricate changes that the diff does not support.');
                 break;

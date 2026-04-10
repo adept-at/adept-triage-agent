@@ -95,6 +95,8 @@ export interface AgentContext {
   skillsPrompt?: string;
   /** Context-aware briefing from the orchestrator for the current agent stage */
   delegationContext?: string;
+  /** Whether to include screenshot images in the API call (default true). */
+  includeScreenshots?: boolean;
 }
 
 /**
@@ -247,8 +249,7 @@ export abstract class BaseAgent<TInput, TOutput> {
     // Build content array for multimodal support
     const content: ChatContentPart[] = [{ type: 'text', text: userPrompt }];
 
-    // Add screenshots if available
-    if (context.screenshots && context.screenshots.length > 0) {
+    if (context.includeScreenshots !== false && context.screenshots && context.screenshots.length > 0) {
       for (const screenshot of context.screenshots) {
         if (screenshot.base64Data) {
           content.push({

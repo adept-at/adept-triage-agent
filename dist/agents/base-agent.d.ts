@@ -40,6 +40,7 @@ export interface AgentContext {
     relatedFiles?: Map<string, string>;
     skillsPrompt?: string;
     delegationContext?: string;
+    includeScreenshots?: boolean;
 }
 export interface AgentConfig {
     timeoutMs: number;
