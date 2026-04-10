@@ -114,7 +114,7 @@ You MUST respond with a JSON object matching this schema:
             }
         }
         if (context.productDiff && context.productDiff.files.length > 0) {
-            parts.push('', `### ⚠️ Recent Product Repo Changes (${constants_1.DEFAULT_PRODUCT_REPO})`, 'Review these carefully — if the product changed selectors, components, or layouts the test depends on, classify as PRODUCT_ISSUE.');
+            parts.push('', `### ⚠️ Recent Product Repo Changes (${constants_1.DEFAULT_PRODUCT_REPO})`, 'Review these carefully. If the product change looks like a BUG (missing null checks, broken logic, accidental deletion), classify as PRODUCT_ISSUE. If it looks like an INTENTIONAL behavior change (lazy loading, conditional rendering, lifecycle refactor, performance optimization) and the test fails because it has not adapted, set issueLocation to APP_CODE and note that the test needs to adapt to the new product behavior.');
             for (const file of context.productDiff.files.slice(0, 8)) {
                 parts.push(`- **${file.filename}** (${file.status})`);
                 if (file.patch) {

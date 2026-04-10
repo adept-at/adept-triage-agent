@@ -196,7 +196,17 @@ class AgentOrchestrator {
         }
         const investigation = investigationResult.data;
         core.info(`   Findings: ${investigation.findings.length}`);
+        core.info(`   Test code fixable: ${investigation.isTestCodeFixable}`);
         core.info(`   Recommended approach: ${investigation.recommendedApproach}`);
+        if (!investigation.isTestCodeFixable) {
+            core.warning('🛑 Investigation agent determined the issue is NOT fixable in test code — aborting repair pipeline');
+            core.info('   This likely indicates a product-side regression that the test is correctly detecting.');
+            return {
+                error: 'Investigation determined issue is not test-code-fixable (likely product regression)',
+                iterations,
+                lastResponseId,
+            };
+        }
         let lastFix = null;
         let reviewFeedback = null;
         while (iterations < this.config.maxIterations) {
