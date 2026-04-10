@@ -4164,10 +4164,13 @@ When tests fail during login, authentication, or other shared setup steps (e.g.,
 
 When PR changes are provided:
 - Analyze if the test failure is related to the changed code
-- If a test is failing and it tests functionality that was modified in the PR, lean towards PRODUCT_ISSUE
+- If a test is failing and it tests functionality that was modified in the PR, determine whether the change was INTENTIONAL or a BUG:
+  * PRODUCT_ISSUE (bug): null checks removed, broken logic, missing imports, accidental deletion, regressions — the code is wrong and needs to be fixed
+  * TEST_ISSUE (intentional change): the PR deliberately changed rendering behavior, component lifecycle, lazy loading, conditional mounting, layout restructuring, or API contracts — the product is working as designed and the TEST needs to adapt to the new behavior (e.g., scroll to element before asserting, wait for lazy load, use new selectors)
+- Signals that a product change is INTENTIONAL (lean TEST_ISSUE): the diff shows a coherent refactor with new logic replacing old logic, new hooks/observers controlling when elements render, performance optimizations that change when/where DOM elements appear, dependency upgrades with corresponding code adaptation
+- Signals that a product change is a BUG (lean PRODUCT_ISSUE): removed null checks, deleted code without replacement, broken import paths, type errors, incomplete migrations where some callers weren't updated
 - If a test is failing in an area unrelated to the PR changes, it's more likely a TEST_ISSUE or ENVIRONMENT_ISSUE
 - Look for correlations between changed files and the failing test file/functionality
-- Consider if the PR introduced breaking changes that the test correctly caught
 
 CAUSAL CONSISTENCY RULE (CRITICAL):
 Your root cause explanation MUST be consistent with the PR diff evidence. Before finalizing your analysis:
