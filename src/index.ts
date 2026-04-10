@@ -179,12 +179,18 @@ async function run(): Promise<void> {
       return;
     }
 
+    // Emit core classification outputs NOW so they survive if repair times out.
+    // The full triage_json (with fix details) is written after repair completes.
+    core.setOutput('verdict', result.verdict);
+    core.setOutput('confidence', result.confidence.toString());
+    core.setOutput('reasoning', result.reasoning);
+    core.setOutput('summary', result.summary || '');
+
     // Generate fix recommendation for TEST_ISSUE verdicts
     let fixRecommendation: FixRecommendation | null = null;
     let autoFixResult: ApplyResult | null = null;
 
     if (inputs.enableAutoFix && inputs.enableValidation && inputs.validationTestCommand && autoFixTargetRepo) {
-      // Local fix-validate loop: clone, apply, test, iterate up to 3x
       const loopResult = await iterativeFixValidateLoop(
         inputs,
         repoDetails,
@@ -198,7 +204,6 @@ async function run(): Promise<void> {
       fixRecommendation = loopResult.fixRecommendation;
       autoFixResult = loopResult.autoFixResult;
     } else {
-      // Single-attempt flow (no validation loop) — still benefits from skill memory
       const singleResult = await generateFixRecommendation(
         inputs,
         repoDetails,
@@ -225,7 +230,7 @@ async function run(): Promise<void> {
       result.fixRecommendation = fixRecommendation;
     }
 
-    // Set successful outputs
+    // Overwrite with final outputs including fix/auto-fix results
     setSuccessOutput(result, errorData, autoFixResult, flakinessSignal);
   } catch (error) {
     const errorMsg = error instanceof Error ? error.message : 'An unknown error occurred';
@@ -442,9 +447,9 @@ async function iterativeFixValidateLoop(
     octokit
   );
 
-  try {
-    await validator.setup();
+  let validatorReady = false;
 
+  try {
     for (let iteration = 0; iteration < maxIterations; iteration++) {
       core.info(
         `\n${'='.repeat(60)}\n🔄 Fix-Validate iteration ${iteration + 1}/${maxIterations}\n${'='.repeat(60)}`
@@ -491,6 +496,11 @@ async function iterativeFixValidateLoop(
       core.info(
         `Iteration ${iteration + 1}: fix passed quality gates (confidence: ${fixRecommendation.confidence}%, changes: ${fixRecommendation.proposedChanges.length})`
       );
+
+      if (!validatorReady) {
+        await validator.setup();
+        validatorReady = true;
+      }
 
       try {
         await validator.applyFix(fixRecommendation.proposedChanges);
@@ -586,7 +596,9 @@ async function iterativeFixValidateLoop(
       }
     }
   } finally {
-    await validator.cleanup();
+    if (validatorReady) {
+      await validator.cleanup();
+    }
   }
 
   return { fixRecommendation, autoFixResult };

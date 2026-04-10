@@ -3348,6 +3348,10 @@ async function run() {
             setSuccessOutput(result, errorData, null, flakinessSignal);
             return;
         }
+        core.setOutput('verdict', result.verdict);
+        core.setOutput('confidence', result.confidence.toString());
+        core.setOutput('reasoning', result.reasoning);
+        core.setOutput('summary', result.summary || '');
         let fixRecommendation = null;
         let autoFixResult = null;
         if (inputs.enableAutoFix && inputs.enableValidation && inputs.validationTestCommand && autoFixTargetRepo) {
@@ -3494,8 +3498,8 @@ async function iterativeFixValidateLoop(inputs, repoDetails, autoFixTargetRepo, 
         previewUrl: inputs.validationPreviewUrl || constants_1.DEFAULT_PRODUCT_URL,
         testTimeoutMs: constants_1.FIX_VALIDATE_LOOP.TEST_TIMEOUT_MS,
     }, octokit);
+    let validatorReady = false;
     try {
-        await validator.setup();
         for (let iteration = 0; iteration < maxIterations; iteration++) {
             core.info(`\n${'='.repeat(60)}\n🔄 Fix-Validate iteration ${iteration + 1}/${maxIterations}\n${'='.repeat(60)}`);
             const fixResult = await generateFixRecommendation(inputs, repoDetails, errorData, openaiClient, octokit, previousAttempt, lastResponseId, skillStore);
@@ -3517,6 +3521,10 @@ async function iterativeFixValidateLoop(inputs, repoDetails, autoFixTargetRepo, 
                 break;
             }
             core.info(`Iteration ${iteration + 1}: fix passed quality gates (confidence: ${fixRecommendation.confidence}%, changes: ${fixRecommendation.proposedChanges.length})`);
+            if (!validatorReady) {
+                await validator.setup();
+                validatorReady = true;
+            }
             try {
                 await validator.applyFix(fixRecommendation.proposedChanges);
             }
@@ -3600,7 +3608,9 @@ async function iterativeFixValidateLoop(inputs, repoDetails, autoFixTargetRepo, 
         }
     }
     finally {
-        await validator.cleanup();
+        if (validatorReady) {
+            await validator.cleanup();
+        }
     }
     return { fixRecommendation, autoFixResult };
 }
