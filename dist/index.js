@@ -4569,6 +4569,7 @@ async function iterativeFixValidateLoop(inputs, repoDetails, autoFixTargetRepo, 
                         prTitle: `Auto-fix: ${fixRecommendation.proposedChanges[0].file}`,
                         prBody: `Validated fix from triage run ${github.context.runId}`,
                         baseBranch,
+                        changedFiles: fixRecommendation.proposedChanges.map((c) => c.file),
                     });
                     autoFixResult = {
                         success: true,
@@ -6777,7 +6778,21 @@ class LocalFixValidator {
         (0, child_process_1.execFileSync)('git', ['config', 'user.name', 'adept-triage-agent[bot]'], execOpts);
         (0, child_process_1.execFileSync)('git', ['config', 'user.email', 'adept-triage-agent[bot]@users.noreply.github.com'], execOpts);
         (0, child_process_1.execFileSync)('git', ['checkout', '-b', options.branchName], execOpts);
-        (0, child_process_1.execFileSync)('git', ['add', '-A'], execOpts);
+        (0, child_process_1.execFileSync)('git', ['reset', 'HEAD'], execOpts);
+        if (options.changedFiles && options.changedFiles.length > 0) {
+            (0, child_process_1.execFileSync)('git', ['add', ...options.changedFiles], execOpts);
+        }
+        else {
+            (0, child_process_1.execFileSync)('git', ['add', '-A'], execOpts);
+            const scaffoldFiles = ['.npmrc', '.env', '.env.local'];
+            for (const f of scaffoldFiles) {
+                try {
+                    (0, child_process_1.execFileSync)('git', ['reset', 'HEAD', f], { ...execOpts, stdio: 'pipe' });
+                }
+                catch {
+                }
+            }
+        }
         (0, child_process_1.execFileSync)('git', ['commit', '-m', options.commitMessage], execOpts);
         (0, child_process_1.execFileSync)('git', ['push', 'origin', options.branchName], { ...execOpts, stdio: 'pipe' });
         const commitSha = (0, child_process_1.execFileSync)('git', ['rev-parse', 'HEAD'], execOpts).trim();

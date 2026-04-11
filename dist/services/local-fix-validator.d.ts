@@ -51,6 +51,7 @@ export declare class LocalFixValidator {
         prTitle: string;
         prBody: string;
         baseBranch: string;
+        changedFiles?: string[];
     }): Promise<PushResult>;
     cleanup(): Promise<void>;
 }

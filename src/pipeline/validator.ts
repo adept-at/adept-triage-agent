@@ -222,6 +222,7 @@ export async function iterativeFixValidateLoop(
             prTitle: `Auto-fix: ${fixRecommendation.proposedChanges[0].file}`,
             prBody: `Validated fix from triage run ${github.context.runId}`,
             baseBranch,
+            changedFiles: fixRecommendation.proposedChanges.map((c) => c.file),
           });
 
           autoFixResult = {

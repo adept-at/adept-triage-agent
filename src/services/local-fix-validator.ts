@@ -322,13 +322,28 @@ export class LocalFixValidator {
     prTitle: string;
     prBody: string;
     baseBranch: string;
+    changedFiles?: string[];
   }): Promise<PushResult> {
     const execOpts = { cwd: this._workDir, encoding: 'utf-8' as const };
 
     execFileSync('git', ['config', 'user.name', 'adept-triage-agent[bot]'], execOpts);
     execFileSync('git', ['config', 'user.email', 'adept-triage-agent[bot]@users.noreply.github.com'], execOpts);
     execFileSync('git', ['checkout', '-b', options.branchName], execOpts);
-    execFileSync('git', ['add', '-A'], execOpts);
+
+    execFileSync('git', ['reset', 'HEAD'], execOpts);
+    if (options.changedFiles && options.changedFiles.length > 0) {
+      execFileSync('git', ['add', ...options.changedFiles], execOpts);
+    } else {
+      execFileSync('git', ['add', '-A'], execOpts);
+      const scaffoldFiles = ['.npmrc', '.env', '.env.local'];
+      for (const f of scaffoldFiles) {
+        try {
+          execFileSync('git', ['reset', 'HEAD', f], { ...execOpts, stdio: 'pipe' });
+        } catch {
+          // file not staged — fine
+        }
+      }
+    }
     execFileSync('git', ['commit', '-m', options.commitMessage], execOpts);
     execFileSync('git', ['push', 'origin', options.branchName], { ...execOpts, stdio: 'pipe' });
 
