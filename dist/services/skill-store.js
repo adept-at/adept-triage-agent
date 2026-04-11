@@ -54,7 +54,6 @@ function sanitizeForPrompt(input, maxLength = 2000) {
     if (!input)
         return '';
     let sanitized = input
-        .replace(/```/g, '\u2032\u2032\u2032')
         .replace(/## SYSTEM:/gi, '## INFO:')
         .replace(/Ignore previous/gi, '[filtered]')
         .replace(/<\/?(?:system|instruction|prompt)[^>]*>/gi, '')

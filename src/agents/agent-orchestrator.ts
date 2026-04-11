@@ -236,8 +236,6 @@ export class AgentOrchestrator {
     core.info(`   Root cause: ${analysis.rootCauseCategory}`);
     core.info(`   Confidence: ${analysis.confidence}%`);
 
-    context.includeScreenshots = false;
-
     // Step 2: Code Reading Agent
     core.info('📖 Step 2: Running Code Reading Agent...');
     const codeReadingResult = await this.codeReadingAgent.execute(
@@ -306,6 +304,8 @@ export class AgentOrchestrator {
     );
     agentResults.investigation = investigationResult;
     lastResponseId = investigationResult.responseId ?? lastResponseId;
+
+    context.includeScreenshots = false;
 
     if (!investigationResult.success || !investigationResult.data) {
       return {

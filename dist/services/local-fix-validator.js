@@ -39,18 +39,17 @@ const fs = __importStar(require("fs"));
 const os = __importStar(require("os"));
 const path = __importStar(require("path"));
 const child_process_1 = require("child_process");
-function shellEscape(s) {
-    return "'" + s.replace(/'/g, "'\\''") + "'";
-}
 const SECRET_ENV_KEYS = new Set([
     'GITHUB_TOKEN',
     'OPENAI_API_KEY',
     'CURSOR_API_KEY',
     'NPM_TOKEN',
+    'CROSS_REPO_PAT',
     'INPUT_GITHUB_TOKEN',
     'INPUT_OPENAI_API_KEY',
     'INPUT_CURSOR_API_KEY',
     'INPUT_NPM_TOKEN',
+    'INPUT_CROSS_REPO_PAT',
 ]);
 function filterEnv(npmToken) {
     const env = {};
@@ -217,10 +216,10 @@ class LocalFixValidator {
         }
         let cmd = this.config.testCommand;
         if (this.config.spec) {
-            cmd = cmd.replaceAll('{spec}', shellEscape(this.config.spec));
+            cmd = cmd.replaceAll('{spec}', this.config.spec);
         }
         if (this.config.previewUrl) {
-            cmd = cmd.replaceAll('{url}', shellEscape(this.config.previewUrl));
+            cmd = cmd.replaceAll('{url}', this.config.previewUrl);
         }
         const timeout = this.config.testTimeoutMs || DEFAULT_TEST_TIMEOUT_MS;
         const safeEnv = filterEnv(this.config.npmToken);

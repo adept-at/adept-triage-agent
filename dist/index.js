@@ -152,7 +152,6 @@ class AgentOrchestrator {
         const analysis = analysisResult.data;
         core.info(`   Root cause: ${analysis.rootCauseCategory}`);
         core.info(`   Confidence: ${analysis.confidence}%`);
-        context.includeScreenshots = false;
         core.info('📖 Step 2: Running Code Reading Agent...');
         const codeReadingResult = await this.codeReadingAgent.execute({
             testFile: context.testFile,
@@ -201,6 +200,7 @@ class AgentOrchestrator {
         }, context, investigationChainId);
         agentResults.investigation = investigationResult;
         lastResponseId = investigationResult.responseId ?? lastResponseId;
+        context.includeScreenshots = false;
         if (!investigationResult.success || !investigationResult.data) {
             return {
                 error: `Investigation agent failed: ${investigationResult.error}`,
@@ -6540,18 +6540,17 @@ const fs = __importStar(__nccwpck_require__(9896));
 const os = __importStar(__nccwpck_require__(857));
 const path = __importStar(__nccwpck_require__(6928));
 const child_process_1 = __nccwpck_require__(5317);
-function shellEscape(s) {
-    return "'" + s.replace(/'/g, "'\\''") + "'";
-}
 const SECRET_ENV_KEYS = new Set([
     'GITHUB_TOKEN',
     'OPENAI_API_KEY',
     'CURSOR_API_KEY',
     'NPM_TOKEN',
+    'CROSS_REPO_PAT',
     'INPUT_GITHUB_TOKEN',
     'INPUT_OPENAI_API_KEY',
     'INPUT_CURSOR_API_KEY',
     'INPUT_NPM_TOKEN',
+    'INPUT_CROSS_REPO_PAT',
 ]);
 function filterEnv(npmToken) {
     const env = {};
@@ -6718,10 +6717,10 @@ class LocalFixValidator {
         }
         let cmd = this.config.testCommand;
         if (this.config.spec) {
-            cmd = cmd.replaceAll('{spec}', shellEscape(this.config.spec));
+            cmd = cmd.replaceAll('{spec}', this.config.spec);
         }
         if (this.config.previewUrl) {
-            cmd = cmd.replaceAll('{url}', shellEscape(this.config.previewUrl));
+            cmd = cmd.replaceAll('{url}', this.config.previewUrl);
         }
         const timeout = this.config.testTimeoutMs || DEFAULT_TEST_TIMEOUT_MS;
         const safeEnv = filterEnv(this.config.npmToken);
@@ -7260,7 +7259,6 @@ function sanitizeForPrompt(input, maxLength = 2000) {
     if (!input)
         return '';
     let sanitized = input
-        .replace(/```/g, '\u2032\u2032\u2032')
         .replace(/## SYSTEM:/gi, '## INFO:')
         .replace(/Ignore previous/gi, '[filtered]')
         .replace(/<\/?(?:system|instruction|prompt)[^>]*>/gi, '')

@@ -145,7 +145,6 @@ class AgentOrchestrator {
         const analysis = analysisResult.data;
         core.info(`   Root cause: ${analysis.rootCauseCategory}`);
         core.info(`   Confidence: ${analysis.confidence}%`);
-        context.includeScreenshots = false;
         core.info('📖 Step 2: Running Code Reading Agent...');
         const codeReadingResult = await this.codeReadingAgent.execute({
             testFile: context.testFile,
@@ -194,6 +193,7 @@ class AgentOrchestrator {
         }, context, investigationChainId);
         agentResults.investigation = investigationResult;
         lastResponseId = investigationResult.responseId ?? lastResponseId;
+        context.includeScreenshots = false;
         if (!investigationResult.success || !investigationResult.data) {
             return {
                 error: `Investigation agent failed: ${investigationResult.error}`,

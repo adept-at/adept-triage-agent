@@ -31,19 +31,18 @@ export interface PushResult {
   prNumber?: number;
 }
 
-function shellEscape(s: string): string {
-  return "'" + s.replace(/'/g, "'\\''") + "'";
-}
 
 const SECRET_ENV_KEYS = new Set([
   'GITHUB_TOKEN',
   'OPENAI_API_KEY',
   'CURSOR_API_KEY',
   'NPM_TOKEN',
+  'CROSS_REPO_PAT',
   'INPUT_GITHUB_TOKEN',
   'INPUT_OPENAI_API_KEY',
   'INPUT_CURSOR_API_KEY',
   'INPUT_NPM_TOKEN',
+  'INPUT_CROSS_REPO_PAT',
 ]);
 
 function filterEnv(npmToken?: string): Record<string, string> {
@@ -256,10 +255,10 @@ export class LocalFixValidator {
 
     let cmd = this.config.testCommand;
     if (this.config.spec) {
-      cmd = cmd.replaceAll('{spec}', shellEscape(this.config.spec));
+      cmd = cmd.replaceAll('{spec}', this.config.spec);
     }
     if (this.config.previewUrl) {
-      cmd = cmd.replaceAll('{url}', shellEscape(this.config.previewUrl));
+      cmd = cmd.replaceAll('{url}', this.config.previewUrl);
     }
 
     const timeout = this.config.testTimeoutMs || DEFAULT_TEST_TIMEOUT_MS;
