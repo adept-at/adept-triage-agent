@@ -4091,9 +4091,8 @@ class PipelineCoordinator {
         (0, output_1.setSuccessOutput)(result, errorData, autoFixResult, flakinessSignal);
     }
     async handleNoErrorData() {
-        const context = github.context;
-        const { owner, repo } = context.repo;
-        const runId = this.inputs.workflowRunId || context.runId.toString();
+        const { owner, repo } = this.repoDetails;
+        const runId = this.inputs.workflowRunId || github.context.runId.toString();
         try {
             const workflowRun = await this.octokit.actions.getWorkflowRun({
                 owner,
@@ -6548,7 +6547,14 @@ class LocalFixValidator {
         if (!fs.existsSync(npmrcPath)) {
             fs.writeFileSync(npmrcPath, '//npm.pkg.github.com/:_authToken=${NODE_AUTH_TOKEN}\n@adept-at:registry=https://npm.pkg.github.com\n', 'utf-8');
         }
-        const npmEnv = { ...process.env, NODE_AUTH_TOKEN: this.config.npmToken || this.config.githubToken };
+        const npmEnv = {
+            PATH: process.env.PATH || '',
+            HOME: process.env.HOME || '',
+            NODE_ENV: process.env.NODE_ENV || '',
+            LANG: process.env.LANG || 'en_US.UTF-8',
+            CI: 'true',
+            NODE_AUTH_TOKEN: this.config.npmToken || this.config.githubToken,
+        };
         try {
             (0, child_process_1.execSync)('npm ci 2>&1', {
                 cwd: this._workDir,

@@ -80,7 +80,14 @@ export class LocalFixValidator {
         'utf-8'
       );
     }
-    const npmEnv = { ...process.env, NODE_AUTH_TOKEN: this.config.npmToken || this.config.githubToken };
+    const npmEnv: Record<string, string> = {
+      PATH: process.env.PATH || '',
+      HOME: process.env.HOME || '',
+      NODE_ENV: process.env.NODE_ENV || '',
+      LANG: process.env.LANG || 'en_US.UTF-8',
+      CI: 'true',
+      NODE_AUTH_TOKEN: this.config.npmToken || this.config.githubToken,
+    };
     try {
       execSync('npm ci 2>&1', {
         cwd: this._workDir,

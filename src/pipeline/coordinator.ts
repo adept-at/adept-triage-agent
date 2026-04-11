@@ -208,9 +208,8 @@ export class PipelineCoordinator {
   }
 
   private async handleNoErrorData(): Promise<void> {
-    const context = github.context;
-    const { owner, repo } = context.repo;
-    const runId = this.inputs.workflowRunId || context.runId.toString();
+    const { owner, repo } = this.repoDetails;
+    const runId = this.inputs.workflowRunId || github.context.runId.toString();
 
     try {
       const workflowRun = await this.octokit.actions.getWorkflowRun({
