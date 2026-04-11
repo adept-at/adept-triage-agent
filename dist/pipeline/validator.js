@@ -104,7 +104,7 @@ async function iterativeFixValidateLoop(inputs, repoDetails, autoFixTargetRepo, 
     let autoFixResult = null;
     let previousAttempt;
     const failedFixFingerprints = new Set();
-    const minConfidence = inputs.autoFixMinConfidence || constants_1.AUTO_FIX.DEFAULT_MIN_CONFIDENCE;
+    const minConfidence = inputs.autoFixMinConfidence ?? constants_1.AUTO_FIX.DEFAULT_MIN_CONFIDENCE;
     const baseBranch = inputs.branch || inputs.autoFixBaseBranch || 'main';
     let lastResponseId = classificationResponseId;
     const validator = new local_fix_validator_1.LocalFixValidator({
@@ -276,7 +276,7 @@ async function attemptAutoFix(inputs, fixRecommendation, octokit, repoDetails, e
         owner: repoDetails.owner,
         repo: repoDetails.repo,
         baseBranch: inputs.branch || inputs.autoFixBaseBranch || 'main',
-        minConfidence: inputs.autoFixMinConfidence || constants_1.AUTO_FIX.DEFAULT_MIN_CONFIDENCE,
+        minConfidence: inputs.autoFixMinConfidence ?? constants_1.AUTO_FIX.DEFAULT_MIN_CONFIDENCE,
         enableValidation: inputs.enableValidation,
         validationWorkflow: inputs.validationWorkflow,
         validationTestCommand: inputs.validationTestCommand,

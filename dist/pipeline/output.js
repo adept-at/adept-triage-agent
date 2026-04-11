@@ -127,7 +127,7 @@ function setSuccessOutput(result, errorData, autoFixResult, flakiness) {
     core.setOutput('verdict', result.verdict);
     core.setOutput('confidence', result.confidence.toString());
     core.setOutput('reasoning', result.reasoning);
-    core.setOutput('summary', result.summary);
+    core.setOutput('summary', result.summary || '');
     core.setOutput('triage_json', JSON.stringify(triageJson));
     if (result.fixRecommendation) {
         core.setOutput('has_fix_recommendation', 'true');

@@ -533,13 +533,13 @@ describe('formatSkillsForPrompt', () => {
 
   it('uses fix_generation framing for fix_generation role', () => {
     const result = formatSkillsForPrompt([makeSkill()], 'fix_generation');
-    expect(result).toContain('CONSIDER these proven approaches');
-    expect(result).toContain('Proven Fix Patterns');
+    expect(result).toContain('CONSIDER these approaches');
+    expect(result).toContain('Prior Fix Patterns');
   });
 
   it('uses review framing for review role', () => {
     const result = formatSkillsForPrompt([makeSkill()], 'review');
-    expect(result).toContain('contradicts a proven approach');
+    expect(result).toContain('contradicts a prior pattern');
     expect(result).toContain('Prior Successful Fixes');
   });
 

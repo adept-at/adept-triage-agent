@@ -1945,6 +1945,7 @@ __exportStar(__nccwpck_require__(1218), exports);
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.InvestigationAgent = void 0;
 const base_agent_1 = __nccwpck_require__(6575);
+const constants_1 = __nccwpck_require__(8361);
 class InvestigationAgent extends base_agent_1.BaseAgent {
     constructor(openaiClient, config) {
         super(openaiClient, 'InvestigationAgent', config);
@@ -2037,7 +2038,16 @@ You MUST respond with a JSON object matching this schema:
                 }
             }
         }
-        if (context.screenshots && context.screenshots.length > 0) {
+        if (context.productDiff && context.productDiff.files.length > 0) {
+            parts.push('', `### ⚠️ Recent Product Repo Changes (${constants_1.DEFAULT_PRODUCT_REPO})`, 'Review these carefully. If the product change looks like a BUG (missing null checks, broken logic, accidental deletion), classify as a product issue. If it looks like an INTENTIONAL behavior change (lazy loading, conditional rendering, lifecycle refactor, performance optimization) and the test fails because it has not adapted, note that the test needs to adapt to the new product behavior. Use this to inform your verdictOverride decision.');
+            for (const file of context.productDiff.files.slice(0, 5)) {
+                parts.push(`- **${file.filename}** (${file.status})`);
+                if (file.patch) {
+                    parts.push('```diff', file.patch.slice(0, 1000), '```');
+                }
+            }
+        }
+        if (context.includeScreenshots !== false && context.screenshots && context.screenshots.length > 0) {
             parts.push('', '### Screenshots', `${context.screenshots.length} screenshot(s) are attached. Analyze them to see:`, '- What elements are visible', '- What the actual DOM state looks like', '- Any visual clues about the failure');
         }
         if (context.skillsPrompt) {
@@ -3294,6 +3304,9 @@ Object.defineProperty(exports, "resolveAutoFixTargetRepo", ({ enumerable: true, 
 async function run() {
     try {
         const inputs = getInputs();
+        if (inputs.cursorApiKey) {
+            core.setSecret(inputs.cursorApiKey);
+        }
         const octokit = new rest_1.Octokit({ auth: inputs.githubToken });
         const repoDetails = resolveRepository(inputs);
         const openaiClient = new openai_client_1.OpenAIClient(inputs.openaiApiKey);
@@ -4289,7 +4302,7 @@ function setSuccessOutput(result, errorData, autoFixResult, flakiness) {
     core.setOutput('verdict', result.verdict);
     core.setOutput('confidence', result.confidence.toString());
     core.setOutput('reasoning', result.reasoning);
-    core.setOutput('summary', result.summary);
+    core.setOutput('summary', result.summary || '');
     core.setOutput('triage_json', JSON.stringify(triageJson));
     if (result.fixRecommendation) {
         core.setOutput('has_fix_recommendation', 'true');
@@ -4476,7 +4489,7 @@ async function iterativeFixValidateLoop(inputs, repoDetails, autoFixTargetRepo, 
     let autoFixResult = null;
     let previousAttempt;
     const failedFixFingerprints = new Set();
-    const minConfidence = inputs.autoFixMinConfidence || constants_1.AUTO_FIX.DEFAULT_MIN_CONFIDENCE;
+    const minConfidence = inputs.autoFixMinConfidence ?? constants_1.AUTO_FIX.DEFAULT_MIN_CONFIDENCE;
     const baseBranch = inputs.branch || inputs.autoFixBaseBranch || 'main';
     let lastResponseId = classificationResponseId;
     const validator = new local_fix_validator_1.LocalFixValidator({
@@ -4648,7 +4661,7 @@ async function attemptAutoFix(inputs, fixRecommendation, octokit, repoDetails, e
         owner: repoDetails.owner,
         repo: repoDetails.repo,
         baseBranch: inputs.branch || inputs.autoFixBaseBranch || 'main',
-        minConfidence: inputs.autoFixMinConfidence || constants_1.AUTO_FIX.DEFAULT_MIN_CONFIDENCE,
+        minConfidence: inputs.autoFixMinConfidence ?? constants_1.AUTO_FIX.DEFAULT_MIN_CONFIDENCE,
         enableValidation: inputs.enableValidation,
         validationWorkflow: inputs.validationWorkflow,
         validationTestCommand: inputs.validationTestCommand,
@@ -6528,6 +6541,7 @@ class LocalFixValidator {
         (0, child_process_1.execFileSync)('git', ['clone', '--branch', this.config.branch, '--depth', '50', cloneUrl, this._workDir], {
             encoding: 'utf-8',
             stdio: 'pipe',
+            timeout: 300_000,
         });
         core.info('📦 Installing dependencies...');
         const npmrcPath = path.join(this._workDir, '.npmrc');
@@ -6655,19 +6669,29 @@ class LocalFixValidator {
         }
         let cmd = this.config.testCommand;
         if (this.config.spec) {
-            cmd = cmd.replace('{spec}', shellEscape(this.config.spec));
+            cmd = cmd.replaceAll('{spec}', shellEscape(this.config.spec));
         }
         if (this.config.previewUrl) {
-            cmd = cmd.replace('{url}', shellEscape(this.config.previewUrl));
+            cmd = cmd.replaceAll('{url}', shellEscape(this.config.previewUrl));
         }
         const timeout = this.config.testTimeoutMs || DEFAULT_TEST_TIMEOUT_MS;
+        const safeEnv = {
+            PATH: process.env.PATH || '',
+            HOME: process.env.HOME || '',
+            NODE_ENV: 'test',
+            CI: 'true',
+            LANG: process.env.LANG || 'en_US.UTF-8',
+        };
+        if (this.config.npmToken) {
+            safeEnv.NODE_AUTH_TOKEN = this.config.npmToken;
+        }
         const start = Date.now();
         try {
             const output = (0, child_process_1.execSync)(cmd, {
                 cwd: this._workDir,
                 encoding: 'utf-8',
                 timeout,
-                env: { ...process.env },
+                env: safeEnv,
                 maxBuffer: MAX_BUFFER,
                 stdio: 'pipe',
             });
@@ -7192,6 +7216,21 @@ const FLAKY_THRESHOLDS = {
     LONG_WINDOW_DAYS: 7,
     LONG_WINDOW_MAX: 2,
 };
+function sanitizeForPrompt(input, maxLength = 2000) {
+    if (!input)
+        return '';
+    let sanitized = input
+        .replace(/```/g, '\u2032\u2032\u2032')
+        .replace(/## SYSTEM:/gi, '## INFO:')
+        .replace(/Ignore previous/gi, '[filtered]')
+        .replace(/<\/?(?:system|instruction|prompt)[^>]*>/gi, '')
+        .replace(/\[INST\]|\[\/INST\]/gi, '')
+        .replace(/<<SYS>>|<<\/SYS>>/gi, '');
+    if (sanitized.length > maxLength) {
+        sanitized = sanitized.substring(0, maxLength) + '... [truncated]';
+    }
+    return sanitized;
+}
 function backfillDefaults(skill) {
     return {
         ...skill,
@@ -7471,9 +7510,9 @@ class SkillStore {
         if (relevant.length === 0)
             return '';
         return relevant
-            .map((s, i) => `${i + 1}. errorPattern: ${s.errorPattern}\n` +
-            `   rootCauseCategory: ${s.rootCauseCategory}\n` +
-            `   fix: ${s.fix.summary}\n` +
+            .map((s, i) => `${i + 1}. errorPattern: ${sanitizeForPrompt(s.errorPattern)}\n` +
+            `   rootCauseCategory: ${sanitizeForPrompt(s.rootCauseCategory)}\n` +
+            `   fix: ${sanitizeForPrompt(s.fix.summary)}\n` +
             `   confidence: ${s.confidence}%`)
             .join('\n');
     }
@@ -7485,9 +7524,9 @@ class SkillStore {
             .map((s, i) => {
             const tag = s.wasSuccessful ? 'SUCCESS' : 'FAILED';
             const suffix = s.wasSuccessful ? '' : ' (this approach did NOT work)';
-            return (`${i + 1}. [${tag}] errorPattern: ${s.errorPattern}\n` +
-                `   rootCause: ${s.rootCauseCategory}\n` +
-                `   fix: ${s.fix.summary}${suffix}`);
+            return (`${i + 1}. [${tag}] errorPattern: ${sanitizeForPrompt(s.errorPattern)}\n` +
+                `   rootCause: ${sanitizeForPrompt(s.rootCauseCategory)}\n` +
+                `   fix: ${sanitizeForPrompt(s.fix.summary)}${suffix}`);
         })
             .join('\n');
     }
@@ -7611,25 +7650,25 @@ function formatSkillsForPrompt(skills, role, flakiness) {
             'If your findings match a prior pattern, note that. If they differ, explain why.',
         ].join('\n'),
         fix_generation: [
-            '### Agent Memory: Proven Fix Patterns',
+            '### Agent Memory: Prior Fix Patterns',
             '',
-            'The following fixes were previously applied successfully and validated locally.',
-            'CONSIDER these proven approaches as starting points. If you see a better approach than the prior pattern, explain why and use the better approach instead.',
+            'The following patterns were applied in prior runs. Not all were validated — use them as context, not guarantees.',
+            'CONSIDER these approaches as starting points. If you see a better approach, explain why and use it instead.',
         ].join('\n'),
         review: [
             '### Agent Memory: Prior Successful Fixes',
             '',
             'Check if the proposed fix aligns with patterns that have worked before.',
-            'Flag if the fix contradicts a proven approach without justification.',
+            'Flag if the fix contradicts a prior pattern without justification.',
         ].join('\n'),
     };
     const entries = skills.map((s, i) => [
         `**Fix ${i + 1}** (${s.createdAt.split('T')[0]}, ${s.confidence}% confidence, ${s.iterations} iteration${s.iterations !== 1 ? 's' : ''})`,
-        `- Spec: ${s.spec}`,
-        `- Error: ${s.errorPattern}`,
-        `- Root cause: ${s.rootCauseCategory}`,
-        `- Pattern: ${s.fix.pattern}`,
-        `- Change type: ${s.fix.changeType} in ${s.fix.file}`,
+        `- Spec: ${sanitizeForPrompt(s.spec)}`,
+        `- Error: ${sanitizeForPrompt(s.errorPattern)}`,
+        `- Root cause: ${sanitizeForPrompt(s.rootCauseCategory)}`,
+        `- Pattern: ${sanitizeForPrompt(s.fix.pattern)}`,
+        `- Change type: ${sanitizeForPrompt(s.fix.changeType)} in ${sanitizeForPrompt(s.fix.file)}`,
     ].join('\n'));
     const parts = [headers[role], '', ...entries];
     if (flakiness?.isFlaky) {

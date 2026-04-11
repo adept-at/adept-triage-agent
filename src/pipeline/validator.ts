@@ -120,7 +120,7 @@ export async function iterativeFixValidateLoop(
     | { iteration: number; previousFix: FixRecommendation; validationLogs: string }
     | undefined;
   const failedFixFingerprints = new Set<string>();
-  const minConfidence = inputs.autoFixMinConfidence || AUTO_FIX.DEFAULT_MIN_CONFIDENCE;
+  const minConfidence = inputs.autoFixMinConfidence ?? AUTO_FIX.DEFAULT_MIN_CONFIDENCE;
   const baseBranch = inputs.branch || inputs.autoFixBaseBranch || 'main';
   let lastResponseId: string | undefined = classificationResponseId;
 
@@ -352,7 +352,7 @@ export async function attemptAutoFix(
     repo: repoDetails.repo,
     baseBranch: inputs.branch || inputs.autoFixBaseBranch || 'main',
     minConfidence:
-      inputs.autoFixMinConfidence || AUTO_FIX.DEFAULT_MIN_CONFIDENCE,
+      inputs.autoFixMinConfidence ?? AUTO_FIX.DEFAULT_MIN_CONFIDENCE,
     enableValidation: inputs.enableValidation,
     validationWorkflow: inputs.validationWorkflow,
     validationTestCommand: inputs.validationTestCommand,

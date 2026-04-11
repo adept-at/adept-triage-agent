@@ -59,6 +59,25 @@ const FLAKY_THRESHOLDS = {
   LONG_WINDOW_MAX: 2,
 } as const;
 
+/**
+ * Strip patterns that could be interpreted as prompt injection when
+ * skill fields are interpolated into LLM prompts.
+ */
+function sanitizeForPrompt(input: string, maxLength = 2000): string {
+  if (!input) return '';
+  let sanitized = input
+    .replace(/```/g, '\u2032\u2032\u2032')
+    .replace(/## SYSTEM:/gi, '## INFO:')
+    .replace(/Ignore previous/gi, '[filtered]')
+    .replace(/<\/?(?:system|instruction|prompt)[^>]*>/gi, '')
+    .replace(/\[INST\]|\[\/INST\]/gi, '')
+    .replace(/<<SYS>>|<<\/SYS>>/gi, '');
+  if (sanitized.length > maxLength) {
+    sanitized = sanitized.substring(0, maxLength) + '... [truncated]';
+  }
+  return sanitized;
+}
+
 function backfillDefaults(skill: TriageSkill): TriageSkill {
   return {
     ...skill,
@@ -412,9 +431,9 @@ export class SkillStore {
     return relevant
       .map(
         (s, i) =>
-          `${i + 1}. errorPattern: ${s.errorPattern}\n` +
-          `   rootCauseCategory: ${s.rootCauseCategory}\n` +
-          `   fix: ${s.fix.summary}\n` +
+          `${i + 1}. errorPattern: ${sanitizeForPrompt(s.errorPattern)}\n` +
+          `   rootCauseCategory: ${sanitizeForPrompt(s.rootCauseCategory)}\n` +
+          `   fix: ${sanitizeForPrompt(s.fix.summary)}\n` +
           `   confidence: ${s.confidence}%`
       )
       .join('\n');
@@ -434,9 +453,9 @@ export class SkillStore {
         const tag = s.wasSuccessful ? 'SUCCESS' : 'FAILED';
         const suffix = s.wasSuccessful ? '' : ' (this approach did NOT work)';
         return (
-          `${i + 1}. [${tag}] errorPattern: ${s.errorPattern}\n` +
-          `   rootCause: ${s.rootCauseCategory}\n` +
-          `   fix: ${s.fix.summary}${suffix}`
+          `${i + 1}. [${tag}] errorPattern: ${sanitizeForPrompt(s.errorPattern)}\n` +
+          `   rootCause: ${sanitizeForPrompt(s.rootCauseCategory)}\n` +
+          `   fix: ${sanitizeForPrompt(s.fix.summary)}${suffix}`
         );
       })
       .join('\n');
@@ -619,26 +638,26 @@ export function formatSkillsForPrompt(
       'If your findings match a prior pattern, note that. If they differ, explain why.',
     ].join('\n'),
     fix_generation: [
-      '### Agent Memory: Proven Fix Patterns',
+      '### Agent Memory: Prior Fix Patterns',
       '',
-      'The following fixes were previously applied successfully and validated locally.',
-      'CONSIDER these proven approaches as starting points. If you see a better approach than the prior pattern, explain why and use the better approach instead.',
+      'The following patterns were applied in prior runs. Not all were validated — use them as context, not guarantees.',
+      'CONSIDER these approaches as starting points. If you see a better approach, explain why and use it instead.',
     ].join('\n'),
     review: [
       '### Agent Memory: Prior Successful Fixes',
       '',
       'Check if the proposed fix aligns with patterns that have worked before.',
-      'Flag if the fix contradicts a proven approach without justification.',
+      'Flag if the fix contradicts a prior pattern without justification.',
     ].join('\n'),
   };
 
   const entries = skills.map((s, i) => [
     `**Fix ${i + 1}** (${s.createdAt.split('T')[0]}, ${s.confidence}% confidence, ${s.iterations} iteration${s.iterations !== 1 ? 's' : ''})`,
-    `- Spec: ${s.spec}`,
-    `- Error: ${s.errorPattern}`,
-    `- Root cause: ${s.rootCauseCategory}`,
-    `- Pattern: ${s.fix.pattern}`,
-    `- Change type: ${s.fix.changeType} in ${s.fix.file}`,
+    `- Spec: ${sanitizeForPrompt(s.spec)}`,
+    `- Error: ${sanitizeForPrompt(s.errorPattern)}`,
+    `- Root cause: ${sanitizeForPrompt(s.rootCauseCategory)}`,
+    `- Pattern: ${sanitizeForPrompt(s.fix.pattern)}`,
+    `- Change type: ${sanitizeForPrompt(s.fix.changeType)} in ${sanitizeForPrompt(s.fix.file)}`,
   ].join('\n'));
 
   const parts = [headers[role], '', ...entries];

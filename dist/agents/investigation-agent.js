@@ -2,6 +2,7 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.InvestigationAgent = void 0;
 const base_agent_1 = require("./base-agent");
+const constants_1 = require("../config/constants");
 class InvestigationAgent extends base_agent_1.BaseAgent {
     constructor(openaiClient, config) {
         super(openaiClient, 'InvestigationAgent', config);
@@ -94,7 +95,16 @@ You MUST respond with a JSON object matching this schema:
                 }
             }
         }
-        if (context.screenshots && context.screenshots.length > 0) {
+        if (context.productDiff && context.productDiff.files.length > 0) {
+            parts.push('', `### ⚠️ Recent Product Repo Changes (${constants_1.DEFAULT_PRODUCT_REPO})`, 'Review these carefully. If the product change looks like a BUG (missing null checks, broken logic, accidental deletion), classify as a product issue. If it looks like an INTENTIONAL behavior change (lazy loading, conditional rendering, lifecycle refactor, performance optimization) and the test fails because it has not adapted, note that the test needs to adapt to the new product behavior. Use this to inform your verdictOverride decision.');
+            for (const file of context.productDiff.files.slice(0, 5)) {
+                parts.push(`- **${file.filename}** (${file.status})`);
+                if (file.patch) {
+                    parts.push('```diff', file.patch.slice(0, 1000), '```');
+                }
+            }
+        }
+        if (context.includeScreenshots !== false && context.screenshots && context.screenshots.length > 0) {
             parts.push('', '### Screenshots', `${context.screenshots.length} screenshot(s) are attached. Analyze them to see:`, '- What elements are visible', '- What the actual DOM state looks like', '- Any visual clues about the failure');
         }
         if (context.skillsPrompt) {

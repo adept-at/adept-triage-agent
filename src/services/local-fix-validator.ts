@@ -68,6 +68,7 @@ export class LocalFixValidator {
     execFileSync('git', ['clone', '--branch', this.config.branch, '--depth', '50', cloneUrl, this._workDir], {
       encoding: 'utf-8',
       stdio: 'pipe',
+      timeout: 300_000,
     });
 
     core.info('📦 Installing dependencies...');
@@ -231,13 +232,23 @@ export class LocalFixValidator {
 
     let cmd = this.config.testCommand;
     if (this.config.spec) {
-      cmd = cmd.replace('{spec}', shellEscape(this.config.spec));
+      cmd = cmd.replaceAll('{spec}', shellEscape(this.config.spec));
     }
     if (this.config.previewUrl) {
-      cmd = cmd.replace('{url}', shellEscape(this.config.previewUrl));
+      cmd = cmd.replaceAll('{url}', shellEscape(this.config.previewUrl));
     }
 
     const timeout = this.config.testTimeoutMs || DEFAULT_TEST_TIMEOUT_MS;
+    const safeEnv: Record<string, string> = {
+      PATH: process.env.PATH || '',
+      HOME: process.env.HOME || '',
+      NODE_ENV: 'test',
+      CI: 'true',
+      LANG: process.env.LANG || 'en_US.UTF-8',
+    };
+    if (this.config.npmToken) {
+      safeEnv.NODE_AUTH_TOKEN = this.config.npmToken;
+    }
     const start = Date.now();
 
     try {
@@ -245,7 +256,7 @@ export class LocalFixValidator {
         cwd: this._workDir,
         encoding: 'utf-8',
         timeout,
-        env: { ...process.env },
+        env: safeEnv,
         maxBuffer: MAX_BUFFER,
         stdio: 'pipe',
       });

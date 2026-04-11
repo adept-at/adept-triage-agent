@@ -11,6 +11,7 @@ import {
   getFrameworkLabel,
 } from './base-agent';
 import { OpenAIClient } from '../openai-client';
+import { DEFAULT_PRODUCT_REPO } from '../config/constants';
 import { AnalysisOutput } from './analysis-agent';
 import { CodeReadingOutput } from './code-reading-agent';
 
@@ -244,8 +245,23 @@ You MUST respond with a JSON object matching this schema:
       }
     }
 
+    // Add product diff info
+    if (context.productDiff && context.productDiff.files.length > 0) {
+      parts.push(
+        '',
+        `### ⚠️ Recent Product Repo Changes (${DEFAULT_PRODUCT_REPO})`,
+        'Review these carefully. If the product change looks like a BUG (missing null checks, broken logic, accidental deletion), classify as a product issue. If it looks like an INTENTIONAL behavior change (lazy loading, conditional rendering, lifecycle refactor, performance optimization) and the test fails because it has not adapted, note that the test needs to adapt to the new product behavior. Use this to inform your verdictOverride decision.'
+      );
+      for (const file of context.productDiff.files.slice(0, 5)) {
+        parts.push(`- **${file.filename}** (${file.status})`);
+        if (file.patch) {
+          parts.push('```diff', file.patch.slice(0, 1000), '```');
+        }
+      }
+    }
+
     // Add screenshots context
-    if (context.screenshots && context.screenshots.length > 0) {
+    if (context.includeScreenshots !== false && context.screenshots && context.screenshots.length > 0) {
       parts.push(
         '',
         '### Screenshots',

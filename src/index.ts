@@ -13,6 +13,9 @@ export { setSuccessOutput, setInconclusiveOutput, setErrorOutput, resolveAutoFix
 async function run(): Promise<void> {
   try {
     const inputs = getInputs();
+    if (inputs.cursorApiKey) {
+      core.setSecret(inputs.cursorApiKey);
+    }
     const octokit = new Octokit({ auth: inputs.githubToken });
     const repoDetails = resolveRepository(inputs);
     const openaiClient = new OpenAIClient(inputs.openaiApiKey);
