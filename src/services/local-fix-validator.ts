@@ -35,6 +35,30 @@ function shellEscape(s: string): string {
   return "'" + s.replace(/'/g, "'\\''") + "'";
 }
 
+const SECRET_ENV_KEYS = new Set([
+  'GITHUB_TOKEN',
+  'OPENAI_API_KEY',
+  'CURSOR_API_KEY',
+  'NPM_TOKEN',
+  'INPUT_GITHUB_TOKEN',
+  'INPUT_OPENAI_API_KEY',
+  'INPUT_CURSOR_API_KEY',
+  'INPUT_NPM_TOKEN',
+]);
+
+function filterEnv(npmToken?: string): Record<string, string> {
+  const env: Record<string, string> = {};
+  for (const [key, value] of Object.entries(process.env)) {
+    if (value !== undefined && !SECRET_ENV_KEYS.has(key)) {
+      env[key] = value;
+    }
+  }
+  if (npmToken) {
+    env.NODE_AUTH_TOKEN = npmToken;
+  }
+  return env;
+}
+
 const DEFAULT_TEST_TIMEOUT_MS = 300_000;
 const MAX_LOG_CHARS = 20_000;
 const MAX_BUFFER = 10 * 1024 * 1024;
@@ -80,14 +104,7 @@ export class LocalFixValidator {
         'utf-8'
       );
     }
-    const npmEnv: Record<string, string> = {
-      PATH: process.env.PATH || '',
-      HOME: process.env.HOME || '',
-      NODE_ENV: process.env.NODE_ENV || '',
-      LANG: process.env.LANG || 'en_US.UTF-8',
-      CI: 'true',
-      NODE_AUTH_TOKEN: this.config.npmToken || this.config.githubToken,
-    };
+    const npmEnv = filterEnv(this.config.npmToken || this.config.githubToken);
     try {
       execSync('npm ci 2>&1', {
         cwd: this._workDir,
@@ -246,16 +263,7 @@ export class LocalFixValidator {
     }
 
     const timeout = this.config.testTimeoutMs || DEFAULT_TEST_TIMEOUT_MS;
-    const safeEnv: Record<string, string> = {
-      PATH: process.env.PATH || '',
-      HOME: process.env.HOME || '',
-      NODE_ENV: 'test',
-      CI: 'true',
-      LANG: process.env.LANG || 'en_US.UTF-8',
-    };
-    if (this.config.npmToken) {
-      safeEnv.NODE_AUTH_TOKEN = this.config.npmToken;
-    }
+    const safeEnv = filterEnv(this.config.npmToken);
     const start = Date.now();
 
     try {

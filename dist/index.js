@@ -6543,6 +6543,28 @@ const child_process_1 = __nccwpck_require__(5317);
 function shellEscape(s) {
     return "'" + s.replace(/'/g, "'\\''") + "'";
 }
+const SECRET_ENV_KEYS = new Set([
+    'GITHUB_TOKEN',
+    'OPENAI_API_KEY',
+    'CURSOR_API_KEY',
+    'NPM_TOKEN',
+    'INPUT_GITHUB_TOKEN',
+    'INPUT_OPENAI_API_KEY',
+    'INPUT_CURSOR_API_KEY',
+    'INPUT_NPM_TOKEN',
+]);
+function filterEnv(npmToken) {
+    const env = {};
+    for (const [key, value] of Object.entries(process.env)) {
+        if (value !== undefined && !SECRET_ENV_KEYS.has(key)) {
+            env[key] = value;
+        }
+    }
+    if (npmToken) {
+        env.NODE_AUTH_TOKEN = npmToken;
+    }
+    return env;
+}
 const DEFAULT_TEST_TIMEOUT_MS = 300_000;
 const MAX_LOG_CHARS = 20_000;
 const MAX_BUFFER = 10 * 1024 * 1024;
@@ -6575,14 +6597,7 @@ class LocalFixValidator {
         if (!fs.existsSync(npmrcPath)) {
             fs.writeFileSync(npmrcPath, '//npm.pkg.github.com/:_authToken=${NODE_AUTH_TOKEN}\n@adept-at:registry=https://npm.pkg.github.com\n', 'utf-8');
         }
-        const npmEnv = {
-            PATH: process.env.PATH || '',
-            HOME: process.env.HOME || '',
-            NODE_ENV: process.env.NODE_ENV || '',
-            LANG: process.env.LANG || 'en_US.UTF-8',
-            CI: 'true',
-            NODE_AUTH_TOKEN: this.config.npmToken || this.config.githubToken,
-        };
+        const npmEnv = filterEnv(this.config.npmToken || this.config.githubToken);
         try {
             (0, child_process_1.execSync)('npm ci 2>&1', {
                 cwd: this._workDir,
@@ -6709,16 +6724,7 @@ class LocalFixValidator {
             cmd = cmd.replaceAll('{url}', shellEscape(this.config.previewUrl));
         }
         const timeout = this.config.testTimeoutMs || DEFAULT_TEST_TIMEOUT_MS;
-        const safeEnv = {
-            PATH: process.env.PATH || '',
-            HOME: process.env.HOME || '',
-            NODE_ENV: 'test',
-            CI: 'true',
-            LANG: process.env.LANG || 'en_US.UTF-8',
-        };
-        if (this.config.npmToken) {
-            safeEnv.NODE_AUTH_TOKEN = this.config.npmToken;
-        }
+        const safeEnv = filterEnv(this.config.npmToken);
         const start = Date.now();
         try {
             const output = (0, child_process_1.execSync)(cmd, {
