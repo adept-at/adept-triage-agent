@@ -29,9 +29,10 @@ export declare function iterativeFixValidateLoop(inputs: ActionInputs, repoDetai
     testName?: string;
     fileName?: string;
     framework?: string;
-}, openaiClient: OpenAIClient, octokit: Octokit, skillStore?: SkillStore, classificationResponseId?: string): Promise<{
+}, openaiClient: OpenAIClient, octokit: Octokit, skillStore?: SkillStore, classificationResponseId?: string, investigationContext?: string): Promise<{
     fixRecommendation: FixRecommendation | null;
     autoFixResult: ApplyResult | null;
+    savedSkillId?: string;
 }>;
 export declare function fixFingerprint(fix: FixRecommendation): string;
 export declare function attemptAutoFix(inputs: ActionInputs, fixRecommendation: FixRecommendation, octokit: Octokit, repoDetails: {

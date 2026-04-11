@@ -186,10 +186,12 @@ class AgentOrchestrator {
         context.skillsPrompt = skills
             ? (0, skill_store_1.formatSkillsForPrompt)(skills.relevant, 'investigation', skills.flakiness)
             : '';
+        const investigationChainId = analysis.confidence < 80 ? (analysisResult.responseId ?? undefined) : undefined;
+        core.info(analysis.confidence < 80 ? '🔗 Chaining analysis context to investigation (confidence < 80%)' : '📋 Investigation starts fresh (analysis confidence >= 80%)');
         const investigationResult = await this.investigationAgent.execute({
             analysis,
             codeContext: codeReadingResult.data,
-        }, context, undefined);
+        }, context, investigationChainId);
         agentResults.investigation = investigationResult;
         lastResponseId = investigationResult.responseId ?? lastResponseId;
         if (!investigationResult.success || !investigationResult.data) {
@@ -222,6 +224,11 @@ class AgentOrchestrator {
                 lastResponseId: investigationResult.responseId ?? lastResponseId,
             };
         }
+        context.investigationSummary = [
+            investigation.primaryFinding?.description,
+            investigation.recommendedApproach,
+            investigation.verdictOverride ? `verdictOverride: ${investigation.verdictOverride.suggestedLocation}` : '',
+        ].filter(Boolean).join(' | ');
         let lastFix = null;
         let reviewFeedback = null;
         let fixReviewChainId;

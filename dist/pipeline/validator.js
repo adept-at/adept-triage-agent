@@ -98,7 +98,7 @@ async function generateFixRecommendation(inputs, repoDetails, errorData, openaiC
         return null;
     }
 }
-async function iterativeFixValidateLoop(inputs, repoDetails, autoFixTargetRepo, errorData, openaiClient, octokit, skillStore, classificationResponseId) {
+async function iterativeFixValidateLoop(inputs, repoDetails, autoFixTargetRepo, errorData, openaiClient, octokit, skillStore, classificationResponseId, investigationContext) {
     const maxIterations = constants_1.FIX_VALIDATE_LOOP.MAX_ITERATIONS;
     let fixRecommendation = null;
     let autoFixResult = null;
@@ -194,11 +194,15 @@ async function iterativeFixValidateLoop(inputs, repoDetails, autoFixTargetRepo, 
                             prUrl: pushResult.prUrl || '',
                             validatedLocally: true,
                             priorSkillCount: skillStore.countForSpec(errorData.fileName || 'unknown'),
+                            investigationFindings: investigationContext || '',
+                            rootCauseChain: `${changeType} → ${fixRecommendation.summary.slice(0, 80)}`,
+                            repoContext: '',
                         });
                         await skillStore.save(skill).catch((err) => {
                             core.warning(`Failed to save skill: ${err}`);
                         });
                         await skillStore.recordOutcome(skill.id, true).catch(() => { });
+                        return { fixRecommendation, autoFixResult, savedSkillId: skill.id };
                     }
                 }
                 catch (pushError) {
@@ -247,6 +251,9 @@ async function iterativeFixValidateLoop(inputs, repoDetails, autoFixTargetRepo, 
                         prUrl: '',
                         validatedLocally: false,
                         priorSkillCount: skillStore.countForSpec(errorData.fileName || 'unknown'),
+                        investigationFindings: investigationContext || '',
+                        rootCauseChain: `${changeType} → ${fixRecommendation.summary.slice(0, 80)}`,
+                        repoContext: '',
                     });
                     await skillStore.save(failedSkill).catch(() => { });
                     await skillStore.recordOutcome(failedSkill.id, false).catch(() => { });

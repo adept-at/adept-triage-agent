@@ -97,6 +97,8 @@ export interface AgentContext {
   delegationContext?: string;
   /** Whether to include screenshot images in the API call (default true). */
   includeScreenshots?: boolean;
+  /** Summary of investigation findings, available for downstream skill saving */
+  investigationSummary?: string;
 }
 
 /**

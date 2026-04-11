@@ -193,10 +193,12 @@ class AgentOrchestrator {
         context.skillsPrompt = skills
             ? (0, skill_store_1.formatSkillsForPrompt)(skills.relevant, 'investigation', skills.flakiness)
             : '';
+        const investigationChainId = analysis.confidence < 80 ? (analysisResult.responseId ?? undefined) : undefined;
+        core.info(analysis.confidence < 80 ? '🔗 Chaining analysis context to investigation (confidence < 80%)' : '📋 Investigation starts fresh (analysis confidence >= 80%)');
         const investigationResult = await this.investigationAgent.execute({
             analysis,
             codeContext: codeReadingResult.data,
-        }, context, undefined);
+        }, context, investigationChainId);
         agentResults.investigation = investigationResult;
         lastResponseId = investigationResult.responseId ?? lastResponseId;
         if (!investigationResult.success || !investigationResult.data) {
@@ -229,6 +231,11 @@ class AgentOrchestrator {
                 lastResponseId: investigationResult.responseId ?? lastResponseId,
             };
         }
+        context.investigationSummary = [
+            investigation.primaryFinding?.description,
+            investigation.recommendedApproach,
+            investigation.verdictOverride ? `verdictOverride: ${investigation.verdictOverride.suggestedLocation}` : '',
+        ].filter(Boolean).join(' | ');
         let lastFix = null;
         let reviewFeedback = null;
         let fixReviewChainId;
@@ -4040,15 +4047,24 @@ class PipelineCoordinator {
         const autoFixTargetRepo = this.inputs.autoFixTargetRepo
             ? (0, output_1.resolveAutoFixTargetRepo)(this.inputs)
             : null;
+        const investigationContext = skillStore
+            ? skillStore.formatForInvestigation({
+                framework: errorData.framework || 'unknown',
+                spec: errorData.fileName,
+                errorMessage: errorData.message,
+            })
+            : '';
         let fixRecommendation = null;
         let autoFixResult = null;
+        let savedSkillId;
         if (this.inputs.enableAutoFix &&
             this.inputs.enableValidation &&
             this.inputs.validationTestCommand &&
             autoFixTargetRepo) {
-            const loopResult = await (0, validator_1.iterativeFixValidateLoop)(this.inputs, this.repoDetails, autoFixTargetRepo, errorData, this.openaiClient, this.octokit, skillStore, undefined);
+            const loopResult = await (0, validator_1.iterativeFixValidateLoop)(this.inputs, this.repoDetails, autoFixTargetRepo, errorData, this.openaiClient, this.octokit, skillStore, undefined, investigationContext);
             fixRecommendation = loopResult.fixRecommendation;
             autoFixResult = loopResult.autoFixResult;
+            savedSkillId = loopResult.savedSkillId;
         }
         else {
             const singleResult = await (0, validator_1.generateFixRecommendation)(this.inputs, this.repoDetails, errorData, this.openaiClient, this.octokit, undefined, undefined, skillStore);
@@ -4057,7 +4073,7 @@ class PipelineCoordinator {
                 autoFixResult = await (0, validator_1.attemptAutoFix)(this.inputs, fixRecommendation, this.octokit, autoFixTargetRepo, errorData);
             }
         }
-        return { fixRecommendation, autoFixResult };
+        return { fixRecommendation, autoFixResult, savedSkillId };
     }
     async execute() {
         const errorData = await (0, log_processor_1.processWorkflowLogs)(this.octokit, this.artifactFetcher, this.inputs, this.repoDetails);
@@ -4080,7 +4096,12 @@ class PipelineCoordinator {
             return;
         if (classification.verdict !== 'TEST_ISSUE')
             return;
-        const { fixRecommendation, autoFixResult } = await this.repair(classification, errorData, skillStore);
+        const { fixRecommendation, autoFixResult, savedSkillId } = await this.repair(classification, errorData, skillStore);
+        if (autoFixResult?.success && savedSkillId && skillStore) {
+            await skillStore.recordClassificationOutcome(savedSkillId, 'correct').catch((err) => {
+                core.warning(`Failed to record classification outcome: ${err}`);
+            });
+        }
         const result = { ...classification };
         if (fixRecommendation) {
             result.fixRecommendation = fixRecommendation;
@@ -4482,7 +4503,7 @@ async function generateFixRecommendation(inputs, repoDetails, errorData, openaiC
         return null;
     }
 }
-async function iterativeFixValidateLoop(inputs, repoDetails, autoFixTargetRepo, errorData, openaiClient, octokit, skillStore, classificationResponseId) {
+async function iterativeFixValidateLoop(inputs, repoDetails, autoFixTargetRepo, errorData, openaiClient, octokit, skillStore, classificationResponseId, investigationContext) {
     const maxIterations = constants_1.FIX_VALIDATE_LOOP.MAX_ITERATIONS;
     let fixRecommendation = null;
     let autoFixResult = null;
@@ -4578,11 +4599,15 @@ async function iterativeFixValidateLoop(inputs, repoDetails, autoFixTargetRepo, 
                             prUrl: pushResult.prUrl || '',
                             validatedLocally: true,
                             priorSkillCount: skillStore.countForSpec(errorData.fileName || 'unknown'),
+                            investigationFindings: investigationContext || '',
+                            rootCauseChain: `${changeType} → ${fixRecommendation.summary.slice(0, 80)}`,
+                            repoContext: '',
                         });
                         await skillStore.save(skill).catch((err) => {
                             core.warning(`Failed to save skill: ${err}`);
                         });
                         await skillStore.recordOutcome(skill.id, true).catch(() => { });
+                        return { fixRecommendation, autoFixResult, savedSkillId: skill.id };
                     }
                 }
                 catch (pushError) {
@@ -4631,6 +4656,9 @@ async function iterativeFixValidateLoop(inputs, repoDetails, autoFixTargetRepo, 
                         prUrl: '',
                         validatedLocally: false,
                         priorSkillCount: skillStore.countForSpec(errorData.fileName || 'unknown'),
+                        investigationFindings: investigationContext || '',
+                        rootCauseChain: `${changeType} → ${fixRecommendation.summary.slice(0, 80)}`,
+                        repoContext: '',
                     });
                     await skillStore.save(failedSkill).catch(() => { });
                     await skillStore.recordOutcome(failedSkill.id, false).catch(() => { });
@@ -7244,6 +7272,10 @@ function backfillDefaults(skill) {
         failCount: skill.failCount ?? 0,
         lastUsedAt: skill.lastUsedAt ?? skill.createdAt,
         retired: skill.retired ?? false,
+        investigationFindings: skill.investigationFindings ?? '',
+        classificationOutcome: skill.classificationOutcome ?? 'unknown',
+        rootCauseChain: skill.rootCauseChain ?? '',
+        repoContext: skill.repoContext ?? '',
     };
 }
 class SkillStore {
@@ -7403,6 +7435,54 @@ class SkillStore {
             }
         }
     }
+    async recordClassificationOutcome(skillId, outcome) {
+        if (!this.loaded) {
+            await this.load();
+        }
+        const skill = this.skills.find(s => s.id === skillId);
+        if (!skill) {
+            core.warning(`Skill ${skillId} not found — cannot record classification outcome`);
+            return;
+        }
+        skill.classificationOutcome = outcome;
+        const commitMsg = `chore: record classification ${outcome} for skill ${skillId}`;
+        try {
+            await this.persist(commitMsg);
+        }
+        catch (err) {
+            const status = err.status;
+            if (status === 409) {
+                try {
+                    const { data } = await this.octokit.repos.getContent({
+                        owner: this.owner,
+                        repo: this.repo,
+                        path: SKILLS_FILE,
+                        ref: SKILLS_BRANCH,
+                    });
+                    if (!('content' in data) || !data.content) {
+                        throw new Error('Unexpected empty skills file');
+                    }
+                    const raw = Buffer.from(data.content, 'base64').toString('utf-8');
+                    const remoteSkills = JSON.parse(raw).map(backfillDefaults);
+                    const remoteSkill = remoteSkills.find(s => s.id === skillId);
+                    if (!remoteSkill) {
+                        core.warning(`Skill ${skillId} not found in remote data — skipping classification persist`);
+                        return;
+                    }
+                    remoteSkill.classificationOutcome = outcome;
+                    this.skills = remoteSkills;
+                    this.fileSha = data.sha;
+                    await this.persist(commitMsg);
+                }
+                catch (retryErr) {
+                    core.warning(`Failed to persist classification outcome: ${retryErr}`);
+                }
+            }
+            else {
+                core.warning(`Failed to persist classification outcome: ${err}`);
+            }
+        }
+    }
     findRelevant(opts) {
         const limit = opts.limit ?? 5;
         const normalized = normalizeFramework(opts.framework);
@@ -7530,9 +7610,42 @@ class SkillStore {
             .map((s, i) => {
             const tag = s.wasSuccessful ? 'SUCCESS' : 'FAILED';
             const suffix = s.wasSuccessful ? '' : ' (this approach did NOT work)';
-            return (`${i + 1}. [${tag}] errorPattern: ${sanitizeForPrompt(s.errorPattern)}\n` +
+            let entry = `${i + 1}. [${tag}] errorPattern: ${sanitizeForPrompt(s.errorPattern)}\n` +
                 `   rootCause: ${sanitizeForPrompt(s.rootCauseCategory)}\n` +
-                `   fix: ${sanitizeForPrompt(s.fix.summary)}${suffix}`);
+                `   fix: ${sanitizeForPrompt(s.fix.summary)}${suffix}`;
+            if (s.investigationFindings) {
+                entry += `\n   Investigation found: ${sanitizeForPrompt(s.investigationFindings)}`;
+            }
+            if (s.repoContext) {
+                entry += `\n   Repo note: ${sanitizeForPrompt(s.repoContext)}`;
+            }
+            return entry;
+        })
+            .join('\n');
+    }
+    formatForInvestigation(opts) {
+        const relevant = this.findRelevant({
+            framework: opts.framework,
+            spec: opts.spec,
+            errorMessage: opts.errorMessage,
+        }).filter(s => s.investigationFindings);
+        if (relevant.length === 0)
+            return '';
+        return relevant
+            .slice(0, 3)
+            .map((s, i) => {
+            const date = s.createdAt.split('T')[0];
+            const outcome = s.classificationOutcome ?? 'unknown';
+            let entry = `${i + 1}. Prior investigation for ${sanitizeForPrompt(s.spec)} (${date}):`;
+            entry += `\n   Finding: ${sanitizeForPrompt(s.investigationFindings)}`;
+            if (s.rootCauseChain) {
+                entry += `\n   Root cause: ${sanitizeForPrompt(s.rootCauseChain)}`;
+            }
+            entry += `\n   Outcome: ${outcome}`;
+            if (s.repoContext) {
+                entry += `\n   Repo note: ${sanitizeForPrompt(s.repoContext)}`;
+            }
+            return entry;
         })
             .join('\n');
     }
@@ -7611,6 +7724,10 @@ function buildSkill(params) {
         failCount: 0,
         lastUsedAt: new Date().toISOString(),
         retired: false,
+        investigationFindings: params.investigationFindings ?? '',
+        classificationOutcome: 'unknown',
+        rootCauseChain: params.rootCauseChain ?? '',
+        repoContext: params.repoContext ?? '',
     };
 }
 function describeFixPattern(changes) {

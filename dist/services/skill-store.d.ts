@@ -23,6 +23,10 @@ export interface TriageSkill {
     failCount: number;
     lastUsedAt: string;
     retired: boolean;
+    investigationFindings?: string;
+    classificationOutcome?: 'correct' | 'incorrect' | 'unknown';
+    rootCauseChain?: string;
+    repoContext?: string;
 }
 export interface RepairSkill extends TriageSkill {
     wasSuccessful: boolean;
@@ -44,6 +48,7 @@ export declare class SkillStore {
     load(): Promise<TriageSkill[]>;
     save(skill: TriageSkill): Promise<void>;
     recordOutcome(skillId: string, success: boolean): Promise<void>;
+    recordClassificationOutcome(skillId: string, outcome: 'correct' | 'incorrect'): Promise<void>;
     findRelevant(opts: {
         framework: string;
         spec?: string;
@@ -74,6 +79,11 @@ export declare class SkillStore {
         errorMessage?: string;
         rootCauseCategory?: string;
     }): string;
+    formatForInvestigation(opts: {
+        framework: string;
+        spec?: string;
+        errorMessage?: string;
+    }): string;
     private persist;
     private ensureBranch;
 }
@@ -96,6 +106,9 @@ export declare function buildSkill(params: {
     prUrl: string;
     validatedLocally: boolean;
     priorSkillCount: number;
+    investigationFindings?: string;
+    rootCauseChain?: string;
+    repoContext?: string;
 }): TriageSkill;
 export declare function describeFixPattern(changes: Array<{
     file: string;

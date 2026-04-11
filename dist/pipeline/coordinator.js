@@ -90,15 +90,24 @@ class PipelineCoordinator {
         const autoFixTargetRepo = this.inputs.autoFixTargetRepo
             ? (0, output_1.resolveAutoFixTargetRepo)(this.inputs)
             : null;
+        const investigationContext = skillStore
+            ? skillStore.formatForInvestigation({
+                framework: errorData.framework || 'unknown',
+                spec: errorData.fileName,
+                errorMessage: errorData.message,
+            })
+            : '';
         let fixRecommendation = null;
         let autoFixResult = null;
+        let savedSkillId;
         if (this.inputs.enableAutoFix &&
             this.inputs.enableValidation &&
             this.inputs.validationTestCommand &&
             autoFixTargetRepo) {
-            const loopResult = await (0, validator_1.iterativeFixValidateLoop)(this.inputs, this.repoDetails, autoFixTargetRepo, errorData, this.openaiClient, this.octokit, skillStore, undefined);
+            const loopResult = await (0, validator_1.iterativeFixValidateLoop)(this.inputs, this.repoDetails, autoFixTargetRepo, errorData, this.openaiClient, this.octokit, skillStore, undefined, investigationContext);
             fixRecommendation = loopResult.fixRecommendation;
             autoFixResult = loopResult.autoFixResult;
+            savedSkillId = loopResult.savedSkillId;
         }
         else {
             const singleResult = await (0, validator_1.generateFixRecommendation)(this.inputs, this.repoDetails, errorData, this.openaiClient, this.octokit, undefined, undefined, skillStore);
@@ -107,7 +116,7 @@ class PipelineCoordinator {
                 autoFixResult = await (0, validator_1.attemptAutoFix)(this.inputs, fixRecommendation, this.octokit, autoFixTargetRepo, errorData);
             }
         }
-        return { fixRecommendation, autoFixResult };
+        return { fixRecommendation, autoFixResult, savedSkillId };
     }
     async execute() {
         const errorData = await (0, log_processor_1.processWorkflowLogs)(this.octokit, this.artifactFetcher, this.inputs, this.repoDetails);
@@ -130,7 +139,12 @@ class PipelineCoordinator {
             return;
         if (classification.verdict !== 'TEST_ISSUE')
             return;
-        const { fixRecommendation, autoFixResult } = await this.repair(classification, errorData, skillStore);
+        const { fixRecommendation, autoFixResult, savedSkillId } = await this.repair(classification, errorData, skillStore);
+        if (autoFixResult?.success && savedSkillId && skillStore) {
+            await skillStore.recordClassificationOutcome(savedSkillId, 'correct').catch((err) => {
+                core.warning(`Failed to record classification outcome: ${err}`);
+            });
+        }
         const result = { ...classification };
         if (fixRecommendation) {
             result.fixRecommendation = fixRecommendation;

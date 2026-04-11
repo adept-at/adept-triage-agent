@@ -21,6 +21,7 @@ export interface ClassificationResult {
 export interface RepairResult {
     fixRecommendation: FixRecommendation | null;
     autoFixResult: ApplyResult | null;
+    savedSkillId?: string;
 }
 interface PipelineCoordinatorDeps {
     octokit: Octokit;
