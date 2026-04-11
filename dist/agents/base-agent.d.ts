@@ -41,6 +41,7 @@ export interface AgentContext {
     skillsPrompt?: string;
     delegationContext?: string;
     includeScreenshots?: boolean;
+    investigationSummary?: string;
 }
 export interface AgentConfig {
     timeoutMs: number;

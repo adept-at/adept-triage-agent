@@ -294,13 +294,15 @@ export class AgentOrchestrator {
     context.skillsPrompt = skills
       ? formatSkillsForPrompt(skills.relevant, 'investigation', skills.flakiness)
       : '';
+    const investigationChainId = analysis.confidence < 80 ? (analysisResult.responseId ?? undefined) : undefined;
+    core.info(analysis.confidence < 80 ? '🔗 Chaining analysis context to investigation (confidence < 80%)' : '📋 Investigation starts fresh (analysis confidence >= 80%)');
     const investigationResult = await this.investigationAgent.execute(
       {
         analysis,
         codeContext: codeReadingResult.data,
       },
       context,
-      undefined
+      investigationChainId
     );
     agentResults.investigation = investigationResult;
     lastResponseId = investigationResult.responseId ?? lastResponseId;
@@ -340,6 +342,12 @@ export class AgentOrchestrator {
         lastResponseId: investigationResult.responseId ?? lastResponseId,
       };
     }
+
+    context.investigationSummary = [
+      investigation.primaryFinding?.description,
+      investigation.recommendedApproach,
+      investigation.verdictOverride ? `verdictOverride: ${investigation.verdictOverride.suggestedLocation}` : '',
+    ].filter(Boolean).join(' | ');
 
     // Step 4 & 5: Fix Generation and Review Loop
     let lastFix: FixGenerationOutput | null = null;

@@ -108,10 +108,12 @@ export async function iterativeFixValidateLoop(
   openaiClient: OpenAIClient,
   octokit: Octokit,
   skillStore?: SkillStore,
-  classificationResponseId?: string
+  classificationResponseId?: string,
+  investigationContext?: string
 ): Promise<{
   fixRecommendation: FixRecommendation | null;
   autoFixResult: ApplyResult | null;
+  savedSkillId?: string;
 }> {
   const maxIterations = FIX_VALIDATE_LOOP.MAX_ITERATIONS;
   let fixRecommendation: FixRecommendation | null = null;
@@ -252,11 +254,16 @@ export async function iterativeFixValidateLoop(
               prUrl: pushResult.prUrl || '',
               validatedLocally: true,
               priorSkillCount: skillStore.countForSpec(errorData.fileName || 'unknown'),
+              investigationFindings: investigationContext || '',
+              rootCauseChain: `${changeType} → ${fixRecommendation.summary.slice(0, 80)}`,
+              repoContext: '',
             });
             await skillStore.save(skill).catch((err) => {
               core.warning(`Failed to save skill: ${err}`);
             });
             await skillStore.recordOutcome(skill.id, true).catch(() => {});
+
+            return { fixRecommendation, autoFixResult, savedSkillId: skill.id };
           }
         } catch (pushError) {
           core.warning(`Test passed but push/PR creation failed: ${pushError}`);
@@ -309,6 +316,9 @@ export async function iterativeFixValidateLoop(
             prUrl: '',
             validatedLocally: false,
             priorSkillCount: skillStore.countForSpec(errorData.fileName || 'unknown'),
+            investigationFindings: investigationContext || '',
+            rootCauseChain: `${changeType} → ${fixRecommendation.summary.slice(0, 80)}`,
+            repoContext: '',
           });
           await skillStore.save(failedSkill).catch(() => {});
           await skillStore.recordOutcome(failedSkill.id, false).catch(() => {});

@@ -34,6 +34,7 @@ export interface ClassificationResult {
 export interface RepairResult {
   fixRecommendation: FixRecommendation | null;
   autoFixResult: ApplyResult | null;
+  savedSkillId?: string;
 }
 
 interface PipelineCoordinatorDeps {
@@ -112,8 +113,17 @@ export class PipelineCoordinator {
       ? resolveAutoFixTargetRepo(this.inputs)
       : null;
 
+    const investigationContext = skillStore
+      ? skillStore.formatForInvestigation({
+          framework: errorData.framework || 'unknown',
+          spec: errorData.fileName,
+          errorMessage: errorData.message,
+        })
+      : '';
+
     let fixRecommendation: FixRecommendation | null = null;
     let autoFixResult: ApplyResult | null = null;
+    let savedSkillId: string | undefined;
 
     if (
       this.inputs.enableAutoFix &&
@@ -129,10 +139,12 @@ export class PipelineCoordinator {
         this.openaiClient,
         this.octokit,
         skillStore,
-        undefined
+        undefined,
+        investigationContext
       );
       fixRecommendation = loopResult.fixRecommendation;
       autoFixResult = loopResult.autoFixResult;
+      savedSkillId = loopResult.savedSkillId;
     } else {
       const singleResult = await generateFixRecommendation(
         this.inputs,
@@ -156,7 +168,7 @@ export class PipelineCoordinator {
       }
     }
 
-    return { fixRecommendation, autoFixResult };
+    return { fixRecommendation, autoFixResult, savedSkillId };
   }
 
   async execute(): Promise<void> {
@@ -189,11 +201,17 @@ export class PipelineCoordinator {
     if (classification.confidence < this.inputs.confidenceThreshold) return;
     if (classification.verdict !== 'TEST_ISSUE') return;
 
-    const { fixRecommendation, autoFixResult } = await this.repair(
+    const { fixRecommendation, autoFixResult, savedSkillId } = await this.repair(
       classification,
       errorData,
       skillStore
     );
+
+    if (autoFixResult?.success && savedSkillId && skillStore) {
+      await skillStore.recordClassificationOutcome(savedSkillId, 'correct').catch((err) => {
+        core.warning(`Failed to record classification outcome: ${err}`);
+      });
+    }
 
     const result: AnalysisResult = { ...classification };
     if (fixRecommendation) {
