@@ -1,4 +1,5 @@
 import * as core from '@actions/core';
+import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
@@ -103,6 +104,27 @@ export class LocalFixValidator {
         'utf-8'
       );
     }
+
+    const npmCacheDir = path.join(os.homedir(), '.npm');
+    const lockPath = path.join(this._workDir, 'package-lock.json');
+    let cacheKey = '';
+    let cacheRestored = false;
+
+    if (fs.existsSync(lockPath)) {
+      const lockHash = crypto.createHash('sha256').update(fs.readFileSync(lockPath)).digest('hex').slice(0, 16);
+      cacheKey = `triage-npm-${process.platform}-${this.config.owner}-${this.config.repo}-${lockHash}`;
+      try {
+        const cacheModule = await import('@actions/cache');
+        const hit = await cacheModule.restoreCache([npmCacheDir], cacheKey, [
+          `triage-npm-${process.platform}-${this.config.owner}-${this.config.repo}-`,
+        ]);
+        cacheRestored = !!hit;
+        core.info(hit ? `📦 npm cache restored (key: ${hit})` : '📦 npm cache miss — full install');
+      } catch (err) {
+        core.info(`📦 npm cache restore failed (non-fatal): ${err}`);
+      }
+    }
+
     const npmEnv = filterEnv(this.config.npmToken || this.config.githubToken);
     try {
       execSync('npm ci 2>&1', {
@@ -131,6 +153,16 @@ export class LocalFixValidator {
         const ie = installErr as { stdout?: string; stderr?: string };
         const installOutput = ie.stdout || ie.stderr || String(installErr);
         throw new Error(`npm install failed:\n${installOutput.slice(-1000)}`);
+      }
+    }
+
+    if (cacheKey && !cacheRestored) {
+      try {
+        const cacheModule = await import('@actions/cache');
+        await cacheModule.saveCache([npmCacheDir], cacheKey);
+        core.info(`📦 npm cache saved (key: ${cacheKey})`);
+      } catch (err) {
+        core.info(`📦 npm cache save failed (non-fatal): ${err}`);
       }
     }
 

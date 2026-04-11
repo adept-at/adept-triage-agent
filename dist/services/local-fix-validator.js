@@ -35,6 +35,7 @@ var __importStar = (this && this.__importStar) || (function () {
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.LocalFixValidator = void 0;
 const core = __importStar(require("@actions/core"));
+const crypto = __importStar(require("crypto"));
 const fs = __importStar(require("fs"));
 const os = __importStar(require("os"));
 const path = __importStar(require("path"));
@@ -95,6 +96,25 @@ class LocalFixValidator {
         if (!fs.existsSync(npmrcPath)) {
             fs.writeFileSync(npmrcPath, '//npm.pkg.github.com/:_authToken=${NODE_AUTH_TOKEN}\n@adept-at:registry=https://npm.pkg.github.com\n', 'utf-8');
         }
+        const npmCacheDir = path.join(os.homedir(), '.npm');
+        const lockPath = path.join(this._workDir, 'package-lock.json');
+        let cacheKey = '';
+        let cacheRestored = false;
+        if (fs.existsSync(lockPath)) {
+            const lockHash = crypto.createHash('sha256').update(fs.readFileSync(lockPath)).digest('hex').slice(0, 16);
+            cacheKey = `triage-npm-${process.platform}-${this.config.owner}-${this.config.repo}-${lockHash}`;
+            try {
+                const cacheModule = await import('@actions/cache');
+                const hit = await cacheModule.restoreCache([npmCacheDir], cacheKey, [
+                    `triage-npm-${process.platform}-${this.config.owner}-${this.config.repo}-`,
+                ]);
+                cacheRestored = !!hit;
+                core.info(hit ? `📦 npm cache restored (key: ${hit})` : '📦 npm cache miss — full install');
+            }
+            catch (err) {
+                core.info(`📦 npm cache restore failed (non-fatal): ${err}`);
+            }
+        }
         const npmEnv = filterEnv(this.config.npmToken || this.config.githubToken);
         try {
             (0, child_process_1.execSync)('npm ci 2>&1', {
@@ -125,6 +145,16 @@ class LocalFixValidator {
                 const ie = installErr;
                 const installOutput = ie.stdout || ie.stderr || String(installErr);
                 throw new Error(`npm install failed:\n${installOutput.slice(-1000)}`);
+            }
+        }
+        if (cacheKey && !cacheRestored) {
+            try {
+                const cacheModule = await import('@actions/cache');
+                await cacheModule.saveCache([npmCacheDir], cacheKey);
+                core.info(`📦 npm cache saved (key: ${cacheKey})`);
+            }
+            catch (err) {
+                core.info(`📦 npm cache save failed (non-fatal): ${err}`);
             }
         }
         core.info('✅ Setup complete');
