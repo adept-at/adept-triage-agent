@@ -3599,9 +3599,17 @@ When analyzing screenshots (if provided):
 
 Screenshots often contain crucial error information that logs might miss. If an error is visible in a screenshot, it should be a key factor in your analysis.
 
+CROSS-BROWSER EVIDENCE (CRITICAL):
+When the same test suite runs across multiple browsers in the same CI run:
+- If ALL browsers fail with the same error: likely a real PRODUCT_ISSUE or a universal test problem
+- If SOME browsers pass and others fail: almost always a TEST_ISSUE (timing, scroll behavior, intersection observer differences between browser engines) or a TRANSIENT issue (API timeout, cache miss that affected one browser's run but not another's). Modern JavaScript behaves identically across browsers — browser-specific product bugs are extremely rare.
+- If one browser shows "No data" or empty state while another shows data: this is more likely a transient backend issue (API timeout, slow CDN) than a browser-specific rendering bug. Classify based on whether it reproduces, not on a single occurrence.
+- Do NOT classify as PRODUCT_ISSUE solely because one browser fails — check if other browsers in the same run passed first.
+
 COMMON MISCLASSIFICATION PATTERNS TO AVOID:
 - Don't classify as TEST_ISSUE just because error happens in test file - check if it's exposing a real product bug
 - Don't classify as PRODUCT_ISSUE just because of a timeout - many timeouts are test synchronization issues
+- Don't classify as PRODUCT_ISSUE when one browser fails but others pass in the same run — this is almost always test timing or a transient issue
 - GraphQL/API errors during tests often indicate real product issues, not test problems
 - "Element not found" can be either - check if UI actually rendered correctly in screenshots
 
