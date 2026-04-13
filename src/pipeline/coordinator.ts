@@ -37,6 +37,8 @@ export interface RepairResult {
   investigationContext?: string;
   iterations: number;
   prUrl?: string;
+  agentRootCause?: string;
+  agentInvestigationFindings?: string;
 }
 
 interface PipelineCoordinatorDeps {
@@ -127,6 +129,8 @@ export class PipelineCoordinator {
     let autoFixResult: ApplyResult | null = null;
     let iterations = 0;
     let prUrl: string | undefined;
+    let agentRootCause: string | undefined;
+    let agentInvestigationFindings: string | undefined;
 
     if (
       this.inputs.enableAutoFix &&
@@ -149,6 +153,8 @@ export class PipelineCoordinator {
       autoFixResult = loopResult.autoFixResult;
       iterations = loopResult.iterations;
       prUrl = loopResult.prUrl;
+      agentRootCause = loopResult.agentRootCause;
+      agentInvestigationFindings = loopResult.agentInvestigationFindings;
     } else {
       const singleResult = await generateFixRecommendation(
         this.inputs,
@@ -162,6 +168,8 @@ export class PipelineCoordinator {
         investigationContext
       );
       fixRecommendation = singleResult?.fix ?? null;
+      agentRootCause = singleResult?.agentRootCause;
+      agentInvestigationFindings = singleResult?.agentInvestigationFindings;
       if (fixRecommendation && this.inputs.enableAutoFix && autoFixTargetRepo) {
         autoFixResult = await attemptAutoFix(
           this.inputs,
@@ -173,7 +181,7 @@ export class PipelineCoordinator {
       }
     }
 
-    return { fixRecommendation, autoFixResult, investigationContext, iterations, prUrl };
+    return { fixRecommendation, autoFixResult, investigationContext, iterations, prUrl, agentRootCause, agentInvestigationFindings };
   }
 
   async execute(): Promise<void> {
@@ -220,7 +228,7 @@ export class PipelineCoordinator {
     if (classification.confidence < this.inputs.confidenceThreshold) return;
     if (classification.verdict !== 'TEST_ISSUE') return;
 
-    const { fixRecommendation, autoFixResult, investigationContext, iterations, prUrl: skillPrUrl } = await this.repair(
+    const { fixRecommendation, autoFixResult, iterations, prUrl: skillPrUrl, agentRootCause, agentInvestigationFindings } = await this.repair(
       classification,
       errorData,
       skillStore
@@ -233,7 +241,8 @@ export class PipelineCoordinator {
 
       if (fixAttempted) {
         const firstChange = fixRecommendation!.proposedChanges?.[0];
-        const rootCause = inferRootCauseCategory(fixRecommendation!);
+        const rootCause = agentRootCause || inferRootCauseCategory(fixRecommendation!);
+        const currentFindings = agentInvestigationFindings || '';
 
         const skill = buildSkill({
           repo: `${autoFixTargetRepo.owner}/${autoFixTargetRepo.repo}`,
@@ -253,7 +262,7 @@ export class PipelineCoordinator {
           prUrl: skillPrUrl || '',
           validatedLocally: fixSucceeded,
           priorSkillCount: skillStore.countForSpec(errorData.fileName || 'unknown'),
-          investigationFindings: investigationContext || '',
+          investigationFindings: currentFindings,
           rootCauseChain: `${rootCause} → ${fixRecommendation!.summary?.slice(0, 80)}`,
         });
 

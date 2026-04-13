@@ -148,7 +148,25 @@ class SimplifiedRepairAgent {
                         change.file = cleaned;
                     }
                 }
-                return { fix: result.fix, lastResponseId: result.lastResponseId };
+                const analysis = result.agentResults.analysis?.data;
+                const investigation = result.agentResults.investigation?.data;
+                const agentRootCause = analysis?.rootCauseCategory;
+                const investigationParts = [];
+                if (investigation?.primaryFinding) {
+                    investigationParts.push(investigation.primaryFinding.description);
+                }
+                if (investigation?.recommendedApproach) {
+                    investigationParts.push(`Approach: ${investigation.recommendedApproach}`);
+                }
+                if (investigation?.findings?.length) {
+                    for (const f of investigation.findings.slice(0, 3)) {
+                        investigationParts.push(`[${f.severity}] ${f.description}`);
+                    }
+                }
+                const agentInvestigationFindings = investigationParts.length > 0
+                    ? investigationParts.join('\n')
+                    : undefined;
+                return { fix: result.fix, lastResponseId: result.lastResponseId, agentRootCause, agentInvestigationFindings };
             }
             core.info(`🤖 Agentic approach failed: ${result.error || 'No fix generated'}`);
             return null;

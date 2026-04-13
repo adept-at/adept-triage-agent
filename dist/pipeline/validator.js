@@ -101,6 +101,8 @@ async function iterativeFixValidateLoop(inputs, repoDetails, autoFixTargetRepo, 
     let fixRecommendation = null;
     let autoFixResult = null;
     let completedIterations = 0;
+    let agentRootCause;
+    let agentInvestigationFindings;
     let previousAttempt;
     const failedFixFingerprints = new Set();
     const minConfidence = inputs.autoFixMinConfidence ?? constants_1.AUTO_FIX.DEFAULT_MIN_CONFIDENCE;
@@ -130,6 +132,10 @@ async function iterativeFixValidateLoop(inputs, repoDetails, autoFixTargetRepo, 
             }
             fixRecommendation = fixResult.fix;
             lastResponseId = fixResult.lastResponseId ?? lastResponseId;
+            if (fixResult.agentRootCause)
+                agentRootCause = fixResult.agentRootCause;
+            if (fixResult.agentInvestigationFindings)
+                agentInvestigationFindings = fixResult.agentInvestigationFindings;
             if (fixRecommendation.confidence < minConfidence ||
                 !fixRecommendation.proposedChanges?.length) {
                 core.info(`Iteration ${iteration + 1}: fix rejected — confidence ${fixRecommendation.confidence}% below ${minConfidence}% or no changes`);
@@ -147,7 +153,7 @@ async function iterativeFixValidateLoop(inputs, repoDetails, autoFixTargetRepo, 
                 const baseline = await validator.baselineCheck();
                 if (baseline.passed) {
                     core.info('✅ Baseline check passed — test passes without fix. Failure was likely transient.');
-                    return { fixRecommendation: null, autoFixResult: null, iterations: 0 };
+                    return { fixRecommendation: null, autoFixResult: null, iterations: 0, agentRootCause, agentInvestigationFindings };
                 }
                 core.info('❌ Baseline check confirmed failure — proceeding with fix.');
             }
@@ -179,7 +185,7 @@ async function iterativeFixValidateLoop(inputs, repoDetails, autoFixTargetRepo, 
                         branchName: pushResult.branchName,
                         validationStatus: 'passed',
                     };
-                    return { fixRecommendation, autoFixResult, iterations: iteration + 1, prUrl: pushResult.prUrl };
+                    return { fixRecommendation, autoFixResult, iterations: iteration + 1, prUrl: pushResult.prUrl, agentRootCause, agentInvestigationFindings };
                 }
                 catch (pushError) {
                     core.warning(`Test passed but push/PR creation failed: ${pushError}`);
@@ -190,7 +196,7 @@ async function iterativeFixValidateLoop(inputs, repoDetails, autoFixTargetRepo, 
                         validationStatus: 'passed',
                     };
                 }
-                return { fixRecommendation, autoFixResult, iterations: iteration + 1 };
+                return { fixRecommendation, autoFixResult, iterations: iteration + 1, agentRootCause, agentInvestigationFindings };
             }
             core.warning(`\n❌ Test FAILED on iteration ${iteration + 1} (exit code: ${testResult.exitCode}, ${testResult.durationMs}ms)`);
             failedFixFingerprints.add(fingerprint);
@@ -213,7 +219,7 @@ async function iterativeFixValidateLoop(inputs, repoDetails, autoFixTargetRepo, 
             await validator.cleanup();
         }
     }
-    return { fixRecommendation, autoFixResult, iterations: completedIterations };
+    return { fixRecommendation, autoFixResult, iterations: completedIterations, agentRootCause, agentInvestigationFindings };
 }
 function fixFingerprint(fix) {
     const normalize = (s) => s.replace(/\s+/g, ' ').trim();

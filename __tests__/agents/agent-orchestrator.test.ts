@@ -208,6 +208,11 @@ describe('AgentOrchestrator', () => {
       expect(result.approach).toBe('agentic');
       expect(result.fix).toBeDefined();
       expect(result.fix?.confidence).toBeGreaterThanOrEqual(70);
+
+      expect(result.agentResults.analysis?.data?.rootCauseCategory).toBe('SELECTOR_MISMATCH');
+      expect(result.agentResults.investigation?.data?.findings).toHaveLength(1);
+      expect(result.agentResults.investigation?.data?.findings[0].description).toBe('Selector changed');
+      expect(result.agentResults.investigation?.data?.recommendedApproach).toBe('Update the selector');
     });
 
     it('should handle timeout', async () => {

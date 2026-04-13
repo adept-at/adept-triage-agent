@@ -101,6 +101,8 @@ class PipelineCoordinator {
         let autoFixResult = null;
         let iterations = 0;
         let prUrl;
+        let agentRootCause;
+        let agentInvestigationFindings;
         if (this.inputs.enableAutoFix &&
             this.inputs.enableValidation &&
             this.inputs.validationTestCommand &&
@@ -110,15 +112,19 @@ class PipelineCoordinator {
             autoFixResult = loopResult.autoFixResult;
             iterations = loopResult.iterations;
             prUrl = loopResult.prUrl;
+            agentRootCause = loopResult.agentRootCause;
+            agentInvestigationFindings = loopResult.agentInvestigationFindings;
         }
         else {
             const singleResult = await (0, validator_1.generateFixRecommendation)(this.inputs, this.repoDetails, errorData, this.openaiClient, this.octokit, undefined, undefined, skillStore, investigationContext);
             fixRecommendation = singleResult?.fix ?? null;
+            agentRootCause = singleResult?.agentRootCause;
+            agentInvestigationFindings = singleResult?.agentInvestigationFindings;
             if (fixRecommendation && this.inputs.enableAutoFix && autoFixTargetRepo) {
                 autoFixResult = await (0, validator_1.attemptAutoFix)(this.inputs, fixRecommendation, this.octokit, autoFixTargetRepo, errorData);
             }
         }
-        return { fixRecommendation, autoFixResult, investigationContext, iterations, prUrl };
+        return { fixRecommendation, autoFixResult, investigationContext, iterations, prUrl, agentRootCause, agentInvestigationFindings };
     }
     async execute() {
         const errorData = await (0, log_processor_1.processWorkflowLogs)(this.octokit, this.artifactFetcher, this.inputs, this.repoDetails);
@@ -149,14 +155,15 @@ class PipelineCoordinator {
             return;
         if (classification.verdict !== 'TEST_ISSUE')
             return;
-        const { fixRecommendation, autoFixResult, investigationContext, iterations, prUrl: skillPrUrl } = await this.repair(classification, errorData, skillStore);
+        const { fixRecommendation, autoFixResult, iterations, prUrl: skillPrUrl, agentRootCause, agentInvestigationFindings } = await this.repair(classification, errorData, skillStore);
         let savedSkillId;
         if (skillStore && autoFixTargetRepo && errorData) {
             const fixSucceeded = !!(autoFixResult?.success && autoFixResult.validationStatus === 'passed');
             const fixAttempted = !!fixRecommendation;
             if (fixAttempted) {
                 const firstChange = fixRecommendation.proposedChanges?.[0];
-                const rootCause = inferRootCauseCategory(fixRecommendation);
+                const rootCause = agentRootCause || inferRootCauseCategory(fixRecommendation);
+                const currentFindings = agentInvestigationFindings || '';
                 const skill = (0, skill_store_1.buildSkill)({
                     repo: `${autoFixTargetRepo.owner}/${autoFixTargetRepo.repo}`,
                     spec: errorData.fileName || 'unknown',
@@ -175,7 +182,7 @@ class PipelineCoordinator {
                     prUrl: skillPrUrl || '',
                     validatedLocally: fixSucceeded,
                     priorSkillCount: skillStore.countForSpec(errorData.fileName || 'unknown'),
-                    investigationFindings: investigationContext || '',
+                    investigationFindings: currentFindings,
                     rootCauseChain: `${rootCause} → ${fixRecommendation.summary?.slice(0, 80)}`,
                 });
                 savedSkillId = skill.id;

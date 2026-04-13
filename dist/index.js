@@ -4063,6 +4063,8 @@ class PipelineCoordinator {
         let autoFixResult = null;
         let iterations = 0;
         let prUrl;
+        let agentRootCause;
+        let agentInvestigationFindings;
         if (this.inputs.enableAutoFix &&
             this.inputs.enableValidation &&
             this.inputs.validationTestCommand &&
@@ -4072,15 +4074,19 @@ class PipelineCoordinator {
             autoFixResult = loopResult.autoFixResult;
             iterations = loopResult.iterations;
             prUrl = loopResult.prUrl;
+            agentRootCause = loopResult.agentRootCause;
+            agentInvestigationFindings = loopResult.agentInvestigationFindings;
         }
         else {
             const singleResult = await (0, validator_1.generateFixRecommendation)(this.inputs, this.repoDetails, errorData, this.openaiClient, this.octokit, undefined, undefined, skillStore, investigationContext);
             fixRecommendation = singleResult?.fix ?? null;
+            agentRootCause = singleResult?.agentRootCause;
+            agentInvestigationFindings = singleResult?.agentInvestigationFindings;
             if (fixRecommendation && this.inputs.enableAutoFix && autoFixTargetRepo) {
                 autoFixResult = await (0, validator_1.attemptAutoFix)(this.inputs, fixRecommendation, this.octokit, autoFixTargetRepo, errorData);
             }
         }
-        return { fixRecommendation, autoFixResult, investigationContext, iterations, prUrl };
+        return { fixRecommendation, autoFixResult, investigationContext, iterations, prUrl, agentRootCause, agentInvestigationFindings };
     }
     async execute() {
         const errorData = await (0, log_processor_1.processWorkflowLogs)(this.octokit, this.artifactFetcher, this.inputs, this.repoDetails);
@@ -4111,14 +4117,15 @@ class PipelineCoordinator {
             return;
         if (classification.verdict !== 'TEST_ISSUE')
             return;
-        const { fixRecommendation, autoFixResult, investigationContext, iterations, prUrl: skillPrUrl } = await this.repair(classification, errorData, skillStore);
+        const { fixRecommendation, autoFixResult, iterations, prUrl: skillPrUrl, agentRootCause, agentInvestigationFindings } = await this.repair(classification, errorData, skillStore);
         let savedSkillId;
         if (skillStore && autoFixTargetRepo && errorData) {
             const fixSucceeded = !!(autoFixResult?.success && autoFixResult.validationStatus === 'passed');
             const fixAttempted = !!fixRecommendation;
             if (fixAttempted) {
                 const firstChange = fixRecommendation.proposedChanges?.[0];
-                const rootCause = inferRootCauseCategory(fixRecommendation);
+                const rootCause = agentRootCause || inferRootCauseCategory(fixRecommendation);
+                const currentFindings = agentInvestigationFindings || '';
                 const skill = (0, skill_store_1.buildSkill)({
                     repo: `${autoFixTargetRepo.owner}/${autoFixTargetRepo.repo}`,
                     spec: errorData.fileName || 'unknown',
@@ -4137,7 +4144,7 @@ class PipelineCoordinator {
                     prUrl: skillPrUrl || '',
                     validatedLocally: fixSucceeded,
                     priorSkillCount: skillStore.countForSpec(errorData.fileName || 'unknown'),
-                    investigationFindings: investigationContext || '',
+                    investigationFindings: currentFindings,
                     rootCauseChain: `${rootCause} → ${fixRecommendation.summary?.slice(0, 80)}`,
                 });
                 savedSkillId = skill.id;
@@ -4585,6 +4592,8 @@ async function iterativeFixValidateLoop(inputs, repoDetails, autoFixTargetRepo, 
     let fixRecommendation = null;
     let autoFixResult = null;
     let completedIterations = 0;
+    let agentRootCause;
+    let agentInvestigationFindings;
     let previousAttempt;
     const failedFixFingerprints = new Set();
     const minConfidence = inputs.autoFixMinConfidence ?? constants_1.AUTO_FIX.DEFAULT_MIN_CONFIDENCE;
@@ -4614,6 +4623,10 @@ async function iterativeFixValidateLoop(inputs, repoDetails, autoFixTargetRepo, 
             }
             fixRecommendation = fixResult.fix;
             lastResponseId = fixResult.lastResponseId ?? lastResponseId;
+            if (fixResult.agentRootCause)
+                agentRootCause = fixResult.agentRootCause;
+            if (fixResult.agentInvestigationFindings)
+                agentInvestigationFindings = fixResult.agentInvestigationFindings;
             if (fixRecommendation.confidence < minConfidence ||
                 !fixRecommendation.proposedChanges?.length) {
                 core.info(`Iteration ${iteration + 1}: fix rejected — confidence ${fixRecommendation.confidence}% below ${minConfidence}% or no changes`);
@@ -4631,7 +4644,7 @@ async function iterativeFixValidateLoop(inputs, repoDetails, autoFixTargetRepo, 
                 const baseline = await validator.baselineCheck();
                 if (baseline.passed) {
                     core.info('✅ Baseline check passed — test passes without fix. Failure was likely transient.');
-                    return { fixRecommendation: null, autoFixResult: null, iterations: 0 };
+                    return { fixRecommendation: null, autoFixResult: null, iterations: 0, agentRootCause, agentInvestigationFindings };
                 }
                 core.info('❌ Baseline check confirmed failure — proceeding with fix.');
             }
@@ -4663,7 +4676,7 @@ async function iterativeFixValidateLoop(inputs, repoDetails, autoFixTargetRepo, 
                         branchName: pushResult.branchName,
                         validationStatus: 'passed',
                     };
-                    return { fixRecommendation, autoFixResult, iterations: iteration + 1, prUrl: pushResult.prUrl };
+                    return { fixRecommendation, autoFixResult, iterations: iteration + 1, prUrl: pushResult.prUrl, agentRootCause, agentInvestigationFindings };
                 }
                 catch (pushError) {
                     core.warning(`Test passed but push/PR creation failed: ${pushError}`);
@@ -4674,7 +4687,7 @@ async function iterativeFixValidateLoop(inputs, repoDetails, autoFixTargetRepo, 
                         validationStatus: 'passed',
                     };
                 }
-                return { fixRecommendation, autoFixResult, iterations: iteration + 1 };
+                return { fixRecommendation, autoFixResult, iterations: iteration + 1, agentRootCause, agentInvestigationFindings };
             }
             core.warning(`\n❌ Test FAILED on iteration ${iteration + 1} (exit code: ${testResult.exitCode}, ${testResult.durationMs}ms)`);
             failedFixFingerprints.add(fingerprint);
@@ -4697,7 +4710,7 @@ async function iterativeFixValidateLoop(inputs, repoDetails, autoFixTargetRepo, 
             await validator.cleanup();
         }
     }
-    return { fixRecommendation, autoFixResult, iterations: completedIterations };
+    return { fixRecommendation, autoFixResult, iterations: completedIterations, agentRootCause, agentInvestigationFindings };
 }
 function fixFingerprint(fix) {
     const normalize = (s) => s.replace(/\s+/g, ' ').trim();
@@ -5568,7 +5581,25 @@ class SimplifiedRepairAgent {
                         change.file = cleaned;
                     }
                 }
-                return { fix: result.fix, lastResponseId: result.lastResponseId };
+                const analysis = result.agentResults.analysis?.data;
+                const investigation = result.agentResults.investigation?.data;
+                const agentRootCause = analysis?.rootCauseCategory;
+                const investigationParts = [];
+                if (investigation?.primaryFinding) {
+                    investigationParts.push(investigation.primaryFinding.description);
+                }
+                if (investigation?.recommendedApproach) {
+                    investigationParts.push(`Approach: ${investigation.recommendedApproach}`);
+                }
+                if (investigation?.findings?.length) {
+                    for (const f of investigation.findings.slice(0, 3)) {
+                        investigationParts.push(`[${f.severity}] ${f.description}`);
+                    }
+                }
+                const agentInvestigationFindings = investigationParts.length > 0
+                    ? investigationParts.join('\n')
+                    : undefined;
+                return { fix: result.fix, lastResponseId: result.lastResponseId, agentRootCause, agentInvestigationFindings };
             }
             core.info(`🤖 Agentic approach failed: ${result.error || 'No fix generated'}`);
             return null;

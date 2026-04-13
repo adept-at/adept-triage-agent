@@ -25,7 +25,7 @@ export async function generateFixRecommendation(
   previousResponseId?: string,
   skillStore?: SkillStore,
   priorInvestigationContext?: string
-): Promise<{ fix: FixRecommendation; lastResponseId?: string } | null> {
+): Promise<{ fix: FixRecommendation; lastResponseId?: string; agentRootCause?: string; agentInvestigationFindings?: string } | null> {
   try {
     const iterLabel = previousAttempt
       ? ` (iteration ${previousAttempt.iteration + 1})`
@@ -116,11 +116,15 @@ export async function iterativeFixValidateLoop(
   autoFixResult: ApplyResult | null;
   iterations: number;
   prUrl?: string;
+  agentRootCause?: string;
+  agentInvestigationFindings?: string;
 }> {
   const maxIterations = FIX_VALIDATE_LOOP.MAX_ITERATIONS;
   let fixRecommendation: FixRecommendation | null = null;
   let autoFixResult: ApplyResult | null = null;
   let completedIterations = 0;
+  let agentRootCause: string | undefined;
+  let agentInvestigationFindings: string | undefined;
   let previousAttempt:
     | { iteration: number; previousFix: FixRecommendation; validationLogs: string }
     | undefined;
@@ -173,6 +177,8 @@ export async function iterativeFixValidateLoop(
 
       fixRecommendation = fixResult.fix;
       lastResponseId = fixResult.lastResponseId ?? lastResponseId;
+      if (fixResult.agentRootCause) agentRootCause = fixResult.agentRootCause;
+      if (fixResult.agentInvestigationFindings) agentInvestigationFindings = fixResult.agentInvestigationFindings;
 
       if (
         fixRecommendation.confidence < minConfidence ||
@@ -203,7 +209,7 @@ export async function iterativeFixValidateLoop(
         const baseline = await validator.baselineCheck();
         if (baseline.passed) {
           core.info('✅ Baseline check passed — test passes without fix. Failure was likely transient.');
-          return { fixRecommendation: null, autoFixResult: null, iterations: 0 };
+          return { fixRecommendation: null, autoFixResult: null, iterations: 0, agentRootCause, agentInvestigationFindings };
         }
         core.info('❌ Baseline check confirmed failure — proceeding with fix.');
       }
@@ -245,7 +251,7 @@ export async function iterativeFixValidateLoop(
             validationStatus: 'passed',
           };
 
-          return { fixRecommendation, autoFixResult, iterations: iteration + 1, prUrl: pushResult.prUrl };
+          return { fixRecommendation, autoFixResult, iterations: iteration + 1, prUrl: pushResult.prUrl, agentRootCause, agentInvestigationFindings };
         } catch (pushError) {
           core.warning(`Test passed but push/PR creation failed: ${pushError}`);
           autoFixResult = {
@@ -256,7 +262,7 @@ export async function iterativeFixValidateLoop(
           };
         }
 
-        return { fixRecommendation, autoFixResult, iterations: iteration + 1 };
+        return { fixRecommendation, autoFixResult, iterations: iteration + 1, agentRootCause, agentInvestigationFindings };
       }
 
       core.warning(
@@ -282,7 +288,7 @@ export async function iterativeFixValidateLoop(
     }
   }
 
-  return { fixRecommendation, autoFixResult, iterations: completedIterations };
+  return { fixRecommendation, autoFixResult, iterations: completedIterations, agentRootCause, agentInvestigationFindings };
 }
 
 /**

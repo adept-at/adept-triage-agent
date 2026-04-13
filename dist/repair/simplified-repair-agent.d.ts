@@ -22,6 +22,8 @@ export declare class SimplifiedRepairAgent {
     }, priorInvestigationContext?: string): Promise<{
         fix: FixRecommendation;
         lastResponseId?: string;
+        agentRootCause?: string;
+        agentInvestigationFindings?: string;
     } | null>;
     private tryAgenticRepair;
     private singleShotRepair;

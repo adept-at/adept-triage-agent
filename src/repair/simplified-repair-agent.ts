@@ -96,7 +96,7 @@ export class SimplifiedRepairAgent {
     previousResponseId?: string,
     skills?: { relevant: TriageSkill[]; flakiness?: FlakinessSignal },
     priorInvestigationContext?: string
-  ): Promise<{ fix: FixRecommendation; lastResponseId?: string } | null> {
+  ): Promise<{ fix: FixRecommendation; lastResponseId?: string; agentRootCause?: string; agentInvestigationFindings?: string } | null> {
     try {
       core.info('🔧 Generating fix recommendation...');
 
@@ -147,7 +147,7 @@ export class SimplifiedRepairAgent {
     previousResponseId?: string,
     skills?: { relevant: TriageSkill[]; flakiness?: FlakinessSignal },
     priorInvestigationContext?: string
-  ): Promise<{ fix: FixRecommendation; lastResponseId?: string } | null> {
+  ): Promise<{ fix: FixRecommendation; lastResponseId?: string; agentRootCause?: string; agentInvestigationFindings?: string } | null> {
     if (!this.orchestrator) {
       return null;
     }
@@ -215,7 +215,28 @@ export class SimplifiedRepairAgent {
             change.file = cleaned;
           }
         }
-        return { fix: result.fix, lastResponseId: result.lastResponseId };
+
+        const analysis = result.agentResults.analysis?.data;
+        const investigation = result.agentResults.investigation?.data;
+        const agentRootCause = analysis?.rootCauseCategory;
+
+        const investigationParts: string[] = [];
+        if (investigation?.primaryFinding) {
+          investigationParts.push(investigation.primaryFinding.description);
+        }
+        if (investigation?.recommendedApproach) {
+          investigationParts.push(`Approach: ${investigation.recommendedApproach}`);
+        }
+        if (investigation?.findings?.length) {
+          for (const f of investigation.findings.slice(0, 3)) {
+            investigationParts.push(`[${f.severity}] ${f.description}`);
+          }
+        }
+        const agentInvestigationFindings = investigationParts.length > 0
+          ? investigationParts.join('\n')
+          : undefined;
+
+        return { fix: result.fix, lastResponseId: result.lastResponseId, agentRootCause, agentInvestigationFindings };
       }
 
       core.info(

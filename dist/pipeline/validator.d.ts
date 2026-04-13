@@ -17,6 +17,8 @@ export declare function generateFixRecommendation(inputs: ActionInputs, repoDeta
 }, previousResponseId?: string, skillStore?: SkillStore, priorInvestigationContext?: string): Promise<{
     fix: FixRecommendation;
     lastResponseId?: string;
+    agentRootCause?: string;
+    agentInvestigationFindings?: string;
 } | null>;
 export declare function iterativeFixValidateLoop(inputs: ActionInputs, repoDetails: {
     owner: string;
@@ -34,6 +36,8 @@ export declare function iterativeFixValidateLoop(inputs: ActionInputs, repoDetai
     autoFixResult: ApplyResult | null;
     iterations: number;
     prUrl?: string;
+    agentRootCause?: string;
+    agentInvestigationFindings?: string;
 }>;
 export declare function fixFingerprint(fix: FixRecommendation): string;
 export declare function attemptAutoFix(inputs: ActionInputs, fixRecommendation: FixRecommendation, octokit: Octokit, repoDetails: {

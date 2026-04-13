@@ -24,6 +24,8 @@ export interface RepairResult {
     investigationContext?: string;
     iterations: number;
     prUrl?: string;
+    agentRootCause?: string;
+    agentInvestigationFindings?: string;
 }
 interface PipelineCoordinatorDeps {
     octokit: Octokit;
