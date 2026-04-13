@@ -156,6 +156,22 @@ export class LocalFixValidator {
       }
     }
 
+    if (this.config.testCommand && this.config.testCommand.includes('cypress')) {
+      core.info('📦 Cypress detected in test command — installing Cypress binary...');
+      try {
+        execSync('npx cypress install 2>&1', {
+          cwd: this._workDir,
+          encoding: 'utf-8',
+          stdio: 'pipe',
+          maxBuffer: MAX_BUFFER,
+          env: npmEnv,
+          timeout: 300_000,
+        });
+      } catch (cypressErr) {
+        core.warning(`Cypress install failed (non-fatal): ${cypressErr}`);
+      }
+    }
+
     if (cacheKey && !cacheRestored) {
       try {
         const cacheModule = await import('@actions/cache');

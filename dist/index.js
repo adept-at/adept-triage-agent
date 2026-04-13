@@ -6701,6 +6701,22 @@ class LocalFixValidator {
                 throw new Error(`npm install failed:\n${installOutput.slice(-1000)}`);
             }
         }
+        if (this.config.testCommand && this.config.testCommand.includes('cypress')) {
+            core.info('📦 Cypress detected in test command — installing Cypress binary...');
+            try {
+                (0, child_process_1.execSync)('npx cypress install 2>&1', {
+                    cwd: this._workDir,
+                    encoding: 'utf-8',
+                    stdio: 'pipe',
+                    maxBuffer: MAX_BUFFER,
+                    env: npmEnv,
+                    timeout: 300_000,
+                });
+            }
+            catch (cypressErr) {
+                core.warning(`Cypress install failed (non-fatal): ${cypressErr}`);
+            }
+        }
         if (cacheKey && !cacheRestored) {
             try {
                 const cacheModule = await __nccwpck_require__.e(/* import() */ 54).then(__nccwpck_require__.bind(__nccwpck_require__, 94054));
