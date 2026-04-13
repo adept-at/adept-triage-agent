@@ -3314,6 +3314,12 @@ async function run() {
         if (inputs.cursorApiKey) {
             core.setSecret(inputs.cursorApiKey);
         }
+        if (inputs.triageAwsAccessKeyId) {
+            core.setSecret(inputs.triageAwsAccessKeyId);
+        }
+        if (inputs.triageAwsSecretAccessKey) {
+            core.setSecret(inputs.triageAwsSecretAccessKey);
+        }
         const octokit = new rest_1.Octokit({ auth: inputs.githubToken });
         const repoDetails = resolveRepository(inputs);
         const openaiClient = new openai_client_1.OpenAIClient(inputs.openaiApiKey);
@@ -3371,6 +3377,10 @@ function getInputs() {
         cursorApiKey: core.getInput('CURSOR_API_KEY') || undefined,
         cursorValidationMode: core.getInput('CURSOR_VALIDATION_MODE') || 'poll',
         cursorValidationTimeout: safeParseInt(core.getInput('CURSOR_VALIDATION_TIMEOUT'), constants_1.CURSOR_CLOUD.VALIDATION_TIMEOUT_MS),
+        triageAwsAccessKeyId: core.getInput('TRIAGE_AWS_ACCESS_KEY_ID') || undefined,
+        triageAwsSecretAccessKey: core.getInput('TRIAGE_AWS_SECRET_ACCESS_KEY') || undefined,
+        triageAwsRegion: core.getInput('TRIAGE_AWS_REGION') || 'us-east-1',
+        triageDynamoTable: core.getInput('TRIAGE_DYNAMO_TABLE') || 'triage-skills-v1-live',
     };
 }
 function resolveRepository(inputs) {
@@ -4094,7 +4104,13 @@ class PipelineCoordinator {
             : null;
         let skillStore;
         if (autoFixTargetRepo) {
-            skillStore = new skill_store_1.SkillStore(this.octokit, autoFixTargetRepo.owner, autoFixTargetRepo.repo);
+            if (this.inputs.triageAwsAccessKeyId && this.inputs.triageAwsSecretAccessKey) {
+                const { DynamoSkillStore } = await __nccwpck_require__.e(/* import() */ 442).then(__nccwpck_require__.t.bind(__nccwpck_require__, 61442, 23));
+                skillStore = new DynamoSkillStore(this.inputs.triageAwsRegion || 'us-east-1', this.inputs.triageDynamoTable || 'triage-skills-v1-live', autoFixTargetRepo.owner, autoFixTargetRepo.repo, this.inputs.triageAwsAccessKeyId, this.inputs.triageAwsSecretAccessKey);
+            }
+            else {
+                skillStore = new skill_store_1.SkillStore(this.octokit, autoFixTargetRepo.owner, autoFixTargetRepo.repo);
+            }
             await skillStore.load().catch((err) => {
                 core.warning(`Skill store load failed (non-fatal): ${err}`);
             });
@@ -50132,6 +50148,14 @@ module.exports = require("fs");
 
 /***/ }),
 
+/***/ 91943:
+/***/ ((module) => {
+
+"use strict";
+module.exports = require("fs/promises");
+
+/***/ }),
+
 /***/ 58611:
 /***/ ((module) => {
 
@@ -50188,6 +50212,14 @@ module.exports = require("node:buffer");
 
 /***/ }),
 
+/***/ 31421:
+/***/ ((module) => {
+
+"use strict";
+module.exports = require("node:child_process");
+
+/***/ }),
+
 /***/ 37540:
 /***/ ((module) => {
 
@@ -50236,6 +50268,14 @@ module.exports = require("node:fs");
 
 /***/ }),
 
+/***/ 51455:
+/***/ ((module) => {
+
+"use strict";
+module.exports = require("node:fs/promises");
+
+/***/ }),
+
 /***/ 37067:
 /***/ ((module) => {
 
@@ -50273,6 +50313,14 @@ module.exports = require("node:net");
 
 "use strict";
 module.exports = require("node:os");
+
+/***/ }),
+
+/***/ 76760:
+/***/ ((module) => {
+
+"use strict";
+module.exports = require("node:path");
 
 /***/ }),
 

@@ -102,12 +102,12 @@ function backfillDefaults(skill: TriageSkill): TriageSkill {
  * one JSON file per repo, permanent, zero external dependencies.
  */
 export class SkillStore {
-  private skills: TriageSkill[] = [];
-  private loaded = false;
+  protected skills: TriageSkill[] = [];
+  protected loaded = false;
   private fileSha: string | undefined;
   private octokit: Octokit;
-  private owner: string;
-  private repo: string;
+  protected owner: string;
+  protected repo: string;
 
   constructor(octokit: Octokit, owner: string, repo: string) {
     this.octokit = octokit;

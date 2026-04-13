@@ -175,6 +175,14 @@ export interface ActionInputs {
   cursorValidationMode?: 'poll' | 'async';
   /** Timeout in ms for Cursor cloud agent validation (default: 300000) */
   cursorValidationTimeout?: number;
+  /** AWS access key ID for DynamoDB skill store */
+  triageAwsAccessKeyId?: string;
+  /** AWS secret access key for DynamoDB skill store */
+  triageAwsSecretAccessKey?: string;
+  /** AWS region for DynamoDB skill store */
+  triageAwsRegion?: string;
+  /** DynamoDB table name for skill store */
+  triageDynamoTable?: string;
 }
 
 export interface PRDiff {

@@ -106,6 +106,20 @@ inputs:
     description: 'Timeout in milliseconds for Cursor cloud agent validation when using poll mode (default: 300000 = 5 minutes)'
     required: false
     default: '300000'
+  TRIAGE_AWS_ACCESS_KEY_ID:
+    description: 'AWS access key ID for DynamoDB skill store. When set with TRIAGE_AWS_SECRET_ACCESS_KEY, skills are stored in DynamoDB instead of a git branch.'
+    required: false
+  TRIAGE_AWS_SECRET_ACCESS_KEY:
+    description: 'AWS secret access key for DynamoDB skill store.'
+    required: false
+  TRIAGE_AWS_REGION:
+    description: 'AWS region for DynamoDB skill store.'
+    required: false
+    default: 'us-east-1'
+  TRIAGE_DYNAMO_TABLE:
+    description: 'DynamoDB table name for skill store.'
+    required: false
+    default: 'triage-skills-v1-live'
 
 outputs:
   verdict:

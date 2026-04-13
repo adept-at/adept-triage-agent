@@ -16,6 +16,12 @@ async function run(): Promise<void> {
     if (inputs.cursorApiKey) {
       core.setSecret(inputs.cursorApiKey);
     }
+    if (inputs.triageAwsAccessKeyId) {
+      core.setSecret(inputs.triageAwsAccessKeyId);
+    }
+    if (inputs.triageAwsSecretAccessKey) {
+      core.setSecret(inputs.triageAwsSecretAccessKey);
+    }
     const octokit = new Octokit({ auth: inputs.githubToken });
     const repoDetails = resolveRepository(inputs);
     const openaiClient = new OpenAIClient(inputs.openaiApiKey);
@@ -92,6 +98,11 @@ function getInputs(): ActionInputs {
       core.getInput('CURSOR_VALIDATION_TIMEOUT'),
       CURSOR_CLOUD.VALIDATION_TIMEOUT_MS
     ),
+    // DynamoDB skill store inputs
+    triageAwsAccessKeyId: core.getInput('TRIAGE_AWS_ACCESS_KEY_ID') || undefined,
+    triageAwsSecretAccessKey: core.getInput('TRIAGE_AWS_SECRET_ACCESS_KEY') || undefined,
+    triageAwsRegion: core.getInput('TRIAGE_AWS_REGION') || 'us-east-1',
+    triageDynamoTable: core.getInput('TRIAGE_DYNAMO_TABLE') || 'triage-skills-v1-live',
   };
 }
 

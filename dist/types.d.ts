@@ -127,6 +127,10 @@ export interface ActionInputs {
     cursorApiKey?: string;
     cursorValidationMode?: 'poll' | 'async';
     cursorValidationTimeout?: number;
+    triageAwsAccessKeyId?: string;
+    triageAwsSecretAccessKey?: string;
+    triageAwsRegion?: string;
+    triageDynamoTable?: string;
 }
 export interface PRDiff {
     files: PRDiffFile[];

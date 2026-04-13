@@ -38,12 +38,12 @@ export interface FlakinessSignal {
     message: string;
 }
 export declare class SkillStore {
-    private skills;
-    private loaded;
+    protected skills: TriageSkill[];
+    protected loaded: boolean;
     private fileSha;
     private octokit;
-    private owner;
-    private repo;
+    protected owner: string;
+    protected repo: string;
     constructor(octokit: Octokit, owner: string, repo: string);
     load(): Promise<TriageSkill[]>;
     save(skill: TriageSkill): Promise<void>;
