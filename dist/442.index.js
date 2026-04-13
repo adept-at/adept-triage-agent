@@ -48,30 +48,19 @@ const rest_1 = __webpack_require__(65772);
 class DynamoSkillStore extends skill_store_js_1.SkillStore {
     region;
     tableName;
-    accessKeyId;
-    secretAccessKey;
     _cachedClient;
-    constructor(region, tableName, owner, repo, accessKeyId, secretAccessKey) {
+    constructor(region, tableName, owner, repo) {
         const dummyOctokit = new rest_1.Octokit();
         super(dummyOctokit, owner, repo);
         this.region = region;
         this.tableName = tableName;
-        this.accessKeyId = accessKeyId;
-        this.secretAccessKey = secretAccessKey;
     }
     async getDocClient() {
         if (this._cachedClient)
             return this._cachedClient;
         const { DynamoDBClient } = await __webpack_require__.e(/* import() */ 305).then(__webpack_require__.t.bind(__webpack_require__, 64305, 23));
         const { DynamoDBDocumentClient } = await Promise.all(/* import() */[__webpack_require__.e(305), __webpack_require__.e(907)]).then(__webpack_require__.t.bind(__webpack_require__, 58907, 19));
-        const clientConfig = { region: this.region };
-        if (this.accessKeyId && this.secretAccessKey) {
-            clientConfig.credentials = {
-                accessKeyId: this.accessKeyId,
-                secretAccessKey: this.secretAccessKey,
-            };
-        }
-        const raw = new DynamoDBClient(clientConfig);
+        const raw = new DynamoDBClient({ region: this.region });
         this._cachedClient = DynamoDBDocumentClient.from(raw, {
             marshallOptions: { removeUndefinedValues: true },
         });

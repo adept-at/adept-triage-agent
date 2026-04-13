@@ -2,10 +2,8 @@ import { SkillStore, TriageSkill } from './skill-store.js';
 export declare class DynamoSkillStore extends SkillStore {
     private region;
     private tableName;
-    private accessKeyId;
-    private secretAccessKey;
     private _cachedClient;
-    constructor(region: string, tableName: string, owner: string, repo: string, accessKeyId: string, secretAccessKey: string);
+    constructor(region: string, tableName: string, owner: string, repo: string);
     private getDocClient;
     load(): Promise<TriageSkill[]>;
     save(skill: TriageSkill): Promise<void>;

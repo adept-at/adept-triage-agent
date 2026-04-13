@@ -3304,12 +3304,6 @@ Object.defineProperty(exports, "resolveAutoFixTargetRepo", ({ enumerable: true, 
 async function run() {
     try {
         const inputs = getInputs();
-        if (inputs.triageAwsAccessKeyId) {
-            core.setSecret(inputs.triageAwsAccessKeyId);
-        }
-        if (inputs.triageAwsSecretAccessKey) {
-            core.setSecret(inputs.triageAwsSecretAccessKey);
-        }
         const octokit = new rest_1.Octokit({ auth: inputs.githubToken });
         const repoDetails = resolveRepository(inputs);
         const openaiClient = new openai_client_1.OpenAIClient(inputs.openaiApiKey);
@@ -3363,8 +3357,6 @@ function getInputs() {
         enableAgenticRepair: core.getInput('ENABLE_AGENTIC_REPAIR') === 'true',
         productRepo: core.getInput('PRODUCT_REPO') || constants_1.DEFAULT_PRODUCT_REPO,
         productDiffCommits: safeParseInt(core.getInput('PRODUCT_DIFF_COMMITS'), 5),
-        triageAwsAccessKeyId: core.getInput('TRIAGE_AWS_ACCESS_KEY_ID') || undefined,
-        triageAwsSecretAccessKey: core.getInput('TRIAGE_AWS_SECRET_ACCESS_KEY') || undefined,
         triageAwsRegion: core.getInput('TRIAGE_AWS_REGION') || 'us-east-1',
         triageDynamoTable: core.getInput('TRIAGE_DYNAMO_TABLE') || 'triage-skills-v1-live',
     };
@@ -4099,13 +4091,12 @@ class PipelineCoordinator {
             : null;
         let skillStore;
         if (autoFixTargetRepo) {
-            const hasExplicitCreds = this.inputs.triageAwsAccessKeyId && this.inputs.triageAwsSecretAccessKey;
-            const hasEnvCreds = !!process.env.AWS_ACCESS_KEY_ID;
-            if (hasExplicitCreds || hasEnvCreds) {
+            if (process.env.AWS_ACCESS_KEY_ID) {
                 const { DynamoSkillStore } = await __nccwpck_require__.e(/* import() */ 442).then(__nccwpck_require__.t.bind(__nccwpck_require__, 61442, 23));
-                skillStore = new DynamoSkillStore(this.inputs.triageAwsRegion || 'us-east-1', this.inputs.triageDynamoTable || 'triage-skills-v1-live', autoFixTargetRepo.owner, autoFixTargetRepo.repo, this.inputs.triageAwsAccessKeyId || '', this.inputs.triageAwsSecretAccessKey || '');
+                skillStore = new DynamoSkillStore(this.inputs.triageAwsRegion || 'us-east-1', this.inputs.triageDynamoTable || 'triage-skills-v1-live', autoFixTargetRepo.owner, autoFixTargetRepo.repo);
             }
             else {
+                core.warning('No AWS credentials in environment — falling back to Git skill store. Ensure OIDC role is configured.');
                 skillStore = new skill_store_1.SkillStore(this.octokit, autoFixTargetRepo.owner, autoFixTargetRepo.repo);
             }
             await skillStore.load().catch((err) => {

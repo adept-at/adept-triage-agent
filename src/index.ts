@@ -13,12 +13,6 @@ export { setSuccessOutput, setInconclusiveOutput, setErrorOutput, resolveAutoFix
 async function run(): Promise<void> {
   try {
     const inputs = getInputs();
-    if (inputs.triageAwsAccessKeyId) {
-      core.setSecret(inputs.triageAwsAccessKeyId);
-    }
-    if (inputs.triageAwsSecretAccessKey) {
-      core.setSecret(inputs.triageAwsSecretAccessKey);
-    }
     const octokit = new Octokit({ auth: inputs.githubToken });
     const repoDetails = resolveRepository(inputs);
     const openaiClient = new OpenAIClient(inputs.openaiApiKey);
@@ -85,9 +79,6 @@ function getInputs(): ActionInputs {
     // Product repo diff inputs
     productRepo: core.getInput('PRODUCT_REPO') || DEFAULT_PRODUCT_REPO,
     productDiffCommits: safeParseInt(core.getInput('PRODUCT_DIFF_COMMITS'), 5),
-    // DynamoDB skill store inputs
-    triageAwsAccessKeyId: core.getInput('TRIAGE_AWS_ACCESS_KEY_ID') || undefined,
-    triageAwsSecretAccessKey: core.getInput('TRIAGE_AWS_SECRET_ACCESS_KEY') || undefined,
     triageAwsRegion: core.getInput('TRIAGE_AWS_REGION') || 'us-east-1',
     triageDynamoTable: core.getInput('TRIAGE_DYNAMO_TABLE') || 'triage-skills-v1-live',
   };

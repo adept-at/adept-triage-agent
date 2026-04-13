@@ -15,8 +15,6 @@ import { Octokit } from '@octokit/rest';
 export class DynamoSkillStore extends SkillStore {
   private region: string;
   private tableName: string;
-  private accessKeyId: string;
-  private secretAccessKey: string;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private _cachedClient: any;
 
@@ -24,16 +22,12 @@ export class DynamoSkillStore extends SkillStore {
     region: string,
     tableName: string,
     owner: string,
-    repo: string,
-    accessKeyId: string,
-    secretAccessKey: string
+    repo: string
   ) {
     const dummyOctokit = new Octokit();
     super(dummyOctokit, owner, repo);
     this.region = region;
     this.tableName = tableName;
-    this.accessKeyId = accessKeyId;
-    this.secretAccessKey = secretAccessKey;
   }
 
   private async getDocClient() {
@@ -41,14 +35,7 @@ export class DynamoSkillStore extends SkillStore {
 
     const { DynamoDBClient } = await import('@aws-sdk/client-dynamodb');
     const { DynamoDBDocumentClient } = await import('@aws-sdk/lib-dynamodb');
-    const clientConfig: Record<string, unknown> = { region: this.region };
-    if (this.accessKeyId && this.secretAccessKey) {
-      clientConfig.credentials = {
-        accessKeyId: this.accessKeyId,
-        secretAccessKey: this.secretAccessKey,
-      };
-    }
-    const raw = new DynamoDBClient(clientConfig);
+    const raw = new DynamoDBClient({ region: this.region });
     this._cachedClient = DynamoDBDocumentClient.from(raw, {
       marshallOptions: { removeUndefinedValues: true },
     });

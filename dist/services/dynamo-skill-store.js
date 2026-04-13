@@ -40,30 +40,19 @@ const rest_1 = require("@octokit/rest");
 class DynamoSkillStore extends skill_store_js_1.SkillStore {
     region;
     tableName;
-    accessKeyId;
-    secretAccessKey;
     _cachedClient;
-    constructor(region, tableName, owner, repo, accessKeyId, secretAccessKey) {
+    constructor(region, tableName, owner, repo) {
         const dummyOctokit = new rest_1.Octokit();
         super(dummyOctokit, owner, repo);
         this.region = region;
         this.tableName = tableName;
-        this.accessKeyId = accessKeyId;
-        this.secretAccessKey = secretAccessKey;
     }
     async getDocClient() {
         if (this._cachedClient)
             return this._cachedClient;
         const { DynamoDBClient } = await import('@aws-sdk/client-dynamodb');
         const { DynamoDBDocumentClient } = await import('@aws-sdk/lib-dynamodb');
-        const clientConfig = { region: this.region };
-        if (this.accessKeyId && this.secretAccessKey) {
-            clientConfig.credentials = {
-                accessKeyId: this.accessKeyId,
-                secretAccessKey: this.secretAccessKey,
-            };
-        }
-        const raw = new DynamoDBClient(clientConfig);
+        const raw = new DynamoDBClient({ region: this.region });
         this._cachedClient = DynamoDBDocumentClient.from(raw, {
             marshallOptions: { removeUndefinedValues: true },
         });

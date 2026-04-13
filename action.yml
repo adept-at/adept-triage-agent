@@ -91,12 +91,6 @@ inputs:
     description: 'Number of recent product commits to include in the diff context (default: 5)'
     required: false
     default: '5'
-  TRIAGE_AWS_ACCESS_KEY_ID:
-    description: 'AWS access key ID for DynamoDB skill store. When set with TRIAGE_AWS_SECRET_ACCESS_KEY, skills are stored in DynamoDB instead of a git branch.'
-    required: false
-  TRIAGE_AWS_SECRET_ACCESS_KEY:
-    description: 'AWS secret access key for DynamoDB skill store.'
-    required: false
   TRIAGE_AWS_REGION:
     description: 'AWS region for DynamoDB skill store.'
     required: false

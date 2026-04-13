@@ -123,8 +123,6 @@ export interface ActionInputs {
     enableAgenticRepair?: boolean;
     productRepo: string;
     productDiffCommits?: number;
-    triageAwsAccessKeyId?: string;
-    triageAwsSecretAccessKey?: string;
     triageAwsRegion?: string;
     triageDynamoTable?: string;
 }

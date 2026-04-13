@@ -167,10 +167,6 @@ export interface ActionInputs {
   productRepo: string;
   /** Number of recent product commits to include in diff (default: 5) */
   productDiffCommits?: number;
-  /** AWS access key ID for DynamoDB skill store */
-  triageAwsAccessKeyId?: string;
-  /** AWS secret access key for DynamoDB skill store */
-  triageAwsSecretAccessKey?: string;
   /** AWS region for DynamoDB skill store */
   triageAwsRegion?: string;
   /** DynamoDB table name for skill store */
