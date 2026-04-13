@@ -6702,19 +6702,41 @@ class LocalFixValidator {
             }
         }
         if (this.config.testCommand && this.config.testCommand.includes('cypress')) {
-            core.info('📦 Cypress detected in test command — installing Cypress binary...');
+            const cypressCacheDir = path.join(os.homedir(), '.cache', 'Cypress');
+            const cypressCacheKey = `triage-cypress-${process.platform}-${this.config.owner}-${this.config.repo}`;
+            let cypressCacheRestored = false;
             try {
-                (0, child_process_1.execSync)('npx cypress install 2>&1', {
-                    cwd: this._workDir,
-                    encoding: 'utf-8',
-                    stdio: 'pipe',
-                    maxBuffer: MAX_BUFFER,
-                    env: npmEnv,
-                    timeout: 300_000,
-                });
+                const cacheModule = await __nccwpck_require__.e(/* import() */ 54).then(__nccwpck_require__.bind(__nccwpck_require__, 94054));
+                const hit = await cacheModule.restoreCache([cypressCacheDir], cypressCacheKey);
+                cypressCacheRestored = !!hit;
+                core.info(hit ? `📦 Cypress binary cache restored (key: ${hit})` : '📦 Cypress binary cache miss');
             }
-            catch (cypressErr) {
-                core.warning(`Cypress install failed (non-fatal): ${cypressErr}`);
+            catch (err) {
+                core.info(`📦 Cypress cache restore failed (non-fatal): ${err}`);
+            }
+            if (!cypressCacheRestored) {
+                core.info('📦 Installing Cypress binary...');
+                try {
+                    (0, child_process_1.execSync)('npx cypress install 2>&1', {
+                        cwd: this._workDir,
+                        encoding: 'utf-8',
+                        stdio: 'pipe',
+                        maxBuffer: MAX_BUFFER,
+                        env: npmEnv,
+                        timeout: 300_000,
+                    });
+                }
+                catch (cypressErr) {
+                    core.warning(`Cypress install failed (non-fatal): ${cypressErr}`);
+                }
+                try {
+                    const cacheModule = await __nccwpck_require__.e(/* import() */ 54).then(__nccwpck_require__.bind(__nccwpck_require__, 94054));
+                    await cacheModule.saveCache([cypressCacheDir], cypressCacheKey);
+                    core.info(`📦 Cypress binary cache saved (key: ${cypressCacheKey})`);
+                }
+                catch (err) {
+                    core.info(`📦 Cypress binary cache save failed (non-fatal): ${err}`);
+                }
             }
         }
         if (cacheKey && !cacheRestored) {
