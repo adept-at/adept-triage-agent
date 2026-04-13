@@ -682,14 +682,25 @@ export function formatSkillsForPrompt(
     ].join('\n'),
   };
 
-  const entries = skills.map((s, i) => [
-    `**Fix ${i + 1}** (${s.createdAt.split('T')[0]}, ${s.confidence}% confidence, ${s.iterations} iteration${s.iterations !== 1 ? 's' : ''})`,
-    `- Spec: ${sanitizeForPrompt(s.spec)}`,
-    `- Error: ${sanitizeForPrompt(s.errorPattern)}`,
-    `- Root cause: ${sanitizeForPrompt(s.rootCauseCategory)}`,
-    `- Pattern: ${sanitizeForPrompt(s.fix.pattern)}`,
-    `- Change type: ${sanitizeForPrompt(s.fix.changeType)} in ${sanitizeForPrompt(s.fix.file)}`,
-  ].join('\n'));
+  const entries = skills.map((s, i) => {
+    const successes = s.successCount ?? 0;
+    const failures = s.failCount ?? 0;
+    const total = successes + failures;
+    const trackRecord = total > 0 ? `${successes}/${total} successful` : 'untested';
+    const outcome = s.classificationOutcome && s.classificationOutcome !== 'unknown'
+      ? `, classification: ${s.classificationOutcome}`
+      : '';
+
+    return [
+      `**Fix ${i + 1}** (${s.createdAt.split('T')[0]}, ${s.confidence}% confidence, ${s.iterations} iteration${s.iterations !== 1 ? 's' : ''})`,
+      `- Spec: ${sanitizeForPrompt(s.spec)}`,
+      `- Error: ${sanitizeForPrompt(s.errorPattern)}`,
+      `- Root cause: ${sanitizeForPrompt(s.rootCauseCategory)}`,
+      `- Pattern: ${sanitizeForPrompt(s.fix.pattern)}`,
+      `- Change type: ${sanitizeForPrompt(s.fix.changeType)} in ${sanitizeForPrompt(s.fix.file)}`,
+      `- Track record: ${trackRecord}${outcome}`,
+    ].join('\n');
+  });
 
   const parts = [headers[role], '', ...entries];
 
