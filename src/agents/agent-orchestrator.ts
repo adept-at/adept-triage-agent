@@ -220,6 +220,9 @@ export class AgentOrchestrator {
 
     // Step 1: Analysis Agent
     core.info('📊 Step 1: Running Analysis Agent...');
+    if (skills && skills.relevant.length > 0) {
+      context.skillsPrompt = formatSkillsForPrompt(skills.relevant, 'investigation', skills.flakiness);
+    }
     const analysisResult = await this.analysisAgent.execute({}, context, lastResponseId);
     agentResults.analysis = analysisResult;
     lastResponseId = analysisResult.responseId ?? lastResponseId;

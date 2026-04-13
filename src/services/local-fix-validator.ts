@@ -169,6 +169,11 @@ export class LocalFixValidator {
     core.info('✅ Setup complete');
   }
 
+  async baselineCheck(): Promise<TestRunResult> {
+    core.info('🔍 Running baseline check — does the test pass without any fix?');
+    return this.runTest();
+  }
+
   async preValidateFix(
     changes: Array<{ file: string; oldCode: string; newCode: string }>
   ): Promise<{ valid: boolean; reason?: string }> {

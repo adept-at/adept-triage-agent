@@ -29,6 +29,7 @@ export declare class LocalFixValidator {
     constructor(config: LocalValidatorConfig, octokit: Octokit);
     get workDir(): string;
     setup(): Promise<void>;
+    baselineCheck(): Promise<TestRunResult>;
     preValidateFix(changes: Array<{
         file: string;
         oldCode: string;

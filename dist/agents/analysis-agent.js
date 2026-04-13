@@ -128,6 +128,9 @@ You MUST respond with a JSON object matching this schema:
         if (context.screenshots && context.screenshots.length > 0) {
             parts.push('', '### Screenshots', `${context.screenshots.length} screenshot(s) attached. Analyze them for visual cues about the failure.`);
         }
+        if (context.skillsPrompt) {
+            parts.push('', context.skillsPrompt);
+        }
         parts.push('', '## Instructions', 'Analyze the above information and provide your root cause analysis in the required JSON format.', 'Consider all available evidence including error messages, stack traces, logs, and screenshots.', 'Be specific about which selectors are problematic and why.');
         return parts.filter(Boolean).join('\n');
     }

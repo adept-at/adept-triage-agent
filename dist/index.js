@@ -139,6 +139,9 @@ class AgentOrchestrator {
         let iterations = 0;
         let lastResponseId = previousResponseId;
         core.info('📊 Step 1: Running Analysis Agent...');
+        if (skills && skills.relevant.length > 0) {
+            context.skillsPrompt = (0, skill_store_1.formatSkillsForPrompt)(skills.relevant, 'investigation', skills.flakiness);
+        }
         const analysisResult = await this.analysisAgent.execute({}, context, lastResponseId);
         agentResults.analysis = analysisResult;
         lastResponseId = analysisResult.responseId ?? lastResponseId;
@@ -780,6 +783,9 @@ You MUST respond with a JSON object matching this schema:
         }
         if (context.screenshots && context.screenshots.length > 0) {
             parts.push('', '### Screenshots', `${context.screenshots.length} screenshot(s) attached. Analyze them for visual cues about the failure.`);
+        }
+        if (context.skillsPrompt) {
+            parts.push('', context.skillsPrompt);
         }
         parts.push('', '## Instructions', 'Analyze the above information and provide your root cause analysis in the required JSON format.', 'Consider all available evidence including error messages, stack traces, logs, and screenshots.', 'Be specific about which selectors are problematic and why.');
         return parts.filter(Boolean).join('\n');
@@ -4129,6 +4135,16 @@ class PipelineCoordinator {
                 core.warning(`Failed to record classification outcome: ${err}`);
             });
         }
+        if (!autoFixResult?.success && skillStore) {
+            const recentSkills = skillStore.findRelevant({
+                framework: errorData.framework || 'unknown',
+                spec: errorData.fileName,
+                limit: 1,
+            });
+            if (recentSkills.length > 0) {
+                await skillStore.recordClassificationOutcome(recentSkills[0].id, 'incorrect').catch(() => { });
+            }
+        }
         const result = { ...classification };
         if (fixRecommendation) {
             result.fixRecommendation = fixRecommendation;
@@ -4576,6 +4592,12 @@ async function iterativeFixValidateLoop(inputs, repoDetails, autoFixTargetRepo, 
             if (!validatorReady) {
                 await validator.setup();
                 validatorReady = true;
+                const baseline = await validator.baselineCheck();
+                if (baseline.passed) {
+                    core.info('✅ Baseline check passed — test passes without fix. Failure was likely transient.');
+                    return { fixRecommendation: null, autoFixResult: null };
+                }
+                core.info('❌ Baseline check confirmed failure — proceeding with fix.');
             }
             try {
                 await validator.applyFix(fixRecommendation.proposedChanges);
@@ -6690,6 +6712,10 @@ class LocalFixValidator {
             }
         }
         core.info('✅ Setup complete');
+    }
+    async baselineCheck() {
+        core.info('🔍 Running baseline check — does the test pass without any fix?');
+        return this.runTest();
     }
     async preValidateFix(changes) {
         for (const change of changes) {

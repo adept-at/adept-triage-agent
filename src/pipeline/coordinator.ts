@@ -226,6 +226,17 @@ export class PipelineCoordinator {
       });
     }
 
+    if (!autoFixResult?.success && skillStore) {
+      const recentSkills = skillStore.findRelevant({
+        framework: errorData.framework || 'unknown',
+        spec: errorData.fileName,
+        limit: 1,
+      });
+      if (recentSkills.length > 0) {
+        await skillStore.recordClassificationOutcome(recentSkills[0].id, 'incorrect').catch(() => {});
+      }
+    }
+
     const result: AnalysisResult = { ...classification };
     if (fixRecommendation) {
       result.fixRecommendation = fixRecommendation;

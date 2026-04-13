@@ -144,6 +144,12 @@ async function iterativeFixValidateLoop(inputs, repoDetails, autoFixTargetRepo, 
             if (!validatorReady) {
                 await validator.setup();
                 validatorReady = true;
+                const baseline = await validator.baselineCheck();
+                if (baseline.passed) {
+                    core.info('✅ Baseline check passed — test passes without fix. Failure was likely transient.');
+                    return { fixRecommendation: null, autoFixResult: null };
+                }
+                core.info('❌ Baseline check confirmed failure — proceeding with fix.');
             }
             try {
                 await validator.applyFix(fixRecommendation.proposedChanges);

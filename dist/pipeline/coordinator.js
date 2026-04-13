@@ -151,6 +151,16 @@ class PipelineCoordinator {
                 core.warning(`Failed to record classification outcome: ${err}`);
             });
         }
+        if (!autoFixResult?.success && skillStore) {
+            const recentSkills = skillStore.findRelevant({
+                framework: errorData.framework || 'unknown',
+                spec: errorData.fileName,
+                limit: 1,
+            });
+            if (recentSkills.length > 0) {
+                await skillStore.recordClassificationOutcome(recentSkills[0].id, 'incorrect').catch(() => { });
+            }
+        }
         const result = { ...classification };
         if (fixRecommendation) {
             result.fixRecommendation = fixRecommendation;

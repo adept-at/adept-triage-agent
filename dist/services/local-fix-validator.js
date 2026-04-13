@@ -159,6 +159,10 @@ class LocalFixValidator {
         }
         core.info('✅ Setup complete');
     }
+    async baselineCheck() {
+        core.info('🔍 Running baseline check — does the test pass without any fix?');
+        return this.runTest();
+    }
     async preValidateFix(changes) {
         for (const change of changes) {
             const cleanPath = change.file

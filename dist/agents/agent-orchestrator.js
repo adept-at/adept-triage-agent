@@ -132,6 +132,9 @@ class AgentOrchestrator {
         let iterations = 0;
         let lastResponseId = previousResponseId;
         core.info('📊 Step 1: Running Analysis Agent...');
+        if (skills && skills.relevant.length > 0) {
+            context.skillsPrompt = (0, skill_store_1.formatSkillsForPrompt)(skills.relevant, 'investigation', skills.flakiness);
+        }
         const analysisResult = await this.analysisAgent.execute({}, context, lastResponseId);
         agentResults.analysis = analysisResult;
         lastResponseId = analysisResult.responseId ?? lastResponseId;
