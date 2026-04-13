@@ -6649,7 +6649,7 @@ class LocalFixValidator {
         }
         const npmEnv = filterEnv(this.config.npmToken || this.config.githubToken);
         try {
-            (0, child_process_1.execSync)('npm ci 2>&1', {
+            (0, child_process_1.execSync)('npm ci --ignore-scripts 2>&1', {
                 cwd: this._workDir,
                 encoding: 'utf-8',
                 stdio: 'pipe',
@@ -6664,7 +6664,7 @@ class LocalFixValidator {
             core.info(`npm ci failed:\n${ciOutput.slice(-500)}`);
             core.info('Falling back to npm install...');
             try {
-                (0, child_process_1.execSync)('npm install 2>&1', {
+                (0, child_process_1.execSync)('npm install --ignore-scripts 2>&1', {
                     cwd: this._workDir,
                     encoding: 'utf-8',
                     stdio: 'pipe',
