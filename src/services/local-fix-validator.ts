@@ -125,6 +125,19 @@ export class LocalFixValidator {
       }
     }
 
+    let cypressCacheKey = '';
+    if (this.config.testCommand && this.config.testCommand.includes('cypress')) {
+      const cypressCacheDir = path.join(os.homedir(), '.cache', 'Cypress');
+      cypressCacheKey = `triage-cypress-${process.platform}-${this.config.owner}-${this.config.repo}`;
+      try {
+        const cacheModule = await import('@actions/cache');
+        const hit = await cacheModule.restoreCache([cypressCacheDir], cypressCacheKey);
+        core.info(hit ? `📦 Cypress binary cache restored (key: ${hit})` : '📦 Cypress binary cache miss — postinstall will download');
+      } catch (err) {
+        core.info(`📦 Cypress cache restore failed (non-fatal): ${err}`);
+      }
+    }
+
     const npmEnv = filterEnv(this.config.npmToken || this.config.githubToken);
     try {
       execSync('npm ci --ignore-scripts 2>&1', {
@@ -157,41 +170,19 @@ export class LocalFixValidator {
     }
 
     if (this.config.testCommand && this.config.testCommand.includes('cypress')) {
-      const cypressCacheDir = path.join(os.homedir(), '.cache', 'Cypress');
-      const cypressCacheKey = `triage-cypress-${process.platform}-${this.config.owner}-${this.config.repo}`;
-      let cypressCacheRestored = false;
-
+      core.info('📦 Installing Cypress binary (postinstall was skipped by --ignore-scripts)...');
       try {
-        const cacheModule = await import('@actions/cache');
-        const hit = await cacheModule.restoreCache([cypressCacheDir], cypressCacheKey);
-        cypressCacheRestored = !!hit;
-        core.info(hit ? `📦 Cypress binary cache restored (key: ${hit})` : '📦 Cypress binary cache miss');
-      } catch (err) {
-        core.info(`📦 Cypress cache restore failed (non-fatal): ${err}`);
-      }
-
-      if (!cypressCacheRestored) {
-        core.info('📦 Installing Cypress binary...');
-        try {
-          execSync('npx cypress install 2>&1', {
-            cwd: this._workDir,
-            encoding: 'utf-8',
-            stdio: 'pipe',
-            maxBuffer: MAX_BUFFER,
-            env: npmEnv,
-            timeout: 300_000,
-          });
-        } catch (cypressErr) {
-          core.warning(`Cypress install failed (non-fatal): ${cypressErr}`);
-        }
-
-        try {
-          const cacheModule = await import('@actions/cache');
-          await cacheModule.saveCache([cypressCacheDir], cypressCacheKey);
-          core.info(`📦 Cypress binary cache saved (key: ${cypressCacheKey})`);
-        } catch (err) {
-          core.info(`📦 Cypress binary cache save failed (non-fatal): ${err}`);
-        }
+        execSync('npx cypress install 2>&1', {
+          cwd: this._workDir,
+          encoding: 'utf-8',
+          stdio: 'pipe',
+          maxBuffer: MAX_BUFFER,
+          env: npmEnv,
+          timeout: 300_000,
+        });
+        core.info('📦 Cypress binary installed');
+      } catch (cypressErr) {
+        core.warning(`Cypress install failed: ${cypressErr}`);
       }
     }
 
@@ -202,6 +193,17 @@ export class LocalFixValidator {
         core.info(`📦 npm cache saved (key: ${cacheKey})`);
       } catch (err) {
         core.info(`📦 npm cache save failed (non-fatal): ${err}`);
+      }
+    }
+
+    if (cypressCacheKey) {
+      const cypressCacheDir = path.join(os.homedir(), '.cache', 'Cypress');
+      try {
+        const cacheModule = await import('@actions/cache');
+        await cacheModule.saveCache([cypressCacheDir], cypressCacheKey);
+        core.info(`📦 Cypress binary cache saved (key: ${cypressCacheKey})`);
+      } catch (err) {
+        core.info(`📦 Cypress binary cache save failed (non-fatal): ${err}`);
       }
     }
 
