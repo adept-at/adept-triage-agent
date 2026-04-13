@@ -8,6 +8,7 @@ export declare class DynamoSkillStore extends SkillStore {
     private getDocClient;
     load(): Promise<TriageSkill[]>;
     save(skill: TriageSkill): Promise<void>;
+    recordOutcome(skillId: string, success: boolean): Promise<void>;
     recordClassificationOutcome(skillId: string, outcome: 'correct' | 'incorrect'): Promise<void>;
 }
 //# sourceMappingURL=dynamo-skill-store.d.ts.map

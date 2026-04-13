@@ -100,6 +100,46 @@ export class DynamoSkillStore extends SkillStore {
     }
   }
 
+  override async recordOutcome(skillId: string, success: boolean): Promise<void> {
+    const skill = this.skills.find((s) => s.id === skillId);
+    if (!skill) return;
+
+    if (success) {
+      skill.successCount = (skill.successCount ?? 0) + 1;
+    } else {
+      skill.failCount = (skill.failCount ?? 0) + 1;
+    }
+    skill.lastUsedAt = new Date().toISOString();
+
+    const totalAttempts = (skill.successCount || 0) + (skill.failCount || 0);
+    const failRate = totalAttempts > 0 ? (skill.failCount || 0) / totalAttempts : 0;
+    if (failRate > 0.4 && (skill.failCount || 0) >= 3) {
+      skill.retired = true;
+      core.warning(`⚠️ Skill ${skillId} retired — ${Math.round(failRate * 100)}% failure rate`);
+    }
+
+    try {
+      const { UpdateCommand } = await import('@aws-sdk/lib-dynamodb');
+      const client = await this.getDocClient();
+
+      await client.send(
+        new UpdateCommand({
+          TableName: this.tableName,
+          Key: { pk: `REPO#${this.owner}/${this.repo}`, sk: `SKILL#${skillId}` },
+          UpdateExpression: 'SET successCount = :sc, failCount = :fc, lastUsedAt = :lu, retired = :r',
+          ExpressionAttributeValues: {
+            ':sc': skill.successCount,
+            ':fc': skill.failCount,
+            ':lu': skill.lastUsedAt,
+            ':r': skill.retired,
+          },
+        })
+      );
+    } catch (err) {
+      core.warning(`DynamoDB recordOutcome failed: ${err}`);
+    }
+  }
+
   override async recordClassificationOutcome(
     skillId: string,
     outcome: 'correct' | 'incorrect'
