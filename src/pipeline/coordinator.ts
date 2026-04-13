@@ -154,7 +154,8 @@ export class PipelineCoordinator {
         this.octokit,
         undefined,
         undefined,
-        skillStore
+        skillStore,
+        investigationContext
       );
       fixRecommendation = singleResult?.fix ?? null;
       if (fixRecommendation && this.inputs.enableAutoFix && autoFixTargetRepo) {

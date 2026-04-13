@@ -110,7 +110,7 @@ class PipelineCoordinator {
             savedSkillId = loopResult.savedSkillId;
         }
         else {
-            const singleResult = await (0, validator_1.generateFixRecommendation)(this.inputs, this.repoDetails, errorData, this.openaiClient, this.octokit, undefined, undefined, skillStore);
+            const singleResult = await (0, validator_1.generateFixRecommendation)(this.inputs, this.repoDetails, errorData, this.openaiClient, this.octokit, undefined, undefined, skillStore, investigationContext);
             fixRecommendation = singleResult?.fix ?? null;
             if (fixRecommendation && this.inputs.enableAutoFix && autoFixTargetRepo) {
                 autoFixResult = await (0, validator_1.attemptAutoFix)(this.inputs, fixRecommendation, this.octokit, autoFixTargetRepo, errorData);
