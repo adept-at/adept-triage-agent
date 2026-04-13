@@ -189,9 +189,12 @@ class AgentOrchestrator {
             ? `${context.productDiff.files.length} files changed (${context.productDiff.files.slice(0, 3).map(f => f.filename).join(', ')}${context.productDiff.files.length > 3 ? '...' : ''})`
             : '';
         context.delegationContext = this.buildDelegationContext('investigation', { analysis, productDiffSummary });
-        context.skillsPrompt = skills
+        const baseInvestigationSkills = skills
             ? (0, skill_store_1.formatSkillsForPrompt)(skills.relevant, 'investigation', skills.flakiness)
             : '';
+        context.skillsPrompt = context.priorInvestigationContext
+            ? `### Prior Investigation Findings\n${context.priorInvestigationContext}\n\n${baseInvestigationSkills}`
+            : baseInvestigationSkills;
         const investigationChainId = analysis.confidence < 80 ? (analysisResult.responseId ?? undefined) : undefined;
         core.info(analysis.confidence < 80 ? '🔗 Chaining analysis context to investigation (confidence < 80%)' : '📋 Investigation starts fresh (analysis confidence >= 80%)');
         const investigationResult = await this.investigationAgent.execute({
@@ -4476,7 +4479,7 @@ const constants_1 = __nccwpck_require__(58361);
 const cursor_cloud_validator_1 = __nccwpck_require__(71697);
 const skill_store_1 = __nccwpck_require__(60215);
 const repo_utils_1 = __nccwpck_require__(74843);
-async function generateFixRecommendation(inputs, repoDetails, errorData, openaiClient, octokit, previousAttempt, previousResponseId, skillStore) {
+async function generateFixRecommendation(inputs, repoDetails, errorData, openaiClient, octokit, previousAttempt, previousResponseId, skillStore, priorInvestigationContext) {
     try {
         const iterLabel = previousAttempt
             ? ` (iteration ${previousAttempt.iteration + 1})`
@@ -4513,7 +4516,7 @@ async function generateFixRecommendation(inputs, repoDetails, errorData, openaiC
                 flakiness: skillStore.detectFlakiness(errorData.fileName || 'unknown'),
             }
             : undefined;
-        const result = await repairAgent.generateFixRecommendation(repairContext, errorData, previousAttempt, previousResponseId, skills);
+        const result = await repairAgent.generateFixRecommendation(repairContext, errorData, previousAttempt, previousResponseId, skills, priorInvestigationContext);
         if (result) {
             core.info(`✅ Fix recommendation generated with ${result.fix.confidence}% confidence`);
         }
@@ -4551,7 +4554,7 @@ async function iterativeFixValidateLoop(inputs, repoDetails, autoFixTargetRepo, 
     try {
         for (let iteration = 0; iteration < maxIterations; iteration++) {
             core.info(`\n${'='.repeat(60)}\n🔄 Fix-Validate iteration ${iteration + 1}/${maxIterations}\n${'='.repeat(60)}`);
-            const fixResult = await generateFixRecommendation(inputs, repoDetails, errorData, openaiClient, octokit, previousAttempt, lastResponseId, skillStore);
+            const fixResult = await generateFixRecommendation(inputs, repoDetails, errorData, openaiClient, octokit, previousAttempt, lastResponseId, skillStore, investigationContext);
             if (!fixResult) {
                 fixRecommendation = null;
                 core.warning(`Iteration ${iteration + 1}: could not generate fix recommendation`);
@@ -5563,12 +5566,12 @@ class SimplifiedRepairAgent {
             });
         }
     }
-    async generateFixRecommendation(repairContext, errorData, previousAttempt, previousResponseId, skills) {
+    async generateFixRecommendation(repairContext, errorData, previousAttempt, previousResponseId, skills, priorInvestigationContext) {
         try {
             core.info('🔧 Generating fix recommendation...');
             if (this.config.enableAgenticRepair && this.orchestrator) {
                 core.info('🤖 Attempting agentic repair...');
-                const agenticResult = await this.tryAgenticRepair(repairContext, errorData, previousAttempt, previousResponseId, skills);
+                const agenticResult = await this.tryAgenticRepair(repairContext, errorData, previousAttempt, previousResponseId, skills, priorInvestigationContext);
                 if (agenticResult) {
                     core.info(`✅ Agentic repair succeeded with ${agenticResult.fix.confidence}% confidence`);
                     return agenticResult;
@@ -5583,7 +5586,7 @@ class SimplifiedRepairAgent {
             return null;
         }
     }
-    async tryAgenticRepair(repairContext, errorData, previousAttempt, previousResponseId, skills) {
+    async tryAgenticRepair(repairContext, errorData, previousAttempt, previousResponseId, skills, priorInvestigationContext) {
         if (!this.orchestrator) {
             return null;
         }
@@ -5624,6 +5627,9 @@ class SimplifiedRepairAgent {
                     : undefined,
                 framework: errorData?.framework,
             });
+            if (priorInvestigationContext) {
+                agentContext.priorInvestigationContext = priorInvestigationContext;
+            }
             const result = await this.orchestrator.orchestrate(agentContext, errorData, previousResponseId, skills);
             if (result.success && result.fix) {
                 core.info(`🤖 Agentic approach: ${result.approach}, iterations: ${result.iterations}, time: ${result.totalTimeMs}ms`);
@@ -7673,27 +7679,6 @@ class SkillStore {
             `   rootCauseCategory: ${sanitizeForPrompt(s.rootCauseCategory)}\n` +
             `   fix: ${sanitizeForPrompt(s.fix.summary)}\n` +
             `   confidence: ${s.confidence}%`)
-            .join('\n');
-    }
-    formatForRepair(opts) {
-        const relevant = this.findForRepair(opts);
-        if (relevant.length === 0)
-            return '';
-        return relevant
-            .map((s, i) => {
-            const tag = s.wasSuccessful ? 'SUCCESS' : 'FAILED';
-            const suffix = s.wasSuccessful ? '' : ' (this approach did NOT work)';
-            let entry = `${i + 1}. [${tag}] errorPattern: ${sanitizeForPrompt(s.errorPattern)}\n` +
-                `   rootCause: ${sanitizeForPrompt(s.rootCauseCategory)}\n` +
-                `   fix: ${sanitizeForPrompt(s.fix.summary)}${suffix}`;
-            if (s.investigationFindings) {
-                entry += `\n   Investigation found: ${sanitizeForPrompt(s.investigationFindings)}`;
-            }
-            if (s.repoContext) {
-                entry += `\n   Repo note: ${sanitizeForPrompt(s.repoContext)}`;
-            }
-            return entry;
-        })
             .join('\n');
     }
     formatForInvestigation(opts) {

@@ -94,7 +94,8 @@ export class SimplifiedRepairAgent {
       validationLogs: string;
     },
     previousResponseId?: string,
-    skills?: { relevant: TriageSkill[]; flakiness?: FlakinessSignal }
+    skills?: { relevant: TriageSkill[]; flakiness?: FlakinessSignal },
+    priorInvestigationContext?: string
   ): Promise<{ fix: FixRecommendation; lastResponseId?: string } | null> {
     try {
       core.info('🔧 Generating fix recommendation...');
@@ -107,7 +108,8 @@ export class SimplifiedRepairAgent {
           errorData,
           previousAttempt,
           previousResponseId,
-          skills
+          skills,
+          priorInvestigationContext
         );
 
         if (agenticResult) {
@@ -143,7 +145,8 @@ export class SimplifiedRepairAgent {
       validationLogs: string;
     },
     previousResponseId?: string,
-    skills?: { relevant: TriageSkill[]; flakiness?: FlakinessSignal }
+    skills?: { relevant: TriageSkill[]; flakiness?: FlakinessSignal },
+    priorInvestigationContext?: string
   ): Promise<{ fix: FixRecommendation; lastResponseId?: string } | null> {
     if (!this.orchestrator) {
       return null;
@@ -188,6 +191,10 @@ export class SimplifiedRepairAgent {
           : undefined,
         framework: errorData?.framework,
       });
+
+      if (priorInvestigationContext) {
+        agentContext.priorInvestigationContext = priorInvestigationContext;
+      }
 
       // Run the orchestration
       const result = await this.orchestrator.orchestrate(

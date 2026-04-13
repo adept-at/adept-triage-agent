@@ -42,6 +42,7 @@ export interface AgentContext {
     delegationContext?: string;
     includeScreenshots?: boolean;
     investigationSummary?: string;
+    priorInvestigationContext?: string;
 }
 export interface AgentConfig {
     timeoutMs: number;

@@ -153,27 +153,15 @@ class DynamoSkillStore extends skill_store_js_1.SkillStore {
         const skill = this.skills.find((s) => s.id === skillId);
         if (!skill)
             return;
-        if (outcome === 'correct') {
-            skill.successCount = (skill.successCount ?? 0) + 1;
-        }
-        else {
-            skill.failCount = (skill.failCount ?? 0) + 1;
-        }
         skill.classificationOutcome = outcome;
         try {
             const { UpdateCommand } = await Promise.all(/* import() */[__webpack_require__.e(305), __webpack_require__.e(907)]).then(__webpack_require__.t.bind(__webpack_require__, 58907, 19));
             const client = await this.getDocClient();
-            const pk = `REPO#${this.owner}/${this.repo}`;
-            const sk = `SKILL#${skillId}`;
             await client.send(new UpdateCommand({
                 TableName: this.tableName,
-                Key: { pk, sk },
-                UpdateExpression: 'SET successCount = :sc, failCount = :fc, classificationOutcome = :co',
-                ExpressionAttributeValues: {
-                    ':sc': skill.successCount,
-                    ':fc': skill.failCount,
-                    ':co': outcome,
-                },
+                Key: { pk: `REPO#${this.owner}/${this.repo}`, sk: `SKILL#${skillId}` },
+                UpdateExpression: 'SET classificationOutcome = :co',
+                ExpressionAttributeValues: { ':co': outcome },
             }));
         }
         catch (err) {

@@ -19,7 +19,7 @@ export declare class SimplifiedRepairAgent {
     }, previousResponseId?: string, skills?: {
         relevant: TriageSkill[];
         flakiness?: FlakinessSignal;
-    }): Promise<{
+    }, priorInvestigationContext?: string): Promise<{
         fix: FixRecommendation;
         lastResponseId?: string;
     } | null>;

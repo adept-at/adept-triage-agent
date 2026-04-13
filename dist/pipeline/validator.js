@@ -47,7 +47,7 @@ const constants_1 = require("../config/constants");
 const cursor_cloud_validator_1 = require("../services/cursor-cloud-validator");
 const skill_store_1 = require("../services/skill-store");
 const repo_utils_1 = require("../utils/repo-utils");
-async function generateFixRecommendation(inputs, repoDetails, errorData, openaiClient, octokit, previousAttempt, previousResponseId, skillStore) {
+async function generateFixRecommendation(inputs, repoDetails, errorData, openaiClient, octokit, previousAttempt, previousResponseId, skillStore, priorInvestigationContext) {
     try {
         const iterLabel = previousAttempt
             ? ` (iteration ${previousAttempt.iteration + 1})`
@@ -84,7 +84,7 @@ async function generateFixRecommendation(inputs, repoDetails, errorData, openaiC
                 flakiness: skillStore.detectFlakiness(errorData.fileName || 'unknown'),
             }
             : undefined;
-        const result = await repairAgent.generateFixRecommendation(repairContext, errorData, previousAttempt, previousResponseId, skills);
+        const result = await repairAgent.generateFixRecommendation(repairContext, errorData, previousAttempt, previousResponseId, skills, priorInvestigationContext);
         if (result) {
             core.info(`✅ Fix recommendation generated with ${result.fix.confidence}% confidence`);
         }
@@ -122,7 +122,7 @@ async function iterativeFixValidateLoop(inputs, repoDetails, autoFixTargetRepo, 
     try {
         for (let iteration = 0; iteration < maxIterations; iteration++) {
             core.info(`\n${'='.repeat(60)}\n🔄 Fix-Validate iteration ${iteration + 1}/${maxIterations}\n${'='.repeat(60)}`);
-            const fixResult = await generateFixRecommendation(inputs, repoDetails, errorData, openaiClient, octokit, previousAttempt, lastResponseId, skillStore);
+            const fixResult = await generateFixRecommendation(inputs, repoDetails, errorData, openaiClient, octokit, previousAttempt, lastResponseId, skillStore, investigationContext);
             if (!fixResult) {
                 fixRecommendation = null;
                 core.warning(`Iteration ${iteration + 1}: could not generate fix recommendation`);

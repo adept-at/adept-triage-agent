@@ -289,9 +289,12 @@ export class AgentOrchestrator {
       ? `${context.productDiff.files.length} files changed (${context.productDiff.files.slice(0, 3).map(f => f.filename).join(', ')}${context.productDiff.files.length > 3 ? '...' : ''})`
       : '';
     context.delegationContext = this.buildDelegationContext('investigation', { analysis, productDiffSummary });
-    context.skillsPrompt = skills
+    const baseInvestigationSkills = skills
       ? formatSkillsForPrompt(skills.relevant, 'investigation', skills.flakiness)
       : '';
+    context.skillsPrompt = context.priorInvestigationContext
+      ? `### Prior Investigation Findings\n${context.priorInvestigationContext}\n\n${baseInvestigationSkills}`
+      : baseInvestigationSkills;
     const investigationChainId = analysis.confidence < 80 ? (analysisResult.responseId ?? undefined) : undefined;
     core.info(analysis.confidence < 80 ? '🔗 Chaining analysis context to investigation (confidence < 80%)' : '📋 Investigation starts fresh (analysis confidence >= 80%)');
     const investigationResult = await this.investigationAgent.execute(

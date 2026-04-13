@@ -99,6 +99,8 @@ export interface AgentContext {
   includeScreenshots?: boolean;
   /** Summary of investigation findings, available for downstream skill saving */
   investigationSummary?: string;
+  /** Prior investigation findings from skill store, for the investigation agent */
+  priorInvestigationContext?: string;
 }
 
 /**

@@ -74,12 +74,12 @@ class SimplifiedRepairAgent {
             });
         }
     }
-    async generateFixRecommendation(repairContext, errorData, previousAttempt, previousResponseId, skills) {
+    async generateFixRecommendation(repairContext, errorData, previousAttempt, previousResponseId, skills, priorInvestigationContext) {
         try {
             core.info('🔧 Generating fix recommendation...');
             if (this.config.enableAgenticRepair && this.orchestrator) {
                 core.info('🤖 Attempting agentic repair...');
-                const agenticResult = await this.tryAgenticRepair(repairContext, errorData, previousAttempt, previousResponseId, skills);
+                const agenticResult = await this.tryAgenticRepair(repairContext, errorData, previousAttempt, previousResponseId, skills, priorInvestigationContext);
                 if (agenticResult) {
                     core.info(`✅ Agentic repair succeeded with ${agenticResult.fix.confidence}% confidence`);
                     return agenticResult;
@@ -94,7 +94,7 @@ class SimplifiedRepairAgent {
             return null;
         }
     }
-    async tryAgenticRepair(repairContext, errorData, previousAttempt, previousResponseId, skills) {
+    async tryAgenticRepair(repairContext, errorData, previousAttempt, previousResponseId, skills, priorInvestigationContext) {
         if (!this.orchestrator) {
             return null;
         }
@@ -135,6 +135,9 @@ class SimplifiedRepairAgent {
                     : undefined,
                 framework: errorData?.framework,
             });
+            if (priorInvestigationContext) {
+                agentContext.priorInvestigationContext = priorInvestigationContext;
+            }
             const result = await this.orchestrator.orchestrate(agentContext, errorData, previousResponseId, skills);
             if (result.success && result.fix) {
                 core.info(`🤖 Agentic approach: ${result.approach}, iterations: ${result.iterations}, time: ${result.totalTimeMs}ms`);

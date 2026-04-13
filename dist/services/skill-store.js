@@ -401,27 +401,6 @@ class SkillStore {
             `   confidence: ${s.confidence}%`)
             .join('\n');
     }
-    formatForRepair(opts) {
-        const relevant = this.findForRepair(opts);
-        if (relevant.length === 0)
-            return '';
-        return relevant
-            .map((s, i) => {
-            const tag = s.wasSuccessful ? 'SUCCESS' : 'FAILED';
-            const suffix = s.wasSuccessful ? '' : ' (this approach did NOT work)';
-            let entry = `${i + 1}. [${tag}] errorPattern: ${sanitizeForPrompt(s.errorPattern)}\n` +
-                `   rootCause: ${sanitizeForPrompt(s.rootCauseCategory)}\n` +
-                `   fix: ${sanitizeForPrompt(s.fix.summary)}${suffix}`;
-            if (s.investigationFindings) {
-                entry += `\n   Investigation found: ${sanitizeForPrompt(s.investigationFindings)}`;
-            }
-            if (s.repoContext) {
-                entry += `\n   Repo note: ${sanitizeForPrompt(s.repoContext)}`;
-            }
-            return entry;
-        })
-            .join('\n');
-    }
     formatForInvestigation(opts) {
         const relevant = this.findRelevant({
             framework: opts.framework,

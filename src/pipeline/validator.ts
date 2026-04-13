@@ -24,7 +24,8 @@ export async function generateFixRecommendation(
     validationLogs: string;
   },
   previousResponseId?: string,
-  skillStore?: SkillStore
+  skillStore?: SkillStore,
+  priorInvestigationContext?: string
 ): Promise<{ fix: FixRecommendation; lastResponseId?: string } | null> {
   try {
     const iterLabel = previousAttempt
@@ -77,7 +78,8 @@ export async function generateFixRecommendation(
       errorData as ErrorData,
       previousAttempt,
       previousResponseId,
-      skills
+      skills,
+      priorInvestigationContext
     );
 
     if (result) {
@@ -157,7 +159,8 @@ export async function iterativeFixValidateLoop(
         octokit,
         previousAttempt,
         lastResponseId,
-        skillStore
+        skillStore,
+        investigationContext
       );
 
       if (!fixResult) {

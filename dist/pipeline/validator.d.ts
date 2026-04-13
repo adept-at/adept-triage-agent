@@ -14,7 +14,7 @@ export declare function generateFixRecommendation(inputs: ActionInputs, repoDeta
     iteration: number;
     previousFix: FixRecommendation;
     validationLogs: string;
-}, previousResponseId?: string, skillStore?: SkillStore): Promise<{
+}, previousResponseId?: string, skillStore?: SkillStore, priorInvestigationContext?: string): Promise<{
     fix: FixRecommendation;
     lastResponseId?: string;
 } | null>;

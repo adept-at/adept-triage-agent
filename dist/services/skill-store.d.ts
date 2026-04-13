@@ -73,12 +73,6 @@ export declare class SkillStore {
         spec?: string;
         errorMessage?: string;
     }): string;
-    formatForRepair(opts: {
-        framework: string;
-        spec?: string;
-        errorMessage?: string;
-        rootCauseCategory?: string;
-    }): string;
     formatForInvestigation(opts: {
         framework: string;
         spec?: string;
