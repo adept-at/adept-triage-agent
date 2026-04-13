@@ -3,7 +3,7 @@ import { Octokit } from '@octokit/rest';
 import { OpenAIClient } from './openai-client';
 import { ArtifactFetcher } from './artifact-fetcher';
 import { ActionInputs } from './types';
-import { AUTO_FIX, CURSOR_CLOUD, DEFAULT_PRODUCT_REPO } from './config/constants';
+import { AUTO_FIX, DEFAULT_PRODUCT_REPO } from './config/constants';
 import { parseRepoString } from './utils/repo-utils';
 import { PipelineCoordinator } from './pipeline/coordinator';
 
@@ -13,9 +13,6 @@ export { setSuccessOutput, setInconclusiveOutput, setErrorOutput, resolveAutoFix
 async function run(): Promise<void> {
   try {
     const inputs = getInputs();
-    if (inputs.cursorApiKey) {
-      core.setSecret(inputs.cursorApiKey);
-    }
     if (inputs.triageAwsAccessKeyId) {
       core.setSecret(inputs.triageAwsAccessKeyId);
     }
@@ -88,16 +85,6 @@ function getInputs(): ActionInputs {
     // Product repo diff inputs
     productRepo: core.getInput('PRODUCT_REPO') || DEFAULT_PRODUCT_REPO,
     productDiffCommits: safeParseInt(core.getInput('PRODUCT_DIFF_COMMITS'), 5),
-    // Cursor Cloud Agent validation inputs
-    enableCursorValidation:
-      core.getInput('ENABLE_CURSOR_VALIDATION') === 'true',
-    cursorApiKey: core.getInput('CURSOR_API_KEY') || undefined,
-    cursorValidationMode:
-      (core.getInput('CURSOR_VALIDATION_MODE') as 'poll' | 'async') || 'poll',
-    cursorValidationTimeout: safeParseInt(
-      core.getInput('CURSOR_VALIDATION_TIMEOUT'),
-      CURSOR_CLOUD.VALIDATION_TIMEOUT_MS
-    ),
     // DynamoDB skill store inputs
     triageAwsAccessKeyId: core.getInput('TRIAGE_AWS_ACCESS_KEY_ID') || undefined,
     triageAwsSecretAccessKey: core.getInput('TRIAGE_AWS_SECRET_ACCESS_KEY') || undefined,

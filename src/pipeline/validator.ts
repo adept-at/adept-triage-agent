@@ -8,8 +8,7 @@ import { SimplifiedRepairAgent } from '../repair/simplified-repair-agent';
 import { createFixApplier, ApplyResult, generateFixBranchName } from '../repair/fix-applier';
 import { LocalFixValidator } from '../services/local-fix-validator';
 import { AUTO_FIX, FIX_VALIDATE_LOOP, DEFAULT_PRODUCT_URL } from '../config/constants';
-import { CursorCloudValidator, CursorValidationParams } from '../services/cursor-cloud-validator';
-import { SkillStore, buildSkill, describeFixPattern } from '../services/skill-store';
+import { SkillStore } from '../services/skill-store';
 import { parseRepoString } from '../utils/repo-utils';
 
 export async function generateFixRecommendation(
@@ -115,11 +114,13 @@ export async function iterativeFixValidateLoop(
 ): Promise<{
   fixRecommendation: FixRecommendation | null;
   autoFixResult: ApplyResult | null;
-  savedSkillId?: string;
+  iterations: number;
+  prUrl?: string;
 }> {
   const maxIterations = FIX_VALIDATE_LOOP.MAX_ITERATIONS;
   let fixRecommendation: FixRecommendation | null = null;
   let autoFixResult: ApplyResult | null = null;
+  let completedIterations = 0;
   let previousAttempt:
     | { iteration: number; previousFix: FixRecommendation; validationLogs: string }
     | undefined;
@@ -147,6 +148,7 @@ export async function iterativeFixValidateLoop(
 
   try {
     for (let iteration = 0; iteration < maxIterations; iteration++) {
+      completedIterations = iteration + 1;
       core.info(
         `\n${'='.repeat(60)}\n🔄 Fix-Validate iteration ${iteration + 1}/${maxIterations}\n${'='.repeat(60)}`
       );
@@ -201,7 +203,7 @@ export async function iterativeFixValidateLoop(
         const baseline = await validator.baselineCheck();
         if (baseline.passed) {
           core.info('✅ Baseline check passed — test passes without fix. Failure was likely transient.');
-          return { fixRecommendation: null, autoFixResult: null };
+          return { fixRecommendation: null, autoFixResult: null, iterations: 0 };
         }
         core.info('❌ Baseline check confirmed failure — proceeding with fix.');
       }
@@ -243,39 +245,7 @@ export async function iterativeFixValidateLoop(
             validationStatus: 'passed',
           };
 
-          if (skillStore && fixRecommendation) {
-            const repoFullName = `${autoFixTargetRepo.owner}/${autoFixTargetRepo.repo}`;
-            const firstChange = fixRecommendation.proposedChanges[0];
-            const changeType = (firstChange as { changeType?: string })?.changeType || 'OTHER';
-            const skill = buildSkill({
-              repo: repoFullName,
-              spec: errorData.fileName || 'unknown',
-              testName: errorData.testName || 'unknown',
-              framework: errorData.framework || 'unknown',
-              errorMessage: errorData.message,
-              rootCauseCategory: changeType,
-              fix: {
-                file: firstChange.file,
-                changeType,
-                summary: fixRecommendation.summary,
-                pattern: describeFixPattern(fixRecommendation.proposedChanges),
-              },
-              confidence: fixRecommendation.confidence,
-              iterations: iteration + 1,
-              prUrl: pushResult.prUrl || '',
-              validatedLocally: true,
-              priorSkillCount: skillStore.countForSpec(errorData.fileName || 'unknown'),
-              investigationFindings: investigationContext || '',
-              rootCauseChain: `${changeType} → ${fixRecommendation.summary.slice(0, 80)}`,
-              repoContext: '',
-            });
-            await skillStore.save(skill).catch((err) => {
-              core.warning(`Failed to save skill: ${err}`);
-            });
-            await skillStore.recordOutcome(skill.id, true).catch(() => {});
-
-            return { fixRecommendation, autoFixResult, savedSkillId: skill.id };
-          }
+          return { fixRecommendation, autoFixResult, iterations: iteration + 1, prUrl: pushResult.prUrl };
         } catch (pushError) {
           core.warning(`Test passed but push/PR creation failed: ${pushError}`);
           autoFixResult = {
@@ -286,7 +256,7 @@ export async function iterativeFixValidateLoop(
           };
         }
 
-        return { fixRecommendation, autoFixResult };
+        return { fixRecommendation, autoFixResult, iterations: iteration + 1 };
       }
 
       core.warning(
@@ -304,37 +274,6 @@ export async function iterativeFixValidateLoop(
         };
       } else {
         core.warning(`\n🛑 All ${maxIterations} fix attempts exhausted. Giving up.`);
-
-        if (skillStore && fixRecommendation) {
-          const repoFullName = `${autoFixTargetRepo.owner}/${autoFixTargetRepo.repo}`;
-          const firstChange = fixRecommendation.proposedChanges?.[0];
-          const changeType = (firstChange as { changeType?: string })?.changeType || 'OTHER';
-          const failedSkill = buildSkill({
-            repo: repoFullName,
-            spec: errorData.fileName || 'unknown',
-            testName: errorData.testName || 'unknown',
-            framework: errorData.framework || 'unknown',
-            errorMessage: errorData.message,
-            rootCauseCategory: changeType,
-            fix: {
-              file: firstChange?.file || 'unknown',
-              changeType,
-              summary: fixRecommendation.summary,
-              pattern: describeFixPattern(fixRecommendation.proposedChanges || []),
-            },
-            confidence: fixRecommendation.confidence,
-            iterations: maxIterations,
-            prUrl: '',
-            validatedLocally: false,
-            priorSkillCount: skillStore.countForSpec(errorData.fileName || 'unknown'),
-            investigationFindings: investigationContext || '',
-            rootCauseChain: `${changeType} → ${fixRecommendation.summary.slice(0, 80)}`,
-            repoContext: '',
-          });
-          await skillStore.save(failedSkill).catch(() => {});
-          await skillStore.recordOutcome(failedSkill.id, false).catch(() => {});
-          core.info(`📝 Saved failed fix trajectory as negative skill example (${failedSkill.id})`);
-        }
       }
     }
   } finally {
@@ -343,7 +282,7 @@ export async function iterativeFixValidateLoop(
     }
   }
 
-  return { fixRecommendation, autoFixResult };
+  return { fixRecommendation, autoFixResult, iterations: completedIterations };
 }
 
 /**
@@ -443,20 +382,6 @@ export async function attemptAutoFix(
             result.validationStatus = 'skipped';
           }
         }
-      } else if (inputs.enableCursorValidation && result.branchName) {
-        core.info('\n🤖 Triggering Cursor cloud agent validation...');
-        try {
-          await triggerCursorValidation(
-            inputs,
-            result,
-            fixRecommendation,
-            repoDetails,
-            errorData
-          );
-        } catch (cursorError) {
-          core.warning(`Cursor cloud agent validation error: ${cursorError}`);
-          result.validationStatus = 'skipped';
-        }
       }
     } else {
       core.warning(`❌ Auto-fix failed: ${result.error}`);
@@ -469,95 +394,3 @@ export async function attemptAutoFix(
   }
 }
 
-/**
- * Trigger Cursor Cloud Agent validation as an alternative to
- * the GitHub Actions workflow_dispatch validation.
- *
- * This is called from attemptAutoFix when ENABLE_CURSOR_VALIDATION=true.
- * It does not modify any existing validation logic — the firing workflow
- * chooses which path to use via the input parameter.
- */
-async function triggerCursorValidation(
-  inputs: ActionInputs,
-  result: ApplyResult,
-  fixRecommendation: FixRecommendation,
-  repoDetails: { owner: string; repo: string },
-  errorData?: { fileName?: string }
-): Promise<void> {
-  if (!inputs.cursorApiKey) {
-    core.warning(
-      'CURSOR_API_KEY is required for Cursor cloud agent validation'
-    );
-    result.validationStatus = 'skipped';
-    return;
-  }
-
-  const spec =
-    inputs.validationSpec ||
-    errorData?.fileName ||
-    fixRecommendation.proposedChanges[0]?.file;
-  const previewUrl =
-    inputs.validationPreviewUrl || DEFAULT_PRODUCT_URL;
-
-  if (!spec) {
-    core.warning(
-      'No spec file identified for Cursor validation, skipping'
-    );
-    result.validationStatus = 'skipped';
-    return;
-  }
-
-  const repositoryUrl = `https://github.com/${repoDetails.owner}/${repoDetails.repo}`;
-
-  const validationParams: CursorValidationParams = {
-    repositoryUrl,
-    branch: result.branchName!,
-    spec,
-    previewUrl,
-    framework: inputs.testFrameworks,
-    testCommand: inputs.validationTestCommand,
-    triageRunId: inputs.workflowRunId,
-  };
-
-  const validator = new CursorCloudValidator(inputs.cursorApiKey);
-  const mode = inputs.cursorValidationMode || 'poll';
-  const timeout = inputs.cursorValidationTimeout;
-
-  core.info(`\n🤖 Launching Cursor cloud agent validation (mode: ${mode})`);
-
-  const cursorResult = await validator.validate(
-    validationParams,
-    mode,
-    timeout
-  );
-
-  result.validationUrl = cursorResult.agentUrl;
-
-  if (cursorResult.status === 'FINISHED') {
-    if (cursorResult.testPassed === true) {
-      result.validationStatus = 'passed';
-      core.info('✅ Cursor cloud agent: tests PASSED');
-    } else if (cursorResult.testPassed === false) {
-      result.validationStatus = 'failed';
-      core.warning('❌ Cursor cloud agent: tests FAILED');
-    } else {
-      result.validationStatus = 'pending';
-      core.info(
-        '❓ Cursor cloud agent finished but result could not be determined'
-      );
-    }
-  } else if (cursorResult.status === 'ERROR') {
-    result.validationStatus = 'failed';
-    core.warning('❌ Cursor cloud agent encountered an error');
-  } else {
-    result.validationStatus = 'pending';
-  }
-
-  core.info(`  Agent ID: ${cursorResult.agentId}`);
-  core.info(`  Agent URL: ${cursorResult.agentUrl}`);
-  core.info(`  Summary: ${cursorResult.summary}`);
-
-  core.setOutput('cursor_agent_id', cursorResult.agentId);
-  core.setOutput('cursor_agent_url', cursorResult.agentUrl || '');
-  core.setOutput('cursor_validation_summary', cursorResult.summary || '');
-}

@@ -28,9 +28,6 @@ export interface TriageSkill {
     rootCauseChain?: string;
     repoContext?: string;
 }
-export interface RepairSkill extends TriageSkill {
-    wasSuccessful: boolean;
-}
 export interface FlakinessSignal {
     isFlaky: boolean;
     fixCount: number;
@@ -60,12 +57,6 @@ export declare class SkillStore {
         spec?: string;
         errorMessage?: string;
     }): TriageSkill[];
-    findForRepair(opts: {
-        framework: string;
-        spec?: string;
-        errorMessage?: string;
-        rootCauseCategory?: string;
-    }): RepairSkill[];
     detectFlakiness(spec: string): FlakinessSignal;
     countForSpec(spec: string): number;
     formatForClassifier(opts: {

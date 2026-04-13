@@ -123,10 +123,6 @@ export interface ActionInputs {
     enableAgenticRepair?: boolean;
     productRepo: string;
     productDiffCommits?: number;
-    enableCursorValidation?: boolean;
-    cursorApiKey?: string;
-    cursorValidationMode?: 'poll' | 'async';
-    cursorValidationTimeout?: number;
     triageAwsAccessKeyId?: string;
     triageAwsSecretAccessKey?: string;
     triageAwsRegion?: string;
@@ -188,26 +184,5 @@ export interface StructuredErrorSummary {
         hasScreenshots: boolean;
         logSize: number;
     };
-}
-export interface CursorValidationResult {
-    agentId: string;
-    status: 'FINISHED' | 'ERROR' | 'TIMEOUT' | 'CREATING' | 'RUNNING';
-    testPassed: boolean | null;
-    summary: string;
-    conversation?: CursorAgentMessage[];
-    agentUrl?: string;
-    branchName?: string;
-    prUrl?: string;
-    artifacts?: CursorAgentArtifact[];
-}
-export interface CursorAgentMessage {
-    id: string;
-    type: 'user_message' | 'assistant_message';
-    text: string;
-}
-export interface CursorAgentArtifact {
-    absolutePath: string;
-    sizeBytes: number;
-    updatedAt: string;
 }
 //# sourceMappingURL=types.d.ts.map

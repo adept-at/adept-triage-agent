@@ -17,6 +17,8 @@ export class DynamoSkillStore extends SkillStore {
   private tableName: string;
   private accessKeyId: string;
   private secretAccessKey: string;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private _cachedClient: any;
 
   constructor(
     region: string,
@@ -35,6 +37,8 @@ export class DynamoSkillStore extends SkillStore {
   }
 
   private async getDocClient() {
+    if (this._cachedClient) return this._cachedClient;
+
     const { DynamoDBClient } = await import('@aws-sdk/client-dynamodb');
     const { DynamoDBDocumentClient } = await import('@aws-sdk/lib-dynamodb');
     const clientConfig: Record<string, unknown> = { region: this.region };
@@ -45,9 +49,10 @@ export class DynamoSkillStore extends SkillStore {
       };
     }
     const raw = new DynamoDBClient(clientConfig);
-    return DynamoDBDocumentClient.from(raw, {
+    this._cachedClient = DynamoDBDocumentClient.from(raw, {
       marshallOptions: { removeUndefinedValues: true },
     });
+    return this._cachedClient;
   }
 
   override async load(): Promise<TriageSkill[]> {
@@ -58,19 +63,29 @@ export class DynamoSkillStore extends SkillStore {
       const client = await this.getDocClient();
 
       const pk = `REPO#${this.owner}/${this.repo}`;
-      const result = await client.send(
-        new QueryCommand({
-          TableName: this.tableName,
-          KeyConditionExpression: 'pk = :pk AND begins_with(sk, :prefix)',
-          ExpressionAttributeValues: { ':pk': pk, ':prefix': 'SKILL#' },
-        })
-      );
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const allItems: any[] = [];
+      let lastKey: Record<string, unknown> | undefined;
 
-      this.skills = (result.Items ?? []).map(({ pk: _pk, sk: _sk, ...rest }) => rest as TriageSkill);
+      do {
+        const result = await client.send(
+          new QueryCommand({
+            TableName: this.tableName,
+            KeyConditionExpression: 'pk = :pk AND begins_with(sk, :prefix)',
+            ExpressionAttributeValues: { ':pk': pk, ':prefix': 'SKILL#' },
+            ExclusiveStartKey: lastKey,
+          })
+        );
+        allItems.push(...(result.Items ?? []));
+        lastKey = result.LastEvaluatedKey as Record<string, unknown> | undefined;
+      } while (lastKey);
+
+      this.skills = allItems.map(({ pk: _pk, sk: _sk, ...rest }: Record<string, unknown>) => rest as unknown as TriageSkill);
       this.loaded = true;
       core.info(`📝 Loaded ${this.skills.length} skill(s) from DynamoDB (${this.tableName}) for ${this.owner}/${this.repo}`);
     } catch (err) {
       core.warning(`DynamoDB skill load failed: ${err}`);
+      this.loaded = true;
     }
 
     return this.skills;
@@ -102,6 +117,7 @@ export class DynamoSkillStore extends SkillStore {
   }
 
   override async recordOutcome(skillId: string, success: boolean): Promise<void> {
+    if (!this.loaded) await this.load();
     const skill = this.skills.find((s) => s.id === skillId);
     if (!skill) return;
 
@@ -145,6 +161,7 @@ export class DynamoSkillStore extends SkillStore {
     skillId: string,
     outcome: 'correct' | 'incorrect'
   ): Promise<void> {
+    if (!this.loaded) await this.load();
     const skill = this.skills.find((s) => s.id === skillId);
     if (!skill) return;
 

@@ -50,6 +50,7 @@ class DynamoSkillStore extends skill_store_js_1.SkillStore {
     tableName;
     accessKeyId;
     secretAccessKey;
+    _cachedClient;
     constructor(region, tableName, owner, repo, accessKeyId, secretAccessKey) {
         const dummyOctokit = new rest_1.Octokit();
         super(dummyOctokit, owner, repo);
@@ -59,6 +60,8 @@ class DynamoSkillStore extends skill_store_js_1.SkillStore {
         this.secretAccessKey = secretAccessKey;
     }
     async getDocClient() {
+        if (this._cachedClient)
+            return this._cachedClient;
         const { DynamoDBClient } = await __webpack_require__.e(/* import() */ 305).then(__webpack_require__.t.bind(__webpack_require__, 64305, 23));
         const { DynamoDBDocumentClient } = await Promise.all(/* import() */[__webpack_require__.e(305), __webpack_require__.e(907)]).then(__webpack_require__.t.bind(__webpack_require__, 58907, 19));
         const clientConfig = { region: this.region };
@@ -69,9 +72,10 @@ class DynamoSkillStore extends skill_store_js_1.SkillStore {
             };
         }
         const raw = new DynamoDBClient(clientConfig);
-        return DynamoDBDocumentClient.from(raw, {
+        this._cachedClient = DynamoDBDocumentClient.from(raw, {
             marshallOptions: { removeUndefinedValues: true },
         });
+        return this._cachedClient;
     }
     async load() {
         if (this.loaded)
@@ -80,17 +84,25 @@ class DynamoSkillStore extends skill_store_js_1.SkillStore {
             const { QueryCommand } = await Promise.all(/* import() */[__webpack_require__.e(305), __webpack_require__.e(907)]).then(__webpack_require__.t.bind(__webpack_require__, 58907, 19));
             const client = await this.getDocClient();
             const pk = `REPO#${this.owner}/${this.repo}`;
-            const result = await client.send(new QueryCommand({
-                TableName: this.tableName,
-                KeyConditionExpression: 'pk = :pk AND begins_with(sk, :prefix)',
-                ExpressionAttributeValues: { ':pk': pk, ':prefix': 'SKILL#' },
-            }));
-            this.skills = (result.Items ?? []).map(({ pk: _pk, sk: _sk, ...rest }) => rest);
+            const allItems = [];
+            let lastKey;
+            do {
+                const result = await client.send(new QueryCommand({
+                    TableName: this.tableName,
+                    KeyConditionExpression: 'pk = :pk AND begins_with(sk, :prefix)',
+                    ExpressionAttributeValues: { ':pk': pk, ':prefix': 'SKILL#' },
+                    ExclusiveStartKey: lastKey,
+                }));
+                allItems.push(...(result.Items ?? []));
+                lastKey = result.LastEvaluatedKey;
+            } while (lastKey);
+            this.skills = allItems.map(({ pk: _pk, sk: _sk, ...rest }) => rest);
             this.loaded = true;
             core.info(`📝 Loaded ${this.skills.length} skill(s) from DynamoDB (${this.tableName}) for ${this.owner}/${this.repo}`);
         }
         catch (err) {
             core.warning(`DynamoDB skill load failed: ${err}`);
+            this.loaded = true;
         }
         return this.skills;
     }
@@ -115,6 +127,8 @@ class DynamoSkillStore extends skill_store_js_1.SkillStore {
         }
     }
     async recordOutcome(skillId, success) {
+        if (!this.loaded)
+            await this.load();
         const skill = this.skills.find((s) => s.id === skillId);
         if (!skill)
             return;
@@ -151,6 +165,8 @@ class DynamoSkillStore extends skill_store_js_1.SkillStore {
         }
     }
     async recordClassificationOutcome(skillId, outcome) {
+        if (!this.loaded)
+            await this.load();
         const skill = this.skills.find((s) => s.id === skillId);
         if (!skill)
             return;

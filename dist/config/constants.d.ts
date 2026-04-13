@@ -21,7 +21,6 @@ export declare const CONFIDENCE: {
 };
 export declare const OPENAI: {
     readonly MODEL: "gpt-5.3-codex";
-    readonly TEMPERATURE: 0.3;
     readonly MAX_COMPLETION_TOKENS: 16384;
     readonly MAX_RETRIES: 3;
     readonly RETRY_DELAY_MS: 1000;
@@ -30,15 +29,9 @@ export declare const SHORT_SHA_LENGTH = 7;
 export declare const ARTIFACTS: {
     readonly MAX_PR_DIFF_FILES: 30;
     readonly MAX_PATCH_LINES: 20;
-    readonly MAX_RELEVANT_FILES: 10;
-    readonly LOG_PREVIEW_LENGTH: 1000;
-    readonly PATCH_PREVIEW_LENGTH: 500;
 };
 export declare const FORMATTING: {
-    readonly SLACK_MAX_LENGTH: 2900;
-    readonly BRIEF_SUMMARY_MAX_LENGTH: 500;
     readonly MAIN_SUMMARY_MAX_LENGTH: 1000;
-    readonly TRUNCATION_BUFFER: 100;
 };
 export declare const ERROR_TYPES: {
     readonly ELEMENT_NOT_FOUND: "ELEMENT_NOT_FOUND";
@@ -65,25 +58,14 @@ export declare const AUTO_FIX: {
     readonly DEFAULT_MIN_CONFIDENCE: 70;
     readonly BRANCH_PREFIX: "fix/triage-agent/";
 };
-export declare const CURSOR_CLOUD: {
-    readonly API_BASE_URL: "https://api.cursor.com";
-    readonly POLL_INTERVAL_MS: 10000;
-    readonly VALIDATION_TIMEOUT_MS: 300000;
-    readonly INITIAL_DELAY_MS: 15000;
-    readonly MAX_POLL_ATTEMPTS: 30;
-    readonly TERMINAL_STATUSES: readonly string[];
-};
 export declare const DEFAULT_PRODUCT_REPO = "adept-at/learn-webapp";
 export declare const DEFAULT_PRODUCT_URL = "https://learn.adept.at";
 export declare const AGENT_CONFIG: {
     readonly ENABLE_AGENTIC_REPAIR: boolean;
     readonly MAX_AGENT_ITERATIONS: 3;
     readonly AGENT_TIMEOUT_MS: 120000;
-    readonly INDIVIDUAL_AGENT_TIMEOUT_MS: 60000;
     readonly REVIEW_REQUIRED_CONFIDENCE: 70;
-    readonly AGENT_TEMPERATURE: 0.3;
-    readonly AGENT_MAX_TOKENS: 4000;
-    readonly FALLBACK_TO_SINGLE_SHOT: true;
+    readonly INVESTIGATION_CHAIN_CONFIDENCE: 80;
 };
 export declare const FIX_VALIDATE_LOOP: {
     readonly MAX_ITERATIONS: 3;

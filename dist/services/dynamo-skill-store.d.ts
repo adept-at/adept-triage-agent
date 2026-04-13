@@ -4,6 +4,7 @@ export declare class DynamoSkillStore extends SkillStore {
     private tableName;
     private accessKeyId;
     private secretAccessKey;
+    private _cachedClient;
     constructor(region: string, tableName: string, owner: string, repo: string, accessKeyId: string, secretAccessKey: string);
     private getDocClient;
     load(): Promise<TriageSkill[]>;

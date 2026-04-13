@@ -42,6 +42,7 @@ const investigation_agent_1 = require("./investigation-agent");
 const fix_generation_agent_1 = require("./fix-generation-agent");
 const review_agent_1 = require("./review-agent");
 const skill_store_1 = require("../services/skill-store");
+const constants_1 = require("../config/constants");
 exports.DEFAULT_ORCHESTRATOR_CONFIG = {
     maxIterations: 3,
     totalTimeoutMs: 120000,
@@ -191,8 +192,9 @@ class AgentOrchestrator {
         context.skillsPrompt = context.priorInvestigationContext
             ? `### Prior Investigation Findings\n${context.priorInvestigationContext}\n\n${baseInvestigationSkills}`
             : baseInvestigationSkills;
-        const investigationChainId = analysis.confidence < 80 ? (analysisResult.responseId ?? undefined) : undefined;
-        core.info(analysis.confidence < 80 ? '🔗 Chaining analysis context to investigation (confidence < 80%)' : '📋 Investigation starts fresh (analysis confidence >= 80%)');
+        const chainThreshold = constants_1.AGENT_CONFIG.INVESTIGATION_CHAIN_CONFIDENCE;
+        const investigationChainId = analysis.confidence < chainThreshold ? (analysisResult.responseId ?? undefined) : undefined;
+        core.info(analysis.confidence < chainThreshold ? `🔗 Chaining analysis context to investigation (confidence < ${chainThreshold}%)` : `📋 Investigation starts fresh (analysis confidence >= ${chainThreshold}%)`);
         const investigationResult = await this.investigationAgent.execute({
             analysis,
             codeContext: codeReadingResult.data,
@@ -213,7 +215,7 @@ class AgentOrchestrator {
         core.info(`   Recommended approach: ${investigation.recommendedApproach}`);
         if (investigation.verdictOverride &&
             investigation.verdictOverride.suggestedLocation === 'APP_CODE' &&
-            investigation.verdictOverride.confidence > analysis.confidence) {
+            investigation.verdictOverride.confidence >= analysis.confidence) {
             core.warning(`🛑 Investigation override: APP_CODE (${investigation.verdictOverride.confidence}% confidence) > Analysis (${analysis.confidence}%). Aborting repair.`);
             core.info(`   Evidence: ${investigation.verdictOverride.evidence.join('; ')}`);
             return {

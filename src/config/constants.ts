@@ -48,8 +48,6 @@ export const CONFIDENCE = {
 export const OPENAI = {
   /** Model to use for analysis */
   MODEL: 'gpt-5.3-codex',
-  /** Temperature for deterministic responses */
-  TEMPERATURE: 0.3,
   /** Maximum completion tokens */
   MAX_COMPLETION_TOKENS: 16384,
   /** Maximum retry attempts */
@@ -67,24 +65,12 @@ export const ARTIFACTS = {
   MAX_PR_DIFF_FILES: 30,
   /** Maximum patch lines to include per file */
   MAX_PATCH_LINES: 20,
-  /** Maximum relevant files to show in repair context */
-  MAX_RELEVANT_FILES: 10,
-  /** Preview length for logs in prompts */
-  LOG_PREVIEW_LENGTH: 1000,
-  /** Preview length for patches */
-  PATCH_PREVIEW_LENGTH: 500,
 } as const;
 
 /** Summary and output formatting */
 export const FORMATTING = {
-  /** Maximum length for Slack summary */
-  SLACK_MAX_LENGTH: 2900,
-  /** Maximum length for brief summaries */
-  BRIEF_SUMMARY_MAX_LENGTH: 500,
   /** Maximum length for main summaries */
   MAIN_SUMMARY_MAX_LENGTH: 1000,
-  /** Truncation point before max length */
-  TRUNCATION_BUFFER: 100,
 } as const;
 
 /** Error classification categories */
@@ -123,21 +109,6 @@ export const AUTO_FIX = {
   BRANCH_PREFIX: 'fix/triage-agent/',
 } as const;
 
-/** Cursor Cloud Agent validation configuration */
-export const CURSOR_CLOUD = {
-  API_BASE_URL: 'https://api.cursor.com',
-  /** How often to poll for agent completion (ms) */
-  POLL_INTERVAL_MS: 10_000,
-  /** Maximum time to wait for agent to finish (5 minutes) */
-  VALIDATION_TIMEOUT_MS: 300_000,
-  /** Delay before first poll to let the agent initialize */
-  INITIAL_DELAY_MS: 15_000,
-  /** Maximum poll attempts before giving up */
-  MAX_POLL_ATTEMPTS: 30,
-  /** Agent statuses that indicate completion */
-  TERMINAL_STATUSES: ['FINISHED', 'ERROR'] as readonly string[],
-} as const;
-
 /** Agentic repair system configuration */
 /** The product repository. All browser-test repos target learn-webapp. */
 export const DEFAULT_PRODUCT_REPO = 'adept-at/learn-webapp';
@@ -152,16 +123,10 @@ export const AGENT_CONFIG = {
   MAX_AGENT_ITERATIONS: 3,
   /** Total timeout for the entire agent orchestration (2 minutes) */
   AGENT_TIMEOUT_MS: 120_000,
-  /** Individual agent timeout */
-  INDIVIDUAL_AGENT_TIMEOUT_MS: 60_000,
   /** Minimum confidence required to accept a fix from review agent */
   REVIEW_REQUIRED_CONFIDENCE: 70,
-  /** Temperature for agent AI calls */
-  AGENT_TEMPERATURE: 0.3,
-  /** Maximum tokens for agent responses */
-  AGENT_MAX_TOKENS: 4000,
-  /** Whether to fall back to single-shot if agentic fails */
-  FALLBACK_TO_SINGLE_SHOT: true,
+  /** Below this confidence, chain analysis context into investigation for richer context */
+  INVESTIGATION_CHAIN_CONFIDENCE: 80,
 } as const;
 
 /** Iterative fix-validate loop configuration */

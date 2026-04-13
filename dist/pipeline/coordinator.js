@@ -99,7 +99,8 @@ class PipelineCoordinator {
             : '';
         let fixRecommendation = null;
         let autoFixResult = null;
-        let savedSkillId;
+        let iterations = 0;
+        let prUrl;
         if (this.inputs.enableAutoFix &&
             this.inputs.enableValidation &&
             this.inputs.validationTestCommand &&
@@ -107,7 +108,8 @@ class PipelineCoordinator {
             const loopResult = await (0, validator_1.iterativeFixValidateLoop)(this.inputs, this.repoDetails, autoFixTargetRepo, errorData, this.openaiClient, this.octokit, skillStore, undefined, investigationContext);
             fixRecommendation = loopResult.fixRecommendation;
             autoFixResult = loopResult.autoFixResult;
-            savedSkillId = loopResult.savedSkillId;
+            iterations = loopResult.iterations;
+            prUrl = loopResult.prUrl;
         }
         else {
             const singleResult = await (0, validator_1.generateFixRecommendation)(this.inputs, this.repoDetails, errorData, this.openaiClient, this.octokit, undefined, undefined, skillStore, investigationContext);
@@ -116,7 +118,7 @@ class PipelineCoordinator {
                 autoFixResult = await (0, validator_1.attemptAutoFix)(this.inputs, fixRecommendation, this.octokit, autoFixTargetRepo, errorData);
             }
         }
-        return { fixRecommendation, autoFixResult, savedSkillId };
+        return { fixRecommendation, autoFixResult, investigationContext, iterations, prUrl };
     }
     async execute() {
         const errorData = await (0, log_processor_1.processWorkflowLogs)(this.octokit, this.artifactFetcher, this.inputs, this.repoDetails);
@@ -147,20 +149,60 @@ class PipelineCoordinator {
             return;
         if (classification.verdict !== 'TEST_ISSUE')
             return;
-        const { fixRecommendation, autoFixResult, savedSkillId } = await this.repair(classification, errorData, skillStore);
-        if (autoFixResult?.success && savedSkillId && skillStore) {
-            await skillStore.recordClassificationOutcome(savedSkillId, 'correct').catch((err) => {
-                core.warning(`Failed to record classification outcome: ${err}`);
-            });
+        const { fixRecommendation, autoFixResult, investigationContext, iterations, prUrl: skillPrUrl } = await this.repair(classification, errorData, skillStore);
+        let savedSkillId;
+        if (skillStore && autoFixTargetRepo && errorData) {
+            const fixSucceeded = !!(autoFixResult?.success && autoFixResult.validationStatus === 'passed');
+            const fixAttempted = !!fixRecommendation;
+            if (fixAttempted) {
+                const firstChange = fixRecommendation.proposedChanges?.[0];
+                const rootCause = inferRootCauseCategory(fixRecommendation);
+                const skill = (0, skill_store_1.buildSkill)({
+                    repo: `${autoFixTargetRepo.owner}/${autoFixTargetRepo.repo}`,
+                    spec: errorData.fileName || 'unknown',
+                    testName: errorData.testName || 'unknown',
+                    framework: errorData.framework || 'unknown',
+                    errorMessage: errorData.message,
+                    rootCauseCategory: rootCause,
+                    fix: {
+                        file: firstChange?.file || 'unknown',
+                        changeType: rootCause,
+                        summary: fixRecommendation.summary,
+                        pattern: (0, skill_store_1.describeFixPattern)(fixRecommendation.proposedChanges || []),
+                    },
+                    confidence: fixRecommendation.confidence,
+                    iterations,
+                    prUrl: skillPrUrl || '',
+                    validatedLocally: fixSucceeded,
+                    priorSkillCount: skillStore.countForSpec(errorData.fileName || 'unknown'),
+                    investigationFindings: investigationContext || '',
+                    rootCauseChain: `${rootCause} → ${fixRecommendation.summary?.slice(0, 80)}`,
+                });
+                savedSkillId = skill.id;
+                await skillStore.save(skill).catch((err) => {
+                    core.warning(`Failed to save skill: ${err}`);
+                });
+                if (fixSucceeded) {
+                    await skillStore.recordOutcome(skill.id, true).catch(() => { });
+                    await skillStore.recordClassificationOutcome(skill.id, 'correct').catch(() => { });
+                    core.info(`📝 Saved validated skill ${skill.id}`);
+                }
+                else {
+                    await skillStore.recordOutcome(skill.id, false).catch(() => { });
+                    core.info(`📝 Saved failed skill trajectory ${skill.id}`);
+                }
+            }
         }
-        if (!autoFixResult?.success && skillStore) {
+        if (fixRecommendation && !autoFixResult?.success && skillStore) {
             const recentSkills = skillStore.findRelevant({
                 framework: errorData.framework || 'unknown',
                 spec: errorData.fileName,
-                limit: 1,
-            });
+                limit: 2,
+            }).filter((s) => s.id !== savedSkillId);
             if (recentSkills.length > 0) {
-                await skillStore.recordClassificationOutcome(recentSkills[0].id, 'incorrect').catch(() => { });
+                await skillStore.recordClassificationOutcome(recentSkills[0].id, 'incorrect').catch((err) => {
+                    core.warning(`Failed to record classification outcome: ${err}`);
+                });
             }
         }
         const result = { ...classification };
@@ -246,4 +288,18 @@ class PipelineCoordinator {
     }
 }
 exports.PipelineCoordinator = PipelineCoordinator;
+function inferRootCauseCategory(fix) {
+    const text = `${fix.summary} ${fix.proposedChanges?.map((c) => c.justification).join(' ')}`.toLowerCase();
+    if (/selector|get\(|find\(|locator|data-testid|querySelector/.test(text))
+        return 'SELECTOR_UPDATE';
+    if (/wait|timeout|retry|sleep|intercept/.test(text))
+        return 'WAIT_ADDITION';
+    if (/assert|expect|should|verify/.test(text))
+        return 'ASSERTION_UPDATE';
+    if (/import|require|module|dependency/.test(text))
+        return 'IMPORT_FIX';
+    if (/config|env|setup|fixture|before/.test(text))
+        return 'CONFIG_CHANGE';
+    return 'OTHER';
+}
 //# sourceMappingURL=coordinator.js.map

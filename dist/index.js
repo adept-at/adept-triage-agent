@@ -49,6 +49,7 @@ const investigation_agent_1 = __nccwpck_require__(19962);
 const fix_generation_agent_1 = __nccwpck_require__(39302);
 const review_agent_1 = __nccwpck_require__(61218);
 const skill_store_1 = __nccwpck_require__(60215);
+const constants_1 = __nccwpck_require__(58361);
 exports.DEFAULT_ORCHESTRATOR_CONFIG = {
     maxIterations: 3,
     totalTimeoutMs: 120000,
@@ -198,8 +199,9 @@ class AgentOrchestrator {
         context.skillsPrompt = context.priorInvestigationContext
             ? `### Prior Investigation Findings\n${context.priorInvestigationContext}\n\n${baseInvestigationSkills}`
             : baseInvestigationSkills;
-        const investigationChainId = analysis.confidence < 80 ? (analysisResult.responseId ?? undefined) : undefined;
-        core.info(analysis.confidence < 80 ? '🔗 Chaining analysis context to investigation (confidence < 80%)' : '📋 Investigation starts fresh (analysis confidence >= 80%)');
+        const chainThreshold = constants_1.AGENT_CONFIG.INVESTIGATION_CHAIN_CONFIDENCE;
+        const investigationChainId = analysis.confidence < chainThreshold ? (analysisResult.responseId ?? undefined) : undefined;
+        core.info(analysis.confidence < chainThreshold ? `🔗 Chaining analysis context to investigation (confidence < ${chainThreshold}%)` : `📋 Investigation starts fresh (analysis confidence >= ${chainThreshold}%)`);
         const investigationResult = await this.investigationAgent.execute({
             analysis,
             codeContext: codeReadingResult.data,
@@ -220,7 +222,7 @@ class AgentOrchestrator {
         core.info(`   Recommended approach: ${investigation.recommendedApproach}`);
         if (investigation.verdictOverride &&
             investigation.verdictOverride.suggestedLocation === 'APP_CODE' &&
-            investigation.verdictOverride.confidence > analysis.confidence) {
+            investigation.verdictOverride.confidence >= analysis.confidence) {
             core.warning(`🛑 Investigation override: APP_CODE (${investigation.verdictOverride.confidence}% confidence) > Analysis (${analysis.confidence}%). Aborting repair.`);
             core.info(`   Evidence: ${investigation.verdictOverride.evidence.join('; ')}`);
             return {
@@ -3168,7 +3170,7 @@ exports.ArtifactFetcher = ArtifactFetcher;
 "use strict";
 
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.FIX_VALIDATE_LOOP = exports.AGENT_CONFIG = exports.DEFAULT_PRODUCT_URL = exports.DEFAULT_PRODUCT_REPO = exports.CURSOR_CLOUD = exports.AUTO_FIX = exports.TEST_ISSUE_CATEGORIES = exports.ERROR_TYPES = exports.FORMATTING = exports.ARTIFACTS = exports.SHORT_SHA_LENGTH = exports.OPENAI = exports.CONFIDENCE = exports.LOG_LIMITS = void 0;
+exports.FIX_VALIDATE_LOOP = exports.AGENT_CONFIG = exports.DEFAULT_PRODUCT_URL = exports.DEFAULT_PRODUCT_REPO = exports.AUTO_FIX = exports.TEST_ISSUE_CATEGORIES = exports.ERROR_TYPES = exports.FORMATTING = exports.ARTIFACTS = exports.SHORT_SHA_LENGTH = exports.OPENAI = exports.CONFIDENCE = exports.LOG_LIMITS = void 0;
 exports.LOG_LIMITS = {
     GITHUB_MAX_SIZE: 50_000,
     ARTIFACT_SOFT_CAP: 20_000,
@@ -3192,7 +3194,6 @@ exports.CONFIDENCE = {
 };
 exports.OPENAI = {
     MODEL: 'gpt-5.3-codex',
-    TEMPERATURE: 0.3,
     MAX_COMPLETION_TOKENS: 16384,
     MAX_RETRIES: 3,
     RETRY_DELAY_MS: 1000,
@@ -3201,15 +3202,9 @@ exports.SHORT_SHA_LENGTH = 7;
 exports.ARTIFACTS = {
     MAX_PR_DIFF_FILES: 30,
     MAX_PATCH_LINES: 20,
-    MAX_RELEVANT_FILES: 10,
-    LOG_PREVIEW_LENGTH: 1000,
-    PATCH_PREVIEW_LENGTH: 500,
 };
 exports.FORMATTING = {
-    SLACK_MAX_LENGTH: 2900,
-    BRIEF_SUMMARY_MAX_LENGTH: 500,
     MAIN_SUMMARY_MAX_LENGTH: 1000,
-    TRUNCATION_BUFFER: 100,
 };
 exports.ERROR_TYPES = {
     ELEMENT_NOT_FOUND: 'ELEMENT_NOT_FOUND',
@@ -3234,25 +3229,14 @@ exports.AUTO_FIX = {
     DEFAULT_MIN_CONFIDENCE: 70,
     BRANCH_PREFIX: 'fix/triage-agent/',
 };
-exports.CURSOR_CLOUD = {
-    API_BASE_URL: 'https://api.cursor.com',
-    POLL_INTERVAL_MS: 10_000,
-    VALIDATION_TIMEOUT_MS: 300_000,
-    INITIAL_DELAY_MS: 15_000,
-    MAX_POLL_ATTEMPTS: 30,
-    TERMINAL_STATUSES: ['FINISHED', 'ERROR'],
-};
 exports.DEFAULT_PRODUCT_REPO = 'adept-at/learn-webapp';
 exports.DEFAULT_PRODUCT_URL = 'https://learn.adept.at';
 exports.AGENT_CONFIG = {
     ENABLE_AGENTIC_REPAIR: process.env.ENABLE_AGENTIC_REPAIR !== 'false',
     MAX_AGENT_ITERATIONS: 3,
     AGENT_TIMEOUT_MS: 120_000,
-    INDIVIDUAL_AGENT_TIMEOUT_MS: 60_000,
     REVIEW_REQUIRED_CONFIDENCE: 70,
-    AGENT_TEMPERATURE: 0.3,
-    AGENT_MAX_TOKENS: 4000,
-    FALLBACK_TO_SINGLE_SHOT: true,
+    INVESTIGATION_CHAIN_CONFIDENCE: 80,
 };
 exports.FIX_VALIDATE_LOOP = {
     MAX_ITERATIONS: 3,
@@ -3320,9 +3304,6 @@ Object.defineProperty(exports, "resolveAutoFixTargetRepo", ({ enumerable: true, 
 async function run() {
     try {
         const inputs = getInputs();
-        if (inputs.cursorApiKey) {
-            core.setSecret(inputs.cursorApiKey);
-        }
         if (inputs.triageAwsAccessKeyId) {
             core.setSecret(inputs.triageAwsAccessKeyId);
         }
@@ -3382,10 +3363,6 @@ function getInputs() {
         enableAgenticRepair: core.getInput('ENABLE_AGENTIC_REPAIR') === 'true',
         productRepo: core.getInput('PRODUCT_REPO') || constants_1.DEFAULT_PRODUCT_REPO,
         productDiffCommits: safeParseInt(core.getInput('PRODUCT_DIFF_COMMITS'), 5),
-        enableCursorValidation: core.getInput('ENABLE_CURSOR_VALIDATION') === 'true',
-        cursorApiKey: core.getInput('CURSOR_API_KEY') || undefined,
-        cursorValidationMode: core.getInput('CURSOR_VALIDATION_MODE') || 'poll',
-        cursorValidationTimeout: safeParseInt(core.getInput('CURSOR_VALIDATION_TIMEOUT'), constants_1.CURSOR_CLOUD.VALIDATION_TIMEOUT_MS),
         triageAwsAccessKeyId: core.getInput('TRIAGE_AWS_ACCESS_KEY_ID') || undefined,
         triageAwsSecretAccessKey: core.getInput('TRIAGE_AWS_SECRET_ACCESS_KEY') || undefined,
         triageAwsRegion: core.getInput('TRIAGE_AWS_REGION') || 'us-east-1',
@@ -3476,7 +3453,8 @@ class OpenAIClient {
         else {
             core.info(`📝 Sending text-only content to ${model}`);
         }
-        const input = this.convertToResponsesInput(userContent);
+        const safeContent = this.ensureJsonMention(userContent);
+        const input = this.convertToResponsesInput(safeContent);
         for (let attempt = 1; attempt <= this.maxRetries; attempt++) {
             try {
                 core.info(`Analyzing with ${model} (attempt ${attempt}/${this.maxRetries})`);
@@ -4083,7 +4061,8 @@ class PipelineCoordinator {
             : '';
         let fixRecommendation = null;
         let autoFixResult = null;
-        let savedSkillId;
+        let iterations = 0;
+        let prUrl;
         if (this.inputs.enableAutoFix &&
             this.inputs.enableValidation &&
             this.inputs.validationTestCommand &&
@@ -4091,7 +4070,8 @@ class PipelineCoordinator {
             const loopResult = await (0, validator_1.iterativeFixValidateLoop)(this.inputs, this.repoDetails, autoFixTargetRepo, errorData, this.openaiClient, this.octokit, skillStore, undefined, investigationContext);
             fixRecommendation = loopResult.fixRecommendation;
             autoFixResult = loopResult.autoFixResult;
-            savedSkillId = loopResult.savedSkillId;
+            iterations = loopResult.iterations;
+            prUrl = loopResult.prUrl;
         }
         else {
             const singleResult = await (0, validator_1.generateFixRecommendation)(this.inputs, this.repoDetails, errorData, this.openaiClient, this.octokit, undefined, undefined, skillStore, investigationContext);
@@ -4100,7 +4080,7 @@ class PipelineCoordinator {
                 autoFixResult = await (0, validator_1.attemptAutoFix)(this.inputs, fixRecommendation, this.octokit, autoFixTargetRepo, errorData);
             }
         }
-        return { fixRecommendation, autoFixResult, savedSkillId };
+        return { fixRecommendation, autoFixResult, investigationContext, iterations, prUrl };
     }
     async execute() {
         const errorData = await (0, log_processor_1.processWorkflowLogs)(this.octokit, this.artifactFetcher, this.inputs, this.repoDetails);
@@ -4131,20 +4111,60 @@ class PipelineCoordinator {
             return;
         if (classification.verdict !== 'TEST_ISSUE')
             return;
-        const { fixRecommendation, autoFixResult, savedSkillId } = await this.repair(classification, errorData, skillStore);
-        if (autoFixResult?.success && savedSkillId && skillStore) {
-            await skillStore.recordClassificationOutcome(savedSkillId, 'correct').catch((err) => {
-                core.warning(`Failed to record classification outcome: ${err}`);
-            });
+        const { fixRecommendation, autoFixResult, investigationContext, iterations, prUrl: skillPrUrl } = await this.repair(classification, errorData, skillStore);
+        let savedSkillId;
+        if (skillStore && autoFixTargetRepo && errorData) {
+            const fixSucceeded = !!(autoFixResult?.success && autoFixResult.validationStatus === 'passed');
+            const fixAttempted = !!fixRecommendation;
+            if (fixAttempted) {
+                const firstChange = fixRecommendation.proposedChanges?.[0];
+                const rootCause = inferRootCauseCategory(fixRecommendation);
+                const skill = (0, skill_store_1.buildSkill)({
+                    repo: `${autoFixTargetRepo.owner}/${autoFixTargetRepo.repo}`,
+                    spec: errorData.fileName || 'unknown',
+                    testName: errorData.testName || 'unknown',
+                    framework: errorData.framework || 'unknown',
+                    errorMessage: errorData.message,
+                    rootCauseCategory: rootCause,
+                    fix: {
+                        file: firstChange?.file || 'unknown',
+                        changeType: rootCause,
+                        summary: fixRecommendation.summary,
+                        pattern: (0, skill_store_1.describeFixPattern)(fixRecommendation.proposedChanges || []),
+                    },
+                    confidence: fixRecommendation.confidence,
+                    iterations,
+                    prUrl: skillPrUrl || '',
+                    validatedLocally: fixSucceeded,
+                    priorSkillCount: skillStore.countForSpec(errorData.fileName || 'unknown'),
+                    investigationFindings: investigationContext || '',
+                    rootCauseChain: `${rootCause} → ${fixRecommendation.summary?.slice(0, 80)}`,
+                });
+                savedSkillId = skill.id;
+                await skillStore.save(skill).catch((err) => {
+                    core.warning(`Failed to save skill: ${err}`);
+                });
+                if (fixSucceeded) {
+                    await skillStore.recordOutcome(skill.id, true).catch(() => { });
+                    await skillStore.recordClassificationOutcome(skill.id, 'correct').catch(() => { });
+                    core.info(`📝 Saved validated skill ${skill.id}`);
+                }
+                else {
+                    await skillStore.recordOutcome(skill.id, false).catch(() => { });
+                    core.info(`📝 Saved failed skill trajectory ${skill.id}`);
+                }
+            }
         }
-        if (!autoFixResult?.success && skillStore) {
+        if (fixRecommendation && !autoFixResult?.success && skillStore) {
             const recentSkills = skillStore.findRelevant({
                 framework: errorData.framework || 'unknown',
                 spec: errorData.fileName,
-                limit: 1,
-            });
+                limit: 2,
+            }).filter((s) => s.id !== savedSkillId);
             if (recentSkills.length > 0) {
-                await skillStore.recordClassificationOutcome(recentSkills[0].id, 'incorrect').catch(() => { });
+                await skillStore.recordClassificationOutcome(recentSkills[0].id, 'incorrect').catch((err) => {
+                    core.warning(`Failed to record classification outcome: ${err}`);
+                });
             }
         }
         const result = { ...classification };
@@ -4230,6 +4250,20 @@ class PipelineCoordinator {
     }
 }
 exports.PipelineCoordinator = PipelineCoordinator;
+function inferRootCauseCategory(fix) {
+    const text = `${fix.summary} ${fix.proposedChanges?.map((c) => c.justification).join(' ')}`.toLowerCase();
+    if (/selector|get\(|find\(|locator|data-testid|querySelector/.test(text))
+        return 'SELECTOR_UPDATE';
+    if (/wait|timeout|retry|sleep|intercept/.test(text))
+        return 'WAIT_ADDITION';
+    if (/assert|expect|should|verify/.test(text))
+        return 'ASSERTION_UPDATE';
+    if (/import|require|module|dependency/.test(text))
+        return 'IMPORT_FIX';
+    if (/config|env|setup|fixture|before/.test(text))
+        return 'CONFIG_CHANGE';
+    return 'OTHER';
+}
 //# sourceMappingURL=coordinator.js.map
 
 /***/ }),
@@ -4494,8 +4528,6 @@ const simplified_repair_agent_1 = __nccwpck_require__(79247);
 const fix_applier_1 = __nccwpck_require__(72134);
 const local_fix_validator_1 = __nccwpck_require__(55168);
 const constants_1 = __nccwpck_require__(58361);
-const cursor_cloud_validator_1 = __nccwpck_require__(71697);
-const skill_store_1 = __nccwpck_require__(60215);
 const repo_utils_1 = __nccwpck_require__(74843);
 async function generateFixRecommendation(inputs, repoDetails, errorData, openaiClient, octokit, previousAttempt, previousResponseId, skillStore, priorInvestigationContext) {
     try {
@@ -4552,6 +4584,7 @@ async function iterativeFixValidateLoop(inputs, repoDetails, autoFixTargetRepo, 
     const maxIterations = constants_1.FIX_VALIDATE_LOOP.MAX_ITERATIONS;
     let fixRecommendation = null;
     let autoFixResult = null;
+    let completedIterations = 0;
     let previousAttempt;
     const failedFixFingerprints = new Set();
     const minConfidence = inputs.autoFixMinConfidence ?? constants_1.AUTO_FIX.DEFAULT_MIN_CONFIDENCE;
@@ -4571,6 +4604,7 @@ async function iterativeFixValidateLoop(inputs, repoDetails, autoFixTargetRepo, 
     let validatorReady = false;
     try {
         for (let iteration = 0; iteration < maxIterations; iteration++) {
+            completedIterations = iteration + 1;
             core.info(`\n${'='.repeat(60)}\n🔄 Fix-Validate iteration ${iteration + 1}/${maxIterations}\n${'='.repeat(60)}`);
             const fixResult = await generateFixRecommendation(inputs, repoDetails, errorData, openaiClient, octokit, previousAttempt, lastResponseId, skillStore, investigationContext);
             if (!fixResult) {
@@ -4597,7 +4631,7 @@ async function iterativeFixValidateLoop(inputs, repoDetails, autoFixTargetRepo, 
                 const baseline = await validator.baselineCheck();
                 if (baseline.passed) {
                     core.info('✅ Baseline check passed — test passes without fix. Failure was likely transient.');
-                    return { fixRecommendation: null, autoFixResult: null };
+                    return { fixRecommendation: null, autoFixResult: null, iterations: 0 };
                 }
                 core.info('❌ Baseline check confirmed failure — proceeding with fix.');
             }
@@ -4629,38 +4663,7 @@ async function iterativeFixValidateLoop(inputs, repoDetails, autoFixTargetRepo, 
                         branchName: pushResult.branchName,
                         validationStatus: 'passed',
                     };
-                    if (skillStore && fixRecommendation) {
-                        const repoFullName = `${autoFixTargetRepo.owner}/${autoFixTargetRepo.repo}`;
-                        const firstChange = fixRecommendation.proposedChanges[0];
-                        const changeType = firstChange?.changeType || 'OTHER';
-                        const skill = (0, skill_store_1.buildSkill)({
-                            repo: repoFullName,
-                            spec: errorData.fileName || 'unknown',
-                            testName: errorData.testName || 'unknown',
-                            framework: errorData.framework || 'unknown',
-                            errorMessage: errorData.message,
-                            rootCauseCategory: changeType,
-                            fix: {
-                                file: firstChange.file,
-                                changeType,
-                                summary: fixRecommendation.summary,
-                                pattern: (0, skill_store_1.describeFixPattern)(fixRecommendation.proposedChanges),
-                            },
-                            confidence: fixRecommendation.confidence,
-                            iterations: iteration + 1,
-                            prUrl: pushResult.prUrl || '',
-                            validatedLocally: true,
-                            priorSkillCount: skillStore.countForSpec(errorData.fileName || 'unknown'),
-                            investigationFindings: investigationContext || '',
-                            rootCauseChain: `${changeType} → ${fixRecommendation.summary.slice(0, 80)}`,
-                            repoContext: '',
-                        });
-                        await skillStore.save(skill).catch((err) => {
-                            core.warning(`Failed to save skill: ${err}`);
-                        });
-                        await skillStore.recordOutcome(skill.id, true).catch(() => { });
-                        return { fixRecommendation, autoFixResult, savedSkillId: skill.id };
-                    }
+                    return { fixRecommendation, autoFixResult, iterations: iteration + 1, prUrl: pushResult.prUrl };
                 }
                 catch (pushError) {
                     core.warning(`Test passed but push/PR creation failed: ${pushError}`);
@@ -4671,7 +4674,7 @@ async function iterativeFixValidateLoop(inputs, repoDetails, autoFixTargetRepo, 
                         validationStatus: 'passed',
                     };
                 }
-                return { fixRecommendation, autoFixResult };
+                return { fixRecommendation, autoFixResult, iterations: iteration + 1 };
             }
             core.warning(`\n❌ Test FAILED on iteration ${iteration + 1} (exit code: ${testResult.exitCode}, ${testResult.durationMs}ms)`);
             failedFixFingerprints.add(fingerprint);
@@ -4686,36 +4689,6 @@ async function iterativeFixValidateLoop(inputs, repoDetails, autoFixTargetRepo, 
             }
             else {
                 core.warning(`\n🛑 All ${maxIterations} fix attempts exhausted. Giving up.`);
-                if (skillStore && fixRecommendation) {
-                    const repoFullName = `${autoFixTargetRepo.owner}/${autoFixTargetRepo.repo}`;
-                    const firstChange = fixRecommendation.proposedChanges?.[0];
-                    const changeType = firstChange?.changeType || 'OTHER';
-                    const failedSkill = (0, skill_store_1.buildSkill)({
-                        repo: repoFullName,
-                        spec: errorData.fileName || 'unknown',
-                        testName: errorData.testName || 'unknown',
-                        framework: errorData.framework || 'unknown',
-                        errorMessage: errorData.message,
-                        rootCauseCategory: changeType,
-                        fix: {
-                            file: firstChange?.file || 'unknown',
-                            changeType,
-                            summary: fixRecommendation.summary,
-                            pattern: (0, skill_store_1.describeFixPattern)(fixRecommendation.proposedChanges || []),
-                        },
-                        confidence: fixRecommendation.confidence,
-                        iterations: maxIterations,
-                        prUrl: '',
-                        validatedLocally: false,
-                        priorSkillCount: skillStore.countForSpec(errorData.fileName || 'unknown'),
-                        investigationFindings: investigationContext || '',
-                        rootCauseChain: `${changeType} → ${fixRecommendation.summary.slice(0, 80)}`,
-                        repoContext: '',
-                    });
-                    await skillStore.save(failedSkill).catch(() => { });
-                    await skillStore.recordOutcome(failedSkill.id, false).catch(() => { });
-                    core.info(`📝 Saved failed fix trajectory as negative skill example (${failedSkill.id})`);
-                }
             }
         }
     }
@@ -4724,7 +4697,7 @@ async function iterativeFixValidateLoop(inputs, repoDetails, autoFixTargetRepo, 
             await validator.cleanup();
         }
     }
-    return { fixRecommendation, autoFixResult };
+    return { fixRecommendation, autoFixResult, iterations: completedIterations };
 }
 function fixFingerprint(fix) {
     const normalize = (s) => s.replace(/\s+/g, ' ').trim();
@@ -4794,16 +4767,6 @@ async function attemptAutoFix(inputs, fixRecommendation, octokit, repoDetails, e
                     }
                 }
             }
-            else if (inputs.enableCursorValidation && result.branchName) {
-                core.info('\n🤖 Triggering Cursor cloud agent validation...');
-                try {
-                    await triggerCursorValidation(inputs, result, fixRecommendation, repoDetails, errorData);
-                }
-                catch (cursorError) {
-                    core.warning(`Cursor cloud agent validation error: ${cursorError}`);
-                    result.validationStatus = 'skipped';
-                }
-            }
         }
         else {
             core.warning(`❌ Auto-fix failed: ${result.error}`);
@@ -4814,65 +4777,6 @@ async function attemptAutoFix(inputs, fixRecommendation, octokit, repoDetails, e
         core.warning(`Auto-fix error: ${error}`);
         return null;
     }
-}
-async function triggerCursorValidation(inputs, result, fixRecommendation, repoDetails, errorData) {
-    if (!inputs.cursorApiKey) {
-        core.warning('CURSOR_API_KEY is required for Cursor cloud agent validation');
-        result.validationStatus = 'skipped';
-        return;
-    }
-    const spec = inputs.validationSpec ||
-        errorData?.fileName ||
-        fixRecommendation.proposedChanges[0]?.file;
-    const previewUrl = inputs.validationPreviewUrl || constants_1.DEFAULT_PRODUCT_URL;
-    if (!spec) {
-        core.warning('No spec file identified for Cursor validation, skipping');
-        result.validationStatus = 'skipped';
-        return;
-    }
-    const repositoryUrl = `https://github.com/${repoDetails.owner}/${repoDetails.repo}`;
-    const validationParams = {
-        repositoryUrl,
-        branch: result.branchName,
-        spec,
-        previewUrl,
-        framework: inputs.testFrameworks,
-        testCommand: inputs.validationTestCommand,
-        triageRunId: inputs.workflowRunId,
-    };
-    const validator = new cursor_cloud_validator_1.CursorCloudValidator(inputs.cursorApiKey);
-    const mode = inputs.cursorValidationMode || 'poll';
-    const timeout = inputs.cursorValidationTimeout;
-    core.info(`\n🤖 Launching Cursor cloud agent validation (mode: ${mode})`);
-    const cursorResult = await validator.validate(validationParams, mode, timeout);
-    result.validationUrl = cursorResult.agentUrl;
-    if (cursorResult.status === 'FINISHED') {
-        if (cursorResult.testPassed === true) {
-            result.validationStatus = 'passed';
-            core.info('✅ Cursor cloud agent: tests PASSED');
-        }
-        else if (cursorResult.testPassed === false) {
-            result.validationStatus = 'failed';
-            core.warning('❌ Cursor cloud agent: tests FAILED');
-        }
-        else {
-            result.validationStatus = 'pending';
-            core.info('❓ Cursor cloud agent finished but result could not be determined');
-        }
-    }
-    else if (cursorResult.status === 'ERROR') {
-        result.validationStatus = 'failed';
-        core.warning('❌ Cursor cloud agent encountered an error');
-    }
-    else {
-        result.validationStatus = 'pending';
-    }
-    core.info(`  Agent ID: ${cursorResult.agentId}`);
-    core.info(`  Agent URL: ${cursorResult.agentUrl}`);
-    core.info(`  Summary: ${cursorResult.summary}`);
-    core.setOutput('cursor_agent_id', cursorResult.agentId);
-    core.setOutput('cursor_agent_url', cursorResult.agentUrl || '');
-    core.setOutput('cursor_validation_summary', cursorResult.summary || '');
 }
 //# sourceMappingURL=validator.js.map
 
@@ -6218,338 +6122,6 @@ exports.SimplifiedRepairAgent = SimplifiedRepairAgent;
 
 /***/ }),
 
-/***/ 71697:
-/***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
-
-"use strict";
-
-var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
-    if (k2 === undefined) k2 = k;
-    var desc = Object.getOwnPropertyDescriptor(m, k);
-    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
-      desc = { enumerable: true, get: function() { return m[k]; } };
-    }
-    Object.defineProperty(o, k2, desc);
-}) : (function(o, m, k, k2) {
-    if (k2 === undefined) k2 = k;
-    o[k2] = m[k];
-}));
-var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
-    Object.defineProperty(o, "default", { enumerable: true, value: v });
-}) : function(o, v) {
-    o["default"] = v;
-});
-var __importStar = (this && this.__importStar) || (function () {
-    var ownKeys = function(o) {
-        ownKeys = Object.getOwnPropertyNames || function (o) {
-            var ar = [];
-            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
-            return ar;
-        };
-        return ownKeys(o);
-    };
-    return function (mod) {
-        if (mod && mod.__esModule) return mod;
-        var result = {};
-        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
-        __setModuleDefault(result, mod);
-        return result;
-    };
-})();
-Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.CursorCloudValidator = void 0;
-const core = __importStar(__nccwpck_require__(37484));
-const constants_1 = __nccwpck_require__(58361);
-const cursor_prompt_builder_1 = __nccwpck_require__(36071);
-function sleep(ms) {
-    return new Promise((resolve) => setTimeout(resolve, ms));
-}
-class CursorCloudValidator {
-    apiKey;
-    baseUrl;
-    constructor(apiKey, baseUrl) {
-        this.apiKey = apiKey;
-        this.baseUrl = baseUrl || constants_1.CURSOR_CLOUD.API_BASE_URL;
-    }
-    async validate(params, mode = 'poll', timeoutMs) {
-        const agentId = await this.launchAgent(params);
-        if (mode === 'async') {
-            core.info(`Cursor cloud agent launched in async mode: ${this.agentUrl(agentId)}`);
-            return {
-                agentId,
-                status: 'CREATING',
-                testPassed: null,
-                summary: 'Cursor cloud agent launched. Results will be available asynchronously.',
-                agentUrl: this.agentUrl(agentId),
-            };
-        }
-        const finalStatus = await this.pollForCompletion(agentId, timeoutMs || constants_1.CURSOR_CLOUD.VALIDATION_TIMEOUT_MS);
-        return this.buildResult(agentId, finalStatus);
-    }
-    async launchAgent(params) {
-        const prompt = (0, cursor_prompt_builder_1.buildValidationPrompt)(params);
-        core.info(`Launching Cursor cloud agent for ${params.repositoryUrl}`);
-        core.info(`  Branch: ${params.branch}`);
-        core.info(`  Spec: ${params.spec}`);
-        const body = {
-            prompt: { text: prompt },
-            source: {
-                repository: params.repositoryUrl,
-                ref: params.branch,
-            },
-            target: {
-                autoCreatePr: false,
-            },
-        };
-        const response = await this.request('POST', '/v0/agents', body);
-        core.info(`Cursor cloud agent created: ${response.id}`);
-        core.info(`  URL: ${this.agentUrl(response.id)}`);
-        return response.id;
-    }
-    async pollForCompletion(agentId, timeoutMs) {
-        core.info(`Waiting for Cursor cloud agent ${agentId} to complete...`);
-        await sleep(constants_1.CURSOR_CLOUD.INITIAL_DELAY_MS);
-        const deadline = Date.now() + timeoutMs;
-        let attempts = 0;
-        while (Date.now() < deadline && attempts < constants_1.CURSOR_CLOUD.MAX_POLL_ATTEMPTS) {
-            attempts++;
-            const agent = await this.getAgentStatus(agentId);
-            core.info(`  Poll ${attempts}: status=${agent.status} (${Math.round((deadline - Date.now()) / 1000)}s remaining)`);
-            if (constants_1.CURSOR_CLOUD.TERMINAL_STATUSES.includes(agent.status)) {
-                core.info(`Cursor cloud agent reached terminal status: ${agent.status}`);
-                return agent.status;
-            }
-            await sleep(constants_1.CURSOR_CLOUD.POLL_INTERVAL_MS);
-        }
-        core.warning(`Cursor cloud agent ${agentId} did not complete within ${timeoutMs}ms`);
-        return 'TIMEOUT';
-    }
-    async buildResult(agentId, finalStatus) {
-        const result = {
-            agentId,
-            status: finalStatus,
-            testPassed: null,
-            summary: '',
-            agentUrl: this.agentUrl(agentId),
-        };
-        try {
-            const agent = await this.getAgentStatus(agentId);
-            result.summary = agent.summary || '';
-            result.branchName = agent.target?.branchName;
-            result.prUrl = agent.target?.prUrl;
-        }
-        catch (err) {
-            core.debug(`Failed to fetch final agent status: ${err}`);
-        }
-        if (finalStatus === 'FINISHED' || finalStatus === 'ERROR') {
-            try {
-                const conversation = await this.getConversation(agentId);
-                result.conversation = conversation.messages;
-                result.testPassed = this.inferTestResult(conversation.messages);
-            }
-            catch (err) {
-                core.debug(`Failed to fetch agent conversation: ${err}`);
-            }
-            try {
-                const artifacts = await this.getArtifacts(agentId);
-                result.artifacts = artifacts.artifacts;
-            }
-            catch (err) {
-                core.debug(`Failed to fetch agent artifacts: ${err}`);
-            }
-        }
-        if (!result.summary) {
-            result.summary = this.generateFallbackSummary(result);
-        }
-        return result;
-    }
-    inferTestResult(messages) {
-        const assistantMessages = messages.filter((m) => m.type === 'assistant_message');
-        if (assistantMessages.length === 0)
-            return null;
-        const lastMessage = assistantMessages[assistantMessages.length - 1].text.toLowerCase();
-        const passSignals = [
-            'test passed',
-            'tests passed',
-            'all passing',
-            'all tests pass',
-            'validation passed',
-            'successfully passed',
-            'test run passed',
-            'specs passed',
-            'suite passed',
-        ];
-        const failSignals = [
-            'test failed',
-            'tests failed',
-            'validation failed',
-            'test run failed',
-            'specs failed',
-            'suite failed',
-            'failure detected',
-            'assertion error',
-            'did not pass',
-        ];
-        const hasPass = passSignals.some((s) => lastMessage.includes(s));
-        const hasFail = failSignals.some((s) => lastMessage.includes(s));
-        if (hasPass && !hasFail)
-            return true;
-        if (hasFail && !hasPass)
-            return false;
-        return null;
-    }
-    generateFallbackSummary(result) {
-        switch (result.status) {
-            case 'FINISHED':
-                if (result.testPassed === true)
-                    return 'Cursor cloud agent: tests passed';
-                if (result.testPassed === false)
-                    return 'Cursor cloud agent: tests failed';
-                return 'Cursor cloud agent finished but test result could not be determined';
-            case 'ERROR':
-                return 'Cursor cloud agent encountered an error during validation';
-            case 'TIMEOUT':
-                return 'Cursor cloud agent validation timed out';
-            default:
-                return `Cursor cloud agent status: ${result.status}`;
-        }
-    }
-    async getAgentStatus(agentId) {
-        return this.request('GET', `/v0/agents/${agentId}`);
-    }
-    async getConversation(agentId) {
-        return this.request('GET', `/v0/agents/${agentId}/conversation`);
-    }
-    async getArtifacts(agentId) {
-        return this.request('GET', `/v0/agents/${agentId}/artifacts`);
-    }
-    agentUrl(agentId) {
-        return `https://cursor.com/agents?id=${agentId}`;
-    }
-    async request(method, path, body) {
-        const url = `${this.baseUrl}${path}`;
-        const authHeader = `Basic ${Buffer.from(`${this.apiKey}:`).toString('base64')}`;
-        const options = {
-            method,
-            headers: {
-                Authorization: authHeader,
-                'Content-Type': 'application/json',
-            },
-        };
-        if (body) {
-            options.body = JSON.stringify(body);
-        }
-        const response = await fetch(url, options);
-        if (!response.ok) {
-            const text = await response.text().catch(() => '');
-            throw new Error(`Cursor API ${method} ${path} failed: ${response.status} ${response.statusText}${text ? ` — ${text}` : ''}`);
-        }
-        return response.json();
-    }
-}
-exports.CursorCloudValidator = CursorCloudValidator;
-//# sourceMappingURL=cursor-cloud-validator.js.map
-
-/***/ }),
-
-/***/ 36071:
-/***/ ((__unused_webpack_module, exports) => {
-
-"use strict";
-
-Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.buildValidationPrompt = buildValidationPrompt;
-function buildValidationPrompt(params) {
-    const framework = params.framework || detectFramework(params.spec);
-    const testCommand = params.testCommand || defaultTestCommand(framework, params);
-    return `You are validating a test fix created by the adept-triage-agent.
-
-## Your Task
-
-Run the failing test spec against the fix branch and report whether it passes or fails.
-
-## Context
-
-- **Repository:** ${params.repositoryUrl}
-- **Branch:** ${params.branch}
-- **Spec file:** ${params.spec}
-- **Target URL:** ${params.previewUrl}
-- **Framework:** ${framework}
-${params.triageRunId ? `- **Triage Run ID:** ${params.triageRunId}` : ''}
-
-## Steps
-
-1. The repository has already been checked out at the correct branch. Verify you are on branch \`${params.branch}\`.
-
-2. Install dependencies:
-   \`\`\`bash
-   npm ci
-   \`\`\`
-
-3. Run the test:
-   \`\`\`bash
-   ${testCommand}
-   \`\`\`
-
-4. After the test completes, analyze the output carefully.
-
-## Reporting
-
-Conclude your response with one of these exact phrases:
-
-- **"VALIDATION RESULT: TEST PASSED"** — if the spec passes
-- **"VALIDATION RESULT: TEST FAILED"** — if the spec fails
-- **"VALIDATION RESULT: INCONCLUSIVE"** — if you cannot determine the result
-
-Then provide:
-- The full test output (stdout/stderr)
-- If the test failed, explain *why* it failed and whether the fix was on the right track
-- Any screenshots or artifacts that help explain the result
-
-## Important Notes
-
-${frameworkNotes(framework)}
-- Do NOT modify any test files. You are only validating, not fixing.
-- If dependencies fail to install, report that as INCONCLUSIVE with the error details.
-- If the test command itself is malformed, report INCONCLUSIVE.
-`;
-}
-function detectFramework(spec) {
-    if (spec.includes('.cy.') || spec.includes('cypress/'))
-        return 'cypress';
-    if (spec.includes('wdio') || spec.includes('test/specs/'))
-        return 'webdriverio';
-    return 'unknown';
-}
-function defaultTestCommand(framework, params) {
-    switch (framework) {
-        case 'webdriverio':
-            return `npx wdio wdio.conf.ts --spec ${params.spec} -u ${params.previewUrl} -t local`;
-        case 'cypress':
-            return `CYPRESS_BASE_URL=${params.previewUrl} npx cypress run --spec ${params.spec} --browser chrome`;
-        default:
-            return params.testCommand || `npm test -- --spec ${params.spec}`;
-    }
-}
-function frameworkNotes(framework) {
-    switch (framework) {
-        case 'webdriverio':
-            return `- This is a WebdriverIO project. Tests may use multi-remote mode (multiple browser instances).
-- Run with \`-t local\` to use local Chrome. Do NOT use Sauce Labs (\`-t sauce\`) for validation.
-- Some specs use Chromedriver on port 9515 — only run one spec at a time.
-- If you see Chromedriver port conflicts, kill existing chromedriver processes first.`;
-        case 'cypress':
-            return `- This is a Cypress project. Set CYPRESS_BASE_URL to the target URL.
-- Use \`--browser chrome\` for consistency.
-- Check for any required environment variables in cypress.config.ts.`;
-        default:
-            return `- Test framework not auto-detected. Follow the project's README or AGENTS.md for run instructions.`;
-    }
-}
-//# sourceMappingURL=cursor-prompt-builder.js.map
-
-/***/ }),
-
 /***/ 55168:
 /***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
 
@@ -6853,7 +6425,7 @@ class LocalFixValidator {
             cmd = cmd.replaceAll('{url}', this.config.previewUrl);
         }
         const timeout = this.config.testTimeoutMs || DEFAULT_TEST_TIMEOUT_MS;
-        const safeEnv = filterEnv(this.config.npmToken);
+        const safeEnv = filterEnv(this.config.npmToken || this.config.githubToken);
         const start = Date.now();
         try {
             const output = (0, child_process_1.execSync)(cmd, {
@@ -6893,17 +6465,29 @@ class LocalFixValidator {
         }
     }
     async reset() {
-        (0, child_process_1.execSync)('git checkout -- .', {
-            cwd: this._workDir,
-            encoding: 'utf-8',
-        });
-        (0, child_process_1.execSync)('git clean -fd', {
-            cwd: this._workDir,
-            encoding: 'utf-8',
-        });
+        try {
+            (0, child_process_1.execSync)('git checkout -- .', {
+                cwd: this._workDir,
+                encoding: 'utf-8',
+                timeout: 30_000,
+            });
+        }
+        catch (err) {
+            core.warning(`git checkout reset failed: ${err}`);
+        }
+        try {
+            (0, child_process_1.execSync)('git clean -fd', {
+                cwd: this._workDir,
+                encoding: 'utf-8',
+                timeout: 30_000,
+            });
+        }
+        catch (err) {
+            core.warning(`git clean reset failed: ${err}`);
+        }
     }
     async pushAndCreatePR(options) {
-        const execOpts = { cwd: this._workDir, encoding: 'utf-8' };
+        const execOpts = { cwd: this._workDir, encoding: 'utf-8', timeout: 120_000 };
         (0, child_process_1.execFileSync)('git', ['config', 'user.name', 'adept-triage-agent[bot]'], execOpts);
         (0, child_process_1.execFileSync)('git', ['config', 'user.email', 'adept-triage-agent[bot]@users.noreply.github.com'], execOpts);
         (0, child_process_1.execFileSync)('git', ['checkout', '-b', options.branchName], execOpts);
@@ -7477,6 +7061,7 @@ class SkillStore {
             this.skills = this.skills.slice(-MAX_SKILLS);
         }
         const commitMsg = `chore: update triage skills (${skill.spec})`;
+        const preSaveSnapshot = [...this.skills];
         try {
             await this.persist(commitMsg);
             core.info(`📝 Saved skill ${skill.id} (${this.skills.length} total for ${this.owner}/${this.repo})`);
@@ -7497,17 +7082,20 @@ class SkillStore {
                     const raw = Buffer.from(data.content, 'base64').toString('utf-8');
                     const remoteSkills = JSON.parse(raw).map(backfillDefaults);
                     this.skills = [...remoteSkills, skill];
+                    if (this.skills.length > MAX_SKILLS) {
+                        this.skills = this.skills.slice(-MAX_SKILLS);
+                    }
                     this.fileSha = data.sha;
                     await this.persist(commitMsg);
                     core.info(`📝 Saved skill ${skill.id} (${this.skills.length} total for ${this.owner}/${this.repo})`);
                 }
                 catch (retryErr) {
-                    this.skills.pop();
+                    this.skills = preSaveSnapshot.filter((s) => s.id !== skill.id);
                     core.warning(`Failed to save skill: ${retryErr}`);
                 }
             }
             else {
-                this.skills.pop();
+                this.skills = preSaveSnapshot.filter((s) => s.id !== skill.id);
                 core.warning(`Failed to save skill: ${err}`);
             }
         }
@@ -7677,35 +7265,6 @@ class SkillStore {
             .filter((s) => s.score > 0)
             .sort((a, b) => b.score - a.score)
             .slice(0, 3)
-            .map((s) => s.skill);
-    }
-    findForRepair(opts) {
-        const normalized = normalizeFramework(opts.framework);
-        const candidates = this.skills.filter((s) => (s.framework === normalized || s.framework === 'unknown') && !s.retired);
-        if (candidates.length === 0)
-            return [];
-        const scored = candidates.map((skill) => {
-            let score = 0;
-            if (opts.rootCauseCategory && skill.rootCauseCategory === opts.rootCauseCategory)
-                score += 10;
-            if (opts.spec && skill.spec === opts.spec)
-                score += 8;
-            if (opts.errorMessage) {
-                score +=
-                    errorSimilarity(skill.errorPattern, normalizeError(opts.errorMessage)) * 5;
-            }
-            if (skill.confidence > 80)
-                score += 2;
-            const repairSkill = {
-                ...skill,
-                wasSuccessful: skill.validatedLocally,
-            };
-            return { skill: repairSkill, score };
-        });
-        return scored
-            .filter((s) => s.score > 0)
-            .sort((a, b) => b.score - a.score)
-            .slice(0, 5)
             .map((s) => s.skill);
     }
     detectFlakiness(spec) {

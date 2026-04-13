@@ -128,6 +128,7 @@ class SkillStore {
             this.skills = this.skills.slice(-MAX_SKILLS);
         }
         const commitMsg = `chore: update triage skills (${skill.spec})`;
+        const preSaveSnapshot = [...this.skills];
         try {
             await this.persist(commitMsg);
             core.info(`📝 Saved skill ${skill.id} (${this.skills.length} total for ${this.owner}/${this.repo})`);
@@ -148,17 +149,20 @@ class SkillStore {
                     const raw = Buffer.from(data.content, 'base64').toString('utf-8');
                     const remoteSkills = JSON.parse(raw).map(backfillDefaults);
                     this.skills = [...remoteSkills, skill];
+                    if (this.skills.length > MAX_SKILLS) {
+                        this.skills = this.skills.slice(-MAX_SKILLS);
+                    }
                     this.fileSha = data.sha;
                     await this.persist(commitMsg);
                     core.info(`📝 Saved skill ${skill.id} (${this.skills.length} total for ${this.owner}/${this.repo})`);
                 }
                 catch (retryErr) {
-                    this.skills.pop();
+                    this.skills = preSaveSnapshot.filter((s) => s.id !== skill.id);
                     core.warning(`Failed to save skill: ${retryErr}`);
                 }
             }
             else {
-                this.skills.pop();
+                this.skills = preSaveSnapshot.filter((s) => s.id !== skill.id);
                 core.warning(`Failed to save skill: ${err}`);
             }
         }
@@ -328,35 +332,6 @@ class SkillStore {
             .filter((s) => s.score > 0)
             .sort((a, b) => b.score - a.score)
             .slice(0, 3)
-            .map((s) => s.skill);
-    }
-    findForRepair(opts) {
-        const normalized = normalizeFramework(opts.framework);
-        const candidates = this.skills.filter((s) => (s.framework === normalized || s.framework === 'unknown') && !s.retired);
-        if (candidates.length === 0)
-            return [];
-        const scored = candidates.map((skill) => {
-            let score = 0;
-            if (opts.rootCauseCategory && skill.rootCauseCategory === opts.rootCauseCategory)
-                score += 10;
-            if (opts.spec && skill.spec === opts.spec)
-                score += 8;
-            if (opts.errorMessage) {
-                score +=
-                    errorSimilarity(skill.errorPattern, normalizeError(opts.errorMessage)) * 5;
-            }
-            if (skill.confidence > 80)
-                score += 2;
-            const repairSkill = {
-                ...skill,
-                wasSuccessful: skill.validatedLocally,
-            };
-            return { skill: repairSkill, score };
-        });
-        return scored
-            .filter((s) => s.score > 0)
-            .sort((a, b) => b.score - a.score)
-            .slice(0, 5)
             .map((s) => s.skill);
     }
     detectFlakiness(spec) {

@@ -297,7 +297,7 @@ class LocalFixValidator {
             cmd = cmd.replaceAll('{url}', this.config.previewUrl);
         }
         const timeout = this.config.testTimeoutMs || DEFAULT_TEST_TIMEOUT_MS;
-        const safeEnv = filterEnv(this.config.npmToken);
+        const safeEnv = filterEnv(this.config.npmToken || this.config.githubToken);
         const start = Date.now();
         try {
             const output = (0, child_process_1.execSync)(cmd, {
@@ -337,17 +337,29 @@ class LocalFixValidator {
         }
     }
     async reset() {
-        (0, child_process_1.execSync)('git checkout -- .', {
-            cwd: this._workDir,
-            encoding: 'utf-8',
-        });
-        (0, child_process_1.execSync)('git clean -fd', {
-            cwd: this._workDir,
-            encoding: 'utf-8',
-        });
+        try {
+            (0, child_process_1.execSync)('git checkout -- .', {
+                cwd: this._workDir,
+                encoding: 'utf-8',
+                timeout: 30_000,
+            });
+        }
+        catch (err) {
+            core.warning(`git checkout reset failed: ${err}`);
+        }
+        try {
+            (0, child_process_1.execSync)('git clean -fd', {
+                cwd: this._workDir,
+                encoding: 'utf-8',
+                timeout: 30_000,
+            });
+        }
+        catch (err) {
+            core.warning(`git clean reset failed: ${err}`);
+        }
     }
     async pushAndCreatePR(options) {
-        const execOpts = { cwd: this._workDir, encoding: 'utf-8' };
+        const execOpts = { cwd: this._workDir, encoding: 'utf-8', timeout: 120_000 };
         (0, child_process_1.execFileSync)('git', ['config', 'user.name', 'adept-triage-agent[bot]'], execOpts);
         (0, child_process_1.execFileSync)('git', ['config', 'user.email', 'adept-triage-agent[bot]@users.noreply.github.com'], execOpts);
         (0, child_process_1.execFileSync)('git', ['checkout', '-b', options.branchName], execOpts);

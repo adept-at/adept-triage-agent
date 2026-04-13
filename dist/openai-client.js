@@ -59,7 +59,8 @@ class OpenAIClient {
         else {
             core.info(`📝 Sending text-only content to ${model}`);
         }
-        const input = this.convertToResponsesInput(userContent);
+        const safeContent = this.ensureJsonMention(userContent);
+        const input = this.convertToResponsesInput(safeContent);
         for (let attempt = 1; attempt <= this.maxRetries; attempt++) {
             try {
                 core.info(`Analyzing with ${model} (attempt ${attempt}/${this.maxRetries})`);
