@@ -53,13 +53,14 @@ class DynamoSkillStore extends skill_store_js_1.SkillStore {
     async getDocClient() {
         const { DynamoDBClient } = await import('@aws-sdk/client-dynamodb');
         const { DynamoDBDocumentClient } = await import('@aws-sdk/lib-dynamodb');
-        const raw = new DynamoDBClient({
-            region: this.region,
-            credentials: {
+        const clientConfig = { region: this.region };
+        if (this.accessKeyId && this.secretAccessKey) {
+            clientConfig.credentials = {
                 accessKeyId: this.accessKeyId,
                 secretAccessKey: this.secretAccessKey,
-            },
-        });
+            };
+        }
+        const raw = new DynamoDBClient(clientConfig);
         return DynamoDBDocumentClient.from(raw, {
             marshallOptions: { removeUndefinedValues: true },
         });

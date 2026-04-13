@@ -129,9 +129,11 @@ class PipelineCoordinator {
             : null;
         let skillStore;
         if (autoFixTargetRepo) {
-            if (this.inputs.triageAwsAccessKeyId && this.inputs.triageAwsSecretAccessKey) {
+            const hasExplicitCreds = this.inputs.triageAwsAccessKeyId && this.inputs.triageAwsSecretAccessKey;
+            const hasEnvCreds = !!process.env.AWS_ACCESS_KEY_ID;
+            if (hasExplicitCreds || hasEnvCreds) {
                 const { DynamoSkillStore } = await import('../services/dynamo-skill-store.js');
-                skillStore = new DynamoSkillStore(this.inputs.triageAwsRegion || 'us-east-1', this.inputs.triageDynamoTable || 'triage-skills-v1-live', autoFixTargetRepo.owner, autoFixTargetRepo.repo, this.inputs.triageAwsAccessKeyId, this.inputs.triageAwsSecretAccessKey);
+                skillStore = new DynamoSkillStore(this.inputs.triageAwsRegion || 'us-east-1', this.inputs.triageDynamoTable || 'triage-skills-v1-live', autoFixTargetRepo.owner, autoFixTargetRepo.repo, this.inputs.triageAwsAccessKeyId || '', this.inputs.triageAwsSecretAccessKey || '');
             }
             else {
                 skillStore = new skill_store_1.SkillStore(this.octokit, autoFixTargetRepo.owner, autoFixTargetRepo.repo);

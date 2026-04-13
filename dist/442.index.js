@@ -61,13 +61,14 @@ class DynamoSkillStore extends skill_store_js_1.SkillStore {
     async getDocClient() {
         const { DynamoDBClient } = await __webpack_require__.e(/* import() */ 305).then(__webpack_require__.t.bind(__webpack_require__, 64305, 23));
         const { DynamoDBDocumentClient } = await Promise.all(/* import() */[__webpack_require__.e(305), __webpack_require__.e(907)]).then(__webpack_require__.t.bind(__webpack_require__, 58907, 19));
-        const raw = new DynamoDBClient({
-            region: this.region,
-            credentials: {
+        const clientConfig = { region: this.region };
+        if (this.accessKeyId && this.secretAccessKey) {
+            clientConfig.credentials = {
                 accessKeyId: this.accessKeyId,
                 secretAccessKey: this.secretAccessKey,
-            },
-        });
+            };
+        }
+        const raw = new DynamoDBClient(clientConfig);
         return DynamoDBDocumentClient.from(raw, {
             marshallOptions: { removeUndefinedValues: true },
         });
