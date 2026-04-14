@@ -4,7 +4,6 @@ import { OpenAIClient } from '../openai-client';
 import { RepairContext, ErrorData, FixRecommendation, SourceFetchContext, AIRecommendation, AIChange } from '../types';
 import { generateFixSummary } from '../analysis/summary-generator';
 import { CONFIDENCE, AGENT_CONFIG, DEFAULT_PRODUCT_REPO } from '../config/constants';
-import type { RootCauseCategory } from '../agents/analysis-agent';
 import {
   AgentOrchestrator,
   createOrchestrator,
@@ -14,6 +13,7 @@ import {
 import { getFrameworkLabel } from '../agents/base-agent';
 import { CYPRESS_PATTERNS, WDIO_PATTERNS } from '../agents/fix-generation-agent';
 import { TriageSkill, FlakinessSignal, formatSkillsForPrompt } from '../services/skill-store';
+import { inferRootCauseCategoryFromText } from './root-cause-category';
 
 /**
  * Configuration for the repair agent
@@ -400,9 +400,9 @@ export class SimplifiedRepairAgent {
     core.info(
       `✅ Fix recommendation generated with ${fixRecommendation.confidence}% confidence`
     );
-    const agentRootCause = this.inferSingleShotRootCauseCategory(
-      recommendation,
-      repairContext
+    const agentRootCause = inferRootCauseCategoryFromText(
+      `${recommendation.rootCause || ''} ${recommendation.reasoning || ''} ${repairContext.errorMessage || ''}`,
+      repairContext.errorType
     );
     return { fix: fixRecommendation, agentRootCause };
   }
@@ -1022,85 +1022,5 @@ You MUST respond in strict JSON only with this schema:
   ): string {
     // Use consolidated summary generator (no code blocks for Slack compatibility)
     return generateFixSummary(recommendation, context, false);
-  }
-
-  private inferSingleShotRootCauseCategory(
-    recommendation: AIRecommendation,
-    context: RepairContext
-  ): RootCauseCategory {
-    const text = `${recommendation.rootCause || ''} ${recommendation.reasoning || ''} ${context.errorMessage || ''}`.toLowerCase();
-
-    if (
-      /selector|data-testid|aria-label|locator|queryselector|no such element|unable to locate|expected to find element|element not found/.test(
-        text
-      )
-    ) {
-      return 'SELECTOR_MISMATCH';
-    }
-
-    if (/\btimeout\b|timing|race|retry|not ready/.test(text)) {
-      return 'TIMING_ISSUE';
-    }
-
-    if (
-      /\bstate\b|session|auth|login|\bsetup\b|precondition|not set up/.test(
-        text
-      )
-    ) {
-      return 'STATE_DEPENDENCY';
-    }
-
-    if (
-      /\bnetwork\b|\bgraphql\b|\bapi\b|request failed|failed to fetch|\bxhr\b|\bbackend\b|\bserver\b|status code|http \d{3}|response code/.test(
-        text
-      )
-    ) {
-      return 'NETWORK_ISSUE';
-    }
-
-    if (
-      /visible|visibility|hidden|overlay|covered|clickable|viewport|scroll/.test(
-        text
-      )
-    ) {
-      return 'ELEMENT_VISIBILITY';
-    }
-
-    if (/assert|expect|mismatch|wrong value|comparison/.test(text)) {
-      return 'ASSERTION_MISMATCH';
-    }
-
-    if (
-      /\bfixture\b|\bseed\b|\btest data\b|\bmissing data\b|\bcontent missing\b|\brecord missing\b/.test(
-        text
-      )
-    ) {
-      return 'DATA_DEPENDENCY';
-    }
-
-    if (
-      /environment|provider|browser crash|session finished|infrastructure|deployment|config/.test(
-        text
-      )
-    ) {
-      return 'ENVIRONMENT_ISSUE';
-    }
-
-    switch (context.errorType) {
-      case 'ELEMENT_NOT_FOUND':
-        return 'SELECTOR_MISMATCH';
-      case 'TIMEOUT':
-        return 'TIMING_ISSUE';
-      case 'ASSERTION_FAILED':
-        return 'ASSERTION_MISMATCH';
-      case 'NETWORK_ERROR':
-        return 'NETWORK_ISSUE';
-      case 'ELEMENT_NOT_VISIBLE':
-      case 'ELEMENT_COVERED':
-      case 'ELEMENT_DETACHED':
-        return 'ELEMENT_VISIBILITY';
-      default:
-        return 'UNKNOWN';
-    }
   }
 }

@@ -39,6 +39,7 @@ const github = __importStar(require("@actions/github"));
 const simplified_analyzer_1 = require("../simplified-analyzer");
 const log_processor_1 = require("../services/log-processor");
 const skill_store_1 = require("../services/skill-store");
+const root_cause_category_1 = require("../repair/root-cause-category");
 const output_1 = require("./output");
 const validator_1 = require("./validator");
 class PipelineCoordinator {
@@ -291,17 +292,13 @@ class PipelineCoordinator {
 }
 exports.PipelineCoordinator = PipelineCoordinator;
 function inferRootCauseCategory(fix) {
-    const text = `${fix.summary} ${fix.proposedChanges?.map((c) => c.justification).join(' ')}`.toLowerCase();
-    if (/selector|get\(|find\(|locator|data-testid|querySelector/.test(text))
-        return 'SELECTOR_UPDATE';
-    if (/wait|timeout|retry|sleep|intercept/.test(text))
-        return 'WAIT_ADDITION';
-    if (/assert|expect|should|verify/.test(text))
-        return 'ASSERTION_UPDATE';
-    if (/import|require|module|dependency/.test(text))
-        return 'IMPORT_FIX';
-    if (/config|env|setup|fixture|before/.test(text))
-        return 'CONFIG_CHANGE';
-    return 'OTHER';
+    return (0, root_cause_category_1.inferRootCauseCategoryFromText)([
+        fix.summary,
+        fix.reasoning,
+        ...(fix.evidence || []),
+        ...(fix.proposedChanges?.map((c) => c.justification) || []),
+    ]
+        .filter(Boolean)
+        .join(' '));
 }
 //# sourceMappingURL=coordinator.js.map

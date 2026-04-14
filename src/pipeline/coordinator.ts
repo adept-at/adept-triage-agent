@@ -8,6 +8,7 @@ import { ApplyResult } from '../repair/fix-applier';
 import { analyzeFailure } from '../simplified-analyzer';
 import { processWorkflowLogs } from '../services/log-processor';
 import { SkillStore, buildSkill, describeFixPattern } from '../services/skill-store';
+import { inferRootCauseCategoryFromText } from '../repair/root-cause-category';
 import {
   resolveAutoFixTargetRepo,
   setSuccessOutput,
@@ -404,11 +405,14 @@ export class PipelineCoordinator {
 }
 
 function inferRootCauseCategory(fix: FixRecommendation): string {
-  const text = `${fix.summary} ${fix.proposedChanges?.map((c) => c.justification).join(' ')}`.toLowerCase();
-  if (/selector|get\(|find\(|locator|data-testid|querySelector/.test(text)) return 'SELECTOR_UPDATE';
-  if (/wait|timeout|retry|sleep|intercept/.test(text)) return 'WAIT_ADDITION';
-  if (/assert|expect|should|verify/.test(text)) return 'ASSERTION_UPDATE';
-  if (/import|require|module|dependency/.test(text)) return 'IMPORT_FIX';
-  if (/config|env|setup|fixture|before/.test(text)) return 'CONFIG_CHANGE';
-  return 'OTHER';
+  return inferRootCauseCategoryFromText(
+    [
+      fix.summary,
+      fix.reasoning,
+      ...(fix.evidence || []),
+      ...(fix.proposedChanges?.map((c) => c.justification) || []),
+    ]
+      .filter(Boolean)
+      .join(' ')
+  );
 }

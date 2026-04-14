@@ -35,6 +35,5 @@ export declare class SimplifiedRepairAgent {
     private getRecommendationFromAI;
     private extractChangesFromText;
     private generateSummary;
-    private inferSingleShotRootCauseCategory;
 }
 //# sourceMappingURL=simplified-repair-agent.d.ts.map

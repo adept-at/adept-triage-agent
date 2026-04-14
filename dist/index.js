@@ -3993,6 +3993,7 @@ const github = __importStar(__nccwpck_require__(93228));
 const simplified_analyzer_1 = __nccwpck_require__(20078);
 const log_processor_1 = __nccwpck_require__(65833);
 const skill_store_1 = __nccwpck_require__(60215);
+const root_cause_category_1 = __nccwpck_require__(21406);
 const output_1 = __nccwpck_require__(12639);
 const validator_1 = __nccwpck_require__(34670);
 class PipelineCoordinator {
@@ -4245,18 +4246,14 @@ class PipelineCoordinator {
 }
 exports.PipelineCoordinator = PipelineCoordinator;
 function inferRootCauseCategory(fix) {
-    const text = `${fix.summary} ${fix.proposedChanges?.map((c) => c.justification).join(' ')}`.toLowerCase();
-    if (/selector|get\(|find\(|locator|data-testid|querySelector/.test(text))
-        return 'SELECTOR_UPDATE';
-    if (/wait|timeout|retry|sleep|intercept/.test(text))
-        return 'WAIT_ADDITION';
-    if (/assert|expect|should|verify/.test(text))
-        return 'ASSERTION_UPDATE';
-    if (/import|require|module|dependency/.test(text))
-        return 'IMPORT_FIX';
-    if (/config|env|setup|fixture|before/.test(text))
-        return 'CONFIG_CHANGE';
-    return 'OTHER';
+    return (0, root_cause_category_1.inferRootCauseCategoryFromText)([
+        fix.summary,
+        fix.reasoning,
+        ...(fix.evidence || []),
+        ...(fix.proposedChanges?.map((c) => c.justification) || []),
+    ]
+        .filter(Boolean)
+        .join(' '));
 }
 //# sourceMappingURL=coordinator.js.map
 
@@ -5414,6 +5411,60 @@ function computeLineSimilarity(a, b) {
 
 /***/ }),
 
+/***/ 21406:
+/***/ ((__unused_webpack_module, exports) => {
+
+"use strict";
+
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.inferRootCauseCategoryFromText = inferRootCauseCategoryFromText;
+function inferRootCauseCategoryFromText(text, errorType) {
+    const normalizedText = text.toLowerCase();
+    if (/selector|data-testid|aria-label|locator|queryselector|no such element|unable to locate|expected to find element|element not found/.test(normalizedText)) {
+        return 'SELECTOR_MISMATCH';
+    }
+    if (/\btimeout\b|timing|race|retry|not ready/.test(normalizedText)) {
+        return 'TIMING_ISSUE';
+    }
+    if (/\bnetwork\b|\bgraphql\b|\bapi\b|request failed|failed to fetch|\bxhr\b|\bbackend\b|\bserver\b|status code|http \d{3}|response code/.test(normalizedText)) {
+        return 'NETWORK_ISSUE';
+    }
+    if (/\bfixture\b|\bseed\b|\btest data\b|\bmissing data\b|\bcontent missing\b|\brecord missing\b/.test(normalizedText)) {
+        return 'DATA_DEPENDENCY';
+    }
+    if (/visible|visibility|hidden|overlay|covered|clickable|viewport|scroll/.test(normalizedText)) {
+        return 'ELEMENT_VISIBILITY';
+    }
+    if (/assert|expect|mismatch|wrong value|comparison/.test(normalizedText)) {
+        return 'ASSERTION_MISMATCH';
+    }
+    if (/\bstate\b|session|auth|login|\bsetup\b|precondition|not set up/.test(normalizedText)) {
+        return 'STATE_DEPENDENCY';
+    }
+    if (/environment|provider|browser crash|session finished|infrastructure|deployment|config/.test(normalizedText)) {
+        return 'ENVIRONMENT_ISSUE';
+    }
+    switch (errorType) {
+        case 'ELEMENT_NOT_FOUND':
+            return 'SELECTOR_MISMATCH';
+        case 'TIMEOUT':
+            return 'TIMING_ISSUE';
+        case 'ASSERTION_FAILED':
+            return 'ASSERTION_MISMATCH';
+        case 'NETWORK_ERROR':
+            return 'NETWORK_ISSUE';
+        case 'ELEMENT_NOT_VISIBLE':
+        case 'ELEMENT_COVERED':
+        case 'ELEMENT_DETACHED':
+            return 'ELEMENT_VISIBILITY';
+        default:
+            return 'UNKNOWN';
+    }
+}
+//# sourceMappingURL=root-cause-category.js.map
+
+/***/ }),
+
 /***/ 79247:
 /***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
 
@@ -5463,6 +5514,7 @@ const agents_1 = __nccwpck_require__(59796);
 const base_agent_1 = __nccwpck_require__(46575);
 const fix_generation_agent_1 = __nccwpck_require__(39302);
 const skill_store_1 = __nccwpck_require__(60215);
+const root_cause_category_1 = __nccwpck_require__(21406);
 class SimplifiedRepairAgent {
     openaiClient;
     sourceFetchContext;
@@ -5677,7 +5729,7 @@ class SimplifiedRepairAgent {
             reasoning: recommendation.reasoning || 'Fix based on error pattern analysis',
         };
         core.info(`✅ Fix recommendation generated with ${fixRecommendation.confidence}% confidence`);
-        const agentRootCause = this.inferSingleShotRootCauseCategory(recommendation, repairContext);
+        const agentRootCause = (0, root_cause_category_1.inferRootCauseCategoryFromText)(`${recommendation.rootCause || ''} ${recommendation.reasoning || ''} ${repairContext.errorMessage || ''}`, repairContext.errorType);
         return { fix: fixRecommendation, agentRootCause };
     }
     extractFilePath(rawPath) {
@@ -6133,49 +6185,6 @@ You MUST respond in strict JSON only with this schema:
     }
     generateSummary(recommendation, context) {
         return (0, summary_generator_1.generateFixSummary)(recommendation, context, false);
-    }
-    inferSingleShotRootCauseCategory(recommendation, context) {
-        const text = `${recommendation.rootCause || ''} ${recommendation.reasoning || ''} ${context.errorMessage || ''}`.toLowerCase();
-        if (/selector|data-testid|aria-label|locator|queryselector|no such element|unable to locate|expected to find element|element not found/.test(text)) {
-            return 'SELECTOR_MISMATCH';
-        }
-        if (/\btimeout\b|timing|race|retry|not ready/.test(text)) {
-            return 'TIMING_ISSUE';
-        }
-        if (/\bstate\b|session|auth|login|\bsetup\b|precondition|not set up/.test(text)) {
-            return 'STATE_DEPENDENCY';
-        }
-        if (/\bnetwork\b|\bgraphql\b|\bapi\b|request failed|failed to fetch|\bxhr\b|\bbackend\b|\bserver\b|status code|http \d{3}|response code/.test(text)) {
-            return 'NETWORK_ISSUE';
-        }
-        if (/visible|visibility|hidden|overlay|covered|clickable|viewport|scroll/.test(text)) {
-            return 'ELEMENT_VISIBILITY';
-        }
-        if (/assert|expect|mismatch|wrong value|comparison/.test(text)) {
-            return 'ASSERTION_MISMATCH';
-        }
-        if (/\bfixture\b|\bseed\b|\btest data\b|\bmissing data\b|\bcontent missing\b|\brecord missing\b/.test(text)) {
-            return 'DATA_DEPENDENCY';
-        }
-        if (/environment|provider|browser crash|session finished|infrastructure|deployment|config/.test(text)) {
-            return 'ENVIRONMENT_ISSUE';
-        }
-        switch (context.errorType) {
-            case 'ELEMENT_NOT_FOUND':
-                return 'SELECTOR_MISMATCH';
-            case 'TIMEOUT':
-                return 'TIMING_ISSUE';
-            case 'ASSERTION_FAILED':
-                return 'ASSERTION_MISMATCH';
-            case 'NETWORK_ERROR':
-                return 'NETWORK_ISSUE';
-            case 'ELEMENT_NOT_VISIBLE':
-            case 'ELEMENT_COVERED':
-            case 'ELEMENT_DETACHED':
-                return 'ELEMENT_VISIBILITY';
-            default:
-                return 'UNKNOWN';
-        }
     }
 }
 exports.SimplifiedRepairAgent = SimplifiedRepairAgent;
