@@ -1,6 +1,6 @@
 # Triage Memory Hardening Plan
 
-> **Status:** Phase 1 and Phase 2 committed on feature branch, Phase 3A in progress  
+> **Status:** Phase 1, Phase 2, and Phase 3A committed on feature branch, Phase 3B in progress  
 > **Scope:** Triage pipeline, skill-memory quality, DynamoDB safety, rollout sequencing  
 > **Related docs:** `docs/dynamo-skill-store-implementation-plan.md`, `docs/ARCHITECTURE.md`, `docs/agent-workflow-flowchart.md`
 
@@ -51,9 +51,12 @@ These items were identified in earlier reviews and are already shipped. They sho
   - deterministic surfaced-skill ordering via explicit recency tie-breakers
   - shared hydration/defaulting path for Git and Dynamo loads
   - retention behavior intentionally left unchanged
+- Phase 3A checkpoint commit: `72beae0`
+  - bounded flakiness signal added to classifier context
+  - classifier skill-store heading updated to cover both patterns and signals
 - Current target:
-  - Phase 3A bounded flakiness context in the classifier prompt path
-  - keep the message informational rather than directive
+  - Phase 3B single-shot root-cause metadata parity
+  - keep the change scoped to returned repair metadata
   - leave broader prompt-memory redesign out of scope for this slice
 
 ---
@@ -66,8 +69,6 @@ These items were identified in earlier reviews and are already shipped. They sho
 
 - `src/services/dynamo-skill-store.ts`
   - Raw load order is still not canonicalized, and that is now intentional for the short term so Git `MAX_SKILLS` trimming semantics do not change as a side effect of Phase 2.
-- `src/repair/simplified-repair-agent.ts`
-  - The single-shot path does not return `agentRootCause`, so memory metadata can still diverge from the agentic path.
 
 ### Design tradeoff requiring an explicit decision
 
@@ -336,18 +337,17 @@ Plan:
 Targets:
 
 - `src/repair/simplified-repair-agent.ts`
-- `src/pipeline/coordinator.ts`
 
 Plan:
 
-- Narrow the scope from “broad prompt/taxonomy redesign” to the still-live gap:
-  - single-shot repair does not surface `agentRootCause`
+- Narrow the scope from “broad prompt/taxonomy redesign” to single-shot metadata parity:
+  - return normalized root-cause metadata from the single-shot path
 - Only expand this phase beyond that if Phase 2 canaries show real prompt-memory dilution that is still not addressed by the shipped `v1.41.0` / `v1.41.1` work.
 
 ### Acceptance criteria
 
 - Classifier prompts include flakiness only when relevant.
-- Single-shot and agentic paths no longer diverge unnecessarily on stored root-cause metadata.
+- Single-shot and agentic paths no longer diverge unnecessarily on stored root-cause metadata shape and broad category vocabulary.
 
 ### Rollback
 
