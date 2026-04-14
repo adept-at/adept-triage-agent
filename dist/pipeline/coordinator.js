@@ -155,7 +155,6 @@ class PipelineCoordinator {
         if (classification.verdict !== 'TEST_ISSUE')
             return;
         const { fixRecommendation, autoFixResult, iterations, prUrl: skillPrUrl, agentRootCause, agentInvestigationFindings } = await this.repair(classification, errorData, skillStore);
-        let savedSkillId;
         if (skillStore && autoFixTargetRepo && errorData) {
             const fixSucceeded = !!(autoFixResult?.success && autoFixResult.validationStatus === 'passed');
             const fixAttempted = !!fixRecommendation;
@@ -184,7 +183,6 @@ class PipelineCoordinator {
                     investigationFindings: currentFindings,
                     rootCauseChain: `${rootCause} → ${fixRecommendation.summary?.slice(0, 80)}`,
                 });
-                savedSkillId = skill.id;
                 await skillStore.save(skill).catch((err) => {
                     core.warning(`Failed to save skill: ${err}`);
                 });
@@ -197,18 +195,6 @@ class PipelineCoordinator {
                     await skillStore.recordOutcome(skill.id, false).catch(() => { });
                     core.info(`📝 Saved failed skill trajectory ${skill.id}`);
                 }
-            }
-        }
-        if (fixRecommendation && !autoFixResult?.success && skillStore) {
-            const recentSkills = skillStore.findRelevant({
-                framework: errorData.framework || 'unknown',
-                spec: errorData.fileName,
-                limit: 2,
-            }).filter((s) => s.id !== savedSkillId);
-            if (recentSkills.length > 0) {
-                await skillStore.recordClassificationOutcome(recentSkills[0].id, 'incorrect').catch((err) => {
-                    core.warning(`Failed to record classification outcome: ${err}`);
-                });
             }
         }
         const result = { ...classification };

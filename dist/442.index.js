@@ -90,7 +90,8 @@ class DynamoSkillStore extends skill_store_js_1.SkillStore {
             core.info(`📝 Loaded ${this.skills.length} skill(s) from DynamoDB (${this.tableName}) for ${this.owner}/${this.repo}`);
         }
         catch (err) {
-            core.warning(`DynamoDB skill load failed: ${err}`);
+            core.warning(`DynamoDB skill load failed for ${this.owner}/${this.repo} in ${this.tableName}: ${err}`);
+            core.warning('Continuing with an empty in-memory skill cache for this run to avoid retry loops and preserve any new skills saved later in the run.');
             this.loaded = true;
         }
         return this.skills;
@@ -119,35 +120,47 @@ class DynamoSkillStore extends skill_store_js_1.SkillStore {
         if (!this.loaded)
             await this.load();
         const skill = this.skills.find((s) => s.id === skillId);
-        if (!skill)
+        if (!skill) {
+            core.warning(`Skill ${skillId} not found in DynamoDB in-memory cache for ${this.owner}/${this.repo} — skipping outcome write`);
             return;
-        if (success) {
-            skill.successCount = (skill.successCount ?? 0) + 1;
         }
-        else {
-            skill.failCount = (skill.failCount ?? 0) + 1;
-        }
-        skill.lastUsedAt = new Date().toISOString();
-        const totalAttempts = (skill.successCount || 0) + (skill.failCount || 0);
-        const failRate = totalAttempts > 0 ? (skill.failCount || 0) / totalAttempts : 0;
-        if (failRate > 0.4 && (skill.failCount || 0) >= 3) {
-            skill.retired = true;
-            core.warning(`⚠️ Skill ${skillId} retired — ${Math.round(failRate * 100)}% failure rate`);
-        }
+        const now = new Date().toISOString();
         try {
             const { UpdateCommand } = await Promise.all(/* import() */[__webpack_require__.e(305), __webpack_require__.e(907)]).then(__webpack_require__.t.bind(__webpack_require__, 58907, 19));
             const client = await this.getDocClient();
-            await client.send(new UpdateCommand({
+            const counterField = success ? 'successCount' : 'failCount';
+            const result = await client.send(new UpdateCommand({
                 TableName: this.tableName,
                 Key: { pk: `REPO#${this.owner}/${this.repo}`, sk: `SKILL#${skillId}` },
-                UpdateExpression: 'SET successCount = :sc, failCount = :fc, lastUsedAt = :lu, retired = :r',
+                UpdateExpression: `ADD ${counterField} :inc SET lastUsedAt = :lu`,
+                ConditionExpression: 'attribute_exists(pk) AND attribute_exists(sk)',
                 ExpressionAttributeValues: {
-                    ':sc': skill.successCount,
-                    ':fc': skill.failCount,
-                    ':lu': skill.lastUsedAt,
-                    ':r': skill.retired,
+                    ':inc': 1,
+                    ':lu': now,
                 },
+                ReturnValues: 'ALL_NEW',
             }));
+            const attributes = result.Attributes;
+            skill.successCount = attributes?.successCount ?? skill.successCount ?? 0;
+            skill.failCount = attributes?.failCount ?? skill.failCount ?? 0;
+            skill.lastUsedAt = attributes?.lastUsedAt ?? now;
+            skill.retired = attributes?.retired ?? skill.retired ?? false;
+            const totalAttempts = (skill.successCount || 0) + (skill.failCount || 0);
+            const failRate = totalAttempts > 0 ? (skill.failCount || 0) / totalAttempts : 0;
+            const shouldRetire = failRate > 0.4 && (skill.failCount || 0) >= 3;
+            if (shouldRetire && !skill.retired) {
+                await client.send(new UpdateCommand({
+                    TableName: this.tableName,
+                    Key: { pk: `REPO#${this.owner}/${this.repo}`, sk: `SKILL#${skillId}` },
+                    UpdateExpression: 'SET retired = :r',
+                    ConditionExpression: 'attribute_exists(pk) AND attribute_exists(sk)',
+                    ExpressionAttributeValues: {
+                        ':r': true,
+                    },
+                }));
+                skill.retired = true;
+                core.warning(`⚠️ Skill ${skillId} retired — ${Math.round(failRate * 100)}% failure rate`);
+            }
         }
         catch (err) {
             core.warning(`DynamoDB recordOutcome failed: ${err}`);
@@ -157,9 +170,10 @@ class DynamoSkillStore extends skill_store_js_1.SkillStore {
         if (!this.loaded)
             await this.load();
         const skill = this.skills.find((s) => s.id === skillId);
-        if (!skill)
+        if (!skill) {
+            core.warning(`Skill ${skillId} not found in DynamoDB in-memory cache for ${this.owner}/${this.repo} — skipping classification outcome write`);
             return;
-        skill.classificationOutcome = outcome;
+        }
         try {
             const { UpdateCommand } = await Promise.all(/* import() */[__webpack_require__.e(305), __webpack_require__.e(907)]).then(__webpack_require__.t.bind(__webpack_require__, 58907, 19));
             const client = await this.getDocClient();
@@ -167,8 +181,10 @@ class DynamoSkillStore extends skill_store_js_1.SkillStore {
                 TableName: this.tableName,
                 Key: { pk: `REPO#${this.owner}/${this.repo}`, sk: `SKILL#${skillId}` },
                 UpdateExpression: 'SET classificationOutcome = :co',
+                ConditionExpression: 'attribute_exists(pk) AND attribute_exists(sk)',
                 ExpressionAttributeValues: { ':co': outcome },
             }));
+            skill.classificationOutcome = outcome;
         }
         catch (err) {
             core.warning(`DynamoDB recordClassificationOutcome failed: ${err}`);
