@@ -7018,6 +7018,24 @@ function backfillDefaults(skill) {
         repoContext: skill.repoContext ?? '',
     };
 }
+function parseSkillTimestamp(value) {
+    if (!value)
+        return 0;
+    const parsed = Date.parse(value);
+    return Number.isNaN(parsed) ? 0 : parsed;
+}
+function compareSkillRecency(a, b) {
+    const lastUsedDiff = parseSkillTimestamp(b.lastUsedAt) - parseSkillTimestamp(a.lastUsedAt);
+    if (lastUsedDiff !== 0)
+        return lastUsedDiff;
+    const createdDiff = parseSkillTimestamp(b.createdAt) - parseSkillTimestamp(a.createdAt);
+    if (createdDiff !== 0)
+        return createdDiff;
+    return a.id.localeCompare(b.id);
+}
+function hydrateLoadedSkills(skills) {
+    return skills.map(backfillDefaults);
+}
 class SkillStore {
     skills = [];
     loaded = false;
@@ -7029,6 +7047,9 @@ class SkillStore {
         this.octokit = octokit;
         this.owner = owner;
         this.repo = repo;
+    }
+    hydrateLoadedSkills(skills) {
+        return hydrateLoadedSkills(skills);
     }
     async load() {
         if (this.loaded)
@@ -7042,7 +7063,7 @@ class SkillStore {
             });
             if ('content' in data && data.content) {
                 const raw = Buffer.from(data.content, 'base64').toString('utf-8');
-                this.skills = JSON.parse(raw).map(backfillDefaults);
+                this.skills = this.hydrateLoadedSkills(JSON.parse(raw));
                 this.fileSha = data.sha;
                 core.info(`📝 Loaded ${this.skills.length} skill(s) from ${this.owner}/${this.repo}@${SKILLS_BRANCH}`);
             }
@@ -7088,7 +7109,7 @@ class SkillStore {
                         throw new Error('Unexpected empty skills file');
                     }
                     const raw = Buffer.from(data.content, 'base64').toString('utf-8');
-                    const remoteSkills = JSON.parse(raw).map(backfillDefaults);
+                    const remoteSkills = this.hydrateLoadedSkills(JSON.parse(raw));
                     this.skills = [...remoteSkills, skill];
                     if (this.skills.length > MAX_SKILLS) {
                         this.skills = this.skills.slice(-MAX_SKILLS);
@@ -7148,7 +7169,7 @@ class SkillStore {
                         throw new Error('Unexpected empty skills file');
                     }
                     const raw = Buffer.from(data.content, 'base64').toString('utf-8');
-                    const remoteSkills = JSON.parse(raw).map(backfillDefaults);
+                    const remoteSkills = this.hydrateLoadedSkills(JSON.parse(raw));
                     const remoteSkill = remoteSkills.find(s => s.id === skillId);
                     if (!remoteSkill) {
                         core.warning(`Skill ${skillId} not found in remote data — skipping outcome persist`);
@@ -7207,7 +7228,7 @@ class SkillStore {
                         throw new Error('Unexpected empty skills file');
                     }
                     const raw = Buffer.from(data.content, 'base64').toString('utf-8');
-                    const remoteSkills = JSON.parse(raw).map(backfillDefaults);
+                    const remoteSkills = this.hydrateLoadedSkills(JSON.parse(raw));
                     const remoteSkill = remoteSkills.find(s => s.id === skillId);
                     if (!remoteSkill) {
                         core.warning(`Skill ${skillId} not found in remote data — skipping classification persist`);
@@ -7244,7 +7265,12 @@ class SkillStore {
         });
         return scored
             .filter((s) => s.score > 0)
-            .sort((a, b) => b.score - a.score)
+            .sort((a, b) => {
+            const scoreDiff = b.score - a.score;
+            if (scoreDiff !== 0)
+                return scoreDiff;
+            return compareSkillRecency(a.skill, b.skill);
+        })
             .slice(0, limit)
             .map((s) => s.skill);
     }
@@ -7265,13 +7291,18 @@ class SkillStore {
                 score +=
                     errorSimilarity(skill.errorPattern, normalizeError(opts.errorMessage)) * 5;
             }
-            if (now - new Date(skill.lastUsedAt).getTime() < SEVEN_DAYS)
+            if (now - parseSkillTimestamp(skill.lastUsedAt) < SEVEN_DAYS)
                 score += 3;
             return { skill, score };
         });
         return scored
             .filter((s) => s.score > 0)
-            .sort((a, b) => b.score - a.score)
+            .sort((a, b) => {
+            const scoreDiff = b.score - a.score;
+            if (scoreDiff !== 0)
+                return scoreDiff;
+            return compareSkillRecency(a.skill, b.skill);
+        })
             .slice(0, 3)
             .map((s) => s.skill);
     }

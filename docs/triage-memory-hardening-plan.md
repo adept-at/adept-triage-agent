@@ -1,6 +1,6 @@
 # Triage Memory Hardening Plan
 
-> **Status:** Draft working plan  
+> **Status:** Phase 1 committed on feature branch, Phase 2 in progress  
 > **Scope:** Triage pipeline, skill-memory quality, DynamoDB safety, rollout sequencing  
 > **Related docs:** `docs/dynamo-skill-store-implementation-plan.md`, `docs/ARCHITECTURE.md`, `docs/agent-workflow-flowchart.md`
 
@@ -40,22 +40,31 @@ These items were identified in earlier reviews and are already shipped. They sho
 
 ---
 
+## Current Branch Checkpoints
+
+- Branch: `feature/triage-memory-hardening`
+- Phase 1 checkpoint commit: `574730e`
+  - explicit degraded-memory logging for Dynamo load failures
+  - atomic Dynamo outcome updates via `ADD`
+  - removal of unrelated-skill `incorrect` writeback
+- Current target:
+  - Phase 2 deterministic surfaced-skill ordering
+  - explicit recency tie-breakers for surfaced skills
+  - defer canonical load-order normalization until retention / `MAX_SKILLS` semantics are addressed explicitly
+
+---
+
 ## Still Active Problems
 
 ### High-risk correctness issues
 
-- `src/services/dynamo-skill-store.ts`
-  - `recordOutcome()` uses overwrite-style counter updates, so concurrent runs can lose increments.
 - `src/pipeline/coordinator.ts`
-  - A failed fix can mark an unrelated prior skill as `classificationOutcome = incorrect`.
   - Flakiness is computed during classification but is not actually injected into the classifier prompt.
 
 ### Retrieval and prompt-quality issues
 
-- `src/services/skill-store.ts`
-  - `findRelevant()` and `findForClassifier()` do not have explicit deterministic tie-breakers beyond score.
 - `src/services/dynamo-skill-store.ts`
-  - Dynamo-backed loading does not guarantee a useful logical order like newest, most successful, or most recently used.
+  - Raw load order is still not canonicalized, and that is now intentional for the short term so Git `MAX_SKILLS` trimming semantics do not change as a side effect of Phase 2.
 - `src/repair/simplified-repair-agent.ts`
   - The single-shot path does not return `agentRootCause`, so memory metadata can still diverge from the agentic path.
 
@@ -245,10 +254,11 @@ Make memory retrieval stable and backend-independent before making it smarter.
 - This phase is not behavior-neutral.
 - Tie-breakers will change which skills surface in some real runs.
 - Treat Phase 2 as a canary phase, not a pure refactor.
+- Do not silently change Git retention behavior in the same phase.
 
 ### Change set
 
-#### 1. Normalize in-memory ordering after load
+#### 1. Make surfaced skill ordering deterministic
 
 Targets:
 
@@ -257,8 +267,8 @@ Targets:
 
 Plan:
 
-- Apply the same stable sort after load in both backends.
-- Use explicit tie-breakers so equal-score results do not depend on storage order.
+- Use explicit recency tie-breakers so equal-score results do not depend on storage order.
+- Keep raw load ordering unchanged for now so Git `MAX_SKILLS` behavior does not shift as a side effect.
 
 #### 2. Make `findRelevant()` and `findForClassifier()` deterministic
 
@@ -284,6 +294,7 @@ Targets:
 Plan:
 
 - The same logical set of skills should produce the same ranked result list regardless of backend.
+- Canonical in-memory load ordering is explicitly deferred until retention semantics are addressed.
 
 ### Acceptance criteria
 

@@ -67,7 +67,9 @@ export class DynamoSkillStore extends SkillStore {
         lastKey = result.LastEvaluatedKey as Record<string, unknown> | undefined;
       } while (lastKey);
 
-      this.skills = allItems.map(({ pk: _pk, sk: _sk, ...rest }: Record<string, unknown>) => rest as unknown as TriageSkill);
+      this.skills = this.hydrateLoadedSkills(
+        allItems.map(({ pk: _pk, sk: _sk, ...rest }: Record<string, unknown>) => rest as unknown as TriageSkill)
+      );
       this.loaded = true;
       core.info(`📝 Loaded ${this.skills.length} skill(s) from DynamoDB (${this.tableName}) for ${this.owner}/${this.repo}`);
     } catch (err) {

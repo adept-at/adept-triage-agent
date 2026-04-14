@@ -42,6 +42,7 @@ export declare class SkillStore {
     protected owner: string;
     protected repo: string;
     constructor(octokit: Octokit, owner: string, repo: string);
+    protected hydrateLoadedSkills(skills: TriageSkill[]): TriageSkill[];
     load(): Promise<TriageSkill[]>;
     save(skill: TriageSkill): Promise<void>;
     recordOutcome(skillId: string, success: boolean): Promise<void>;

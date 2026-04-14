@@ -92,6 +92,28 @@ function backfillDefaults(skill: TriageSkill): TriageSkill {
   };
 }
 
+function parseSkillTimestamp(value?: string): number {
+  if (!value) return 0;
+  const parsed = Date.parse(value);
+  return Number.isNaN(parsed) ? 0 : parsed;
+}
+
+function compareSkillRecency(a: TriageSkill, b: TriageSkill): number {
+  const lastUsedDiff =
+    parseSkillTimestamp(b.lastUsedAt) - parseSkillTimestamp(a.lastUsedAt);
+  if (lastUsedDiff !== 0) return lastUsedDiff;
+
+  const createdDiff =
+    parseSkillTimestamp(b.createdAt) - parseSkillTimestamp(a.createdAt);
+  if (createdDiff !== 0) return createdDiff;
+
+  return a.id.localeCompare(b.id);
+}
+
+function hydrateLoadedSkills(skills: TriageSkill[]): TriageSkill[] {
+  return skills.map(backfillDefaults);
+}
+
 /**
  * Stores and retrieves triage skills via the GitHub Contents API.
  * Skills live in a dedicated `triage-data` branch of each test repo —
@@ -111,6 +133,10 @@ export class SkillStore {
     this.repo = repo;
   }
 
+  protected hydrateLoadedSkills(skills: TriageSkill[]): TriageSkill[] {
+    return hydrateLoadedSkills(skills);
+  }
+
   /**
    * Load existing skills from the triage-data branch.
    * Safe to call multiple times — only fetches once.
@@ -128,7 +154,7 @@ export class SkillStore {
 
       if ('content' in data && data.content) {
         const raw = Buffer.from(data.content, 'base64').toString('utf-8');
-        this.skills = (JSON.parse(raw) as TriageSkill[]).map(backfillDefaults);
+        this.skills = this.hydrateLoadedSkills(JSON.parse(raw) as TriageSkill[]);
         this.fileSha = data.sha;
         core.info(`📝 Loaded ${this.skills.length} skill(s) from ${this.owner}/${this.repo}@${SKILLS_BRANCH}`);
       }
@@ -181,7 +207,7 @@ export class SkillStore {
             throw new Error('Unexpected empty skills file');
           }
           const raw = Buffer.from(data.content, 'base64').toString('utf-8');
-          const remoteSkills = (JSON.parse(raw) as TriageSkill[]).map(backfillDefaults);
+          const remoteSkills = this.hydrateLoadedSkills(JSON.parse(raw) as TriageSkill[]);
           this.skills = [...remoteSkills, skill];
           if (this.skills.length > MAX_SKILLS) {
             this.skills = this.skills.slice(-MAX_SKILLS);
@@ -243,7 +269,7 @@ export class SkillStore {
             throw new Error('Unexpected empty skills file');
           }
           const raw = Buffer.from(data.content, 'base64').toString('utf-8');
-          const remoteSkills = (JSON.parse(raw) as TriageSkill[]).map(backfillDefaults);
+          const remoteSkills = this.hydrateLoadedSkills(JSON.parse(raw) as TriageSkill[]);
           const remoteSkill = remoteSkills.find(s => s.id === skillId);
           if (!remoteSkill) {
             core.warning(`Skill ${skillId} not found in remote data — skipping outcome persist`);
@@ -303,7 +329,7 @@ export class SkillStore {
             throw new Error('Unexpected empty skills file');
           }
           const raw = Buffer.from(data.content, 'base64').toString('utf-8');
-          const remoteSkills = (JSON.parse(raw) as TriageSkill[]).map(backfillDefaults);
+          const remoteSkills = this.hydrateLoadedSkills(JSON.parse(raw) as TriageSkill[]);
           const remoteSkill = remoteSkills.find(s => s.id === skillId);
           if (!remoteSkill) {
             core.warning(`Skill ${skillId} not found in remote data — skipping classification persist`);
@@ -350,7 +376,11 @@ export class SkillStore {
 
     return scored
       .filter((s) => s.score > 0)
-      .sort((a, b) => b.score - a.score)
+      .sort((a, b) => {
+        const scoreDiff = b.score - a.score;
+        if (scoreDiff !== 0) return scoreDiff;
+        return compareSkillRecency(a.skill, b.skill);
+      })
       .slice(0, limit)
       .map((s) => s.skill);
   }
@@ -383,13 +413,17 @@ export class SkillStore {
         score +=
           errorSimilarity(skill.errorPattern, normalizeError(opts.errorMessage)) * 5;
       }
-      if (now - new Date(skill.lastUsedAt).getTime() < SEVEN_DAYS) score += 3;
+      if (now - parseSkillTimestamp(skill.lastUsedAt) < SEVEN_DAYS) score += 3;
       return { skill, score };
     });
 
     return scored
       .filter((s) => s.score > 0)
-      .sort((a, b) => b.score - a.score)
+      .sort((a, b) => {
+        const scoreDiff = b.score - a.score;
+        if (scoreDiff !== 0) return scoreDiff;
+        return compareSkillRecency(a.skill, b.skill);
+      })
       .slice(0, 3)
       .map((s) => s.skill);
   }

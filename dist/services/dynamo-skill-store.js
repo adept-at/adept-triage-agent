@@ -77,7 +77,7 @@ class DynamoSkillStore extends skill_store_js_1.SkillStore {
                 allItems.push(...(result.Items ?? []));
                 lastKey = result.LastEvaluatedKey;
             } while (lastKey);
-            this.skills = allItems.map(({ pk: _pk, sk: _sk, ...rest }) => rest);
+            this.skills = this.hydrateLoadedSkills(allItems.map(({ pk: _pk, sk: _sk, ...rest }) => rest));
             this.loaded = true;
             core.info(`📝 Loaded ${this.skills.length} skill(s) from DynamoDB (${this.tableName}) for ${this.owner}/${this.repo}`);
         }
