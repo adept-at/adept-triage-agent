@@ -51,7 +51,7 @@ export interface FlakinessSignal {
 const SKILLS_BRANCH = 'triage-data';
 const SKILLS_FILE = 'skills.json';
 
-const MAX_SKILLS = 100;
+export const MAX_SKILLS = 100;
 
 const FLAKY_THRESHOLDS = {
   SHORT_WINDOW_DAYS: 3,

@@ -1,6 +1,31 @@
 import * as core from '@actions/core';
-import { SkillStore, TriageSkill } from './skill-store.js';
+import { MAX_SKILLS, SkillStore, TriageSkill } from './skill-store.js';
 import { Octokit } from '@octokit/rest';
+
+function parseRetentionTimestamp(value?: string): number {
+  if (!value) return 0;
+  const parsed = Date.parse(value);
+  return Number.isNaN(parsed) ? 0 : parsed;
+}
+
+function compareOldestFirst(a: TriageSkill, b: TriageSkill): number {
+  const createdDiff =
+    parseRetentionTimestamp(a.createdAt) - parseRetentionTimestamp(b.createdAt);
+  if (createdDiff !== 0) return createdDiff;
+  return a.id.localeCompare(b.id);
+}
+
+function selectSkillsToPrune(
+  skills: TriageSkill[],
+  keepSkillId?: string
+): TriageSkill[] {
+  if (skills.length <= MAX_SKILLS) return [];
+  const overflowCount = skills.length - MAX_SKILLS;
+  return [...skills]
+    .filter((skill) => skill.id !== keepSkillId)
+    .sort(compareOldestFirst)
+    .slice(0, overflowCount);
+}
 
 /**
  * DynamoDB-backed skill store. Drop-in replacement for the git-branch-based
@@ -90,7 +115,7 @@ export class DynamoSkillStore extends SkillStore {
     this.skills.push(skill);
 
     try {
-      const { PutCommand } = await import('@aws-sdk/lib-dynamodb');
+      const { DeleteCommand, PutCommand } = await import('@aws-sdk/lib-dynamodb');
       const client = await this.getDocClient();
 
       const pk = `REPO#${this.owner}/${this.repo}`;
@@ -102,6 +127,35 @@ export class DynamoSkillStore extends SkillStore {
           Item: { pk, sk, ...skill },
         })
       );
+
+      const pruneCandidates = selectSkillsToPrune(
+        this.skills,
+        skill.id
+      );
+      if (pruneCandidates.length > 0) {
+        const deletedSkillIds = new Set<string>();
+        for (const candidate of pruneCandidates) {
+          try {
+            await client.send(
+              new DeleteCommand({
+                TableName: this.tableName,
+                Key: { pk, sk: `SKILL#${candidate.id}` },
+                ConditionExpression: 'attribute_exists(pk) AND attribute_exists(sk)',
+              })
+            );
+            deletedSkillIds.add(candidate.id);
+          } catch (deleteErr) {
+            core.warning(`Failed to prune DynamoDB skill ${candidate.id}: ${deleteErr}`);
+          }
+        }
+
+        if (deletedSkillIds.size > 0) {
+          this.skills = this.skills.filter((entry) => !deletedSkillIds.has(entry.id));
+          core.info(
+            `🧹 Pruned ${deletedSkillIds.size} old skill(s) from DynamoDB to maintain the ${MAX_SKILLS}-skill cap`
+          );
+        }
+      }
 
       core.info(`📝 Saved skill ${skill.id} to DynamoDB (${this.skills.length} total)`);
     } catch (err) {

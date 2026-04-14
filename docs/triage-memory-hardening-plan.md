@@ -1,6 +1,6 @@
 # Triage Memory Hardening Plan
 
-> **Status:** Phase 1, Phase 2, and Phase 3A committed on feature branch, Phase 3B in progress  
+> **Status:** Phase 1 through Phase 3 committed on feature branch, Phase 4A in progress  
 > **Scope:** Triage pipeline, skill-memory quality, DynamoDB safety, rollout sequencing  
 > **Related docs:** `docs/dynamo-skill-store-implementation-plan.md`, `docs/ARCHITECTURE.md`, `docs/agent-workflow-flowchart.md`
 
@@ -54,10 +54,15 @@ These items were identified in earlier reviews and are already shipped. They sho
 - Phase 3A checkpoint commit: `72beae0`
   - bounded flakiness signal added to classifier context
   - classifier skill-store heading updated to cover both patterns and signals
+- Phase 3B checkpoint commit: `a16ecb9`
+  - single-shot repair now returns root-cause metadata
+  - broad root-cause category shape now matches the agentic path more closely
+- Taxonomy alignment checkpoint commit: `8c12684`
+  - coordinator fallback and single-shot metadata now share one root-cause taxonomy helper
 - Current target:
-  - Phase 3B single-shot root-cause metadata parity
-  - keep the change scoped to returned repair metadata
-  - leave broader prompt-memory redesign out of scope for this slice
+  - Phase 4A bounded Dynamo retention policy
+  - cap Dynamo-backed skills to the same `MAX_SKILLS` limit used by the Git-backed store
+  - keep the retention slice scoped to Dynamo save-time pruning rather than broader audit or analytics changes
 
 ---
 
@@ -377,6 +382,14 @@ Options:
 - archive old skills
 - prune by age
 - prune by low quality / poor outcomes
+
+Current slice:
+
+- implement a bounded Dynamo save-time retention cap
+- prune the oldest skills by `createdAt` when the repo partition exceeds `MAX_SKILLS`
+- leave Git retention behavior unchanged in this slice
+- keep audit-script alignment and broader lifecycle reporting as follow-up work inside Phase 4
+- treat the acceptance criteria below as the Phase 4 exit bar, not the narrower 4A checkpoint bar
 
 #### 2. Revisit classification accuracy model
 

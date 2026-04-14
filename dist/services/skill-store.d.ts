@@ -34,6 +34,7 @@ export interface FlakinessSignal {
     windowDays: number;
     message: string;
 }
+export declare const MAX_SKILLS = 100;
 export declare class SkillStore {
     protected skills: TriageSkill[];
     protected loaded: boolean;

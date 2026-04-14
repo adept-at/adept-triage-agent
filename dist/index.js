@@ -7036,7 +7036,7 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.SkillStore = void 0;
+exports.SkillStore = exports.MAX_SKILLS = void 0;
 exports.normalizeFramework = normalizeFramework;
 exports.buildSkill = buildSkill;
 exports.describeFixPattern = describeFixPattern;
@@ -7046,7 +7046,7 @@ const core = __importStar(__nccwpck_require__(37484));
 const crypto = __importStar(__nccwpck_require__(76982));
 const SKILLS_BRANCH = 'triage-data';
 const SKILLS_FILE = 'skills.json';
-const MAX_SKILLS = 100;
+exports.MAX_SKILLS = 100;
 const FLAKY_THRESHOLDS = {
     SHORT_WINDOW_DAYS: 3,
     SHORT_WINDOW_MAX: 1,
@@ -7148,8 +7148,8 @@ class SkillStore {
             await this.load();
         }
         this.skills.push(skill);
-        if (this.skills.length > MAX_SKILLS) {
-            this.skills = this.skills.slice(-MAX_SKILLS);
+        if (this.skills.length > exports.MAX_SKILLS) {
+            this.skills = this.skills.slice(-exports.MAX_SKILLS);
         }
         const commitMsg = `chore: update triage skills (${skill.spec})`;
         const preSaveSnapshot = [...this.skills];
@@ -7173,8 +7173,8 @@ class SkillStore {
                     const raw = Buffer.from(data.content, 'base64').toString('utf-8');
                     const remoteSkills = this.hydrateLoadedSkills(JSON.parse(raw));
                     this.skills = [...remoteSkills, skill];
-                    if (this.skills.length > MAX_SKILLS) {
-                        this.skills = this.skills.slice(-MAX_SKILLS);
+                    if (this.skills.length > exports.MAX_SKILLS) {
+                        this.skills = this.skills.slice(-exports.MAX_SKILLS);
                     }
                     this.fileSha = data.sha;
                     await this.persist(commitMsg);
