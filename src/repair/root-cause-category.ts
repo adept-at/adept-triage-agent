@@ -19,7 +19,7 @@ export function inferRootCauseCategoryFromText(
   }
 
   if (
-    /\bnetwork\b|\bgraphql\b|\bapi\b|request failed|failed to fetch|\bxhr\b|\bbackend\b|\bserver\b|status code|http \d{3}|response code/.test(
+    /\bnetwork\b|\bgraphql\b|\bapi\b|request failed|failed to fetch|\bxhr\b|\bbackend\b|\bserver\b|status code|http \d{3}|response code|econnrefused|socket hang up|net::err_|cors\b.*\berror\b/.test(
       normalizedText
     )
   ) {
@@ -47,7 +47,7 @@ export function inferRootCauseCategoryFromText(
   }
 
   if (
-    /\bstate\b|session|auth|login|\bsetup\b|precondition|not set up/.test(
+    /\bstate\b|auth|login|\bsetup\b|precondition|not set up|authenticated/.test(
       normalizedText
     )
   ) {

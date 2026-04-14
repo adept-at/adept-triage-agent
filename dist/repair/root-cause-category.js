@@ -9,7 +9,7 @@ function inferRootCauseCategoryFromText(text, errorType) {
     if (/\btimeout\b|timing|race|retry|not ready/.test(normalizedText)) {
         return 'TIMING_ISSUE';
     }
-    if (/\bnetwork\b|\bgraphql\b|\bapi\b|request failed|failed to fetch|\bxhr\b|\bbackend\b|\bserver\b|status code|http \d{3}|response code/.test(normalizedText)) {
+    if (/\bnetwork\b|\bgraphql\b|\bapi\b|request failed|failed to fetch|\bxhr\b|\bbackend\b|\bserver\b|status code|http \d{3}|response code|econnrefused|socket hang up|net::err_|cors\b.*\berror\b/.test(normalizedText)) {
         return 'NETWORK_ISSUE';
     }
     if (/\bfixture\b|\bseed\b|\btest data\b|\bmissing data\b|\bcontent missing\b|\brecord missing\b/.test(normalizedText)) {
@@ -21,7 +21,7 @@ function inferRootCauseCategoryFromText(text, errorType) {
     if (/assert|expect|mismatch|wrong value|comparison/.test(normalizedText)) {
         return 'ASSERTION_MISMATCH';
     }
-    if (/\bstate\b|session|auth|login|\bsetup\b|precondition|not set up/.test(normalizedText)) {
+    if (/\bstate\b|auth|login|\bsetup\b|precondition|not set up|authenticated/.test(normalizedText)) {
         return 'STATE_DEPENDENCY';
     }
     if (/environment|provider|browser crash|session finished|infrastructure|deployment|config/.test(normalizedText)) {

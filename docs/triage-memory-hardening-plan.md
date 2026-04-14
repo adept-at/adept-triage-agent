@@ -1,6 +1,6 @@
 # Triage Memory Hardening Plan
 
-> **Status:** Phase 1 through Phase 3 committed on feature branch, Phase 4A in progress  
+> **Status:** Phase 1 through Phase 4A committed on feature branch, Phase 4B in progress  
 > **Scope:** Triage pipeline, skill-memory quality, DynamoDB safety, rollout sequencing  
 > **Related docs:** `docs/dynamo-skill-store-implementation-plan.md`, `docs/ARCHITECTURE.md`, `docs/agent-workflow-flowchart.md`
 
@@ -59,10 +59,13 @@ These items were identified in earlier reviews and are already shipped. They sho
   - broad root-cause category shape now matches the agentic path more closely
 - Taxonomy alignment checkpoint commit: `8c12684`
   - coordinator fallback and single-shot metadata now share one root-cause taxonomy helper
+- Phase 4A checkpoint commit: `72efe28`
+  - Dynamo save path now prunes oldest skills when a repo partition exceeds `MAX_SKILLS`
+  - the just-saved skill is excluded from prune candidates
 - Current target:
-  - Phase 4A bounded Dynamo retention policy
-  - cap Dynamo-backed skills to the same `MAX_SKILLS` limit used by the Git-backed store
-  - keep the retention slice scoped to Dynamo save-time pruning rather than broader audit or analytics changes
+  - Phase 4B audit alignment for lifecycle reporting
+  - surface repos that are still above the retention cap
+  - improve the audit summary without expanding into classification-history redesign
 
 ---
 
@@ -383,13 +386,19 @@ Options:
 - prune by age
 - prune by low quality / poor outcomes
 
-Current slice:
+Delivered 4A slice:
 
 - implement a bounded Dynamo save-time retention cap
 - prune the oldest skills by `createdAt` when the repo partition exceeds `MAX_SKILLS`
 - leave Git retention behavior unchanged in this slice
 - keep audit-script alignment and broader lifecycle reporting as follow-up work inside Phase 4
 - treat the acceptance criteria below as the Phase 4 exit bar, not the narrower 4A checkpoint bar
+
+Current 4B slice:
+
+- update `scripts/audit-skills.ts` to report repo partitions that remain above the runtime retention cap
+- include retired counts in the repo summary output
+- keep automated deletion behavior unchanged
 
 #### 2. Revisit classification accuracy model
 

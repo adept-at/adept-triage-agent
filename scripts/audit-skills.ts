@@ -13,10 +13,12 @@
  *   - Missing investigation findings
  *   - Classification marked incorrect
  *   - Stale skills (no activity in 30+ days)
+ *   - Repo partitions still above the runtime retention cap
  */
 
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient, ScanCommand, DeleteCommand } from '@aws-sdk/lib-dynamodb';
+import { MAX_SKILLS } from '../src/services/skill-store.js';
 
 const TABLE = process.env.TRIAGE_DYNAMO_TABLE || 'triage-skills-v1-live';
 const REGION = process.env.AWS_REGION || 'us-east-1';
@@ -161,12 +163,25 @@ async function main() {
   }
 
   for (const [repo, repoSkills] of byRepo) {
+    if (repoSkills.length > MAX_SKILLS) {
+      flags.push({
+        skillId: repoSkills[0].id,
+        repo,
+        spec: 'repo-wide',
+        severity: 'WARN',
+        reason: `Repo partition has ${repoSkills.length} skills, above the ${MAX_SKILLS}-skill retention cap. This suggests legacy overflow or failed prune deletes.`,
+      });
+    }
+  }
+
+  for (const [repo, repoSkills] of byRepo) {
     const validated = repoSkills.filter(s => s.validatedLocally);
     const failed = repoSkills.filter(s => !s.validatedLocally);
+    const retired = repoSkills.filter(s => s.retired);
     const correct = repoSkills.filter(s => s.classificationOutcome === 'correct');
     const incorrect = repoSkills.filter(s => s.classificationOutcome === 'incorrect');
     console.log(`📦 ${repo}`);
-    console.log(`   Total: ${repoSkills.length} | Validated: ${validated.length} | Failed: ${failed.length}`);
+    console.log(`   Total: ${repoSkills.length} | Validated: ${validated.length} | Failed: ${failed.length} | Retired: ${retired.length}`);
     console.log(`   Classification: ${correct.length} correct, ${incorrect.length} incorrect, ${repoSkills.length - correct.length - incorrect.length} unknown`);
     console.log();
   }
