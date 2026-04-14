@@ -68,8 +68,18 @@ class PipelineCoordinator {
                 errorMessage: errorData.message,
             })
             : '';
-        const result = skillContext
-            ? await (0, simplified_analyzer_1.analyzeFailure)(this.openaiClient, errorData, skillContext)
+        const flakinessContext = flakinessSignal?.isFlaky
+            ? [
+                '### Flakiness Signal',
+                flakinessSignal.message,
+                'Treat this as additional evidence of instability, but do not let it override the current failure evidence.',
+            ].join('\n')
+            : '';
+        const classifierContext = [skillContext, flakinessContext]
+            .filter(Boolean)
+            .join('\n\n');
+        const result = classifierContext
+            ? await (0, simplified_analyzer_1.analyzeFailure)(this.openaiClient, errorData, classifierContext)
             : await (0, simplified_analyzer_1.analyzeFailure)(this.openaiClient, errorData);
         if (result.confidence < this.inputs.confidenceThreshold) {
             core.warning(`Confidence ${result.confidence}% is below threshold ${this.inputs.confidenceThreshold}%`);

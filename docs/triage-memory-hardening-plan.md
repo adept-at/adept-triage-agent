@@ -1,6 +1,6 @@
 # Triage Memory Hardening Plan
 
-> **Status:** Phase 1 committed on feature branch, Phase 2 in progress  
+> **Status:** Phase 1 and Phase 2 committed on feature branch, Phase 3A in progress  
 > **Scope:** Triage pipeline, skill-memory quality, DynamoDB safety, rollout sequencing  
 > **Related docs:** `docs/dynamo-skill-store-implementation-plan.md`, `docs/ARCHITECTURE.md`, `docs/agent-workflow-flowchart.md`
 
@@ -47,19 +47,20 @@ These items were identified in earlier reviews and are already shipped. They sho
   - explicit degraded-memory logging for Dynamo load failures
   - atomic Dynamo outcome updates via `ADD`
   - removal of unrelated-skill `incorrect` writeback
+- Phase 2 checkpoint commit: `c7b06cd`
+  - deterministic surfaced-skill ordering via explicit recency tie-breakers
+  - shared hydration/defaulting path for Git and Dynamo loads
+  - retention behavior intentionally left unchanged
 - Current target:
-  - Phase 2 deterministic surfaced-skill ordering
-  - explicit recency tie-breakers for surfaced skills
-  - defer canonical load-order normalization until retention / `MAX_SKILLS` semantics are addressed explicitly
+  - Phase 3A bounded flakiness context in the classifier prompt path
+  - keep the message informational rather than directive
+  - leave broader prompt-memory redesign out of scope for this slice
 
 ---
 
 ## Still Active Problems
 
 ### High-risk correctness issues
-
-- `src/pipeline/coordinator.ts`
-  - Flakiness is computed during classification but is not actually injected into the classifier prompt.
 
 ### Retrieval and prompt-quality issues
 

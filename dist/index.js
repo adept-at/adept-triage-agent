@@ -3755,7 +3755,7 @@ Based on ALL the information provided (especially the PR changes if available), 
 
 Respond with your analysis as a JSON object.`;
         if (skillContext) {
-            return prompt + `\n\n### Prior Fix Patterns (from skill store)\nThese patterns were learned from previous fixes on similar failures. Consider them as additional evidence but do not let them override the current failure context. Each pattern shows the error, root cause category, fix approach, and confidence.\n${skillContext}`;
+            return prompt + `\n\n### Prior Fix Patterns and Skill Signals (from skill store)\nThese patterns and signals were learned from previous runs on similar failures. Consider them as additional evidence but do not let them override the current failure context.\n${skillContext}`;
         }
         return prompt;
     }
@@ -4022,8 +4022,18 @@ class PipelineCoordinator {
                 errorMessage: errorData.message,
             })
             : '';
-        const result = skillContext
-            ? await (0, simplified_analyzer_1.analyzeFailure)(this.openaiClient, errorData, skillContext)
+        const flakinessContext = flakinessSignal?.isFlaky
+            ? [
+                '### Flakiness Signal',
+                flakinessSignal.message,
+                'Treat this as additional evidence of instability, but do not let it override the current failure evidence.',
+            ].join('\n')
+            : '';
+        const classifierContext = [skillContext, flakinessContext]
+            .filter(Boolean)
+            .join('\n\n');
+        const result = classifierContext
+            ? await (0, simplified_analyzer_1.analyzeFailure)(this.openaiClient, errorData, classifierContext)
             : await (0, simplified_analyzer_1.analyzeFailure)(this.openaiClient, errorData);
         if (result.confidence < this.inputs.confidenceThreshold) {
             core.warning(`Confidence ${result.confidence}% is below threshold ${this.inputs.confidenceThreshold}%`);
