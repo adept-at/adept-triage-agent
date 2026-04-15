@@ -41,13 +41,13 @@ flowchart TB
 
     AI_CALL --> VERDICT{Verdict?}
 
-    VERDICT -->|TEST_ISSUE| SKILLS["Load SkillStore<br/>(triage-data branch)<br/>+ detect flakiness"]
+    VERDICT -->|TEST_ISSUE| SKILLS["Load SkillStore<br/>(DynamoDB via OIDC, or triage-data branch fallback)<br/>+ detect flakiness"]
     VERDICT -->|PRODUCT_ISSUE| CONFIDENCE_CHECK
     VERDICT -->|INCONCLUSIVE| CONFIDENCE_CHECK
 
     SKILLS --> PATH_CHECK{Local validation?<br/>enableAutoFix +<br/>enableValidation +<br/>testCommand}
 
-    PATH_CHECK -->|Yes| LOCAL_LOOP["Local Fix-Validate Loop<br/>iterativeFixValidateLoop()<br/><br/>1. Clone failing branch + npm ci<br/>2. Generate fix (agentic or single-shot)<br/>   with skills injected into prompts<br/>3. Apply to local files<br/>4. Run test command in container<br/>5. If pass → push branch + create PR<br/>   + save skill to triage-data branch<br/>6. If fail → reset, iterate (up to 3x)<br/>   (fix fingerprinting deduplicates)"]
+    PATH_CHECK -->|Yes| LOCAL_LOOP["Local Fix-Validate Loop<br/>iterativeFixValidateLoop()<br/><br/>1. Clone failing branch + npm ci<br/>2. Generate fix (agentic or single-shot)<br/>   with skills injected into prompts<br/>3. Apply to local files<br/>4. Run test command in container<br/>5. If pass → push branch + create PR<br/>   + save skill to DynamoDB (or triage-data branch fallback)<br/>6. If fail → reset, iterate (up to 3x)<br/>   (fix fingerprinting deduplicates)"]
     PATH_CHECK -->|No| FIX_REC["Generate Fix Recommendation<br/>SimplifiedRepairAgent<br/>(with skills injected)"]
 
     FIX_REC --> AUTO_FIX_CHECK{Auto-Fix<br/>Enabled?}
@@ -66,7 +66,7 @@ flowchart TB
 
 All LLM steps (Analysis, Investigation, Fix Generation, Review) share **one OpenAI conversation**: each call passes the prior turn’s `response_id` as `previous_response_id`, so retries and review feedback accumulate in the same thread. Outer validation iterations (test fails after an approved fix) resume that thread with additional context, not a fresh chat.
 
-When skill memory is available, relevant skills are injected into `context.skillsPrompt` before the Investigation, Fix Generation, and Review steps — each with role-appropriate framing to avoid anchoring bias.
+Skills are also injected into the **classifier** step (`PipelineCoordinator.classify()` → `formatForClassifier`), not only into repair. When skill memory is available, relevant skills are injected into `context.skillsPrompt` before the Investigation, Fix Generation, and Review steps — each with role-appropriate framing to avoid anchoring bias. **Failed fix trajectories** (unsuccessful iterations and outcomes) are persisted as well as successful ones, so the store learns from misses and not only from merged fixes.
 
 ```mermaid
 flowchart TB

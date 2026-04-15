@@ -1,3 +1,5 @@
+> **Status:** Archived — this plan was superseded by the DynamoDB skill store (shipped v1.37.0). The Retool approach was not implemented.
+
 # Retool Skill Store Implementation Plan
 
 > **Status:** Blocked on Retool API key + DB connection string  

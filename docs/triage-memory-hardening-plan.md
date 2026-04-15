@@ -1,6 +1,6 @@
 # Triage Memory Hardening Plan
 
-> **Status:** Phase 1 through Phase 4A committed on feature branch, Phase 4B in progress  
+> **Status:** Phases 1–3 shipped in v1.43.0. Phase 4 (lifecycle/retention) is future work.  
 > **Scope:** Triage pipeline, skill-memory quality, DynamoDB safety, rollout sequencing  
 > **Related docs:** `docs/dynamo-skill-store-implementation-plan.md`, `docs/ARCHITECTURE.md`, `docs/agent-workflow-flowchart.md`
 

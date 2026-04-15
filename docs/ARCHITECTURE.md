@@ -57,7 +57,7 @@ graph TB
             FIX[generateFixRecommendation]
             RC[buildRepairContext]
             RA[SimplifiedRepairAgent]
-            SK[SkillStore - triage-data branch]
+            SK[SkillStore - DynamoDB / triage-data fallback]
         end
 
         subgraph "Output"
@@ -258,18 +258,20 @@ flowchart TD
 
 ### Entry Point (`src/index.ts`)
 
-The main entry point that orchestrates the entire triage process.
+A thin wrapper that parses Action inputs, constructs clients, and delegates to `PipelineCoordinator`.
 
 #### Key Functions
 
 | Function | Purpose | Inputs | Outputs |
 |----------|---------|--------|---------|
-| `run()` | Main orchestrator | None (reads from Action inputs) | GitHub Action outputs |
+| `run()` | Parse inputs, build clients, call `PipelineCoordinator.execute()` | None (reads from Action inputs) | GitHub Action outputs |
 | `getInputs()` | Parse Action inputs | None | `ActionInputs` |
 | `resolveRepository()` | Resolve repo from input or context | `ActionInputs` | `{ owner, repo }` |
-| `generateFixRecommendation()` | Generate fix for TEST_ISSUE | Context, OpenAIClient | `FixRecommendation \| null` |
-| `setSuccessOutput()` | Set successful analysis outputs | `AnalysisResult`, `ErrorData` | void |
-| `setInconclusiveOutput()` | Set inconclusive outputs | Result, inputs, errorData | void |
+
+All pipeline logic lives in dedicated modules:
+- **`src/pipeline/coordinator.ts`** — `PipelineCoordinator` class: skill store selection, `classify()`, `repair()`, `execute()`
+- **`src/pipeline/output.ts`** — `setSuccessOutput()`, `setInconclusiveOutput()`, `setErrorOutput()`, `resolveAutoFixTargetRepo()`
+- **`src/pipeline/validator.ts`** — `generateFixRecommendation()`, `iterativeFixValidateLoop()`, `attemptAutoFix()`
 
 #### Dependencies
 - `@actions/core` - GitHub Actions toolkit
@@ -511,29 +513,55 @@ For either path, **cleanup on failure** still applies: if a step fails, delete t
 
 ---
 
-### Skill Store (`src/services/skill-store.ts`)
+### Skill Store (`src/services/skill-store.ts`, `src/services/dynamo-skill-store.ts`)
 
-Stores and retrieves historical fix patterns (skills) via the GitHub Contents API. Skills live in a dedicated `triage-data` branch of each test repo as a single `skills.json` file — zero external dependencies.
+Stores and retrieves historical fix patterns (skills). Two backends are available:
+
+- **DynamoDB** (`DynamoSkillStore`) — primary backend when `AWS_ACCESS_KEY_ID` is present in the environment (provided via OIDC). Table schema uses `pk = REPO#<owner>/<repo>`, `sk = SKILL#<id>`. Outcome writes use atomic `ADD` expressions to avoid lost updates.
+- **Git triage-data branch** (`SkillStore`) — fallback when no AWS credentials are available. Skills live as a single `skills.json` file on the `triage-data` branch of each test repo, with SHA-based conflict resolution.
+
+`PipelineCoordinator.execute()` selects the backend at runtime:
+
+```typescript
+if (process.env.AWS_ACCESS_KEY_ID) {
+  skillStore = new DynamoSkillStore(region, table, owner, repo);
+} else {
+  skillStore = new SkillStore(octokit, owner, repo);
+}
+```
 
 #### How It Works
 
-1. **Loading**: On every `TEST_ISSUE` verdict (regardless of `enableAutoFix`), the entrypoint `run()` in `index.ts` creates a `SkillStore` for the target repo and calls `load()`, which fetches `skills.json` from the `triage-data` branch. If the branch or file doesn't exist, skills start empty. The orchestrator then receives pre-loaded skills via its `orchestrate()` parameter.
-2. **Relevance Matching**: `findRelevant()` scores skills by exact spec match (highest) then error-message similarity (Jaccard token overlap). Skills are filtered by framework (cypress/webdriverio/unknown).
-3. **Prompt Injection**: Relevant skills are formatted differently per agent role via `formatSkillsForPrompt()`:
+1. **Loading**: When `AUTO_FIX_TARGET_REPO` is set, the coordinator creates a skill store and calls `load()`. DynamoDB uses a paginated `Query` on the partition key; Git fetches `skills.json` from the `triage-data` branch. If no data exists, skills start empty.
+2. **Classification Injection**: `findForClassifier()` returns validated-only skills (non-retired, `validatedLocally === true`), scored by spec match (+15), error similarity (Jaccard, ×5), and recency bonus (+3 if used within 7 days). Results (max 3) are formatted by `formatForClassifier()` and injected into the classifier prompt alongside any flakiness signal.
+3. **Investigation Injection**: `formatForInvestigation()` returns up to 3 skills with `investigationFindings`, formatted with prior root-cause chains and classification outcomes. Injected into the repair pipeline's investigation context.
+4. **Agent Prompt Injection**: `formatSkillsForPrompt()` formats skills differently per agent role:
    - **Investigation**: "Use as background context. Base findings on CURRENT evidence."
-   - **Fix Generation**: "PREFER proven approaches over novel ones."
-   - **Review**: "Flag if fix contradicts a proven approach without justification."
-4. **Flakiness Detection**: `detectFlakiness()` checks if a spec has been auto-fixed >1 time in 3 days or >2 times in 7 days. The signal is injected into agent prompts and included in the `triage_json` output.
-5. **Saving**: A skill is saved **only** after `iterativeFixValidateLoop` success — the local test passed AND the branch was pushed. This ensures only validated patterns enter the memory. The save creates the `triage-data` branch if needed and handles SHA-based conflict resolution for concurrent writes.
+   - **Fix Generation**: "CONSIDER these approaches as starting points."
+   - **Review**: "Flag if fix contradicts a prior pattern without justification."
+   - Each skill entry includes a **track record** line (`successCount/total successful`, classification outcome) so agents can weigh pattern reliability.
+5. **Relevance Matching**: `findRelevant()` scores skills by exact spec match (+10) then error-message similarity (Jaccard token overlap, ×5). Skills filtered by framework (cypress/webdriverio/unknown), retired skills excluded. Used by the repair pipeline for fix generation and review.
+6. **Flakiness Detection**: `detectFlakiness()` checks if a spec has been auto-fixed >1 time in 3 days or >2 times in 7 days. The signal is injected into agent prompts and included in the `triage_json` output.
+7. **Saving**: Skills are saved after every fix attempt (both successful and failed) to preserve trajectories. DynamoDB uses `PutCommand`; Git creates/updates the `triage-data` branch.
+8. **Outcome Tracking**: After save, the coordinator calls:
+   - `recordOutcome(skillId, success)` — increments `successCount` or `failCount`. DynamoDB uses an atomic `ADD` expression; Git does read-modify-write with conflict retry.
+   - `recordClassificationOutcome(skillId, 'correct' | 'incorrect')` — records whether the classification was accurate.
+9. **Auto-retirement**: On every `recordOutcome` call, if `failCount / (successCount + failCount) > 0.4` and `failCount >= 3`, the skill is marked `retired: true` and excluded from future queries.
+10. **Pruning**: Both backends enforce `MAX_SKILLS` (100) per repo on `save()`. DynamoDB individually deletes the oldest overflow skills; Git slices the array.
 
 #### Key Functions
 
 | Function | Purpose | Inputs | Outputs |
 |----------|---------|--------|---------|
-| `SkillStore.load()` | Fetch skills from `triage-data` branch | None | `TriageSkill[]` |
-| `SkillStore.save()` | Append a skill to `skills.json` | `TriageSkill` | void |
-| `SkillStore.findRelevant()` | Score and return matching skills | framework, spec, errorMessage | `TriageSkill[]` |
-| `SkillStore.detectFlakiness()` | Check if spec is chronically flaky | spec name | `FlakinessSignal` |
+| `load()` | Fetch skills from DynamoDB or `triage-data` branch | None | `TriageSkill[]` |
+| `save()` | Persist a skill, prune if over `MAX_SKILLS` | `TriageSkill` | void |
+| `findRelevant()` | Score and return matching skills | framework, spec, errorMessage | `TriageSkill[]` |
+| `findForClassifier()` | Validated-only, recency-weighted skills for classification | framework, spec, errorMessage | `TriageSkill[]` (max 3) |
+| `formatForClassifier()` | Format classifier skills as numbered text | framework, spec, errorMessage | string |
+| `formatForInvestigation()` | Format skills with investigation findings | framework, spec, errorMessage | string |
+| `detectFlakiness()` | Check if spec is chronically flaky | spec name | `FlakinessSignal` |
+| `recordOutcome()` | Increment success/fail counter, auto-retire | skillId, success | void |
+| `recordClassificationOutcome()` | Record classification correctness | skillId, outcome | void |
 | `buildSkill()` | Factory for creating a `TriageSkill` | fix result params | `TriageSkill` |
 | `formatSkillsForPrompt()` | Format skills for a specific agent role | skills, role, flakiness | string |
 
@@ -547,19 +575,32 @@ interface TriageSkill {
   spec: string;
   testName: string;
   framework: 'cypress' | 'webdriverio' | 'unknown';
+
   errorPattern: string;        // Normalized error message
   rootCauseCategory: string;
+
   fix: {
     file: string;
     changeType: string;
     summary: string;
     pattern: string;           // Reusable description of the fix
   };
+
   confidence: number;
   iterations: number;          // How many fix-validate iterations it took
   prUrl: string;
   validatedLocally: boolean;
   priorSkillCount: number;     // How many skills existed for this spec before this one
+
+  successCount: number;        // Atomic counter — incremented on successful outcome
+  failCount: number;           // Atomic counter — incremented on failed outcome
+  lastUsedAt: string;          // ISO timestamp, updated on each outcome
+  retired: boolean;            // Auto-set when failure rate > 40% with >= 3 failures
+
+  investigationFindings?: string;       // Deep investigation notes from InvestigationAgent
+  classificationOutcome?: 'correct' | 'incorrect' | 'unknown';
+  rootCauseChain?: string;              // e.g. "SELECTOR_MISMATCH → Updated data-testid..."
+  repoContext?: string;                 // Repository-specific notes
 }
 ```
 
@@ -567,9 +608,9 @@ interface TriageSkill {
 
 | Constant | Value | Description |
 |----------|-------|-------------|
-| `SKILLS_BRANCH` | `triage-data` | Branch where skills are stored |
-| `SKILLS_FILE` | `skills.json` | File name within the branch |
-| `MAX_SKILLS` | `100` | Maximum skills per repo — enforced on `save()`, oldest entries dropped when exceeded |
+| `SKILLS_BRANCH` | `triage-data` | Branch where skills are stored (Git backend) |
+| `SKILLS_FILE` | `skills.json` | File name within the branch (Git backend) |
+| `MAX_SKILLS` | `100` | Maximum skills per repo — enforced on `save()`, oldest entries pruned when exceeded |
 | `FLAKY_THRESHOLDS.SHORT_WINDOW_DAYS` | `3` | Short flakiness window |
 | `FLAKY_THRESHOLDS.SHORT_WINDOW_MAX` | `1` | Max fixes before flagging (short) |
 | `FLAKY_THRESHOLDS.LONG_WINDOW_DAYS` | `7` | Long flakiness window |
@@ -653,6 +694,12 @@ Centralized configuration values.
 | `MAX_RETRIES` | 3 | Retry attempts |
 | `RETRY_DELAY_MS` | 1,000 | Base retry delay |
 
+#### DynamoDB Skill Store Defaults
+| Constant | Value | Description |
+|----------|-------|-------------|
+| `TRIAGE_AWS_REGION` | `us-east-1` | Default AWS region for DynamoDB skill store |
+| `TRIAGE_DYNAMO_TABLE` | `triage-skills-v1-live` | Default DynamoDB table name |
+
 #### Fix-Validate Loop
 | Constant | Value | Description |
 |----------|-------|-------------|
@@ -721,10 +768,8 @@ interface ActionInputs {
   validationTestCommand?: string;
   npmToken?: string;
   enableAgenticRepair?: boolean;   // Defaults to true (action.yml default: 'true')
-  enableCursorValidation?: boolean;
-  cursorApiKey?: string;
-  cursorValidationMode?: 'poll' | 'async';
-  cursorValidationTimeout?: number;
+  triageAwsRegion?: string;        // AWS region for DynamoDB skill store (default: us-east-1)
+  triageDynamoTable?: string;      // DynamoDB table name (default: triage-skills-v1-live)
 }
 ```
 
@@ -750,9 +795,6 @@ interface ActionInputs {
 | `validation_run_id` | string | Validation workflow run ID when discovered after dispatch |
 | `validation_status` | string | Validation status reported by this action: `pending`, `passed`, `failed`, or `skipped` (aligns with local validation and legacy dispatch outcomes) |
 | `validation_url` | string | URL for the dispatched validation workflow run when GitHub returns it |
-| `cursor_agent_id` | string | Cursor agent ID when Cursor validation is enabled |
-| `cursor_agent_url` | string | URL to the Cursor agent run |
-| `cursor_validation_summary` | string | Summary of Cursor validation results |
 
 ---
 

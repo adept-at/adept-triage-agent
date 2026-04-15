@@ -1,7 +1,6 @@
 # DynamoDB Skill Store Implementation Plan
 
-> **Status:** Phase 1 complete, Phase 2 in progress  
-> **Current version:** v1.37.2  
+> **Status:** Historical — DynamoDB skill store shipped in v1.37.0. Auth switched from static IAM keys to OIDC in v1.42.0. Memory hardening (atomic counters, pruning, deterministic retrieval) shipped in v1.43.0. See `docs/triage-memory-hardening-plan.md` for current work.
 
 ---
 

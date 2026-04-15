@@ -22,7 +22,7 @@ Best-effort same-workflow analysis is still supported when you target the curren
 We recommend using the major version tag for automatic updates:
 
 - **`@v1`** - Automatically gets backward-compatible updates (recommended)
-- **`@v1.21.2`** - Pin to specific version for full reproducibility
+- **`@v1.43.0`** - Pin to specific version for full reproducibility
 
 ## Quick Start
 
@@ -204,11 +204,9 @@ If you point the action at the current in-progress job, it can still do a best-e
 | `VALIDATION_TEST_COMMAND` | No | - | Local test command template; `{spec}` and `{url}` placeholders. Primary validation path when set. |
 | `ENABLE_AGENTIC_REPAIR` | No | `true` | Enable multi-agent repair pipeline (enabled by default; set `'false'` to use single-shot) |
 | `NPM_TOKEN` | No | - | NPM token for private registry authentication during local validation `npm ci` |
-| **Cursor Validation Inputs** | | | |
-| `ENABLE_CURSOR_VALIDATION` | No | `false` | Enable Cursor-based fix validation. Mutually exclusive with `ENABLE_VALIDATION` (GitHub Actions validation takes precedence if both are true). |
-| `CURSOR_API_KEY` | No | - | API key for Cursor validation |
-| `CURSOR_VALIDATION_MODE` | No | `poll` | Cursor validation mode |
-| `CURSOR_VALIDATION_TIMEOUT` | No | `300000` | Timeout for Cursor validation (ms) |
+| **Skill Store Inputs** | | | |
+| `TRIAGE_AWS_REGION` | No | `us-east-1` | AWS region for DynamoDB skill store |
+| `TRIAGE_DYNAMO_TABLE` | No | `triage-skills-v1-live` | DynamoDB table name for skill store |
 
 ## Outputs
 
@@ -230,9 +228,6 @@ If you point the action at the current in-progress job, it can still do a best-e
 | `validation_run_id` | Validation workflow run ID (legacy remote path only) | - |
 | `validation_status` | `passed`, `pending`, or `skipped` | - |
 | `validation_url` | URL to validation workflow run (legacy remote path only) | - |
-| `cursor_agent_id` | Cursor agent ID (when Cursor validation enabled) | - |
-| `cursor_agent_url` | URL to Cursor agent run | - |
-| `cursor_validation_summary` | Summary of Cursor validation results | - |
 
 ### Special Verdicts
 
@@ -496,9 +491,9 @@ Even if some data collection fails (e.g., screenshots unavailable), the agent wi
 2. **Infrastructure Check**: Short-circuits to `INCONCLUSIVE` if a browser crash or session termination is detected (no LLM call)
 3. **AI Classification**: Sends structured error summary, logs, screenshots, and diffs to GPT-5.3 Codex via the Responses API to classify as `TEST_ISSUE`, `PRODUCT_ISSUE`, or `INCONCLUSIVE`
 4. **Confidence Gating**: If confidence is below `CONFIDENCE_THRESHOLD`, returns `INCONCLUSIVE` without attempting repair
-5. **Skill Memory Loading**: For `TEST_ISSUE` verdicts, loads historical fix patterns from the `triage-data` branch of the test repo and checks for flakiness signals
+5. **Skill Memory Loading**: For `TEST_ISSUE` verdicts, loads historical fix patterns from DynamoDB (primary, via OIDC) or the Git `triage-data` branch (fallback) of the test repo and checks for flakiness signals
 6. **Fix Generation**: Uses either the multi-agent pipeline (Analysis → Code Reading → Investigation → Fix/Review loop with skill memory injected) or single-shot repair
-7. **Fix Application**: Depending on configuration, applies the fix via the local validation loop (clone → apply → test → push/PR) or via the GitHub API (legacy path). Validated fixes are saved as skills for future runs.
+7. **Fix Application**: Depending on configuration, applies the fix via the local validation loop (clone → apply → test → push/PR) or via the GitHub API (legacy path). All fix attempts (both validated successes and failed trajectories) are saved as skills for future runs.
 
 ### Structured Error Summary (v1.5.0+)
 
@@ -514,9 +509,9 @@ This pre-analysis helps GPT-5.3 Codex make more accurate determinations between 
 
 ### Skill Memory and Flakiness Detection
 
-When `AUTO_FIX_TARGET_REPO` is set, the agent loads historical fix patterns from a `triage-data` branch in the test repo. These "skills" are injected into agent prompts so the multi-agent pipeline can reuse proven patterns rather than re-deriving fixes from scratch. Skills are loaded for all `TEST_ISSUE` verdicts regardless of whether auto-fix is enabled.
+When `AUTO_FIX_TARGET_REPO` is set, the agent loads historical fix patterns from a DynamoDB skill store (primary, using OIDC credentials) or falls back to the Git `triage-data` branch when AWS credentials are unavailable. These "skills" are injected into agent prompts so the multi-agent pipeline can reuse proven patterns rather than re-deriving fixes from scratch. Skills are loaded for all `TEST_ISSUE` verdicts regardless of whether auto-fix is enabled.
 
-Skills are only saved after a successful iterative fix-validate loop — the local test must pass and the branch must be pushed. This ensures only validated patterns enter the memory.
+Skills are saved for all fix attempts — both validated successes and failed trajectories. This allows the pipeline to learn from every attempt, not just successful ones.
 
 The agent also detects **flakiness** by counting how many times a given spec has been auto-fixed recently:
 - **>1 fix in 3 days**: flagged as chronically flaky
@@ -536,7 +531,7 @@ Flakiness signals are included in the `triage_json` output and injected into age
 
 - **OpenAI API Key**: Required for AI analysis
 - **GitHub Token**: Usually available as `${{ github.token }}`
-- **Node.js 20**: The action runs on Node.js 20
+- **Node.js 24**: The action runs on Node.js 24
 
 ## Troubleshooting
 

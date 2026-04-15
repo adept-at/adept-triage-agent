@@ -18,7 +18,7 @@ AI-powered GitHub Action that automatically triages test failures to determine i
 - 📊 **Confidence Scoring**: Provides confidence levels for each verdict
 - 🔄 **Flexible Integration**: Works with various CI/CD workflows
 - 📝 **Change Diff Analysis**: Analyzes test-repo PR, branch, or commit diffs when provided, and recent commits in the default product repo (`adept-at/learn-webapp`) for classification
-- 🧠 **Skill Memory**: Remembers successful fix patterns in a Git-backed store (`triage-data` branch) and reuses them on future failures for faster, more accurate repairs
+- 🧠 **Skill Memory**: Remembers fix patterns in a DynamoDB-backed store (with Git `triage-data` branch fallback) and reuses them on future failures for faster, more accurate repairs
 - ⚠️ **Flakiness Detection**: Flags specs that have been auto-fixed repeatedly (>1 fix in 3 days, or >2 in 7 days) as chronically flaky
 
 ### Auto-Fix Feature
@@ -82,7 +82,7 @@ The Analysis, Investigation, Fix Generation, and Review agents share one OpenAI 
 
 #### Skill Memory
 
-When the iterative fix-validate loop produces a validated fix (local test passes), the agent saves the fix pattern to a `triage-data` branch in the test repo. On future runs, these skills are loaded and injected into agent prompts so the pipeline can reuse proven patterns. Skills are loaded for all `TEST_ISSUE` verdicts regardless of whether auto-fix is enabled.
+When a fix is attempted, the agent saves the fix pattern to a DynamoDB skill store (with OIDC credentials; falls back to the Git `triage-data` branch when AWS credentials are unavailable). Both validated successes and failed trajectories are saved so the pipeline can learn from all attempts. On future runs, these skills are loaded and injected into agent prompts so the pipeline can reuse proven patterns. Skills are loaded for all `TEST_ISSUE` verdicts regardless of whether auto-fix is enabled.
 
 #### Fix Validation (Optional)
 
@@ -316,11 +316,9 @@ This approach triggers automatically when the specified workflow completes with 
 | `VALIDATION_PREVIEW_URL` | Replaces `{url}` in `VALIDATION_TEST_COMMAND`.                                                                                                                                                                                             | No       | -                          |
 | `VALIDATION_SPEC`      | Replaces `{spec}` in `VALIDATION_TEST_COMMAND`.                                                                                                                                                                                                 | No       | -                          |
 | `VALIDATION_TEST_COMMAND` | Test command template with `{spec}` and `{url}` placeholders; when set with `ENABLE_VALIDATION`, runs locally to validate fixes before push.                                                                                                                                                                                          | No       | -                          |
-| **Cursor Validation Inputs** | | | |
-| `ENABLE_CURSOR_VALIDATION` | Enable Cursor-based fix validation. Mutually exclusive with `ENABLE_VALIDATION`; if both are true, GitHub Actions validation takes precedence.                                                                             | No       | `false`                    |
-| `CURSOR_API_KEY`       | API key for Cursor validation                                                                                                                                                                                                  | No       | -                          |
-| `CURSOR_VALIDATION_MODE` | Cursor validation mode                                                                                                                                                                                                       | No       | `poll`                     |
-| `CURSOR_VALIDATION_TIMEOUT` | Timeout for Cursor validation (ms)                                                                                                                                                                                        | No       | `300000`                   |
+| **Skill Store Inputs** | | | |
+| `TRIAGE_AWS_REGION`    | AWS region for DynamoDB skill store                                                                                                                                                                                            | No       | `us-east-1`               |
+| `TRIAGE_DYNAMO_TABLE`  | DynamoDB table name for skill store                                                                                                                                                                                            | No       | `triage-skills-v1-live`   |
 
 ## Outputs
 
@@ -345,10 +343,6 @@ This approach triggers automatically when the specified workflow completes with 
 | `validation_run_id` | Workflow run ID of the validation workflow (legacy remote validation path only).                   |
 | `validation_status` | `passed` (local test succeeded), `pending`, or `skipped`.            |
 | `validation_url` | URL to the validation workflow run (legacy remote validation path only).        |
-| **Cursor Validation Outputs** | |
-| `cursor_agent_id` | Cursor agent ID (when Cursor validation enabled)                                  |
-| `cursor_agent_url` | URL to Cursor agent run                                                          |
-| `cursor_validation_summary` | Summary of Cursor validation results                                       |
 
 ### Special Verdicts
 
@@ -392,7 +386,7 @@ This approach triggers automatically when the specified workflow completes with 
 2. **Infrastructure Check**: Short-circuits to `INCONCLUSIVE` if a browser crash or session termination is detected (no LLM call)
 3. **AI Classification**: Sends structured error summary, logs, screenshots, and diffs to GPT-5.3 Codex via the Responses API to classify as `TEST_ISSUE`, `PRODUCT_ISSUE`, or `INCONCLUSIVE`
 4. **Confidence Gating**: If confidence is below `CONFIDENCE_THRESHOLD`, returns `INCONCLUSIVE` without attempting repair
-5. **Skill Memory Loading**: For `TEST_ISSUE` verdicts, loads historical fix patterns from the `triage-data` branch of the test repo (if `AUTO_FIX_TARGET_REPO` is set) and checks for flakiness signals
+5. **Skill Memory Loading**: For `TEST_ISSUE` verdicts, loads historical fix patterns from DynamoDB (primary, via OIDC) or the Git `triage-data` branch (fallback) of the test repo (if `AUTO_FIX_TARGET_REPO` is set) and checks for flakiness signals
 6. **Fix Generation**: Uses either the multi-agent pipeline (Analysis → Code Reading → Investigation → Fix/Review loop) or single-shot repair, with skill memory injected into prompts
 7. **Fix Application**: Depending on configuration, applies the fix via the local validation loop (clone → apply → test → push/PR) or via the GitHub API (legacy path)
 
@@ -447,7 +441,7 @@ npm run build
 We follow semantic versioning and provide multiple ways to reference this action:
 
 - **`@v1`** - Recommended for production. Automatically updates to the latest v1.x.x release
-- **`@v1.21.2`** - Pin to a specific version for full reproducibility
+- **`@v1.43.0`** - Pin to a specific version for full reproducibility
 - **`@main`** - Latest development version (use with caution)
 
 Example:
@@ -457,7 +451,7 @@ Example:
 uses: adept-at/adept-triage-agent@v1
 
 # Specific version - no automatic updates
-uses: adept-at/adept-triage-agent@v1.21.2
+uses: adept-at/adept-triage-agent@v1.43.0
 ```
 
 ## Development
