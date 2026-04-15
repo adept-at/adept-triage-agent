@@ -24,6 +24,16 @@ import {
 } from '../fixtures/mock-responses';
 import type { ArtifactFetcher } from '../../src/artifact-fetcher';
 
+function wrapResponse(
+  value: unknown,
+  responseId = 'mock-response-id'
+): { text: string; responseId: string } {
+  return {
+    text: typeof value === 'string' ? value : JSON.stringify(value),
+    responseId,
+  };
+}
+
 jest.mock('@actions/core', () => ({
   info: jest.fn(),
   warning: jest.fn(),
@@ -48,9 +58,18 @@ describe('Cypress full pipeline (single-shot)', () => {
   const runId = '21640226152';
   const jobName = 'previewUrlTest';
   const repoDetails = { owner: 'adept-at', repo: 'lib-cypress-canary' };
+  const singleShotTestFileContent = `
+describe('Login flow', () => {
+  it('should submit the login form', () => {
+    cy.get('[data-testid="submit"]').click();
+  });
+});
+`;
 
   it('should extract Cypress error and produce Cypress-appropriate fix', async () => {
-    const octokit = createMockOctokit(CYPRESS_RAW_LOG, jobName, runId) as Octokit;
+    const octokit = createMockOctokit(CYPRESS_RAW_LOG, jobName, runId, {
+      fileContent: singleShotTestFileContent,
+    }) as Octokit;
     const artifactFetcher = createMockArtifactFetcher({
       screenshots: [],
       artifactLogs: '',
@@ -59,7 +78,7 @@ describe('Cypress full pipeline (single-shot)', () => {
     const mockAnalyze = jest.fn().mockResolvedValue(ANALYSIS_TEST_ISSUE);
     const mockGenerateWithCustomPrompt = jest
       .fn()
-      .mockResolvedValue(FIX_RECOMMENDATION_CYPRESS_STRING);
+      .mockResolvedValue(wrapResponse(FIX_RECOMMENDATION_CYPRESS_STRING));
     const openaiClient = {
       analyze: mockAnalyze,
       generateWithCustomPrompt: mockGenerateWithCustomPrompt,
@@ -125,15 +144,15 @@ describe('Login flow', () => {
       callCount++;
       switch (callCount) {
         case 1:
-          return Promise.resolve(AGENTIC_ANALYSIS_STRING);
+          return Promise.resolve(wrapResponse(AGENTIC_ANALYSIS_STRING, `mock-${callCount}`));
         case 2:
-          return Promise.resolve(AGENTIC_INVESTIGATION_STRING);
+          return Promise.resolve(wrapResponse(AGENTIC_INVESTIGATION_STRING, `mock-${callCount}`));
         case 3:
-          return Promise.resolve(AGENTIC_FIX_CYPRESS_STRING);
+          return Promise.resolve(wrapResponse(AGENTIC_FIX_CYPRESS_STRING, `mock-${callCount}`));
         case 4:
-          return Promise.resolve(AGENTIC_REVIEW_APPROVED_STRING);
+          return Promise.resolve(wrapResponse(AGENTIC_REVIEW_APPROVED_STRING, `mock-${callCount}`));
         default:
-          return Promise.resolve(AGENTIC_REVIEW_APPROVED_STRING);
+          return Promise.resolve(wrapResponse(AGENTIC_REVIEW_APPROVED_STRING, `mock-${callCount}`));
       }
     });
     const openaiClient = {

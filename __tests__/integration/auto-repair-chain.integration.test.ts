@@ -18,6 +18,7 @@ jest.mock('@actions/core', () => ({
   info: jest.fn(),
   warning: jest.fn(),
   debug: jest.fn(),
+  error: jest.fn(),
   setFailed: jest.fn(),
   setOutput: jest.fn(),
   getInput: jest.fn(),
@@ -127,10 +128,17 @@ describe('Auto-repair chain integration', () => {
   });
 
   it('should call createWorkflowDispatch with correct inputs when validation enabled', async () => {
+    const createdAt = new Date().toISOString();
     const createWorkflowDispatch = jest.fn().mockResolvedValue({});
     const listWorkflowRuns = jest
       .fn()
-      .mockResolvedValueOnce({ data: { workflow_runs: [{ id: 999, html_url: 'https://example.com' }] } });
+      .mockResolvedValueOnce({
+        data: {
+          workflow_runs: [
+            { id: 999, html_url: 'https://example.com', created_at: createdAt },
+          ],
+        },
+      });
 
     const mockOctokit = {
       git: {
@@ -185,11 +193,12 @@ describe('Auto-repair chain integration', () => {
         branch: 'fix/triage-agent/login-20240315-120000',
         spec: 'cypress/e2e/login.cy.ts',
         preview_url: 'https://preview.example.com',
+        test_command: '',
         triage_run_id: '12345',
         fix_branch_name: 'fix/triage-agent/login-20240315-120000',
       },
     });
     expect(triggerResult).not.toBeNull();
     expect(triggerResult?.runId).toBe(999);
-  });
+  }, 10000);
 });

@@ -436,10 +436,10 @@ export class SkillStore {
     const specSkills = this.skills.filter((s) => s.spec === spec);
 
     const inShortWindow = specSkills.filter(
-      (s) => now - new Date(s.createdAt).getTime() < FLAKY_THRESHOLDS.SHORT_WINDOW_DAYS * 86_400_000
+      (s) => now - parseSkillTimestamp(s.createdAt) < FLAKY_THRESHOLDS.SHORT_WINDOW_DAYS * 86_400_000
     );
     const inLongWindow = specSkills.filter(
-      (s) => now - new Date(s.createdAt).getTime() < FLAKY_THRESHOLDS.LONG_WINDOW_DAYS * 86_400_000
+      (s) => now - parseSkillTimestamp(s.createdAt) < FLAKY_THRESHOLDS.LONG_WINDOW_DAYS * 86_400_000
     );
 
     if (inShortWindow.length > FLAKY_THRESHOLDS.SHORT_WINDOW_MAX) {

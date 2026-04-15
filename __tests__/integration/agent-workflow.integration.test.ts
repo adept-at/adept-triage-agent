@@ -18,6 +18,16 @@ import { OpenAIClient } from '../../src/openai-client';
 // Mock OpenAI client
 jest.mock('../../src/openai-client');
 
+function wrapResponse(
+  value: unknown,
+  responseId = 'mock-response-id'
+): { text: string; responseId: string } {
+  return {
+    text: typeof value === 'string' ? value : JSON.stringify(value),
+    responseId,
+  };
+}
+
 describe('Agent Workflow Integration', () => {
   let mockOpenAIClient: jest.Mocked<OpenAIClient>;
   let orchestrator: AgentOrchestrator;
@@ -219,15 +229,15 @@ describe('Login Page', () => {
           callCount++;
           switch (callCount) {
             case 1:
-              return Promise.resolve(JSON.stringify(mockAnalysisResponse));
+              return Promise.resolve(wrapResponse(mockAnalysisResponse, `mock-${callCount}`));
             case 2:
-              return Promise.resolve(JSON.stringify(mockInvestigationResponse));
+              return Promise.resolve(wrapResponse(mockInvestigationResponse, `mock-${callCount}`));
             case 3:
-              return Promise.resolve(JSON.stringify(mockFixGenerationResponse));
+              return Promise.resolve(wrapResponse(mockFixGenerationResponse, `mock-${callCount}`));
             case 4:
-              return Promise.resolve(JSON.stringify(mockReviewResponse));
+              return Promise.resolve(wrapResponse(mockReviewResponse, `mock-${callCount}`));
             default:
-              return Promise.resolve('{}');
+              return Promise.resolve(wrapResponse('{}', `mock-${callCount}`));
           }
         });
 
@@ -330,15 +340,15 @@ describe('Login Page', () => {
           callCount++;
           switch (callCount) {
             case 1:
-              return Promise.resolve(JSON.stringify(timingAnalysis));
+              return Promise.resolve(wrapResponse(timingAnalysis, `mock-${callCount}`));
             case 2:
-              return Promise.resolve(JSON.stringify(timingInvestigation));
+              return Promise.resolve(wrapResponse(timingInvestigation, `mock-${callCount}`));
             case 3:
-              return Promise.resolve(JSON.stringify(timingFix));
+              return Promise.resolve(wrapResponse(timingFix, `mock-${callCount}`));
             case 4:
-              return Promise.resolve(JSON.stringify(mockReviewResponse));
+              return Promise.resolve(wrapResponse(mockReviewResponse, `mock-${callCount}`));
             default:
-              return Promise.resolve('{}');
+              return Promise.resolve(wrapResponse('{}', `mock-${callCount}`));
           }
         });
 
@@ -403,19 +413,19 @@ describe('Login Page', () => {
           callCount++;
           switch (callCount) {
             case 1: // Analysis
-              return Promise.resolve(JSON.stringify(mockAnalysisResponse));
+              return Promise.resolve(wrapResponse(mockAnalysisResponse, `mock-${callCount}`));
             case 2: // Investigation
-              return Promise.resolve(JSON.stringify(mockInvestigationResponse));
+              return Promise.resolve(wrapResponse(mockInvestigationResponse, `mock-${callCount}`));
             case 3: // First fix generation
-              return Promise.resolve(JSON.stringify(mockFixGenerationResponse));
+              return Promise.resolve(wrapResponse(mockFixGenerationResponse, `mock-${callCount}`));
             case 4: // First review (rejected)
-              return Promise.resolve(JSON.stringify(rejectedReview));
+              return Promise.resolve(wrapResponse(rejectedReview, `mock-${callCount}`));
             case 5: // Second fix generation (improved)
-              return Promise.resolve(JSON.stringify(improvedFix));
+              return Promise.resolve(wrapResponse(improvedFix, `mock-${callCount}`));
             case 6: // Second review (approved)
-              return Promise.resolve(JSON.stringify(mockReviewResponse));
+              return Promise.resolve(wrapResponse(mockReviewResponse, `mock-${callCount}`));
             default:
-              return Promise.resolve('{}');
+              return Promise.resolve(wrapResponse('{}', `mock-${callCount}`));
           }
         });
 
@@ -449,15 +459,21 @@ describe('Login Page', () => {
           callCount++;
           // Analysis on call 1
           if (callCount === 1)
-            return Promise.resolve(JSON.stringify(mockAnalysisResponse));
+            return Promise.resolve(
+              wrapResponse(mockAnalysisResponse, `mock-${callCount}`)
+            );
           // Investigation on call 2
           if (callCount === 2)
-            return Promise.resolve(JSON.stringify(mockInvestigationResponse));
+            return Promise.resolve(
+              wrapResponse(mockInvestigationResponse, `mock-${callCount}`)
+            );
           // Odd calls after 2 are fix generations, even are reviews (rejected)
           if (callCount > 2 && callCount % 2 === 1) {
-            return Promise.resolve(JSON.stringify(mockFixGenerationResponse));
+            return Promise.resolve(
+              wrapResponse(mockFixGenerationResponse, `mock-${callCount}`)
+            );
           }
-          return Promise.resolve(JSON.stringify(alwaysReject));
+          return Promise.resolve(wrapResponse(alwaysReject, `mock-${callCount}`));
         });
 
       defaultContext.sourceFileContent = testFileContent;
@@ -490,7 +506,7 @@ describe('Login Page', () => {
         .mockImplementation(() => {
           callCount++;
           if (callCount === 1) {
-            return Promise.resolve(JSON.stringify(mockAnalysisResponse));
+            return Promise.resolve(wrapResponse(mockAnalysisResponse, `mock-${callCount}`));
           }
           throw new Error('Investigation failed');
         });
@@ -520,11 +536,11 @@ describe('Login Page', () => {
           callCount++;
           switch (callCount) {
             case 1:
-              return Promise.resolve(JSON.stringify(lowConfidenceAnalysis));
+              return Promise.resolve(wrapResponse(lowConfidenceAnalysis, `mock-${callCount}`));
             case 2:
-              return Promise.resolve(JSON.stringify(mockInvestigationResponse));
+              return Promise.resolve(wrapResponse(mockInvestigationResponse, `mock-${callCount}`));
             default:
-              return Promise.resolve(JSON.stringify(lowConfidenceFix));
+              return Promise.resolve(wrapResponse(lowConfidenceFix, `mock-${callCount}`));
           }
         });
 
@@ -545,15 +561,15 @@ describe('Login Page', () => {
         .mockImplementation((params) => {
           capturedCalls.push(params.userContent[0]?.text || params.userContent);
           if (capturedCalls.length === 1) {
-            return Promise.resolve(JSON.stringify(mockAnalysisResponse));
+            return Promise.resolve(wrapResponse(mockAnalysisResponse, `mock-${capturedCalls.length}`));
           }
           if (capturedCalls.length === 2) {
-            return Promise.resolve(JSON.stringify(mockInvestigationResponse));
+            return Promise.resolve(wrapResponse(mockInvestigationResponse, `mock-${capturedCalls.length}`));
           }
           if (capturedCalls.length === 3) {
-            return Promise.resolve(JSON.stringify(mockFixGenerationResponse));
+            return Promise.resolve(wrapResponse(mockFixGenerationResponse, `mock-${capturedCalls.length}`));
           }
-          return Promise.resolve(JSON.stringify(mockReviewResponse));
+          return Promise.resolve(wrapResponse(mockReviewResponse, `mock-${capturedCalls.length}`));
         });
 
       defaultContext.sourceFileContent = testFileContent;
@@ -574,15 +590,15 @@ describe('Login Page', () => {
           const text = params.userContent[0]?.text || params.userContent;
           capturedCalls.push(text);
           if (capturedCalls.length === 1) {
-            return Promise.resolve(JSON.stringify(mockAnalysisResponse));
+            return Promise.resolve(wrapResponse(mockAnalysisResponse, `mock-${capturedCalls.length}`));
           }
           if (capturedCalls.length === 2) {
-            return Promise.resolve(JSON.stringify(mockInvestigationResponse));
+            return Promise.resolve(wrapResponse(mockInvestigationResponse, `mock-${capturedCalls.length}`));
           }
           if (capturedCalls.length === 3) {
-            return Promise.resolve(JSON.stringify(mockFixGenerationResponse));
+            return Promise.resolve(wrapResponse(mockFixGenerationResponse, `mock-${capturedCalls.length}`));
           }
-          return Promise.resolve(JSON.stringify(mockReviewResponse));
+          return Promise.resolve(wrapResponse(mockReviewResponse, `mock-${capturedCalls.length}`));
         });
 
       defaultContext.sourceFileContent = testFileContent;
@@ -602,15 +618,15 @@ describe('Login Page', () => {
           const text = params.userContent[0]?.text || params.userContent;
           capturedCalls.push(text);
           if (capturedCalls.length === 1) {
-            return Promise.resolve(JSON.stringify(mockAnalysisResponse));
+            return Promise.resolve(wrapResponse(mockAnalysisResponse, `mock-${capturedCalls.length}`));
           }
           if (capturedCalls.length === 2) {
-            return Promise.resolve(JSON.stringify(mockInvestigationResponse));
+            return Promise.resolve(wrapResponse(mockInvestigationResponse, `mock-${capturedCalls.length}`));
           }
           if (capturedCalls.length === 3) {
-            return Promise.resolve(JSON.stringify(mockFixGenerationResponse));
+            return Promise.resolve(wrapResponse(mockFixGenerationResponse, `mock-${capturedCalls.length}`));
           }
-          return Promise.resolve(JSON.stringify(mockReviewResponse));
+          return Promise.resolve(wrapResponse(mockReviewResponse, `mock-${capturedCalls.length}`));
         });
 
       defaultContext.sourceFileContent = testFileContent;
@@ -632,15 +648,15 @@ describe('Login Page', () => {
           callCount++;
           switch (callCount) {
             case 1:
-              return Promise.resolve(JSON.stringify(mockAnalysisResponse));
+              return Promise.resolve(wrapResponse(mockAnalysisResponse, `mock-${callCount}`));
             case 2:
-              return Promise.resolve(JSON.stringify(mockInvestigationResponse));
+              return Promise.resolve(wrapResponse(mockInvestigationResponse, `mock-${callCount}`));
             case 3:
-              return Promise.resolve(JSON.stringify(mockFixGenerationResponse));
+              return Promise.resolve(wrapResponse(mockFixGenerationResponse, `mock-${callCount}`));
             case 4:
-              return Promise.resolve(JSON.stringify(mockReviewResponse));
+              return Promise.resolve(wrapResponse(mockReviewResponse, `mock-${callCount}`));
             default:
-              return Promise.resolve('{}');
+              return Promise.resolve(wrapResponse('{}', `mock-${callCount}`));
           }
         });
 
@@ -690,7 +706,7 @@ describe('Login Page', () => {
           () =>
             new Promise((resolve) =>
               setTimeout(
-                () => resolve(JSON.stringify(mockAnalysisResponse)),
+                () => resolve(wrapResponse(mockAnalysisResponse, 'mock-timeout')),
                 200
               )
             )

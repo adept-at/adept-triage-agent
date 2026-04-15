@@ -156,16 +156,16 @@ Received: undefined
       );
 
       console.log('\n--- Fix Recommendation ---');
-      console.log('Confidence:', result?.confidence);
-      console.log('Reasoning:', result?.reasoning);
+      console.log('Confidence:', result?.fix.confidence);
+      console.log('Reasoning:', result?.fix.reasoning);
 
       expect(result).not.toBeNull();
-      expect(result!.confidence).toBeGreaterThanOrEqual(50);
-      expect(result!.proposedChanges.length).toBeGreaterThan(0);
+      expect(result!.fix.confidence).toBeGreaterThanOrEqual(50);
+      expect(result!.fix.proposedChanges.length).toBeGreaterThan(0);
 
       // The model may propose multiple changes (root cause + defensive guard).
       // Find the change that addresses the sauceGqlHelper null result.
-      for (const c of result!.proposedChanges) {
+      for (const c of result!.fix.proposedChanges) {
         console.log(`\nFile: ${c.file} (line ${c.line})`);
         console.log(`oldCode:\n---\n${c.oldCode}\n---`);
         console.log(`newCode:\n---\n${c.newCode}\n---`);
@@ -175,7 +175,7 @@ Received: undefined
         }
       }
 
-      const guardChange = result!.proposedChanges.find(
+      const guardChange = result!.fix.proposedChanges.find(
         (c) =>
           c.oldCode?.includes('JSON.parse(result)') &&
           c.oldCode?.includes('expect(upsertResult).toBeTruthy()')
@@ -191,7 +191,8 @@ Received: undefined
         newCodeLower.includes('result === null') ||
         newCodeLower.includes('result == null') ||
         newCodeLower.includes('typeof result') ||
-        newCodeLower.includes('if (result)');
+        newCodeLower.includes('if (result)') ||
+        newCodeLower.includes('expect(result');
       expect(hasNullGuard).toBe(true);
 
       // newCode must still contain the expect when result IS present

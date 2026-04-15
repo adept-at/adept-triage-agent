@@ -157,14 +157,14 @@ describe('Repair agent oldCode match verification', () => {
       );
 
       console.log('\n--- Fix Recommendation ---');
-      console.log('Confidence:', result?.confidence);
+      console.log('Confidence:', result?.fix.confidence);
       console.log(
         'Changes:',
-        result?.proposedChanges?.length ?? 0
+        result?.fix.proposedChanges?.length ?? 0
       );
 
-      if (result?.proposedChanges) {
-        for (const change of result.proposedChanges) {
+      if (result?.fix.proposedChanges) {
+        for (const change of result.fix.proposedChanges) {
           console.log(`\nFile: ${change.file}`);
           console.log(`oldCode:\n${change.oldCode}`);
           console.log(`newCode:\n${change.newCode}`);
@@ -178,8 +178,8 @@ describe('Repair agent oldCode match verification', () => {
       }
 
       expect(result).not.toBeNull();
-      expect(result!.confidence).toBeGreaterThanOrEqual(50);
-      expect(result!.proposedChanges.length).toBeGreaterThan(0);
+      expect(result!.fix.confidence).toBeGreaterThanOrEqual(50);
+      expect(result!.fix.proposedChanges.length).toBeGreaterThan(0);
     },
     60_000
   );

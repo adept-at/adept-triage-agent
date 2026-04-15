@@ -25,6 +25,16 @@ import {
 } from '../fixtures/mock-responses';
 import type { ArtifactFetcher } from '../../src/artifact-fetcher';
 
+function wrapResponse(
+  value: unknown,
+  responseId = 'mock-response-id'
+): { text: string; responseId: string } {
+  return {
+    text: typeof value === 'string' ? value : JSON.stringify(value),
+    responseId,
+  };
+}
+
 jest.mock('@actions/core', () => ({
   info: jest.fn(),
   warning: jest.fn(),
@@ -49,9 +59,19 @@ describe('WDIO full pipeline (single-shot)', () => {
   const runId = '21914697303';
   const jobName = 'sauceTest';
   const repoDetails = { owner: 'adept-at', repo: 'lib-wdio-8-multi-remote' };
+  const singleShotTestFileContent = `
+describe('Editors can take skill lock', () => {
+  it('should allow taking lock', async () => {
+    const el = browser.$(".skill-panel");
+    await el.click();
+  });
+});
+`;
 
   it('should extract WDIO error and produce WDIO-appropriate fix (no Cypress contamination)', async () => {
-    const octokit = createMockOctokit(WDIO_RAW_LOG, jobName, runId) as Octokit;
+    const octokit = createMockOctokit(WDIO_RAW_LOG, jobName, runId, {
+      fileContent: singleShotTestFileContent,
+    }) as Octokit;
     const artifactFetcher = createMockArtifactFetcher({
       screenshots: [],
       artifactLogs: '',
@@ -60,7 +80,7 @@ describe('WDIO full pipeline (single-shot)', () => {
     const mockAnalyze = jest.fn().mockResolvedValue(ANALYSIS_TEST_ISSUE);
     const mockGenerateWithCustomPrompt = jest
       .fn()
-      .mockResolvedValue(FIX_RECOMMENDATION_WDIO_STRING);
+      .mockResolvedValue(wrapResponse(FIX_RECOMMENDATION_WDIO_STRING));
     const openaiClient = {
       analyze: mockAnalyze,
       generateWithCustomPrompt: mockGenerateWithCustomPrompt,
@@ -126,15 +146,15 @@ describe('Editors can take skill lock', () => {
       callCount++;
       switch (callCount) {
         case 1:
-          return Promise.resolve(AGENTIC_ANALYSIS_STRING);
+          return Promise.resolve(wrapResponse(AGENTIC_ANALYSIS_STRING, `mock-${callCount}`));
         case 2:
-          return Promise.resolve(AGENTIC_INVESTIGATION_STRING);
+          return Promise.resolve(wrapResponse(AGENTIC_INVESTIGATION_STRING, `mock-${callCount}`));
         case 3:
-          return Promise.resolve(AGENTIC_FIX_WDIO_STRING);
+          return Promise.resolve(wrapResponse(AGENTIC_FIX_WDIO_STRING, `mock-${callCount}`));
         case 4:
-          return Promise.resolve(AGENTIC_REVIEW_APPROVED_STRING);
+          return Promise.resolve(wrapResponse(AGENTIC_REVIEW_APPROVED_STRING, `mock-${callCount}`));
         default:
-          return Promise.resolve(AGENTIC_REVIEW_APPROVED_STRING);
+          return Promise.resolve(wrapResponse(AGENTIC_REVIEW_APPROVED_STRING, `mock-${callCount}`));
       }
     });
     const openaiClient = {

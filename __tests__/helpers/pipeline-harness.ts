@@ -75,7 +75,7 @@ export function createMockOctokit(
           return Promise.reject(new Error(`File not found: ${path}`));
         }
         return Promise.resolve({
-          data: { content, encoding: 'base64' },
+          data: { type: 'file', content, encoding: 'base64' },
         });
       }),
     };
@@ -171,10 +171,11 @@ export async function runPipeline(
       },
       { enableAgenticRepair: inputs.enableAgenticRepair ?? false }
     );
-    fixRecommendation = await repairAgent.generateFixRecommendation(
+    const generated = await repairAgent.generateFixRecommendation(
       repairContext,
       errorData
     );
+    fixRecommendation = generated?.fix ?? null;
   }
 
   return {

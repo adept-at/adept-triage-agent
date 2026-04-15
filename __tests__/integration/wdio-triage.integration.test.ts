@@ -152,7 +152,8 @@ describe('WDIO Triage Integration', () => {
         framework: 'webdriverio',
         message: expect.stringContaining('still not visible'),
       }),
-      expect.any(Array)
+      expect.any(Array),
+      undefined
     );
   });
 });

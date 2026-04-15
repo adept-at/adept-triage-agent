@@ -368,8 +368,8 @@ class SkillStore {
     detectFlakiness(spec) {
         const now = Date.now();
         const specSkills = this.skills.filter((s) => s.spec === spec);
-        const inShortWindow = specSkills.filter((s) => now - new Date(s.createdAt).getTime() < FLAKY_THRESHOLDS.SHORT_WINDOW_DAYS * 86_400_000);
-        const inLongWindow = specSkills.filter((s) => now - new Date(s.createdAt).getTime() < FLAKY_THRESHOLDS.LONG_WINDOW_DAYS * 86_400_000);
+        const inShortWindow = specSkills.filter((s) => now - parseSkillTimestamp(s.createdAt) < FLAKY_THRESHOLDS.SHORT_WINDOW_DAYS * 86_400_000);
+        const inLongWindow = specSkills.filter((s) => now - parseSkillTimestamp(s.createdAt) < FLAKY_THRESHOLDS.LONG_WINDOW_DAYS * 86_400_000);
         if (inShortWindow.length > FLAKY_THRESHOLDS.SHORT_WINDOW_MAX) {
             return {
                 isFlaky: true,
