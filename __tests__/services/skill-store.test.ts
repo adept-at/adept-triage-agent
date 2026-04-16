@@ -15,6 +15,37 @@ jest.mock('@actions/core', () => ({
   debug: jest.fn(),
 }));
 
+// Mock the AWS SDK modules so both static and dynamic imports resolve to
+// lightweight fakes. The command classes are named so `constructor.name`
+// works for assertion.
+jest.mock('@aws-sdk/client-dynamodb', () => ({
+  DynamoDBClient: class DynamoDBClient {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    constructor(_cfg: any) {}
+  },
+}));
+
+jest.mock('@aws-sdk/lib-dynamodb', () => {
+  const sharedSend = jest.fn();
+  return {
+    __send: sharedSend,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    QueryCommand: class QueryCommand { constructor(public input: any) {} },
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    PutCommand: class PutCommand { constructor(public input: any) {} },
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    DeleteCommand: class DeleteCommand { constructor(public input: any) {} },
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    UpdateCommand: class UpdateCommand { constructor(public input: any) {} },
+    DynamoDBDocumentClient: {
+      from: () => ({ send: sharedSend }),
+    },
+  };
+});
+
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const mockSend = require('@aws-sdk/lib-dynamodb').__send as jest.Mock;
+
 function makeSkill(overrides: Partial<TriageSkill> = {}): TriageSkill {
   return {
     id: 'skill-1',
@@ -38,30 +69,6 @@ function makeSkill(overrides: Partial<TriageSkill> = {}): TriageSkill {
     priorSkillCount: 0,
     ...overrides,
   };
-}
-
-function makeMockOctokit(skills: TriageSkill[] = []) {
-  const encoded = Buffer.from(JSON.stringify(skills)).toString('base64');
-  return {
-    repos: {
-      getContent: jest.fn().mockResolvedValue({
-        data: { content: encoded, sha: 'abc123' },
-      }),
-      createOrUpdateFileContents: jest.fn().mockResolvedValue({
-        data: { content: { sha: 'def456' } },
-      }),
-      getBranch: jest.fn().mockResolvedValue({ data: {} }),
-      get: jest.fn().mockResolvedValue({
-        data: { default_branch: 'main' },
-      }),
-    },
-    git: {
-      getRef: jest.fn().mockResolvedValue({
-        data: { object: { sha: 'aaa' } },
-      }),
-      createRef: jest.fn().mockResolvedValue({}),
-    },
-  } as any;
 }
 
 // ---------------------------------------------------------------------------
@@ -202,149 +209,12 @@ describe('describeFixPattern', () => {
 });
 
 // ---------------------------------------------------------------------------
-// SkillStore.load
-// ---------------------------------------------------------------------------
-describe('SkillStore.load', () => {
-  it('loads skills from GitHub Contents API', async () => {
-    const existing = [makeSkill()];
-    const octokit = makeMockOctokit(existing);
-    const store = new SkillStore(octokit, 'adept-at', 'lib-wdio-8-e2e-ts');
-
-    const result = await store.load();
-
-    expect(result).toHaveLength(1);
-    expect(result[0].spec).toBe('test/specs/skills/lms.video.plays.e2e.ts');
-    expect(octokit.repos.getContent).toHaveBeenCalledWith({
-      owner: 'adept-at',
-      repo: 'lib-wdio-8-e2e-ts',
-      path: 'skills.json',
-      ref: 'triage-data',
-    });
-  });
-
-  it('returns empty array on 404 (fresh repo)', async () => {
-    const octokit = makeMockOctokit();
-    octokit.repos.getContent.mockRejectedValue({ status: 404 });
-    const store = new SkillStore(octokit, 'adept-at', 'new-repo');
-
-    const result = await store.load();
-
-    expect(result).toEqual([]);
-  });
-
-  it('only fetches once (cached on second call)', async () => {
-    const octokit = makeMockOctokit([makeSkill()]);
-    const store = new SkillStore(octokit, 'adept-at', 'test');
-
-    await store.load();
-    await store.load();
-
-    expect(octokit.repos.getContent).toHaveBeenCalledTimes(1);
-  });
-
-  it('does NOT set loaded on transient error (allows retry)', async () => {
-    const octokit = makeMockOctokit();
-    octokit.repos.getContent.mockRejectedValue({ status: 500 });
-    const store = new SkillStore(octokit, 'adept-at', 'test');
-
-    await store.load();
-    expect(store.findRelevant({ framework: 'webdriverio' })).toEqual([]);
-
-    octokit.repos.getContent.mockResolvedValue({
-      data: { content: Buffer.from(JSON.stringify([makeSkill()])).toString('base64'), sha: 'x' },
-    });
-    await store.load();
-
-    expect(octokit.repos.getContent).toHaveBeenCalledTimes(2);
-    expect(store.findRelevant({ framework: 'webdriverio', spec: 'test/specs/skills/lms.video.plays.e2e.ts' })).toHaveLength(1);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// SkillStore.save
-// ---------------------------------------------------------------------------
-describe('SkillStore.save', () => {
-  it('writes skill to GitHub and updates fileSha', async () => {
-    const octokit = makeMockOctokit([]);
-    octokit.repos.getContent.mockRejectedValue({ status: 404 });
-    const store = new SkillStore(octokit, 'adept-at', 'test');
-    await store.load();
-
-    const skill = makeSkill();
-    await store.save(skill);
-
-    expect(octokit.repos.createOrUpdateFileContents).toHaveBeenCalledTimes(1);
-    expect(store.countForSpec(skill.spec)).toBe(1);
-  });
-
-  it('rolls back in-memory on non-409 write failure', async () => {
-    const octokit = makeMockOctokit([]);
-    octokit.repos.getContent.mockRejectedValue({ status: 404 });
-    octokit.repos.createOrUpdateFileContents.mockRejectedValue({ status: 500 });
-    const store = new SkillStore(octokit, 'adept-at', 'test');
-    await store.load();
-
-    await store.save(makeSkill());
-
-    expect(store.countForSpec('test/specs/skills/lms.video.plays.e2e.ts')).toBe(0);
-  });
-
-  it('retries on 409 conflict with fresh data', async () => {
-    const existingSkill = makeSkill({ id: 'existing-1' });
-    const octokit = makeMockOctokit();
-    octokit.repos.getContent
-      .mockRejectedValueOnce({ status: 404 })
-      .mockResolvedValueOnce({
-        data: {
-          content: Buffer.from(JSON.stringify([existingSkill])).toString('base64'),
-          sha: 'fresh-sha',
-        },
-      });
-
-    octokit.repos.createOrUpdateFileContents
-      .mockRejectedValueOnce({ status: 409 })
-      .mockResolvedValueOnce({ data: { content: { sha: 'new-sha' } } });
-
-    const store = new SkillStore(octokit, 'adept-at', 'test');
-    await store.load();
-
-    const newSkill = makeSkill({ id: 'new-1' });
-    await store.save(newSkill);
-
-    expect(octokit.repos.createOrUpdateFileContents).toHaveBeenCalledTimes(2);
-    expect(store.countForSpec(newSkill.spec)).toBe(2);
-  });
-
-  it('enforces max 100 skills cap', async () => {
-    const octokit = makeMockOctokit([]);
-    octokit.repos.getContent.mockRejectedValue({ status: 404 });
-    const store = new SkillStore(octokit, 'adept-at', 'test');
-    await store.load();
-
-    for (let i = 0; i < 105; i++) {
-      await store.save(makeSkill({ id: `skill-${i}`, spec: `spec-${i}.ts` }));
-    }
-
-    const written = JSON.parse(
-      Buffer.from(
-        octokit.repos.createOrUpdateFileContents.mock.calls.at(-1)[0].content,
-        'base64'
-      ).toString('utf-8')
-    );
-    expect(written.length).toBeLessThanOrEqual(100);
-  });
-});
-
-// ---------------------------------------------------------------------------
 // SkillStore.findRelevant
 // ---------------------------------------------------------------------------
 describe('SkillStore.findRelevant', () => {
   function storeWith(skills: TriageSkill[]): SkillStore {
-    const octokit = makeMockOctokit(skills);
-    const store = new SkillStore(octokit, 'adept-at', 'test');
-    // Force-load synchronously by setting internal state
+    const store = new SkillStore('us-east-1', 'test-table', 'adept-at', 'test');
     (store as any).skills = skills;
-    (store as any).loaded = true;
     return store;
   }
 
@@ -441,10 +311,8 @@ describe('SkillStore.findRelevant', () => {
 // ---------------------------------------------------------------------------
 describe('SkillStore.detectFlakiness', () => {
   function storeWith(skills: TriageSkill[]): SkillStore {
-    const octokit = makeMockOctokit(skills);
-    const store = new SkillStore(octokit, 'adept-at', 'test');
+    const store = new SkillStore('us-east-1', 'test-table', 'adept-at', 'test');
     (store as any).skills = skills;
-    (store as any).loaded = true;
     return store;
   }
 
@@ -574,5 +442,455 @@ describe('formatSkillsForPrompt', () => {
     const result = formatSkillsForPrompt([skill], 'fix_generation');
     expect(result).toContain('1 iteration)');
     expect(result).not.toContain('1 iterations');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// SkillStore persistence (DynamoDB paths)
+//
+// Both `@aws-sdk/client-dynamodb` and `@aws-sdk/lib-dynamodb` are mocked at
+// the module level (see jest.mock calls at the top of this file). The shared
+// `mockSend` stands in for the document client's `send()`. Command classes
+// capture their input; `constructor.name` matches the class name for assertions.
+// ---------------------------------------------------------------------------
+function makeStore(): SkillStore {
+  return new SkillStore('us-east-1', 'test-table', 'adept-at', 'test');
+}
+
+function commandType(call: unknown): string {
+  const cmd = (call as unknown[])[0] as { constructor: { name: string } };
+  return cmd.constructor.name;
+}
+
+function commandInput<T = Record<string, unknown>>(call: unknown): T {
+  const cmd = (call as unknown[])[0] as { input: T };
+  return cmd.input;
+}
+
+beforeEach(() => {
+  mockSend.mockReset();
+});
+
+describe('SkillStore.load', () => {
+  it('queries DynamoDB with the correct partition key and prefix', async () => {
+    const store = makeStore();
+    mockSend.mockResolvedValueOnce({ Items: [] });
+
+    await store.load();
+
+    expect(mockSend).toHaveBeenCalledTimes(1);
+    expect(commandType(mockSend.mock.calls[0])).toBe('QueryCommand');
+    const input = commandInput<{
+      TableName: string;
+      ExpressionAttributeValues: Record<string, string>;
+    }>(mockSend.mock.calls[0]);
+    expect(input.TableName).toBe('test-table');
+    expect(input.ExpressionAttributeValues[':pk']).toBe('REPO#adept-at/test');
+    expect(input.ExpressionAttributeValues[':prefix']).toBe('SKILL#');
+  });
+
+  it('paginates via LastEvaluatedKey', async () => {
+    const store = makeStore();
+    const s1 = { pk: 'x', sk: 'SKILL#1', ...makeSkill({ id: '1' }) };
+    const s2 = { pk: 'x', sk: 'SKILL#2', ...makeSkill({ id: '2' }) };
+    mockSend
+      .mockResolvedValueOnce({ Items: [s1], LastEvaluatedKey: { pk: 'x', sk: 'SKILL#1' } })
+      .mockResolvedValueOnce({ Items: [s2] });
+
+    await store.load();
+
+    expect(mockSend).toHaveBeenCalledTimes(2);
+    const secondInput = commandInput<{ ExclusiveStartKey?: unknown }>(mockSend.mock.calls[1]);
+    expect(secondInput.ExclusiveStartKey).toEqual({ pk: 'x', sk: 'SKILL#1' });
+    expect(store.countForSpec('test/specs/skills/lms.video.plays.e2e.ts')).toBe(2);
+  });
+
+  it('only queries once (cached on second call)', async () => {
+    const store = makeStore();
+    mockSend.mockResolvedValue({ Items: [] });
+
+    await store.load();
+    await store.load();
+
+    expect(mockSend).toHaveBeenCalledTimes(1);
+  });
+
+  it('marks loaded=true and loadSucceeded=false on query failure', async () => {
+    const store = makeStore();
+    mockSend.mockRejectedValueOnce(
+      Object.assign(new Error('boom'), { name: 'ResourceNotFoundException' })
+    );
+
+    const result = await store.load();
+
+    expect(result).toEqual([]);
+    expect(mockSend).toHaveBeenCalledTimes(1);
+    expect((store as any).loaded).toBe(true);
+    expect((store as any).loadSucceeded).toBe(false);
+    expect((store as any).loadFailureReason).toContain('ResourceNotFoundException');
+  });
+
+  it('does not re-query after a failed load (loaded=true short-circuits retry thrash)', async () => {
+    const store = makeStore();
+    mockSend.mockRejectedValueOnce(new Error('boom'));
+
+    await store.load();
+    await store.load();
+
+    expect(mockSend).toHaveBeenCalledTimes(1);
+  });
+
+  it('strips pk/sk fields from loaded items', async () => {
+    const store = makeStore();
+    const raw = { pk: 'REPO#a/b', sk: 'SKILL#abc', ...makeSkill({ id: 'abc' }) };
+    mockSend.mockResolvedValueOnce({ Items: [raw] });
+
+    await store.load();
+    const loaded = (store as any).skills as TriageSkill[];
+
+    expect(loaded).toHaveLength(1);
+    expect((loaded[0] as any).pk).toBeUndefined();
+    expect((loaded[0] as any).sk).toBeUndefined();
+    expect(loaded[0].id).toBe('abc');
+  });
+});
+
+describe('SkillStore.save', () => {
+  it('sends PutCommand and returns true on success', async () => {
+    const store = makeStore();
+    (store as any).loaded = true;
+    (store as any).loadSucceeded = true;
+    mockSend.mockResolvedValueOnce({});
+
+    const skill = makeSkill({ id: 'new-1' });
+    const result = await store.save(skill);
+
+    expect(result).toBe(true);
+    expect(mockSend).toHaveBeenCalledTimes(1);
+    expect(commandType(mockSend.mock.calls[0])).toBe('PutCommand');
+    const input = commandInput<{
+      TableName: string;
+      Item: Record<string, unknown>;
+    }>(mockSend.mock.calls[0]);
+    expect(input.TableName).toBe('test-table');
+    expect(input.Item.pk).toBe('REPO#adept-at/test');
+    expect(input.Item.sk).toBe('SKILL#new-1');
+    expect(input.Item.id).toBe('new-1');
+  });
+
+  it('returns false and rolls back in-memory on PutCommand failure', async () => {
+    const store = makeStore();
+    (store as any).loaded = true;
+    (store as any).loadSucceeded = true;
+    mockSend.mockRejectedValueOnce(new Error('put failed'));
+
+    const skill = makeSkill({ id: 'failing' });
+    const result = await store.save(skill);
+
+    expect(result).toBe(false);
+    expect(store.countForSpec(skill.spec)).toBe(0);
+  });
+
+  it('skips pruning when loadSucceeded=false even if cap is exceeded', async () => {
+    const store = makeStore();
+    (store as any).loaded = true;
+    (store as any).loadSucceeded = false;
+    (store as any).skills = Array.from({ length: 120 }, (_, i) =>
+      makeSkill({ id: `s-${i}`, spec: `s-${i}.ts` })
+    );
+    mockSend.mockResolvedValueOnce({});
+
+    const result = await store.save(makeSkill({ id: 'new' }));
+
+    expect(result).toBe(true);
+    expect(mockSend).toHaveBeenCalledTimes(1);
+    expect(commandType(mockSend.mock.calls[0])).toBe('PutCommand');
+  });
+
+  it('prunes oldest skills when over MAX_SKILLS after a successful load', async () => {
+    const store = makeStore();
+    (store as any).loaded = true;
+    (store as any).loadSucceeded = true;
+    const existing = Array.from({ length: 100 }, (_, i) =>
+      makeSkill({
+        id: `s-${i}`,
+        spec: `s-${i}.ts`,
+        createdAt: new Date(2026, 0, i + 1).toISOString(),
+      })
+    );
+    (store as any).skills = existing;
+
+    mockSend.mockResolvedValue({});
+
+    const newSkill = makeSkill({
+      id: 'newest',
+      createdAt: new Date(2026, 5, 1).toISOString(),
+    });
+    await store.save(newSkill);
+
+    const commandNames = mockSend.mock.calls.map(commandType);
+    expect(commandNames[0]).toBe('PutCommand');
+    const deletes = commandNames.filter((n) => n === 'DeleteCommand');
+    expect(deletes).toHaveLength(1);
+
+    const deleteInput = commandInput<{ Key: { sk: string } }>(
+      mockSend.mock.calls.find((c) => commandType(c) === 'DeleteCommand')!
+    );
+    expect(deleteInput.Key.sk).toBe('SKILL#s-0');
+  });
+
+  it('prunes multiple oldest skills when overflow is greater than 1', async () => {
+    const store = makeStore();
+    (store as any).loaded = true;
+    (store as any).loadSucceeded = true;
+    const existing = Array.from({ length: 102 }, (_, i) =>
+      makeSkill({
+        id: `s-${i}`,
+        spec: `s-${i}.ts`,
+        createdAt: new Date(2026, 0, i + 1).toISOString(),
+      })
+    );
+    (store as any).skills = existing;
+    mockSend.mockResolvedValue({});
+
+    const newSkill = makeSkill({
+      id: 'newest',
+      createdAt: new Date(2026, 5, 1).toISOString(),
+    });
+    await store.save(newSkill);
+
+    const deletedSks = mockSend.mock.calls
+      .filter((c) => commandType(c) === 'DeleteCommand')
+      .map((c) => commandInput<{ Key: { sk: string } }>(c).Key.sk);
+    // With 102 existing + 1 new = 103, we need to delete 3 to reach MAX_SKILLS (100).
+    expect(deletedSks).toHaveLength(3);
+    expect(deletedSks).toEqual(['SKILL#s-0', 'SKILL#s-1', 'SKILL#s-2']);
+  });
+
+  it('continues pruning when an individual DeleteCommand fails', async () => {
+    const store = makeStore();
+    (store as any).loaded = true;
+    (store as any).loadSucceeded = true;
+    const existing = Array.from({ length: 101 }, (_, i) =>
+      makeSkill({
+        id: `s-${i}`,
+        spec: `s-${i}.ts`,
+        createdAt: new Date(2026, 0, i + 1).toISOString(),
+      })
+    );
+    (store as any).skills = existing;
+
+    // PutCommand succeeds; first DeleteCommand rejects.
+    mockSend
+      .mockResolvedValueOnce({})
+      .mockRejectedValueOnce(new Error('conditional check failed'));
+
+    const newSkill = makeSkill({
+      id: 'newest',
+      createdAt: new Date(2026, 5, 1).toISOString(),
+    });
+    const result = await store.save(newSkill);
+
+    // save() itself should still return true; prune errors don't roll back.
+    expect(result).toBe(true);
+  });
+
+  it('never includes the just-saved skill in prune candidates', async () => {
+    const store = makeStore();
+    (store as any).loaded = true;
+    (store as any).loadSucceeded = true;
+    (store as any).skills = Array.from({ length: 100 }, (_, i) =>
+      makeSkill({
+        id: `old-${i}`,
+        spec: `s-${i}.ts`,
+        createdAt: new Date(2026, 0, i + 1).toISOString(),
+      })
+    );
+    mockSend.mockResolvedValue({});
+
+    const newest = makeSkill({
+      id: 'newest',
+      createdAt: new Date(2026, 5, 1).toISOString(),
+    });
+    await store.save(newest);
+
+    const deletedSks = mockSend.mock.calls
+      .filter((c) => commandType(c) === 'DeleteCommand')
+      .map((c) => commandInput<{ Key: { sk: string } }>(c).Key.sk);
+    expect(deletedSks).not.toContain('SKILL#newest');
+  });
+
+  it('protects the just-saved skill even when it is the oldest by createdAt', async () => {
+    // Defense-in-depth: exercises the keepSkillId filter in selectSkillsToPrune
+    // against a saved skill that pre-dates all cached skills (e.g. replay,
+    // clock skew, backfill).
+    const store = makeStore();
+    (store as any).loaded = true;
+    (store as any).loadSucceeded = true;
+    (store as any).skills = Array.from({ length: 100 }, (_, i) =>
+      makeSkill({
+        id: `recent-${i}`,
+        spec: `s-${i}.ts`,
+        createdAt: new Date(2026, 5, i + 1).toISOString(),
+      })
+    );
+    mockSend.mockResolvedValue({});
+
+    const ancient = makeSkill({
+      id: 'ancient',
+      createdAt: '2020-01-01T00:00:00.000Z',
+    });
+    await store.save(ancient);
+
+    const deletedSks = mockSend.mock.calls
+      .filter((c) => commandType(c) === 'DeleteCommand')
+      .map((c) => commandInput<{ Key: { sk: string } }>(c).Key.sk);
+    expect(deletedSks).toHaveLength(1);
+    expect(deletedSks).not.toContain('SKILL#ancient');
+  });
+});
+
+describe('SkillStore.recordOutcome', () => {
+  it('increments successCount via UpdateCommand on success', async () => {
+    const store = makeStore();
+    const skill = makeSkill({ id: 'rec-1', successCount: 0, failCount: 0 });
+    (store as any).loaded = true;
+    (store as any).skills = [skill];
+    mockSend.mockResolvedValueOnce({
+      Attributes: { ...skill, successCount: 1, lastUsedAt: 'now' },
+    });
+
+    await store.recordOutcome('rec-1', true);
+
+    expect(mockSend).toHaveBeenCalledTimes(1);
+    expect(commandType(mockSend.mock.calls[0])).toBe('UpdateCommand');
+    const input = commandInput<{ UpdateExpression: string }>(mockSend.mock.calls[0]);
+    expect(input.UpdateExpression).toContain('ADD successCount');
+    expect(skill.successCount).toBe(1);
+  });
+
+  it('increments failCount and retires when fail rate exceeds threshold', async () => {
+    const store = makeStore();
+    const skill = makeSkill({
+      id: 'rec-retire',
+      successCount: 1,
+      failCount: 2,
+    });
+    (store as any).loaded = true;
+    (store as any).skills = [skill];
+
+    mockSend
+      .mockResolvedValueOnce({
+        Attributes: { ...skill, successCount: 1, failCount: 3, lastUsedAt: 'now' },
+      })
+      .mockResolvedValueOnce({});
+
+    await store.recordOutcome('rec-retire', false);
+
+    expect(mockSend).toHaveBeenCalledTimes(2);
+    const firstUpdate = commandInput<{ UpdateExpression: string }>(mockSend.mock.calls[0]);
+    expect(firstUpdate.UpdateExpression).toContain('ADD failCount');
+    const secondUpdate = commandInput<{ UpdateExpression: string }>(mockSend.mock.calls[1]);
+    expect(secondUpdate.UpdateExpression).toContain('SET retired');
+    expect(skill.retired).toBe(true);
+  });
+
+  it('skips UpdateCommand when skill is not in the in-memory cache', async () => {
+    const store = makeStore();
+    (store as any).loaded = true;
+    (store as any).skills = [];
+
+    await store.recordOutcome('missing-id', true);
+
+    expect(mockSend).not.toHaveBeenCalled();
+  });
+
+  it('does not retire when failCount is below minimum', async () => {
+    const store = makeStore();
+    const skill = makeSkill({ id: 'low-fail', successCount: 0, failCount: 1 });
+    (store as any).loaded = true;
+    (store as any).skills = [skill];
+    mockSend.mockResolvedValueOnce({
+      Attributes: { ...skill, failCount: 2, lastUsedAt: 'now' },
+    });
+
+    await store.recordOutcome('low-fail', false);
+
+    expect(mockSend).toHaveBeenCalledTimes(1);
+    expect(skill.retired).toBe(false);
+  });
+
+  it('does not re-retire a skill that is already retired (idempotency guard)', async () => {
+    const store = makeStore();
+    const skill = makeSkill({
+      id: 'already-retired',
+      retired: true,
+      successCount: 1,
+      failCount: 5,
+    });
+    (store as any).loaded = true;
+    (store as any).skills = [skill];
+    mockSend.mockResolvedValueOnce({
+      Attributes: { ...skill, failCount: 6, lastUsedAt: 'now', retired: true },
+    });
+
+    await store.recordOutcome('already-retired', false);
+
+    // Only the counter-increment UpdateCommand — no second retire update.
+    expect(mockSend).toHaveBeenCalledTimes(1);
+  });
+
+  it('never rejects when the DynamoDB send call throws', async () => {
+    const store = makeStore();
+    const skill = makeSkill({ id: 'err-1' });
+    (store as any).loaded = true;
+    (store as any).skills = [skill];
+    mockSend.mockRejectedValueOnce(new Error('dynamo unavailable'));
+
+    await expect(store.recordOutcome('err-1', true)).resolves.toBeUndefined();
+  });
+});
+
+describe('SkillStore.recordClassificationOutcome', () => {
+  it('sends UpdateCommand with classificationOutcome and updates in-memory', async () => {
+    const store = makeStore();
+    const skill = makeSkill({ id: 'cls-1', classificationOutcome: 'unknown' });
+    (store as any).loaded = true;
+    (store as any).skills = [skill];
+    mockSend.mockResolvedValueOnce({});
+
+    await store.recordClassificationOutcome('cls-1', 'correct');
+
+    expect(mockSend).toHaveBeenCalledTimes(1);
+    expect(commandType(mockSend.mock.calls[0])).toBe('UpdateCommand');
+    const input = commandInput<{
+      UpdateExpression: string;
+      ExpressionAttributeValues: Record<string, string>;
+    }>(mockSend.mock.calls[0]);
+    expect(input.UpdateExpression).toBe('SET classificationOutcome = :co');
+    expect(input.ExpressionAttributeValues[':co']).toBe('correct');
+    expect(skill.classificationOutcome).toBe('correct');
+  });
+
+  it('skips UpdateCommand when skill is not in the in-memory cache', async () => {
+    const store = makeStore();
+    (store as any).loaded = true;
+    (store as any).skills = [];
+
+    await store.recordClassificationOutcome('missing', 'correct');
+
+    expect(mockSend).not.toHaveBeenCalled();
+  });
+
+  it('never rejects when the DynamoDB send call throws', async () => {
+    const store = makeStore();
+    const skill = makeSkill({ id: 'cls-err-1' });
+    (store as any).loaded = true;
+    (store as any).skills = [skill];
+    mockSend.mockRejectedValueOnce(new Error('dynamo unavailable'));
+
+    await expect(
+      store.recordClassificationOutcome('cls-err-1', 'correct')
+    ).resolves.toBeUndefined();
   });
 });

@@ -1,4 +1,3 @@
-import { Octokit } from '@octokit/rest';
 export interface TriageSkill {
     id: string;
     createdAt: string;
@@ -36,16 +35,19 @@ export interface FlakinessSignal {
 }
 export declare const MAX_SKILLS = 100;
 export declare class SkillStore {
-    protected skills: TriageSkill[];
-    protected loaded: boolean;
-    private fileSha;
-    private octokit;
-    protected owner: string;
-    protected repo: string;
-    constructor(octokit: Octokit, owner: string, repo: string);
-    protected hydrateLoadedSkills(skills: TriageSkill[]): TriageSkill[];
+    private skills;
+    private loaded;
+    private loadSucceeded;
+    private loadFailureReason?;
+    private region;
+    private tableName;
+    private owner;
+    private repo;
+    private _cachedClient;
+    constructor(region: string, tableName: string, owner: string, repo: string);
+    private getDocClient;
     load(): Promise<TriageSkill[]>;
-    save(skill: TriageSkill): Promise<void>;
+    save(skill: TriageSkill): Promise<boolean>;
     recordOutcome(skillId: string, success: boolean): Promise<void>;
     recordClassificationOutcome(skillId: string, outcome: 'correct' | 'incorrect'): Promise<void>;
     findRelevant(opts: {
@@ -71,8 +73,6 @@ export declare class SkillStore {
         spec?: string;
         errorMessage?: string;
     }): string;
-    private persist;
-    private ensureBranch;
 }
 export declare function normalizeFramework(raw?: string): TriageSkill['framework'];
 export declare function buildSkill(params: {

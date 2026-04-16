@@ -2,7 +2,6 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.truncateForSlack = truncateForSlack;
 exports.formatSummaryForSlack = formatSummaryForSlack;
-exports.createBriefSummary = createBriefSummary;
 function truncateForSlack(text, maxLength = 2900) {
     if (text.length <= maxLength) {
         return text;
@@ -27,19 +26,5 @@ function formatSummaryForSlack(summary, includeCodeBlocks = false) {
         summary = summary.replace(/```[\s\S]*?```/g, '[Code block removed for brevity]');
     }
     return truncateForSlack(summary);
-}
-function createBriefSummary(verdict, confidence, fullSummary, testName) {
-    let brief = `${verdict} (${confidence}% confidence)`;
-    if (testName) {
-        brief += ` for test "${testName}"`;
-    }
-    const lines = fullSummary.split('\n').filter(line => line.trim());
-    const firstMeaningfulLine = lines.find(line => !line.startsWith('#') &&
-        !line.startsWith('*') &&
-        line.length > 20);
-    if (firstMeaningfulLine) {
-        brief += `: ${firstMeaningfulLine}`;
-    }
-    return truncateForSlack(brief, 500);
 }
 //# sourceMappingURL=slack-formatter.js.map

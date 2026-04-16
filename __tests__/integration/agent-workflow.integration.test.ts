@@ -6,7 +6,6 @@
 import {
   AgentOrchestrator,
   createOrchestrator,
-  DEFAULT_ORCHESTRATOR_CONFIG,
 } from '../../src/agents/agent-orchestrator';
 import { createAgentContext, AgentContext } from '../../src/agents/base-agent';
 import { AnalysisOutput } from '../../src/agents/analysis-agent';

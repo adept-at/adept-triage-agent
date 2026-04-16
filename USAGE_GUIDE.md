@@ -22,7 +22,7 @@ Best-effort same-workflow analysis is still supported when you target the curren
 We recommend using the major version tag for automatic updates:
 
 - **`@v1`** - Automatically gets backward-compatible updates (recommended)
-- **`@v1.43.0`** - Pin to specific version for full reproducibility
+- **`@v1.44.0`** - Pin to specific version for full reproducibility
 
 ## Quick Start
 
@@ -488,11 +488,11 @@ Even if some data collection fails (e.g., screenshots unavailable), the agent wi
 ## How It Works
 
 1. **Data Collection**: Fetches workflow logs, screenshots, test artifacts, test-repo PR/branch/commit diff, and recent product-repo diff (default `adept-at/learn-webapp`) in parallel
-2. **Infrastructure Check**: Short-circuits to `INCONCLUSIVE` if a browser crash or session termination is detected (no LLM call)
-3. **AI Classification**: Sends structured error summary, logs, screenshots, and diffs to GPT-5.3 Codex via the Responses API to classify as `TEST_ISSUE`, `PRODUCT_ISSUE`, or `INCONCLUSIVE`
-4. **Confidence Gating**: If confidence is below `CONFIDENCE_THRESHOLD`, returns `INCONCLUSIVE` without attempting repair
-5. **Skill Memory Loading**: For `TEST_ISSUE` verdicts, loads historical fix patterns from DynamoDB (primary, via OIDC) or the Git `triage-data` branch (fallback) of the test repo and checks for flakiness signals
-6. **Fix Generation**: Uses either the multi-agent pipeline (Analysis → Code Reading → Investigation → Fix/Review loop with skill memory injected) or single-shot repair
+2. **Skill Memory Loading**: When `AUTO_FIX_TARGET_REPO` resolves (defaults to the current repo), loads historical fix patterns from DynamoDB and checks for flakiness signals. This happens *before* classification so skill context can feed the classifier prompt as well as repair agents
+3. **Infrastructure Check**: Short-circuits to `INCONCLUSIVE` if a browser crash or session termination is detected (no LLM call)
+4. **AI Classification**: Sends structured error summary, logs, screenshots, diffs, and any injected skill + flakiness context to GPT-5.3 Codex via the Responses API to classify as `TEST_ISSUE`, `PRODUCT_ISSUE`, or `INCONCLUSIVE`
+5. **Confidence Gating**: If confidence is below `CONFIDENCE_THRESHOLD`, returns `INCONCLUSIVE` without attempting repair
+6. **Fix Generation**: For `TEST_ISSUE` verdicts, uses either the multi-agent pipeline (Analysis → Code Reading → Investigation → Fix/Review loop with skill memory injected) or single-shot repair
 7. **Fix Application**: Depending on configuration, applies the fix via the local validation loop (clone → apply → test → push/PR) or via the GitHub API (legacy path). All fix attempts (both validated successes and failed trajectories) are saved as skills for future runs.
 
 ### Structured Error Summary (v1.5.0+)
@@ -509,7 +509,7 @@ This pre-analysis helps GPT-5.3 Codex make more accurate determinations between 
 
 ### Skill Memory and Flakiness Detection
 
-When `AUTO_FIX_TARGET_REPO` is set, the agent loads historical fix patterns from a DynamoDB skill store (primary, using OIDC credentials) or falls back to the Git `triage-data` branch when AWS credentials are unavailable. These "skills" are injected into agent prompts so the multi-agent pipeline can reuse proven patterns rather than re-deriving fixes from scratch. Skills are loaded for all `TEST_ISSUE` verdicts regardless of whether auto-fix is enabled.
+When `AUTO_FIX_TARGET_REPO` resolves (defaults to the current repo), the agent loads historical fix patterns from a DynamoDB skill store using AWS credentials supplied to the action (e.g. via OIDC). These "skills" are injected into the classifier prompt and every repair agent so the multi-agent pipeline can reuse proven patterns rather than re-deriving fixes from scratch. If the DynamoDB load fails, the run continues with an empty in-memory cache and skips the pruning step to avoid deleting unknown entries.
 
 Skills are saved for all fix attempts — both validated successes and failed trajectories. This allows the pipeline to learn from every attempt, not just successful ones.
 

@@ -148,17 +148,8 @@ class PipelineCoordinator {
             : null;
         let skillStore;
         if (autoFixTargetRepo) {
-            if (process.env.AWS_ACCESS_KEY_ID) {
-                const { DynamoSkillStore } = await import('../services/dynamo-skill-store.js');
-                skillStore = new DynamoSkillStore(this.inputs.triageAwsRegion || 'us-east-1', this.inputs.triageDynamoTable || 'triage-skills-v1-live', autoFixTargetRepo.owner, autoFixTargetRepo.repo);
-            }
-            else {
-                core.warning('No AWS credentials in environment — falling back to Git skill store. Ensure OIDC role is configured.');
-                skillStore = new skill_store_1.SkillStore(this.octokit, autoFixTargetRepo.owner, autoFixTargetRepo.repo);
-            }
-            await skillStore.load().catch((err) => {
-                core.warning(`Skill store load failed (non-fatal): ${err}`);
-            });
+            skillStore = new skill_store_1.SkillStore(this.inputs.triageAwsRegion || 'us-east-1', this.inputs.triageDynamoTable || 'triage-skills-v1-live', autoFixTargetRepo.owner, autoFixTargetRepo.repo);
+            await skillStore.load();
         }
         const classification = await this.classify(errorData, skillStore);
         if (classification.confidence < this.inputs.confidenceThreshold)
@@ -194,17 +185,20 @@ class PipelineCoordinator {
                     investigationFindings: currentFindings,
                     rootCauseChain: `${rootCause} → ${fixRecommendation.summary?.slice(0, 80)}`,
                 });
-                await skillStore.save(skill).catch((err) => {
+                const saveSucceeded = await skillStore.save(skill).catch((err) => {
                     core.warning(`Failed to save skill: ${err}`);
+                    return false;
                 });
-                if (fixSucceeded) {
-                    await skillStore.recordOutcome(skill.id, true).catch(() => { });
-                    await skillStore.recordClassificationOutcome(skill.id, 'correct').catch(() => { });
-                    core.info(`📝 Saved validated skill ${skill.id}`);
-                }
-                else {
-                    await skillStore.recordOutcome(skill.id, false).catch(() => { });
-                    core.info(`📝 Saved failed skill trajectory ${skill.id}`);
+                if (saveSucceeded) {
+                    if (fixSucceeded) {
+                        await skillStore.recordOutcome(skill.id, true);
+                        await skillStore.recordClassificationOutcome(skill.id, 'correct');
+                        core.info(`📝 Saved validated skill ${skill.id}`);
+                    }
+                    else {
+                        await skillStore.recordOutcome(skill.id, false);
+                        core.info(`📝 Saved failed skill trajectory ${skill.id}`);
+                    }
                 }
             }
         }

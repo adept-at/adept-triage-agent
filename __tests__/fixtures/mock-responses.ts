@@ -14,13 +14,6 @@ export const ANALYSIS_TEST_ISSUE: OpenAIResponse = {
   suggestedSourceLocations: [],
 };
 
-/** Response from OpenAIClient.analyze() for PRODUCT_ISSUE (optional, for negative tests) */
-export const ANALYSIS_PRODUCT_ISSUE: OpenAIResponse = {
-  verdict: 'PRODUCT_ISSUE',
-  reasoning: 'Application bug.',
-  indicators: [],
-};
-
 /**
  * Parsed shape from generateWithCustomPrompt (single-shot repair) for Cypress.
  * Must produce proposedChanges with cy.get / cy.contains style.

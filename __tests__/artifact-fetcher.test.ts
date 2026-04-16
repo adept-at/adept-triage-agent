@@ -1,7 +1,6 @@
 import { ArtifactFetcher } from '../src/artifact-fetcher';
 import { Octokit } from '@octokit/rest';
 import * as core from '@actions/core';
-import * as github from '@actions/github';
 import AdmZip from 'adm-zip';
 
 // Mock dependencies

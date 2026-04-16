@@ -55,33 +55,3 @@ export function formatSummaryForSlack(summary: string, includeCodeBlocks: boolea
   return truncateForSlack(summary);
 }
 
-/**
- * Creates a brief summary suitable for Slack from a longer summary
- * Prioritizes key information over details
- */
-export function createBriefSummary(
-  verdict: string,
-  confidence: number,
-  fullSummary: string,
-  testName?: string
-): string {
-  let brief = `${verdict} (${confidence}% confidence)`;
-  
-  if (testName) {
-    brief += ` for test "${testName}"`;
-  }
-  
-  // Extract the first meaningful line from the summary
-  const lines = fullSummary.split('\n').filter(line => line.trim());
-  const firstMeaningfulLine = lines.find(line => 
-    !line.startsWith('#') && 
-    !line.startsWith('*') &&
-    line.length > 20
-  );
-  
-  if (firstMeaningfulLine) {
-    brief += `: ${firstMeaningfulLine}`;
-  }
-  
-  return truncateForSlack(brief, 500); // Keep brief summaries under 500 chars
-}

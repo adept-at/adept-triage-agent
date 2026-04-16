@@ -18,7 +18,7 @@ AI-powered GitHub Action that automatically triages test failures to determine i
 - 📊 **Confidence Scoring**: Provides confidence levels for each verdict
 - 🔄 **Flexible Integration**: Works with various CI/CD workflows
 - 📝 **Change Diff Analysis**: Analyzes test-repo PR, branch, or commit diffs when provided, and recent commits in the default product repo (`adept-at/learn-webapp`) for classification
-- 🧠 **Skill Memory**: Remembers fix patterns in a DynamoDB-backed store (with Git `triage-data` branch fallback) and reuses them on future failures for faster, more accurate repairs
+- 🧠 **Skill Memory**: Remembers fix patterns in a DynamoDB-backed store and reuses them on future failures for faster, more accurate repairs
 - ⚠️ **Flakiness Detection**: Flags specs that have been auto-fixed repeatedly (>1 fix in 3 days, or >2 in 7 days) as chronically flaky
 
 ### Auto-Fix Feature
@@ -82,7 +82,7 @@ The Analysis, Investigation, Fix Generation, and Review agents share one OpenAI 
 
 #### Skill Memory
 
-When a fix is attempted, the agent saves the fix pattern to a DynamoDB skill store (with OIDC credentials; falls back to the Git `triage-data` branch when AWS credentials are unavailable). Both validated successes and failed trajectories are saved so the pipeline can learn from all attempts. On future runs, these skills are loaded and injected into agent prompts so the pipeline can reuse proven patterns. Skills are loaded for all `TEST_ISSUE` verdicts regardless of whether auto-fix is enabled.
+When a fix is attempted, the agent saves the fix pattern to a DynamoDB skill store (using AWS credentials supplied to the action, e.g. via OIDC). Both validated successes and failed trajectories are saved so the pipeline can learn from all attempts. On future runs, these skills are loaded and injected into agent prompts so the pipeline can reuse proven patterns. Skills are loaded whenever `AUTO_FIX_TARGET_REPO` resolves (defaults to the current repo), so they can inform classification as well as repair. If the DynamoDB load fails, the run continues with an empty in-memory cache and skips pruning for that run to avoid deleting unknown entries.
 
 #### Fix Validation (Optional)
 
@@ -383,11 +383,11 @@ This approach triggers automatically when the specified workflow completes with 
 ## How It Works
 
 1. **Data Collection**: Fetches workflow logs, screenshots, test artifacts, test-repo PR/branch/commit diff, and recent product-repo diff in parallel
-2. **Infrastructure Check**: Short-circuits to `INCONCLUSIVE` if a browser crash or session termination is detected (no LLM call)
-3. **AI Classification**: Sends structured error summary, logs, screenshots, and diffs to GPT-5.3 Codex via the Responses API to classify as `TEST_ISSUE`, `PRODUCT_ISSUE`, or `INCONCLUSIVE`
-4. **Confidence Gating**: If confidence is below `CONFIDENCE_THRESHOLD`, returns `INCONCLUSIVE` without attempting repair
-5. **Skill Memory Loading**: For `TEST_ISSUE` verdicts, loads historical fix patterns from DynamoDB (primary, via OIDC) or the Git `triage-data` branch (fallback) of the test repo (if `AUTO_FIX_TARGET_REPO` is set) and checks for flakiness signals
-6. **Fix Generation**: Uses either the multi-agent pipeline (Analysis → Code Reading → Investigation → Fix/Review loop) or single-shot repair, with skill memory injected into prompts
+2. **Skill Memory Loading**: When `AUTO_FIX_TARGET_REPO` resolves (defaults to the current repo), loads historical fix patterns from DynamoDB and checks for flakiness signals. This happens *before* classification so skill context can inform both the verdict and the repair
+3. **Infrastructure Check**: Short-circuits to `INCONCLUSIVE` if a browser crash or session termination is detected (no LLM call)
+4. **AI Classification**: Sends structured error summary, logs, screenshots, diffs, and any injected skill + flakiness context to GPT-5.3 Codex via the Responses API to classify as `TEST_ISSUE`, `PRODUCT_ISSUE`, or `INCONCLUSIVE`
+5. **Confidence Gating**: If confidence is below `CONFIDENCE_THRESHOLD`, returns `INCONCLUSIVE` without attempting repair
+6. **Fix Generation**: For `TEST_ISSUE` verdicts, uses either the multi-agent pipeline (Analysis → Code Reading → Investigation → Fix/Review loop) or single-shot repair, with skill memory injected into investigation and repair agent prompts
 7. **Fix Application**: Depending on configuration, applies the fix via the local validation loop (clone → apply → test → push/PR) or via the GitHub API (legacy path)
 
 ## Example Classifications
@@ -441,7 +441,7 @@ npm run build
 We follow semantic versioning and provide multiple ways to reference this action:
 
 - **`@v1`** - Recommended for production. Automatically updates to the latest v1.x.x release
-- **`@v1.43.0`** - Pin to a specific version for full reproducibility
+- **`@v1.44.0`** - Pin to a specific version for full reproducibility
 - **`@main`** - Latest development version (use with caution)
 
 Example:
@@ -451,7 +451,7 @@ Example:
 uses: adept-at/adept-triage-agent@v1
 
 # Specific version - no automatic updates
-uses: adept-at/adept-triage-agent@v1.43.0
+uses: adept-at/adept-triage-agent@v1.44.0
 ```
 
 ## Development

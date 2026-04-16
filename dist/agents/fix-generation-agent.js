@@ -1,9 +1,9 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.FixGenerationAgent = exports.WDIO_PATTERNS = exports.CYPRESS_PATTERNS = exports.COMMON_PREAMBLE = void 0;
+exports.FixGenerationAgent = exports.WDIO_PATTERNS = exports.CYPRESS_PATTERNS = void 0;
 const base_agent_1 = require("./base-agent");
 const constants_1 = require("../config/constants");
-exports.COMMON_PREAMBLE = `You are an expert test engineer who specializes in fixing failing E2E tests.
+const COMMON_PREAMBLE = `You are an expert test engineer who specializes in fixing failing E2E tests.
 
 ## Your Task
 
@@ -247,11 +247,11 @@ class FixGenerationAgent extends base_agent_1.BaseAgent {
     getSystemPrompt(framework) {
         switch (framework) {
             case 'cypress':
-                return exports.COMMON_PREAMBLE + exports.CYPRESS_PATTERNS + COMMON_SUFFIX;
+                return COMMON_PREAMBLE + exports.CYPRESS_PATTERNS + COMMON_SUFFIX;
             case 'webdriverio':
-                return exports.COMMON_PREAMBLE + exports.WDIO_PATTERNS + COMMON_SUFFIX;
+                return COMMON_PREAMBLE + exports.WDIO_PATTERNS + COMMON_SUFFIX;
             default:
-                return exports.COMMON_PREAMBLE + exports.CYPRESS_PATTERNS + exports.WDIO_PATTERNS + COMMON_SUFFIX;
+                return COMMON_PREAMBLE + exports.CYPRESS_PATTERNS + exports.WDIO_PATTERNS + COMMON_SUFFIX;
         }
     }
     buildUserPrompt(input, context) {

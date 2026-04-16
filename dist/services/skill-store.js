@@ -41,8 +41,6 @@ exports.normalizeError = normalizeError;
 exports.formatSkillsForPrompt = formatSkillsForPrompt;
 const core = __importStar(require("@actions/core"));
 const crypto = __importStar(require("crypto"));
-const SKILLS_BRANCH = 'triage-data';
-const SKILLS_FILE = 'skills.json';
 exports.MAX_SKILLS = 100;
 const FLAKY_THRESHOLDS = {
     SHORT_WINDOW_DAYS: 3,
@@ -50,6 +48,8 @@ const FLAKY_THRESHOLDS = {
     LONG_WINDOW_DAYS: 7,
     LONG_WINDOW_MAX: 2,
 };
+const RETIRE_FAIL_RATE = 0.4;
+const RETIRE_MIN_FAILURES = 3;
 function sanitizeForPrompt(input, maxLength = 2000) {
     if (!input)
         return '';
@@ -92,219 +92,204 @@ function compareSkillRecency(a, b) {
         return createdDiff;
     return a.id.localeCompare(b.id);
 }
-function hydrateLoadedSkills(skills) {
-    return skills.map(backfillDefaults);
+function compareOldestFirst(a, b) {
+    const createdDiff = parseSkillTimestamp(a.createdAt) - parseSkillTimestamp(b.createdAt);
+    if (createdDiff !== 0)
+        return createdDiff;
+    return a.id.localeCompare(b.id);
+}
+function selectSkillsToPrune(skills, keepSkillId) {
+    if (skills.length <= exports.MAX_SKILLS)
+        return [];
+    const overflowCount = skills.length - exports.MAX_SKILLS;
+    return [...skills]
+        .filter((skill) => skill.id !== keepSkillId)
+        .sort(compareOldestFirst)
+        .slice(0, overflowCount);
 }
 class SkillStore {
     skills = [];
     loaded = false;
-    fileSha;
-    octokit;
+    loadSucceeded = false;
+    loadFailureReason;
+    region;
+    tableName;
     owner;
     repo;
-    constructor(octokit, owner, repo) {
-        this.octokit = octokit;
+    _cachedClient;
+    constructor(region, tableName, owner, repo) {
+        this.region = region;
+        this.tableName = tableName;
         this.owner = owner;
         this.repo = repo;
     }
-    hydrateLoadedSkills(skills) {
-        return hydrateLoadedSkills(skills);
+    async getDocClient() {
+        if (this._cachedClient)
+            return this._cachedClient;
+        const { DynamoDBClient } = await import('@aws-sdk/client-dynamodb');
+        const { DynamoDBDocumentClient } = await import('@aws-sdk/lib-dynamodb');
+        const raw = new DynamoDBClient({ region: this.region });
+        this._cachedClient = DynamoDBDocumentClient.from(raw, {
+            marshallOptions: { removeUndefinedValues: true },
+        });
+        return this._cachedClient;
     }
     async load() {
         if (this.loaded)
             return this.skills;
         try {
-            const { data } = await this.octokit.repos.getContent({
-                owner: this.owner,
-                repo: this.repo,
-                path: SKILLS_FILE,
-                ref: SKILLS_BRANCH,
-            });
-            if ('content' in data && data.content) {
-                const raw = Buffer.from(data.content, 'base64').toString('utf-8');
-                this.skills = this.hydrateLoadedSkills(JSON.parse(raw));
-                this.fileSha = data.sha;
-                core.info(`📝 Loaded ${this.skills.length} skill(s) from ${this.owner}/${this.repo}@${SKILLS_BRANCH}`);
-            }
+            const { QueryCommand } = await import('@aws-sdk/lib-dynamodb');
+            const client = await this.getDocClient();
+            const pk = `REPO#${this.owner}/${this.repo}`;
+            const allItems = [];
+            let lastKey;
+            do {
+                const result = await client.send(new QueryCommand({
+                    TableName: this.tableName,
+                    KeyConditionExpression: 'pk = :pk AND begins_with(sk, :prefix)',
+                    ExpressionAttributeValues: { ':pk': pk, ':prefix': 'SKILL#' },
+                    ExclusiveStartKey: lastKey,
+                }));
+                allItems.push(...(result.Items ?? []));
+                lastKey = result.LastEvaluatedKey;
+            } while (lastKey);
+            this.skills = allItems
+                .map(({ pk: _pk, sk: _sk, ...rest }) => rest)
+                .map(backfillDefaults);
             this.loaded = true;
+            this.loadSucceeded = true;
+            core.info(`📝 Loaded ${this.skills.length} skill(s) from DynamoDB (${this.tableName}) for ${this.owner}/${this.repo}`);
         }
         catch (err) {
-            const status = err.status;
-            if (status === 404) {
-                this.loaded = true;
-                core.info(`📝 No existing skills found for ${this.owner}/${this.repo} — starting fresh`);
-            }
-            else {
-                core.warning(`Failed to load skills (will retry on next call): ${err}`);
-            }
+            this.loadFailureReason = err instanceof Error ? `${err.name}: ${err.message}` : String(err);
+            core.warning(`DynamoDB skill load failed for ${this.owner}/${this.repo} in ${this.tableName}: ${err}`);
+            core.warning('Continuing with an empty in-memory skill cache for this run to avoid retry loops and preserve any new skills saved later in the run.');
+            this.loaded = true;
         }
         return this.skills;
     }
     async save(skill) {
-        if (!this.loaded) {
+        if (!this.loaded)
             await this.load();
-        }
         this.skills.push(skill);
-        if (this.skills.length > exports.MAX_SKILLS) {
-            this.skills = this.skills.slice(-exports.MAX_SKILLS);
-        }
-        const commitMsg = `chore: update triage skills (${skill.spec})`;
-        const preSaveSnapshot = [...this.skills];
+        const { DeleteCommand, PutCommand } = await import('@aws-sdk/lib-dynamodb');
+        const client = await this.getDocClient();
+        const pk = `REPO#${this.owner}/${this.repo}`;
+        const sk = `SKILL#${skill.id}`;
         try {
-            await this.persist(commitMsg);
-            core.info(`📝 Saved skill ${skill.id} (${this.skills.length} total for ${this.owner}/${this.repo})`);
+            await client.send(new PutCommand({
+                TableName: this.tableName,
+                Item: { pk, sk, ...skill },
+            }));
         }
         catch (err) {
-            const status = err.status;
-            if (status === 409) {
+            this.skills = this.skills.filter((s) => s.id !== skill.id);
+            core.warning(`DynamoDB skill save failed for ${this.tableName}: ${err}`);
+            return false;
+        }
+        if (!this.loadSucceeded) {
+            const reason = this.loadFailureReason
+                ? ` (load failed: ${this.loadFailureReason})`
+                : '';
+            core.info(`📝 Saved skill ${skill.id} to DynamoDB (${this.tableName}); skipping prune because load was degraded${reason}`);
+            return true;
+        }
+        const pruneCandidates = selectSkillsToPrune(this.skills, skill.id);
+        if (pruneCandidates.length > 0) {
+            const deletedSkillIds = new Set();
+            for (const candidate of pruneCandidates) {
                 try {
-                    const { data } = await this.octokit.repos.getContent({
-                        owner: this.owner,
-                        repo: this.repo,
-                        path: SKILLS_FILE,
-                        ref: SKILLS_BRANCH,
-                    });
-                    if (!('content' in data) || !data.content) {
-                        throw new Error('Unexpected empty skills file');
-                    }
-                    const raw = Buffer.from(data.content, 'base64').toString('utf-8');
-                    const remoteSkills = this.hydrateLoadedSkills(JSON.parse(raw));
-                    this.skills = [...remoteSkills, skill];
-                    if (this.skills.length > exports.MAX_SKILLS) {
-                        this.skills = this.skills.slice(-exports.MAX_SKILLS);
-                    }
-                    this.fileSha = data.sha;
-                    await this.persist(commitMsg);
-                    core.info(`📝 Saved skill ${skill.id} (${this.skills.length} total for ${this.owner}/${this.repo})`);
+                    await client.send(new DeleteCommand({
+                        TableName: this.tableName,
+                        Key: { pk, sk: `SKILL#${candidate.id}` },
+                        ConditionExpression: 'attribute_exists(pk) AND attribute_exists(sk)',
+                    }));
+                    deletedSkillIds.add(candidate.id);
                 }
-                catch (retryErr) {
-                    this.skills = preSaveSnapshot.filter((s) => s.id !== skill.id);
-                    core.warning(`Failed to save skill: ${retryErr}`);
+                catch (deleteErr) {
+                    core.warning(`Failed to prune DynamoDB skill ${candidate.id}: ${deleteErr}`);
                 }
             }
-            else {
-                this.skills = preSaveSnapshot.filter((s) => s.id !== skill.id);
-                core.warning(`Failed to save skill: ${err}`);
+            if (deletedSkillIds.size > 0) {
+                this.skills = this.skills.filter((entry) => !deletedSkillIds.has(entry.id));
+                core.info(`🧹 Pruned ${deletedSkillIds.size} old skill(s) from DynamoDB to maintain the ${exports.MAX_SKILLS}-skill cap`);
             }
         }
+        core.info(`📝 Saved skill ${skill.id} to DynamoDB (${this.skills.length} total)`);
+        return true;
     }
     async recordOutcome(skillId, success) {
-        if (!this.loaded) {
+        if (!this.loaded)
             await this.load();
-        }
-        const skill = this.skills.find(s => s.id === skillId);
+        const skill = this.skills.find((s) => s.id === skillId);
         if (!skill) {
-            core.warning(`Skill ${skillId} not found — cannot record outcome`);
+            core.warning(`Skill ${skillId} not found in DynamoDB in-memory cache for ${this.owner}/${this.repo} — skipping outcome write`);
             return;
         }
-        if (success) {
-            skill.successCount++;
-        }
-        else {
-            skill.failCount++;
-        }
-        skill.lastUsedAt = new Date().toISOString();
-        const totalAttempts = (skill.successCount || 0) + (skill.failCount || 0);
-        const failRate = totalAttempts > 0 ? (skill.failCount || 0) / totalAttempts : 0;
-        if (failRate > 0.4 && (skill.failCount || 0) >= 3) {
-            skill.retired = true;
-            core.warning(`⚠️ Skill ${skillId} retired — ${Math.round(failRate * 100)}% failure rate (${skill.failCount} failures in ${totalAttempts} attempts)`);
-        }
-        const commitMsg = `chore: record ${success ? 'success' : 'failure'} for skill ${skillId}`;
+        const now = new Date().toISOString();
         try {
-            await this.persist(commitMsg);
+            const { UpdateCommand } = await import('@aws-sdk/lib-dynamodb');
+            const client = await this.getDocClient();
+            const counterField = success ? 'successCount' : 'failCount';
+            const result = await client.send(new UpdateCommand({
+                TableName: this.tableName,
+                Key: { pk: `REPO#${this.owner}/${this.repo}`, sk: `SKILL#${skillId}` },
+                UpdateExpression: `ADD ${counterField} :inc SET lastUsedAt = :lu`,
+                ConditionExpression: 'attribute_exists(pk) AND attribute_exists(sk)',
+                ExpressionAttributeValues: {
+                    ':inc': 1,
+                    ':lu': now,
+                },
+                ReturnValues: 'ALL_NEW',
+            }));
+            const attributes = result.Attributes;
+            skill.successCount = attributes?.successCount ?? skill.successCount ?? 0;
+            skill.failCount = attributes?.failCount ?? skill.failCount ?? 0;
+            skill.lastUsedAt = attributes?.lastUsedAt ?? now;
+            skill.retired = attributes?.retired ?? skill.retired ?? false;
+            const totalAttempts = (skill.successCount || 0) + (skill.failCount || 0);
+            const failRate = totalAttempts > 0 ? (skill.failCount || 0) / totalAttempts : 0;
+            const shouldRetire = failRate > RETIRE_FAIL_RATE && (skill.failCount || 0) >= RETIRE_MIN_FAILURES;
+            if (shouldRetire && !skill.retired) {
+                await client.send(new UpdateCommand({
+                    TableName: this.tableName,
+                    Key: { pk: `REPO#${this.owner}/${this.repo}`, sk: `SKILL#${skillId}` },
+                    UpdateExpression: 'SET retired = :r',
+                    ConditionExpression: 'attribute_exists(pk) AND attribute_exists(sk)',
+                    ExpressionAttributeValues: {
+                        ':r': true,
+                    },
+                }));
+                skill.retired = true;
+                core.warning(`⚠️ Skill ${skillId} retired — ${Math.round(failRate * 100)}% failure rate`);
+            }
         }
         catch (err) {
-            const status = err.status;
-            if (status === 409) {
-                try {
-                    const { data } = await this.octokit.repos.getContent({
-                        owner: this.owner,
-                        repo: this.repo,
-                        path: SKILLS_FILE,
-                        ref: SKILLS_BRANCH,
-                    });
-                    if (!('content' in data) || !data.content) {
-                        throw new Error('Unexpected empty skills file');
-                    }
-                    const raw = Buffer.from(data.content, 'base64').toString('utf-8');
-                    const remoteSkills = this.hydrateLoadedSkills(JSON.parse(raw));
-                    const remoteSkill = remoteSkills.find(s => s.id === skillId);
-                    if (!remoteSkill) {
-                        core.warning(`Skill ${skillId} not found in remote data — skipping outcome persist`);
-                        return;
-                    }
-                    if (success) {
-                        remoteSkill.successCount++;
-                    }
-                    else {
-                        remoteSkill.failCount++;
-                    }
-                    remoteSkill.lastUsedAt = skill.lastUsedAt;
-                    const remoteTotalAttempts = (remoteSkill.successCount || 0) + (remoteSkill.failCount || 0);
-                    const remoteFailRate = remoteTotalAttempts > 0 ? (remoteSkill.failCount || 0) / remoteTotalAttempts : 0;
-                    if (remoteFailRate > 0.4 && (remoteSkill.failCount || 0) >= 3) {
-                        remoteSkill.retired = true;
-                    }
-                    this.skills = remoteSkills;
-                    this.fileSha = data.sha;
-                    await this.persist(commitMsg);
-                }
-                catch (retryErr) {
-                    core.warning(`Failed to persist skill outcome: ${retryErr}`);
-                }
-            }
-            else {
-                core.warning(`Failed to persist skill outcome: ${err}`);
-            }
+            core.warning(`DynamoDB recordOutcome failed: ${err}`);
         }
     }
     async recordClassificationOutcome(skillId, outcome) {
-        if (!this.loaded) {
+        if (!this.loaded)
             await this.load();
-        }
-        const skill = this.skills.find(s => s.id === skillId);
+        const skill = this.skills.find((s) => s.id === skillId);
         if (!skill) {
-            core.warning(`Skill ${skillId} not found — cannot record classification outcome`);
+            core.warning(`Skill ${skillId} not found in DynamoDB in-memory cache for ${this.owner}/${this.repo} — skipping classification outcome write`);
             return;
         }
-        skill.classificationOutcome = outcome;
-        const commitMsg = `chore: record classification ${outcome} for skill ${skillId}`;
         try {
-            await this.persist(commitMsg);
+            const { UpdateCommand } = await import('@aws-sdk/lib-dynamodb');
+            const client = await this.getDocClient();
+            await client.send(new UpdateCommand({
+                TableName: this.tableName,
+                Key: { pk: `REPO#${this.owner}/${this.repo}`, sk: `SKILL#${skillId}` },
+                UpdateExpression: 'SET classificationOutcome = :co',
+                ConditionExpression: 'attribute_exists(pk) AND attribute_exists(sk)',
+                ExpressionAttributeValues: { ':co': outcome },
+            }));
+            skill.classificationOutcome = outcome;
         }
         catch (err) {
-            const status = err.status;
-            if (status === 409) {
-                try {
-                    const { data } = await this.octokit.repos.getContent({
-                        owner: this.owner,
-                        repo: this.repo,
-                        path: SKILLS_FILE,
-                        ref: SKILLS_BRANCH,
-                    });
-                    if (!('content' in data) || !data.content) {
-                        throw new Error('Unexpected empty skills file');
-                    }
-                    const raw = Buffer.from(data.content, 'base64').toString('utf-8');
-                    const remoteSkills = this.hydrateLoadedSkills(JSON.parse(raw));
-                    const remoteSkill = remoteSkills.find(s => s.id === skillId);
-                    if (!remoteSkill) {
-                        core.warning(`Skill ${skillId} not found in remote data — skipping classification persist`);
-                        return;
-                    }
-                    remoteSkill.classificationOutcome = outcome;
-                    this.skills = remoteSkills;
-                    this.fileSha = data.sha;
-                    await this.persist(commitMsg);
-                }
-                catch (retryErr) {
-                    core.warning(`Failed to persist classification outcome: ${retryErr}`);
-                }
-            }
-            else {
-                core.warning(`Failed to persist classification outcome: ${err}`);
-            }
+            core.warning(`DynamoDB recordClassificationOutcome failed: ${err}`);
         }
     }
     findRelevant(opts) {
@@ -432,49 +417,6 @@ class SkillStore {
             return entry;
         })
             .join('\n');
-    }
-    async persist(commitMessage) {
-        await this.ensureBranch();
-        const content = Buffer.from(JSON.stringify(this.skills, null, 2)).toString('base64');
-        const { data } = await this.octokit.repos.createOrUpdateFileContents({
-            owner: this.owner,
-            repo: this.repo,
-            path: SKILLS_FILE,
-            message: commitMessage,
-            content,
-            branch: SKILLS_BRANCH,
-            ...(this.fileSha ? { sha: this.fileSha } : {}),
-        });
-        this.fileSha = data.content?.sha;
-    }
-    async ensureBranch() {
-        try {
-            await this.octokit.repos.getBranch({
-                owner: this.owner,
-                repo: this.repo,
-                branch: SKILLS_BRANCH,
-            });
-        }
-        catch (err) {
-            if (err.status !== 404)
-                throw err;
-            const { data: defaultBranch } = await this.octokit.repos.get({
-                owner: this.owner,
-                repo: this.repo,
-            });
-            const { data: ref } = await this.octokit.git.getRef({
-                owner: this.owner,
-                repo: this.repo,
-                ref: `heads/${defaultBranch.default_branch}`,
-            });
-            await this.octokit.git.createRef({
-                owner: this.owner,
-                repo: this.repo,
-                ref: `refs/heads/${SKILLS_BRANCH}`,
-                sha: ref.object.sha,
-            });
-            core.info(`📝 Created ${SKILLS_BRANCH} branch in ${this.owner}/${this.repo}`);
-        }
     }
 }
 exports.SkillStore = SkillStore;

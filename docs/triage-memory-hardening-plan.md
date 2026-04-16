@@ -2,6 +2,7 @@
 
 > **Status:** Phases 1–3 shipped in v1.43.0. Phase 4 (lifecycle/retention) is future work.  
 > **Scope:** Triage pipeline, skill-memory quality, DynamoDB safety, rollout sequencing  
+> **Update (v1.44.0):** The Git `triage-data` branch fallback has been removed. `SkillStore` is now a single unified class with DynamoDB as the sole backend. Any "Git fallback" or "409 retry" language in the sections below is historical context.  
 > **Related docs:** `docs/dynamo-skill-store-implementation-plan.md`, `docs/ARCHITECTURE.md`, `docs/agent-workflow-flowchart.md`
 
 ---

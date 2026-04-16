@@ -1,6 +1,5 @@
 import * as core from '@actions/core';
 import * as crypto from 'crypto';
-import { Octokit } from '@octokit/rest';
 
 /**
  * A recorded fix pattern that the agent can recall on future runs.
@@ -48,9 +47,6 @@ export interface FlakinessSignal {
   message: string;
 }
 
-const SKILLS_BRANCH = 'triage-data';
-const SKILLS_FILE = 'skills.json';
-
 export const MAX_SKILLS = 100;
 
 const FLAKY_THRESHOLDS = {
@@ -59,6 +55,9 @@ const FLAKY_THRESHOLDS = {
   LONG_WINDOW_DAYS: 7,
   LONG_WINDOW_MAX: 2,
 } as const;
+
+const RETIRE_FAIL_RATE = 0.4;
+const RETIRE_MIN_FAILURES = 3;
 
 /**
  * Strip patterns that could be interpreted as prompt injection when
@@ -110,241 +109,315 @@ function compareSkillRecency(a: TriageSkill, b: TriageSkill): number {
   return a.id.localeCompare(b.id);
 }
 
-function hydrateLoadedSkills(skills: TriageSkill[]): TriageSkill[] {
-  return skills.map(backfillDefaults);
+function compareOldestFirst(a: TriageSkill, b: TriageSkill): number {
+  const createdDiff =
+    parseSkillTimestamp(a.createdAt) - parseSkillTimestamp(b.createdAt);
+  if (createdDiff !== 0) return createdDiff;
+  return a.id.localeCompare(b.id);
+}
+
+function selectSkillsToPrune(
+  skills: TriageSkill[],
+  keepSkillId?: string
+): TriageSkill[] {
+  if (skills.length <= MAX_SKILLS) return [];
+  const overflowCount = skills.length - MAX_SKILLS;
+  return [...skills]
+    .filter((skill) => skill.id !== keepSkillId)
+    .sort(compareOldestFirst)
+    .slice(0, overflowCount);
 }
 
 /**
- * Stores and retrieves triage skills via the GitHub Contents API.
- * Skills live in a dedicated `triage-data` branch of each test repo —
- * one JSON file per repo, permanent, zero external dependencies.
+ * DynamoDB-backed skill store with in-memory query methods.
+ *
+ * Table schema (partition key = `pk`, sort key = `sk`):
+ *   pk: `REPO#<owner>/<repo>`
+ *   sk: `SKILL#<id>`
+ *   remaining attributes: flat TriageSkill fields
+ *
+ * @invariant Mutating operations (`save`, `recordOutcome`,
+ * `recordClassificationOutcome`) must be serialized by the caller. The
+ * in-memory `skills` array is mutated in-place and is not safe for concurrent
+ * writers. Read-only query methods are safe to call at any time.
  */
 export class SkillStore {
-  protected skills: TriageSkill[] = [];
-  protected loaded = false;
-  private fileSha: string | undefined;
-  private octokit: Octokit;
-  protected owner: string;
-  protected repo: string;
+  private skills: TriageSkill[] = [];
+  private loaded = false;
+  private loadSucceeded = false;
+  private loadFailureReason?: string;
+  private region: string;
+  private tableName: string;
+  private owner: string;
+  private repo: string;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private _cachedClient: any;
 
-  constructor(octokit: Octokit, owner: string, repo: string) {
-    this.octokit = octokit;
+  constructor(
+    region: string,
+    tableName: string,
+    owner: string,
+    repo: string
+  ) {
+    this.region = region;
+    this.tableName = tableName;
     this.owner = owner;
     this.repo = repo;
   }
 
-  protected hydrateLoadedSkills(skills: TriageSkill[]): TriageSkill[] {
-    return hydrateLoadedSkills(skills);
+  private async getDocClient() {
+    if (this._cachedClient) return this._cachedClient;
+
+    const { DynamoDBClient } = await import('@aws-sdk/client-dynamodb');
+    const { DynamoDBDocumentClient } = await import('@aws-sdk/lib-dynamodb');
+    const raw = new DynamoDBClient({ region: this.region });
+    this._cachedClient = DynamoDBDocumentClient.from(raw, {
+      marshallOptions: { removeUndefinedValues: true },
+    });
+    return this._cachedClient;
   }
 
   /**
-   * Load existing skills from the triage-data branch.
-   * Safe to call multiple times — only fetches once.
+   * Load all skills for this repo into the in-memory cache.
+   *
+   * @invariant This method must never reject. All failures are caught,
+   * logged, and leave the store in a usable state: `loaded` is set to `true`
+   * to prevent retry thrash, `loadSucceeded` stays `false`, and
+   * `loadFailureReason` captures the error for downstream log correlation.
+   * The coordinator relies on this contract and awaits without a `.catch`.
    */
   async load(): Promise<TriageSkill[]> {
     if (this.loaded) return this.skills;
 
     try {
-      const { data } = await this.octokit.repos.getContent({
-        owner: this.owner,
-        repo: this.repo,
-        path: SKILLS_FILE,
-        ref: SKILLS_BRANCH,
-      });
+      const { QueryCommand } = await import('@aws-sdk/lib-dynamodb');
+      const client = await this.getDocClient();
 
-      if ('content' in data && data.content) {
-        const raw = Buffer.from(data.content, 'base64').toString('utf-8');
-        this.skills = this.hydrateLoadedSkills(JSON.parse(raw) as TriageSkill[]);
-        this.fileSha = data.sha;
-        core.info(`📝 Loaded ${this.skills.length} skill(s) from ${this.owner}/${this.repo}@${SKILLS_BRANCH}`);
-      }
+      const pk = `REPO#${this.owner}/${this.repo}`;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const allItems: any[] = [];
+      let lastKey: Record<string, unknown> | undefined;
+
+      do {
+        const result = await client.send(
+          new QueryCommand({
+            TableName: this.tableName,
+            KeyConditionExpression: 'pk = :pk AND begins_with(sk, :prefix)',
+            ExpressionAttributeValues: { ':pk': pk, ':prefix': 'SKILL#' },
+            ExclusiveStartKey: lastKey,
+          })
+        );
+        allItems.push(...(result.Items ?? []));
+        lastKey = result.LastEvaluatedKey as Record<string, unknown> | undefined;
+      } while (lastKey);
+
+      this.skills = allItems
+        .map(({ pk: _pk, sk: _sk, ...rest }: Record<string, unknown>) => rest as unknown as TriageSkill)
+        .map(backfillDefaults);
       this.loaded = true;
-    } catch (err: unknown) {
-      const status = (err as { status?: number }).status;
-      if (status === 404) {
-        this.loaded = true;
-        core.info(`📝 No existing skills found for ${this.owner}/${this.repo} — starting fresh`);
-      } else {
-        core.warning(`Failed to load skills (will retry on next call): ${err}`);
-      }
+      this.loadSucceeded = true;
+      core.info(`📝 Loaded ${this.skills.length} skill(s) from DynamoDB (${this.tableName}) for ${this.owner}/${this.repo}`);
+    } catch (err) {
+      this.loadFailureReason = err instanceof Error ? `${err.name}: ${err.message}` : String(err);
+      core.warning(`DynamoDB skill load failed for ${this.owner}/${this.repo} in ${this.tableName}: ${err}`);
+      core.warning(
+        'Continuing with an empty in-memory skill cache for this run to avoid retry loops and preserve any new skills saved later in the run.'
+      );
+      // Mark loaded to prevent retry thrash; loadSucceeded stays false so
+      // save() knows not to prune against an incomplete view of the table.
+      this.loaded = true;
     }
 
     return this.skills;
   }
 
   /**
-   * Save a new skill by appending to the skills file on the triage-data branch.
-   * Creates the branch if it doesn't exist.
+   * Persist a new skill to DynamoDB and keep the in-memory cache in sync.
+   *
+   * Returns `true` when the PutCommand completes; callers (e.g. the pipeline
+   * coordinator) should use this to gate follow-up calls to `recordOutcome` /
+   * `recordClassificationOutcome`. Returning `false` means the skill is not in
+   * the in-memory cache, so those follow-ups would hit the "skill not found"
+   * warning path and produce misleading logs.
    */
-  async save(skill: TriageSkill): Promise<void> {
-    if (!this.loaded) {
-      await this.load();
-    }
+  async save(skill: TriageSkill): Promise<boolean> {
+    if (!this.loaded) await this.load();
 
     this.skills.push(skill);
-    if (this.skills.length > MAX_SKILLS) {
-      this.skills = this.skills.slice(-MAX_SKILLS);
-    }
 
-    const commitMsg = `chore: update triage skills (${skill.spec})`;
-
-    const preSaveSnapshot = [...this.skills];
+    const { DeleteCommand, PutCommand } = await import('@aws-sdk/lib-dynamodb');
+    const client = await this.getDocClient();
+    const pk = `REPO#${this.owner}/${this.repo}`;
+    const sk = `SKILL#${skill.id}`;
 
     try {
-      await this.persist(commitMsg);
-      core.info(`📝 Saved skill ${skill.id} (${this.skills.length} total for ${this.owner}/${this.repo})`);
+      await client.send(
+        new PutCommand({
+          TableName: this.tableName,
+          Item: { pk, sk, ...skill },
+        })
+      );
     } catch (err) {
-      const status = (err as { status?: number }).status;
-      if (status === 409) {
+      this.skills = this.skills.filter((s) => s.id !== skill.id);
+      core.warning(`DynamoDB skill save failed for ${this.tableName}: ${err}`);
+      return false;
+    }
+
+    // Skip pruning when load() did not complete — the in-memory list is not
+    // a trustworthy view of the table, so we cannot safely pick oldest skills
+    // to remove.
+    if (!this.loadSucceeded) {
+      const reason = this.loadFailureReason
+        ? ` (load failed: ${this.loadFailureReason})`
+        : '';
+      core.info(
+        `📝 Saved skill ${skill.id} to DynamoDB (${this.tableName}); skipping prune because load was degraded${reason}`
+      );
+      return true;
+    }
+
+    const pruneCandidates = selectSkillsToPrune(this.skills, skill.id);
+    if (pruneCandidates.length > 0) {
+      const deletedSkillIds = new Set<string>();
+      for (const candidate of pruneCandidates) {
         try {
-          const { data } = await this.octokit.repos.getContent({
-            owner: this.owner,
-            repo: this.repo,
-            path: SKILLS_FILE,
-            ref: SKILLS_BRANCH,
-          });
-          if (!('content' in data) || !data.content) {
-            throw new Error('Unexpected empty skills file');
-          }
-          const raw = Buffer.from(data.content, 'base64').toString('utf-8');
-          const remoteSkills = this.hydrateLoadedSkills(JSON.parse(raw) as TriageSkill[]);
-          this.skills = [...remoteSkills, skill];
-          if (this.skills.length > MAX_SKILLS) {
-            this.skills = this.skills.slice(-MAX_SKILLS);
-          }
-          this.fileSha = data.sha;
-          await this.persist(commitMsg);
-          core.info(`📝 Saved skill ${skill.id} (${this.skills.length} total for ${this.owner}/${this.repo})`);
-        } catch (retryErr) {
-          this.skills = preSaveSnapshot.filter((s) => s.id !== skill.id);
-          core.warning(`Failed to save skill: ${retryErr}`);
+          await client.send(
+            new DeleteCommand({
+              TableName: this.tableName,
+              Key: { pk, sk: `SKILL#${candidate.id}` },
+              ConditionExpression: 'attribute_exists(pk) AND attribute_exists(sk)',
+            })
+          );
+          deletedSkillIds.add(candidate.id);
+        } catch (deleteErr) {
+          core.warning(`Failed to prune DynamoDB skill ${candidate.id}: ${deleteErr}`);
         }
-      } else {
-        this.skills = preSaveSnapshot.filter((s) => s.id !== skill.id);
-        core.warning(`Failed to save skill: ${err}`);
+      }
+
+      if (deletedSkillIds.size > 0) {
+        this.skills = this.skills.filter((entry) => !deletedSkillIds.has(entry.id));
+        core.info(
+          `🧹 Pruned ${deletedSkillIds.size} old skill(s) from DynamoDB to maintain the ${MAX_SKILLS}-skill cap`
+        );
       }
     }
+
+    core.info(`📝 Saved skill ${skill.id} to DynamoDB (${this.skills.length} total)`);
+    return true;
   }
 
+  /**
+   * Record a success/failure outcome for a previously-saved skill. On enough
+   * failures, auto-retires the skill via a second UpdateCommand.
+   *
+   * @invariant This method must never reject. All DynamoDB errors are caught
+   * and logged. Missing-skill cases short-circuit with a warning. The
+   * coordinator awaits without a `.catch`.
+   */
   async recordOutcome(skillId: string, success: boolean): Promise<void> {
-    if (!this.loaded) {
-      await this.load();
-    }
-
-    const skill = this.skills.find(s => s.id === skillId);
+    if (!this.loaded) await this.load();
+    const skill = this.skills.find((s) => s.id === skillId);
     if (!skill) {
-      core.warning(`Skill ${skillId} not found — cannot record outcome`);
+      core.warning(
+        `Skill ${skillId} not found in DynamoDB in-memory cache for ${this.owner}/${this.repo} — skipping outcome write`
+      );
       return;
     }
 
-    if (success) {
-      skill.successCount++;
-    } else {
-      skill.failCount++;
-    }
-    skill.lastUsedAt = new Date().toISOString();
-
-    const totalAttempts = (skill.successCount || 0) + (skill.failCount || 0);
-    const failRate = totalAttempts > 0 ? (skill.failCount || 0) / totalAttempts : 0;
-    if (failRate > 0.4 && (skill.failCount || 0) >= 3) {
-      skill.retired = true;
-      core.warning(`⚠️ Skill ${skillId} retired — ${Math.round(failRate * 100)}% failure rate (${skill.failCount} failures in ${totalAttempts} attempts)`);
-    }
-
-    const commitMsg = `chore: record ${success ? 'success' : 'failure'} for skill ${skillId}`;
+    const now = new Date().toISOString();
 
     try {
-      await this.persist(commitMsg);
-    } catch (err) {
-      const status = (err as { status?: number }).status;
-      if (status === 409) {
-        try {
-          const { data } = await this.octokit.repos.getContent({
-            owner: this.owner,
-            repo: this.repo,
-            path: SKILLS_FILE,
-            ref: SKILLS_BRANCH,
-          });
-          if (!('content' in data) || !data.content) {
-            throw new Error('Unexpected empty skills file');
-          }
-          const raw = Buffer.from(data.content, 'base64').toString('utf-8');
-          const remoteSkills = this.hydrateLoadedSkills(JSON.parse(raw) as TriageSkill[]);
-          const remoteSkill = remoteSkills.find(s => s.id === skillId);
-          if (!remoteSkill) {
-            core.warning(`Skill ${skillId} not found in remote data — skipping outcome persist`);
-            return;
-          }
-          if (success) {
-            remoteSkill.successCount++;
-          } else {
-            remoteSkill.failCount++;
-          }
-          remoteSkill.lastUsedAt = skill.lastUsedAt;
-          const remoteTotalAttempts = (remoteSkill.successCount || 0) + (remoteSkill.failCount || 0);
-          const remoteFailRate = remoteTotalAttempts > 0 ? (remoteSkill.failCount || 0) / remoteTotalAttempts : 0;
-          if (remoteFailRate > 0.4 && (remoteSkill.failCount || 0) >= 3) {
-            remoteSkill.retired = true;
-          }
-          this.skills = remoteSkills;
-          this.fileSha = data.sha;
-          await this.persist(commitMsg);
-        } catch (retryErr) {
-          core.warning(`Failed to persist skill outcome: ${retryErr}`);
-        }
-      } else {
-        core.warning(`Failed to persist skill outcome: ${err}`);
+      const { UpdateCommand } = await import('@aws-sdk/lib-dynamodb');
+      const client = await this.getDocClient();
+      const counterField = success ? 'successCount' : 'failCount';
+
+      const result = await client.send(
+        new UpdateCommand({
+          TableName: this.tableName,
+          Key: { pk: `REPO#${this.owner}/${this.repo}`, sk: `SKILL#${skillId}` },
+          UpdateExpression: `ADD ${counterField} :inc SET lastUsedAt = :lu`,
+          ConditionExpression: 'attribute_exists(pk) AND attribute_exists(sk)',
+          ExpressionAttributeValues: {
+            ':inc': 1,
+            ':lu': now,
+          },
+          ReturnValues: 'ALL_NEW',
+        })
+      );
+
+      const attributes = result.Attributes as Partial<TriageSkill> | undefined;
+      skill.successCount = attributes?.successCount ?? skill.successCount ?? 0;
+      skill.failCount = attributes?.failCount ?? skill.failCount ?? 0;
+      skill.lastUsedAt = attributes?.lastUsedAt ?? now;
+      skill.retired = attributes?.retired ?? skill.retired ?? false;
+
+      const totalAttempts = (skill.successCount || 0) + (skill.failCount || 0);
+      const failRate =
+        totalAttempts > 0 ? (skill.failCount || 0) / totalAttempts : 0;
+      const shouldRetire =
+        failRate > RETIRE_FAIL_RATE && (skill.failCount || 0) >= RETIRE_MIN_FAILURES;
+
+      if (shouldRetire && !skill.retired) {
+        await client.send(
+          new UpdateCommand({
+            TableName: this.tableName,
+            Key: { pk: `REPO#${this.owner}/${this.repo}`, sk: `SKILL#${skillId}` },
+            UpdateExpression: 'SET retired = :r',
+            ConditionExpression: 'attribute_exists(pk) AND attribute_exists(sk)',
+            ExpressionAttributeValues: {
+              ':r': true,
+            },
+          })
+        );
+        skill.retired = true;
+        core.warning(
+          `⚠️ Skill ${skillId} retired — ${Math.round(failRate * 100)}% failure rate`
+        );
       }
+    } catch (err) {
+      core.warning(`DynamoDB recordOutcome failed: ${err}`);
     }
   }
 
-  async recordClassificationOutcome(skillId: string, outcome: 'correct' | 'incorrect'): Promise<void> {
-    if (!this.loaded) {
-      await this.load();
-    }
-
-    const skill = this.skills.find(s => s.id === skillId);
+  /**
+   * Record whether the classifier's verdict was correct for this skill.
+   * Only `'correct'` is currently written by the pipeline (see
+   * `PipelineCoordinator.execute`); the `'incorrect'` case is reserved for
+   * future feedback mechanisms.
+   *
+   * @invariant This method must never reject. All DynamoDB errors are caught
+   * and logged. Missing-skill cases short-circuit with a warning. The
+   * coordinator awaits without a `.catch`.
+   */
+  async recordClassificationOutcome(
+    skillId: string,
+    outcome: 'correct' | 'incorrect'
+  ): Promise<void> {
+    if (!this.loaded) await this.load();
+    const skill = this.skills.find((s) => s.id === skillId);
     if (!skill) {
-      core.warning(`Skill ${skillId} not found — cannot record classification outcome`);
+      core.warning(
+        `Skill ${skillId} not found in DynamoDB in-memory cache for ${this.owner}/${this.repo} — skipping classification outcome write`
+      );
       return;
     }
 
-    skill.classificationOutcome = outcome;
-
-    const commitMsg = `chore: record classification ${outcome} for skill ${skillId}`;
-
     try {
-      await this.persist(commitMsg);
+      const { UpdateCommand } = await import('@aws-sdk/lib-dynamodb');
+      const client = await this.getDocClient();
+
+      await client.send(
+        new UpdateCommand({
+          TableName: this.tableName,
+          Key: { pk: `REPO#${this.owner}/${this.repo}`, sk: `SKILL#${skillId}` },
+          UpdateExpression: 'SET classificationOutcome = :co',
+          ConditionExpression: 'attribute_exists(pk) AND attribute_exists(sk)',
+          ExpressionAttributeValues: { ':co': outcome },
+        })
+      );
+      skill.classificationOutcome = outcome;
     } catch (err) {
-      const status = (err as { status?: number }).status;
-      if (status === 409) {
-        try {
-          const { data } = await this.octokit.repos.getContent({
-            owner: this.owner,
-            repo: this.repo,
-            path: SKILLS_FILE,
-            ref: SKILLS_BRANCH,
-          });
-          if (!('content' in data) || !data.content) {
-            throw new Error('Unexpected empty skills file');
-          }
-          const raw = Buffer.from(data.content, 'base64').toString('utf-8');
-          const remoteSkills = this.hydrateLoadedSkills(JSON.parse(raw) as TriageSkill[]);
-          const remoteSkill = remoteSkills.find(s => s.id === skillId);
-          if (!remoteSkill) {
-            core.warning(`Skill ${skillId} not found in remote data — skipping classification persist`);
-            return;
-          }
-          remoteSkill.classificationOutcome = outcome;
-          this.skills = remoteSkills;
-          this.fileSha = data.sha;
-          await this.persist(commitMsg);
-        } catch (retryErr) {
-          core.warning(`Failed to persist classification outcome: ${retryErr}`);
-        }
-      } else {
-        core.warning(`Failed to persist classification outcome: ${err}`);
-      }
+      core.warning(`DynamoDB recordClassificationOutcome failed: ${err}`);
     }
   }
 
@@ -517,51 +590,6 @@ export class SkillStore {
         return entry;
       })
       .join('\n');
-  }
-
-  private async persist(commitMessage: string): Promise<void> {
-    await this.ensureBranch();
-    const content = Buffer.from(JSON.stringify(this.skills, null, 2)).toString('base64');
-    const { data } = await this.octokit.repos.createOrUpdateFileContents({
-      owner: this.owner,
-      repo: this.repo,
-      path: SKILLS_FILE,
-      message: commitMessage,
-      content,
-      branch: SKILLS_BRANCH,
-      ...(this.fileSha ? { sha: this.fileSha } : {}),
-    });
-    this.fileSha = data.content?.sha;
-  }
-
-  private async ensureBranch(): Promise<void> {
-    try {
-      await this.octokit.repos.getBranch({
-        owner: this.owner,
-        repo: this.repo,
-        branch: SKILLS_BRANCH,
-      });
-    } catch (err: unknown) {
-      if ((err as { status?: number }).status !== 404) throw err;
-
-      const { data: defaultBranch } = await this.octokit.repos.get({
-        owner: this.owner,
-        repo: this.repo,
-      });
-      const { data: ref } = await this.octokit.git.getRef({
-        owner: this.owner,
-        repo: this.repo,
-        ref: `heads/${defaultBranch.default_branch}`,
-      });
-
-      await this.octokit.git.createRef({
-        owner: this.owner,
-        repo: this.repo,
-        ref: `refs/heads/${SKILLS_BRANCH}`,
-        sha: ref.object.sha,
-      });
-      core.info(`📝 Created ${SKILLS_BRANCH} branch in ${this.owner}/${this.repo}`);
-    }
   }
 }
 

@@ -1,6 +1,6 @@
 # DynamoDB Skill Store Implementation Plan
 
-> **Status:** Historical — DynamoDB skill store shipped in v1.37.0. Auth switched from static IAM keys to OIDC in v1.42.0. Memory hardening (atomic counters, pruning, deterministic retrieval) shipped in v1.43.0. See `docs/triage-memory-hardening-plan.md` for current work.
+> **Status:** Historical — DynamoDB skill store shipped in v1.37.0. Auth switched from static IAM keys to OIDC in v1.42.0. Memory hardening (atomic counters, pruning, deterministic retrieval) shipped in v1.43.0. The Git `triage-data` branch fallback was removed in v1.44.0; `SkillStore` is now a single unified class with DynamoDB as the sole backend. See `docs/triage-memory-hardening-plan.md` for related work.
 
 ---
 

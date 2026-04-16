@@ -32,22 +32,22 @@ flowchart TB
     WF_STATUS -->|Yes| PENDING["Output: PENDING"]
     WF_STATUS -->|No| NO_DATA["Output: ERROR<br/>No error data found"]
 
-    NULL_CHECK -->|Yes| INFRA_CHECK{"Infrastructure<br/>Failure Detected?<br/>detectInfrastructureFailure()"}
+    NULL_CHECK -->|Yes| SKILLS["Load SkillStore<br/>(DynamoDB, via OIDC or configured credentials)<br/>+ detect flakiness<br/>(when AUTO_FIX_TARGET_REPO resolves)"]
+
+    SKILLS --> INFRA_CHECK{"Infrastructure<br/>Failure Detected?<br/>detectInfrastructureFailure()"}
 
     INFRA_CHECK -->|Yes| INCONC_INFRA["Output: INCONCLUSIVE<br/>(session/browser crash)"]
-    INFRA_CHECK -->|No| ANALYZE["Analyze with AI<br/>simplified-analyzer.ts"]
+    INFRA_CHECK -->|No| ANALYZE["Analyze with AI<br/>simplified-analyzer.ts<br/>(skill context + flakiness injected)"]
 
     ANALYZE --> AI_CALL["OpenAI Responses API<br/>gpt-5.3-codex<br/>openai-client.ts"]
 
     AI_CALL --> VERDICT{Verdict?}
 
-    VERDICT -->|TEST_ISSUE| SKILLS["Load SkillStore<br/>(DynamoDB via OIDC, or triage-data branch fallback)<br/>+ detect flakiness"]
+    VERDICT -->|TEST_ISSUE| PATH_CHECK{Local validation?<br/>enableAutoFix +<br/>enableValidation +<br/>testCommand}
     VERDICT -->|PRODUCT_ISSUE| CONFIDENCE_CHECK
     VERDICT -->|INCONCLUSIVE| CONFIDENCE_CHECK
 
-    SKILLS --> PATH_CHECK{Local validation?<br/>enableAutoFix +<br/>enableValidation +<br/>testCommand}
-
-    PATH_CHECK -->|Yes| LOCAL_LOOP["Local Fix-Validate Loop<br/>iterativeFixValidateLoop()<br/><br/>1. Clone failing branch + npm ci<br/>2. Generate fix (agentic or single-shot)<br/>   with skills injected into prompts<br/>3. Apply to local files<br/>4. Run test command in container<br/>5. If pass → push branch + create PR<br/>   + save skill to DynamoDB (or triage-data branch fallback)<br/>6. If fail → reset, iterate (up to 3x)<br/>   (fix fingerprinting deduplicates)"]
+    PATH_CHECK -->|Yes| LOCAL_LOOP["Local Fix-Validate Loop<br/>iterativeFixValidateLoop()<br/><br/>1. Clone failing branch + npm ci<br/>2. Generate fix (agentic or single-shot)<br/>   with skills injected into prompts<br/>3. Apply to local files<br/>4. Run test command in container<br/>5. If pass → push branch + create PR<br/>   + save skill to DynamoDB<br/>6. If fail → reset, iterate (up to 3x)<br/>   (fix fingerprinting deduplicates)"]
     PATH_CHECK -->|No| FIX_REC["Generate Fix Recommendation<br/>SimplifiedRepairAgent<br/>(with skills injected)"]
 
     FIX_REC --> AUTO_FIX_CHECK{Auto-Fix<br/>Enabled?}

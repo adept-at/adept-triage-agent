@@ -19,7 +19,7 @@ import { InvestigationOutput } from './investigation-agent';
 // Framework-specialized system prompt sections
 // ---------------------------------------------------------------------------
 
-export const COMMON_PREAMBLE = `You are an expert test engineer who specializes in fixing failing E2E tests.
+const COMMON_PREAMBLE = `You are an expert test engineer who specializes in fixing failing E2E tests.
 
 ## Your Task
 

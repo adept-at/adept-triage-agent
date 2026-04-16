@@ -1,4 +1,4 @@
-import { truncateForSlack, formatSummaryForSlack, createBriefSummary } from '../src/utils/slack-formatter';
+import { truncateForSlack, formatSummaryForSlack } from '../src/utils/slack-formatter';
 
 describe('Slack Formatter', () => {
   describe('truncateForSlack', () => {
@@ -69,30 +69,4 @@ describe('Slack Formatter', () => {
     });
   });
 
-  describe('createBriefSummary', () => {
-    it('should create a brief summary with verdict and confidence', () => {
-      const result = createBriefSummary('TEST_ISSUE', 85, 'Long detailed summary here', 'test-name');
-      expect(result).toContain('TEST_ISSUE');
-      expect(result).toContain('85% confidence');
-      expect(result).toContain('test-name');
-    });
-
-    it('should extract first meaningful line from summary', () => {
-      const fullSummary = '# Header\n\n* Bullet\n\nThis is the meaningful content that should be extracted.';
-      const result = createBriefSummary('PRODUCT_ISSUE', 90, fullSummary);
-      expect(result).toContain('This is the meaningful content');
-    });
-
-    it('should limit brief summary to 500 characters', () => {
-      const longSummary = 'x'.repeat(1000);
-      const result = createBriefSummary('TEST_ISSUE', 75, longSummary, 'very-long-test-name');
-      expect(result.length).toBeLessThan(600);
-    });
-
-    it('should handle summary without meaningful lines', () => {
-      const result = createBriefSummary('TEST_ISSUE', 80, '# Header\n* Short\n## Another');
-      expect(result).toContain('TEST_ISSUE');
-      expect(result).toContain('80% confidence');
-    });
-  });
 });
