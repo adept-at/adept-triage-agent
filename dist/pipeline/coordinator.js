@@ -116,6 +116,7 @@ class PipelineCoordinator {
         let agentInvestigationFindings;
         if (this.inputs.enableAutoFix &&
             this.inputs.enableValidation &&
+            this.inputs.enableLocalValidation &&
             this.inputs.validationTestCommand &&
             autoFixTargetRepo) {
             const loopResult = await (0, validator_1.iterativeFixValidateLoop)(this.inputs, this.repoDetails, autoFixTargetRepo, errorData, this.openaiClient, this.octokit, skillStore, undefined, investigationContext);

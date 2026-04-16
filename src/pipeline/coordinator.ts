@@ -145,9 +145,14 @@ export class PipelineCoordinator {
     let agentRootCause: string | undefined;
     let agentInvestigationFindings: string | undefined;
 
+    // LOCAL validation path: clone + apply + test in-container, push/PR on pass.
+    // Requires ENABLE_LOCAL_VALIDATION explicitly true. Without this gate, a
+    // populated VALIDATION_TEST_COMMAND routes to the local path even when the
+    // consumer wanted to dispatch remote validation — the pre-v1.45.0 bug.
     if (
       this.inputs.enableAutoFix &&
       this.inputs.enableValidation &&
+      this.inputs.enableLocalValidation &&
       this.inputs.validationTestCommand &&
       autoFixTargetRepo
     ) {

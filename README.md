@@ -441,7 +441,7 @@ npm run build
 We follow semantic versioning and provide multiple ways to reference this action:
 
 - **`@v1`** - Recommended for production. Automatically updates to the latest v1.x.x release
-- **`@v1.44.0`** - Pin to a specific version for full reproducibility
+- **`@v1.45.0`** - Pin to a specific version for full reproducibility
 - **`@main`** - Latest development version (use with caution)
 
 Example:
@@ -451,7 +451,7 @@ Example:
 uses: adept-at/adept-triage-agent@v1
 
 # Specific version - no automatic updates
-uses: adept-at/adept-triage-agent@v1.44.0
+uses: adept-at/adept-triage-agent@v1.45.0
 ```
 
 ## Development

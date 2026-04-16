@@ -67,6 +67,8 @@ function getInputs(): ActionInputs {
     branch: core.getInput('BRANCH') || undefined,
     // Validation inputs
     enableValidation: core.getInput('ENABLE_VALIDATION') === 'true',
+    enableLocalValidation:
+      core.getInput('ENABLE_LOCAL_VALIDATION') === 'true',
     validationWorkflow:
       core.getInput('VALIDATION_WORKFLOW') || 'validate-fix.yml',
     validationPreviewUrl: core.getInput('VALIDATION_PREVIEW_URL') || undefined,

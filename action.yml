@@ -60,11 +60,15 @@ inputs:
     required: false
     default: ${{ github.repository }}
   ENABLE_VALIDATION:
-    description: 'Enable local test validation of auto-fixes before pushing. When true with ENABLE_AUTO_FIX and VALIDATION_TEST_COMMAND, the action clones the repo, applies the fix, runs the test locally, and only pushes + creates a PR when the test passes (up to 3 iterations).'
+    description: 'Enable validation of auto-fixes before accepting them. Validation runs remotely by default (dispatches VALIDATION_WORKFLOW with VALIDATION_TEST_COMMAND). Set ENABLE_LOCAL_VALIDATION=true to run validation in-container instead.'
+    required: false
+    default: 'false'
+  ENABLE_LOCAL_VALIDATION:
+    description: 'When true with ENABLE_AUTO_FIX, ENABLE_VALIDATION, and VALIDATION_TEST_COMMAND, runs the validation test locally in-container (clone, apply, test, push + PR only on pass, up to 3 iterations). When false (default), validation is dispatched to VALIDATION_WORKFLOW remotely.'
     required: false
     default: 'false'
   VALIDATION_WORKFLOW:
-    description: 'Name of the validation workflow file (e.g., validate-fix.yml). Used by the legacy remote validation path when VALIDATION_TEST_COMMAND is not set.'
+    description: 'Name of the validation workflow file (e.g., validate-fix.yml). Used by the remote validation path when ENABLE_LOCAL_VALIDATION is false.'
     required: false
     default: 'validate-fix.yml'
   VALIDATION_PREVIEW_URL:
@@ -74,7 +78,7 @@ inputs:
     description: 'Spec file for validation tests (if different from detected). Replaces {spec} in VALIDATION_TEST_COMMAND.'
     required: false
   VALIDATION_TEST_COMMAND:
-    description: 'Test command template with {spec} and {url} placeholders. When set with ENABLE_VALIDATION, the action runs this command locally to validate fixes before pushing. Example: npx wdio run wdio.conf.ts --spec {spec}'
+    description: 'Test command template with {spec} and {url} placeholders. Used by BOTH validation paths — passed to the remote VALIDATION_WORKFLOW via workflow_dispatch, or evaluated locally when ENABLE_LOCAL_VALIDATION=true. Example: npx wdio run wdio.conf.ts --spec {spec} -t sauce'
     required: false
   NPM_TOKEN:
     description: 'Token for npm registry auth (e.g., GitHub Packages read token). Falls back to GITHUB_TOKEN when not set.'

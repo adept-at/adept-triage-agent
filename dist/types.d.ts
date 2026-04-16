@@ -115,6 +115,7 @@ export interface ActionInputs {
     autoFixTargetRepo?: string;
     branch?: string;
     enableValidation?: boolean;
+    enableLocalValidation?: boolean;
     validationWorkflow?: string;
     validationPreviewUrl?: string;
     validationSpec?: string;

@@ -149,9 +149,11 @@ export interface ActionInputs {
   autoFixTargetRepo?: string;
   /** Branch being tested (for fetching branch diff when no PR number) */
   branch?: string;
-  /** Enable validation workflow trigger after fix is applied */
+  /** Enable validation of auto-fixes before accepting (default path: remote workflow_dispatch) */
   enableValidation?: boolean;
-  /** Name of the validation workflow file */
+  /** Run validation test in-container (clone + apply + test + push on pass). When false, uses remote workflow_dispatch. */
+  enableLocalValidation?: boolean;
+  /** Name of the validation workflow file (used by remote path) */
   validationWorkflow?: string;
   /** Preview URL for validation tests (if different from original) */
   validationPreviewUrl?: string;

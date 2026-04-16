@@ -3349,6 +3349,7 @@ function getInputs() {
         autoFixTargetRepo: core.getInput('AUTO_FIX_TARGET_REPO') || undefined,
         branch: core.getInput('BRANCH') || undefined,
         enableValidation: core.getInput('ENABLE_VALIDATION') === 'true',
+        enableLocalValidation: core.getInput('ENABLE_LOCAL_VALIDATION') === 'true',
         validationWorkflow: core.getInput('VALIDATION_WORKFLOW') || 'validate-fix.yml',
         validationPreviewUrl: core.getInput('VALIDATION_PREVIEW_URL') || undefined,
         validationSpec: core.getInput('VALIDATION_SPEC') || undefined,
@@ -4070,6 +4071,7 @@ class PipelineCoordinator {
         let agentInvestigationFindings;
         if (this.inputs.enableAutoFix &&
             this.inputs.enableValidation &&
+            this.inputs.enableLocalValidation &&
             this.inputs.validationTestCommand &&
             autoFixTargetRepo) {
             const loopResult = await (0, validator_1.iterativeFixValidateLoop)(this.inputs, this.repoDetails, autoFixTargetRepo, errorData, this.openaiClient, this.octokit, skillStore, undefined, investigationContext);
