@@ -636,6 +636,122 @@ describe('fix-applier', () => {
       expect(mockOctokit.git.deleteRef).toHaveBeenCalled();
     });
 
+    // Regression: multiple changes to the SAME file used to drop all but the
+    // last. Each change called getContent() against the original branch state
+    // and pushed its own tree item with the same path; createTree silently
+    // kept only the last entry. Now changes compose against a per-file buffer
+    // so all edits land in one blob.
+    it('composes multiple changes to the same file in a single tree item', async () => {
+      const recommendation: FixRecommendation = {
+        confidence: 90,
+        summary: 'Two changes to the same spec',
+        proposedChanges: [
+          {
+            file: 'spec.ts',
+            line: 10,
+            oldCode: 'await snackbarOld()',
+            newCode: 'await dialogOrSnackbar()',
+            justification: 'switch primary success surface to dialog',
+          },
+          {
+            file: 'spec.ts',
+            line: 30,
+            oldCode: 'cleanupSnackbarOld()',
+            newCode: 'maybeCleanupSnackbar()',
+            justification: 'guard cleanup when snackbar absent',
+          },
+        ],
+        evidence: [],
+        reasoning: 'composes both edits',
+      };
+
+      const originalContent = [
+        '// header',
+        '',
+        'describe("redeem", () => {',
+        '  it("works", async () => {',
+        '    await snackbarOld()',
+        '  })',
+        '})',
+        '',
+        '// later in the file',
+        'cleanupSnackbarOld()',
+        '',
+      ].join('\n');
+
+      mockOctokit.repos.getContent.mockResolvedValue({
+        data: {
+          type: 'file',
+          content: Buffer.from(originalContent).toString('base64'),
+          sha: 'sha-spec',
+        },
+      });
+
+      const result = await applier.applyFix(recommendation);
+
+      expect(result.success).toBe(true);
+      expect(result.modifiedFiles).toEqual(['spec.ts']);
+
+      // File should be fetched ONCE — second change uses the cached buffer.
+      expect(mockOctokit.repos.getContent).toHaveBeenCalledTimes(1);
+
+      // Tree should contain ONE entry for spec.ts (not two), with BOTH edits
+      // composed into a single blob.
+      expect(mockOctokit.git.createTree).toHaveBeenCalledTimes(1);
+      const treeArg = mockOctokit.git.createTree.mock.calls[0][0] as {
+        tree: Array<{ path: string; content: string }>;
+      };
+      const specEntries = treeArg.tree.filter((t) => t.path === 'spec.ts');
+      expect(specEntries).toHaveLength(1);
+      expect(specEntries[0].content).toContain('await dialogOrSnackbar()');
+      expect(specEntries[0].content).toContain('maybeCleanupSnackbar()');
+      expect(specEntries[0].content).not.toContain('await snackbarOld()');
+      expect(specEntries[0].content).not.toContain('cleanupSnackbarOld()');
+    });
+
+    it('aborts when a later change to the same file fails to match', async () => {
+      const recommendation: FixRecommendation = {
+        confidence: 90,
+        summary: 'Mixed valid + invalid same-file changes',
+        proposedChanges: [
+          {
+            file: 'spec.ts',
+            line: 10,
+            oldCode: 'await foo()',
+            newCode: 'await bar()',
+            justification: 'first change',
+          },
+          {
+            file: 'spec.ts',
+            line: 20,
+            oldCode: 'NEVER_PRESENT_IN_FILE',
+            newCode: 'replacement',
+            justification: 'second change will fail',
+          },
+        ],
+        evidence: [],
+        reasoning: 'should abort the whole fix',
+      };
+
+      mockOctokit.repos.getContent.mockResolvedValue({
+        data: {
+          type: 'file',
+          content: Buffer.from('const x = await foo();').toString('base64'),
+          sha: 'sha-spec',
+        },
+      });
+
+      const result = await applier.applyFix(recommendation);
+
+      expect(result.success).toBe(false);
+      expect(result.error).toContain('Partial fix rejected');
+      // No tree / commit when we abort.
+      expect(mockOctokit.git.createTree).not.toHaveBeenCalled();
+      expect(mockOctokit.git.createCommit).not.toHaveBeenCalled();
+      // Branch should be cleaned up.
+      expect(mockOctokit.git.deleteRef).toHaveBeenCalled();
+    });
+
     it('should skip changes without oldCode or newCode', async () => {
       const recommendation: FixRecommendation = {
         confidence: 85,

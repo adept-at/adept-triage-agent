@@ -653,142 +653,165 @@ export class GitHubFixApplier implements FixApplier {
     let lastCommitSha = '';
 
     const totalChanges = recommendation.proposedChanges.length;
-    const pendingChanges: Array<{
-      filePath: string;
-      newContent: string;
-      fileSha: string;
-      justification: string;
-    }> = [];
+    // Per-file accumulator. Multiple changes targeting the same file compose
+    // sequentially against this buffer so they all land in a single blob in
+    // one tree item. Without this, two changes to the same path would push
+    // two tree items with the same path; Git's createTree silently keeps the
+    // last entry, dropping all earlier edits.
+    const fileBuffers = new Map<
+      string,
+      {
+        content: string;
+        fileSha: string;
+        appliedChanges: number;
+        firstJustification: string;
+      }
+    >();
     const validationErrors: string[] = [];
+    let appliedTotal = 0;
 
     for (const change of recommendation.proposedChanges) {
       const filePath = change.file;
       try {
-        const fileResponse = await withRetry(
-          () =>
-            octokit.repos.getContent({
-              owner,
-              repo,
-              path: filePath,
-              ref: branchName,
-            }),
-          `getting file content for ${filePath}`
-        );
+        // Fetch the file once per unique path; subsequent changes operate on
+        // the cumulative buffer (post prior edits), not a fresh copy.
+        let buffer = fileBuffers.get(filePath);
+        if (!buffer) {
+          const fileResponse = await withRetry(
+            () =>
+              octokit.repos.getContent({
+                owner,
+                repo,
+                path: filePath,
+                ref: branchName,
+              }),
+            `getting file content for ${filePath}`
+          );
 
-        if (
-          Array.isArray(fileResponse.data) ||
-          fileResponse.data.type !== 'file'
-        ) {
-          validationErrors.push(`${filePath} is not a file`);
+          if (
+            Array.isArray(fileResponse.data) ||
+            fileResponse.data.type !== 'file'
+          ) {
+            validationErrors.push(`${filePath} is not a file`);
+            continue;
+          }
+
+          buffer = {
+            content: Buffer.from(
+              fileResponse.data.content,
+              'base64'
+            ).toString('utf-8'),
+            fileSha: fileResponse.data.sha,
+            appliedChanges: 0,
+            firstJustification: change.justification,
+          };
+          fileBuffers.set(filePath, buffer);
+        }
+
+        if (!change.oldCode || !change.newCode) {
+          // Skip changes that have no code to apply (e.g. metadata-only).
           continue;
         }
 
-        const currentContent = Buffer.from(
-          fileResponse.data.content,
-          'base64'
-        ).toString('utf-8');
-        const fileSha = fileResponse.data.sha;
+        // Match against the buffer's CURRENT (possibly already-edited) content.
+        const currentContent = buffer.content;
+        let matchIndex = currentContent.indexOf(change.oldCode);
+        let effectiveOldCode = change.oldCode;
 
-        if (change.oldCode && change.newCode) {
-          let matchIndex = currentContent.indexOf(change.oldCode);
-          let effectiveOldCode = change.oldCode;
+        // Fuzzy matching fallback when exact match fails
+        if (matchIndex === -1) {
+          core.info(`Exact match failed for ${filePath}, trying fuzzy strategies...`);
 
-          // Fuzzy matching fallback when exact match fails
+          // Strategy 1: strip line-number prefixes the LLM may have copied
+          const stripped = change.oldCode
+            .split('\n')
+            .map((line: string) => line.replace(/^\s*\d+:\s?/, ''))
+            .join('\n');
+          if (stripped !== change.oldCode) {
+            matchIndex = currentContent.indexOf(stripped);
+            if (matchIndex !== -1) {
+              effectiveOldCode = stripped;
+              core.info(`  ✅ Matched after stripping line number prefixes`);
+            }
+          }
+
+          // Strategy 2: normalize trailing whitespace per line
           if (matchIndex === -1) {
-            core.info(`Exact match failed for ${filePath}, trying fuzzy strategies...`);
-
-            // Strategy 1: strip line-number prefixes the LLM may have copied
-            const stripped = change.oldCode
+            const normalizedOld = change.oldCode
               .split('\n')
-              .map((line: string) => line.replace(/^\s*\d+:\s?/, ''))
+              .map((l: string) => l.trimEnd())
               .join('\n');
-            if (stripped !== change.oldCode) {
-              matchIndex = currentContent.indexOf(stripped);
+            const normalizedContent = currentContent
+              .split('\n')
+              .map((l: string) => l.trimEnd())
+              .join('\n');
+            const normIdx = normalizedContent.indexOf(normalizedOld);
+            if (normIdx !== -1) {
+              const linesBefore = normalizedContent.slice(0, normIdx).split('\n').length - 1;
+              const linesInOld = normalizedOld.split('\n').length;
+              const actualLines = currentContent.split('\n');
+              effectiveOldCode = actualLines.slice(linesBefore, linesBefore + linesInOld).join('\n');
+              matchIndex = currentContent.indexOf(effectiveOldCode);
               if (matchIndex !== -1) {
-                effectiveOldCode = stripped;
-                core.info(`  ✅ Matched after stripping line number prefixes`);
+                core.info(`  ✅ Matched after trailing whitespace normalization`);
               }
             }
+          }
 
-            // Strategy 2: normalize trailing whitespace per line
-            if (matchIndex === -1) {
-              const normalizedOld = change.oldCode
-                .split('\n')
-                .map((l: string) => l.trimEnd())
-                .join('\n');
-              const normalizedContent = currentContent
-                .split('\n')
-                .map((l: string) => l.trimEnd())
-                .join('\n');
-              const normIdx = normalizedContent.indexOf(normalizedOld);
-              if (normIdx !== -1) {
-                const linesBefore = normalizedContent.slice(0, normIdx).split('\n').length - 1;
-                const linesInOld = normalizedOld.split('\n').length;
-                const actualLines = currentContent.split('\n');
-                effectiveOldCode = actualLines.slice(linesBefore, linesBefore + linesInOld).join('\n');
-                matchIndex = currentContent.indexOf(effectiveOldCode);
-                if (matchIndex !== -1) {
-                  core.info(`  ✅ Matched after trailing whitespace normalization`);
-                }
-              }
-            }
+          // Strategy 3: line-range extraction near the specified line number.
+          // Note: when prior edits in the same file have shifted lines, the
+          // recommendation's `change.line` is approximate; the strict-then-
+          // fuzzy match plus uniqueness check below still keeps this safe.
+          if (matchIndex === -1 && change.line > 0) {
+            const contentLines = currentContent.split('\n');
+            const oldLineCount = change.oldCode.split('\n').length;
+            const start = Math.max(0, change.line - 3);
+            const end = Math.min(contentLines.length, change.line + oldLineCount + 2);
 
-            // Strategy 3: line-range extraction near the specified line number
-            if (matchIndex === -1 && change.line > 0) {
-              const contentLines = currentContent.split('\n');
-              const oldLineCount = change.oldCode.split('\n').length;
-              const start = Math.max(0, change.line - 3);
-              const end = Math.min(contentLines.length, change.line + oldLineCount + 2);
-
-              for (let s = start; s <= Math.min(start + 5, end - oldLineCount); s++) {
-                const candidate = contentLines.slice(s, s + oldLineCount).join('\n');
-                const similarity = computeLineSimilarity(change.oldCode, candidate);
-                if (similarity >= 0.5) {
-                  const candidateIdx = currentContent.indexOf(candidate);
-                  if (candidateIdx !== -1) {
-                    const secondIdx = currentContent.indexOf(candidate, candidateIdx + 1);
-                    if (secondIdx === -1) {
-                      matchIndex = candidateIdx;
-                      effectiveOldCode = candidate;
-                      core.info(`  ✅ Matched via line-range similarity (${(similarity * 100).toFixed(0)}%) at line ${s + 1}`);
-                      break;
-                    }
+            for (let s = start; s <= Math.min(start + 5, end - oldLineCount); s++) {
+              const candidate = contentLines.slice(s, s + oldLineCount).join('\n');
+              const similarity = computeLineSimilarity(change.oldCode, candidate);
+              if (similarity >= 0.5) {
+                const candidateIdx = currentContent.indexOf(candidate);
+                if (candidateIdx !== -1) {
+                  const secondIdx = currentContent.indexOf(candidate, candidateIdx + 1);
+                  if (secondIdx === -1) {
+                    matchIndex = candidateIdx;
+                    effectiveOldCode = candidate;
+                    core.info(`  ✅ Matched via line-range similarity (${(similarity * 100).toFixed(0)}%) at line ${s + 1}`);
+                    break;
                   }
                 }
               }
             }
-
-            if (matchIndex === -1) {
-              validationErrors.push(
-                `Could not find old code to replace in ${filePath}`
-              );
-              continue;
-            }
           }
 
-          const secondMatch = currentContent.indexOf(
-            effectiveOldCode,
-            matchIndex + 1
-          );
-          if (secondMatch !== -1) {
+          if (matchIndex === -1) {
             validationErrors.push(
-              `oldCode matches multiple locations in ${filePath} — ambiguous replacement rejected`
+              `Could not find old code to replace in ${filePath}`
             );
             continue;
           }
-
-          const newContent =
-            currentContent.slice(0, matchIndex) +
-            change.newCode +
-            currentContent.slice(matchIndex + effectiveOldCode.length);
-
-          pendingChanges.push({
-            filePath,
-            newContent,
-            fileSha,
-            justification: change.justification,
-          });
         }
+
+        const secondMatch = currentContent.indexOf(
+          effectiveOldCode,
+          matchIndex + 1
+        );
+        if (secondMatch !== -1) {
+          validationErrors.push(
+            `oldCode matches multiple locations in ${filePath} — ambiguous replacement rejected`
+          );
+          continue;
+        }
+
+        // Apply the edit to the buffer so subsequent changes see it.
+        buffer.content =
+          currentContent.slice(0, matchIndex) +
+          change.newCode +
+          currentContent.slice(matchIndex + effectiveOldCode.length);
+        buffer.appliedChanges += 1;
+        appliedTotal += 1;
       } catch (fileError) {
         validationErrors.push(
           getErrorMessage(fileError, `validating ${filePath}`)
@@ -796,7 +819,7 @@ export class GitHubFixApplier implements FixApplier {
       }
     }
 
-    if (pendingChanges.length === 0) {
+    if (appliedTotal === 0) {
       for (const err of validationErrors) core.warning(err);
       return {
         success: false,
@@ -819,7 +842,8 @@ export class GitHubFixApplier implements FixApplier {
       };
     }
 
-    // Atomic commit: build all blobs + tree + commit in a single operation
+    // Atomic commit: one tree item per unique file path with the fully
+    // composed (post all-edits) content.
     try {
       const branchRef = await withRetry(
         () => octokit.git.getRef({ owner, repo, ref: `heads/${branchName}` }),
@@ -834,18 +858,22 @@ export class GitHubFixApplier implements FixApplier {
         content: string;
       }> = [];
 
-      for (const pending of pendingChanges) {
+      for (const [filePath, buffer] of fileBuffers) {
+        if (buffer.appliedChanges === 0) continue;
         treeItems.push({
-          path: pending.filePath,
+          path: filePath,
           mode: '100644' as const,
           type: 'blob' as const,
-          content: pending.newContent,
+          content: buffer.content,
         });
-        modifiedFiles.push(pending.filePath);
+        modifiedFiles.push(filePath);
       }
 
-      const fileList = pendingChanges.map((p) => p.filePath).join(', ');
-      const justification = pendingChanges[0].justification.slice(0, 50);
+      const fileList = modifiedFiles.join(', ');
+      const firstFile = modifiedFiles[0];
+      const justification = fileBuffers
+        .get(firstFile)!
+        .firstJustification.slice(0, 50);
       const commitMessage = `fix(test): ${justification}
 
 Automated fix generated by adept-triage-agent.

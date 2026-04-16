@@ -5182,109 +5182,117 @@ class GitHubFixApplier {
         const modifiedFiles = [];
         let lastCommitSha = '';
         const totalChanges = recommendation.proposedChanges.length;
-        const pendingChanges = [];
+        const fileBuffers = new Map();
         const validationErrors = [];
+        let appliedTotal = 0;
         for (const change of recommendation.proposedChanges) {
             const filePath = change.file;
             try {
-                const fileResponse = await withRetry(() => octokit.repos.getContent({
-                    owner,
-                    repo,
-                    path: filePath,
-                    ref: branchName,
-                }), `getting file content for ${filePath}`);
-                if (Array.isArray(fileResponse.data) ||
-                    fileResponse.data.type !== 'file') {
-                    validationErrors.push(`${filePath} is not a file`);
+                let buffer = fileBuffers.get(filePath);
+                if (!buffer) {
+                    const fileResponse = await withRetry(() => octokit.repos.getContent({
+                        owner,
+                        repo,
+                        path: filePath,
+                        ref: branchName,
+                    }), `getting file content for ${filePath}`);
+                    if (Array.isArray(fileResponse.data) ||
+                        fileResponse.data.type !== 'file') {
+                        validationErrors.push(`${filePath} is not a file`);
+                        continue;
+                    }
+                    buffer = {
+                        content: Buffer.from(fileResponse.data.content, 'base64').toString('utf-8'),
+                        fileSha: fileResponse.data.sha,
+                        appliedChanges: 0,
+                        firstJustification: change.justification,
+                    };
+                    fileBuffers.set(filePath, buffer);
+                }
+                if (!change.oldCode || !change.newCode) {
                     continue;
                 }
-                const currentContent = Buffer.from(fileResponse.data.content, 'base64').toString('utf-8');
-                const fileSha = fileResponse.data.sha;
-                if (change.oldCode && change.newCode) {
-                    let matchIndex = currentContent.indexOf(change.oldCode);
-                    let effectiveOldCode = change.oldCode;
+                const currentContent = buffer.content;
+                let matchIndex = currentContent.indexOf(change.oldCode);
+                let effectiveOldCode = change.oldCode;
+                if (matchIndex === -1) {
+                    core.info(`Exact match failed for ${filePath}, trying fuzzy strategies...`);
+                    const stripped = change.oldCode
+                        .split('\n')
+                        .map((line) => line.replace(/^\s*\d+:\s?/, ''))
+                        .join('\n');
+                    if (stripped !== change.oldCode) {
+                        matchIndex = currentContent.indexOf(stripped);
+                        if (matchIndex !== -1) {
+                            effectiveOldCode = stripped;
+                            core.info(`  ✅ Matched after stripping line number prefixes`);
+                        }
+                    }
                     if (matchIndex === -1) {
-                        core.info(`Exact match failed for ${filePath}, trying fuzzy strategies...`);
-                        const stripped = change.oldCode
+                        const normalizedOld = change.oldCode
                             .split('\n')
-                            .map((line) => line.replace(/^\s*\d+:\s?/, ''))
+                            .map((l) => l.trimEnd())
                             .join('\n');
-                        if (stripped !== change.oldCode) {
-                            matchIndex = currentContent.indexOf(stripped);
+                        const normalizedContent = currentContent
+                            .split('\n')
+                            .map((l) => l.trimEnd())
+                            .join('\n');
+                        const normIdx = normalizedContent.indexOf(normalizedOld);
+                        if (normIdx !== -1) {
+                            const linesBefore = normalizedContent.slice(0, normIdx).split('\n').length - 1;
+                            const linesInOld = normalizedOld.split('\n').length;
+                            const actualLines = currentContent.split('\n');
+                            effectiveOldCode = actualLines.slice(linesBefore, linesBefore + linesInOld).join('\n');
+                            matchIndex = currentContent.indexOf(effectiveOldCode);
                             if (matchIndex !== -1) {
-                                effectiveOldCode = stripped;
-                                core.info(`  ✅ Matched after stripping line number prefixes`);
+                                core.info(`  ✅ Matched after trailing whitespace normalization`);
                             }
                         }
-                        if (matchIndex === -1) {
-                            const normalizedOld = change.oldCode
-                                .split('\n')
-                                .map((l) => l.trimEnd())
-                                .join('\n');
-                            const normalizedContent = currentContent
-                                .split('\n')
-                                .map((l) => l.trimEnd())
-                                .join('\n');
-                            const normIdx = normalizedContent.indexOf(normalizedOld);
-                            if (normIdx !== -1) {
-                                const linesBefore = normalizedContent.slice(0, normIdx).split('\n').length - 1;
-                                const linesInOld = normalizedOld.split('\n').length;
-                                const actualLines = currentContent.split('\n');
-                                effectiveOldCode = actualLines.slice(linesBefore, linesBefore + linesInOld).join('\n');
-                                matchIndex = currentContent.indexOf(effectiveOldCode);
-                                if (matchIndex !== -1) {
-                                    core.info(`  ✅ Matched after trailing whitespace normalization`);
-                                }
-                            }
-                        }
-                        if (matchIndex === -1 && change.line > 0) {
-                            const contentLines = currentContent.split('\n');
-                            const oldLineCount = change.oldCode.split('\n').length;
-                            const start = Math.max(0, change.line - 3);
-                            const end = Math.min(contentLines.length, change.line + oldLineCount + 2);
-                            for (let s = start; s <= Math.min(start + 5, end - oldLineCount); s++) {
-                                const candidate = contentLines.slice(s, s + oldLineCount).join('\n');
-                                const similarity = computeLineSimilarity(change.oldCode, candidate);
-                                if (similarity >= 0.5) {
-                                    const candidateIdx = currentContent.indexOf(candidate);
-                                    if (candidateIdx !== -1) {
-                                        const secondIdx = currentContent.indexOf(candidate, candidateIdx + 1);
-                                        if (secondIdx === -1) {
-                                            matchIndex = candidateIdx;
-                                            effectiveOldCode = candidate;
-                                            core.info(`  ✅ Matched via line-range similarity (${(similarity * 100).toFixed(0)}%) at line ${s + 1}`);
-                                            break;
-                                        }
+                    }
+                    if (matchIndex === -1 && change.line > 0) {
+                        const contentLines = currentContent.split('\n');
+                        const oldLineCount = change.oldCode.split('\n').length;
+                        const start = Math.max(0, change.line - 3);
+                        const end = Math.min(contentLines.length, change.line + oldLineCount + 2);
+                        for (let s = start; s <= Math.min(start + 5, end - oldLineCount); s++) {
+                            const candidate = contentLines.slice(s, s + oldLineCount).join('\n');
+                            const similarity = computeLineSimilarity(change.oldCode, candidate);
+                            if (similarity >= 0.5) {
+                                const candidateIdx = currentContent.indexOf(candidate);
+                                if (candidateIdx !== -1) {
+                                    const secondIdx = currentContent.indexOf(candidate, candidateIdx + 1);
+                                    if (secondIdx === -1) {
+                                        matchIndex = candidateIdx;
+                                        effectiveOldCode = candidate;
+                                        core.info(`  ✅ Matched via line-range similarity (${(similarity * 100).toFixed(0)}%) at line ${s + 1}`);
+                                        break;
                                     }
                                 }
                             }
                         }
-                        if (matchIndex === -1) {
-                            validationErrors.push(`Could not find old code to replace in ${filePath}`);
-                            continue;
-                        }
                     }
-                    const secondMatch = currentContent.indexOf(effectiveOldCode, matchIndex + 1);
-                    if (secondMatch !== -1) {
-                        validationErrors.push(`oldCode matches multiple locations in ${filePath} — ambiguous replacement rejected`);
+                    if (matchIndex === -1) {
+                        validationErrors.push(`Could not find old code to replace in ${filePath}`);
                         continue;
                     }
-                    const newContent = currentContent.slice(0, matchIndex) +
+                }
+                const secondMatch = currentContent.indexOf(effectiveOldCode, matchIndex + 1);
+                if (secondMatch !== -1) {
+                    validationErrors.push(`oldCode matches multiple locations in ${filePath} — ambiguous replacement rejected`);
+                    continue;
+                }
+                buffer.content =
+                    currentContent.slice(0, matchIndex) +
                         change.newCode +
                         currentContent.slice(matchIndex + effectiveOldCode.length);
-                    pendingChanges.push({
-                        filePath,
-                        newContent,
-                        fileSha,
-                        justification: change.justification,
-                    });
-                }
+                buffer.appliedChanges += 1;
+                appliedTotal += 1;
             }
             catch (fileError) {
                 validationErrors.push(getErrorMessage(fileError, `validating ${filePath}`));
             }
         }
-        if (pendingChanges.length === 0) {
+        if (appliedTotal === 0) {
             for (const err of validationErrors)
                 core.warning(err);
             return {
@@ -5308,17 +5316,22 @@ class GitHubFixApplier {
             const branchRef = await withRetry(() => octokit.git.getRef({ owner, repo, ref: `heads/${branchName}` }), `getting ref for ${branchName}`);
             const baseSha = branchRef.data.object.sha;
             const treeItems = [];
-            for (const pending of pendingChanges) {
+            for (const [filePath, buffer] of fileBuffers) {
+                if (buffer.appliedChanges === 0)
+                    continue;
                 treeItems.push({
-                    path: pending.filePath,
+                    path: filePath,
                     mode: '100644',
                     type: 'blob',
-                    content: pending.newContent,
+                    content: buffer.content,
                 });
-                modifiedFiles.push(pending.filePath);
+                modifiedFiles.push(filePath);
             }
-            const fileList = pendingChanges.map((p) => p.filePath).join(', ');
-            const justification = pendingChanges[0].justification.slice(0, 50);
+            const fileList = modifiedFiles.join(', ');
+            const firstFile = modifiedFiles[0];
+            const justification = fileBuffers
+                .get(firstFile)
+                .firstJustification.slice(0, 50);
             const commitMessage = `fix(test): ${justification}
 
 Automated fix generated by adept-triage-agent.
