@@ -1591,6 +1591,36 @@ cy.get('my-component').shadow().find('.inner-element')
 cy.get('iframe#editor').its('0.contentDocument.body').then(cy.wrap)
 \`\`\`
 
+### No-op Patterns to Avoid
+\`\`\`javascript
+// AVOID: wrapping Cypress chains in conditionals that re-check what
+// Cypress already asserts. \`.should('not.exist')\` already waits until
+// the element is gone (or times out).
+// ❌ cy.get('body').then($body => {
+//      if ($body.find('#snackbar').length > 0) {
+//        cy.get('#snackbar').should('not.exist')  // already waits
+//      }
+//    })
+
+// PREFER: just call the assertion — Cypress handles the absent case.
+// ✅ cy.get('#snackbar').should('not.exist')
+
+// Similarly, avoid adding \`cy.wait(1000)\` as a "safety buffer" before an
+// assertion that already retries. Use an assertion-based wait or intercept.
+\`\`\`
+
+### Selector Form: Avoid Ambiguous Text Matches
+\`\`\`javascript
+// AVOID: mixing scope implicitly — \`cy.contains()\` returns the deepest
+// matching element, which may not be the one you want when multiple
+// elements contain the same text.
+// ❌ cy.contains('Success')
+
+// PREFER: scope contains() to a specific container, or use selector + text
+// ✅ cy.get('[role="dialog"]').contains('Success')
+// ✅ cy.findByRole('dialog').findByText('Success')  // @testing-library
+\`\`\`
+
 `;
 exports.WDIO_PATTERNS = `## WebDriverIO Fix Patterns
 
@@ -1670,6 +1700,45 @@ await el.click()
 // NEW: Re-query before action
 await $('button').waitForClickable({ timeout: 10000 })
 await $('button').click()
+\`\`\`
+
+### Selector Form: Avoid Mixed Strategies
+\`\`\`javascript
+// AVOID: combining an attribute selector with partial-text matching on the
+// SAME element. WDIO's docs call this "mixed strategies" and behavior
+// depends on version; the \`*=\` text match may or may not scan descendant
+// text of the attribute-matched element.
+// ❌ await $("[role='dialog']*=Your success text")
+// ❌ await $("header h1*=Welcome")   // explicitly forbidden in WDIO docs
+
+// PREFER: chained element queries (guaranteed to scope correctly)
+// ✅ const dialog = await $("[role='dialog']")
+//    const success = await dialog.$("*=Your success text")
+//    if (await success.isDisplayed()) { ... }
+
+// OR: XPath with explicit descendant semantics (always unambiguous)
+// ✅ await $("//*[@role='dialog']//*[contains(normalize-space(), 'Your success text')]")
+\`\`\`
+
+### No-op Patterns to Avoid
+\`\`\`javascript
+// AVOID: wrapping already-idempotent operations in existence guards.
+// Most WDIO waits already handle the absent case cleanly — adding a guard
+// creates a race window without adding safety.
+// ❌ if (await el.isExisting()) {
+//      await el.waitForExist({ reverse: true })   // already no-ops when absent
+//    }
+// The guarded form converts a real "appeared then didn't dismiss" signal
+// into silence (if the element appears between the isExisting check and
+// the wait, the wait is skipped).
+
+// PREFER: call the wait directly — reverse: true returns immediately when
+// the element doesn't exist, so no guard is needed.
+// ✅ await el.waitForExist({ timeout: 120000, reverse: true })
+
+// Similarly, don't wrap isDisplayed / isExisting in defensive try/catch
+// that just returns false — these methods already return false on missing
+// elements. Only catch when you need to distinguish stale-element errors.
 \`\`\`
 
 `;
@@ -2163,12 +2232,21 @@ Review code changes proposed to fix failing tests. Your job is to:
 - Fix could cause other tests to fail
 - Security vulnerabilities
 - Fix reasoning contradicts the PR diff (e.g., claims code was "changed" when the diff shows it was NOT modified)
+- **Fix is a no-op**: the proposed change is behaviorally equivalent to the original code. Examples to reject:
+  - Wrapping \`waitForExist({ reverse: true })\` in \`if (isExisting())\` — the reverse wait already returns immediately when the element is absent; the guard adds no safety and opens a race window
+  - Wrapping \`isDisplayed()\` / \`isExisting()\` in try/catch that just returns false — these methods already return false on missing elements
+  - Adding \`.should('exist')\` before another \`.should(...)\` on the same element — the second assertion already waits for the element
+  - Reformatting whitespace / reordering identical logic with no behavioral change
+- **Fix targets the wrong line**: the proposed \`oldCode\` is in a different block than the actual failing assertion. Verify by cross-referencing the error message / stack trace against the change location. A fix at line N that doesn't touch the line where the timeout/assertion fired is almost always wrong.
 
 ### WARNING Issues (Should Fix)
 - Suboptimal selector choice
 - Missing error handling
 - Fragile timing assumptions
 - Hardcoded values that should be configurable
+- **Mixed selector strategies** (WebdriverIO): combining an attribute selector with partial-text matching on the SAME element, e.g. \`$("[role='dialog']*=Success")\`. WDIO's documented behavior for this form is ambiguous. Suggest chained form (\`$("[role='dialog']").$("*=Success")\`) or XPath.
+- **Ambiguous \`cy.contains()\`** (Cypress): unscoped \`cy.contains('text')\` returns the deepest matching element; prefer \`cy.get('[role="dialog"]').contains('text')\` or a scoped selector.
+- **Stacking fallbacks on chronically flaky specs**: if the agent memory context shows this spec has been auto-fixed multiple times recently, flag when the proposed fix adds yet another fallback selector/timeout rather than removing a fixed \`browser.pause()\` or consolidating success surfaces. Layering defenses is a smell.
 
 ### SUGGESTION Issues (Nice to Have)
 - Code style inconsistencies
@@ -3170,7 +3248,7 @@ exports.ArtifactFetcher = ArtifactFetcher;
 "use strict";
 
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.FIX_VALIDATE_LOOP = exports.AGENT_CONFIG = exports.DEFAULT_PRODUCT_URL = exports.DEFAULT_PRODUCT_REPO = exports.AUTO_FIX = exports.TEST_ISSUE_CATEGORIES = exports.ERROR_TYPES = exports.FORMATTING = exports.ARTIFACTS = exports.SHORT_SHA_LENGTH = exports.OPENAI = exports.CONFIDENCE = exports.LOG_LIMITS = void 0;
+exports.CHRONIC_FLAKINESS_THRESHOLD = exports.FIX_VALIDATE_LOOP = exports.AGENT_CONFIG = exports.DEFAULT_PRODUCT_URL = exports.DEFAULT_PRODUCT_REPO = exports.AUTO_FIX = exports.TEST_ISSUE_CATEGORIES = exports.ERROR_TYPES = exports.FORMATTING = exports.ARTIFACTS = exports.SHORT_SHA_LENGTH = exports.OPENAI = exports.CONFIDENCE = exports.LOG_LIMITS = void 0;
 exports.LOG_LIMITS = {
     GITHUB_MAX_SIZE: 50_000,
     ARTIFACT_SOFT_CAP: 20_000,
@@ -3242,6 +3320,7 @@ exports.FIX_VALIDATE_LOOP = {
     MAX_ITERATIONS: 3,
     TEST_TIMEOUT_MS: 300_000,
 };
+exports.CHRONIC_FLAKINESS_THRESHOLD = 3;
 //# sourceMappingURL=constants.js.map
 
 /***/ }),
@@ -3995,6 +4074,7 @@ const simplified_analyzer_1 = __nccwpck_require__(20078);
 const log_processor_1 = __nccwpck_require__(65833);
 const skill_store_1 = __nccwpck_require__(60215);
 const root_cause_category_1 = __nccwpck_require__(21406);
+const constants_1 = __nccwpck_require__(58361);
 const output_1 = __nccwpck_require__(12639);
 const validator_1 = __nccwpck_require__(34670);
 class PipelineCoordinator {
@@ -4112,6 +4192,20 @@ class PipelineCoordinator {
             return;
         if (classification.verdict !== 'TEST_ISSUE')
             return;
+        const chronicFlakinessSignal = skillStore
+            ? skillStore.detectFlakiness(errorData.fileName || 'unknown')
+            : undefined;
+        if (chronicFlakinessSignal?.isFlaky &&
+            chronicFlakinessSignal.fixCount >= constants_1.CHRONIC_FLAKINESS_THRESHOLD) {
+            const reason = `Chronic flakiness: ${chronicFlakinessSignal.message} Auto-fix skipped — likely needs human refactor (replace fixed pauses with deterministic waits, consolidate success surfaces) rather than another fallback.`;
+            core.warning(`⏭️  ${reason}`);
+            (0, output_1.setSuccessOutput)({
+                ...classification,
+                autoFixSkipped: true,
+                autoFixSkippedReason: reason,
+            }, errorData, null, chronicFlakinessSignal);
+            return;
+        }
         const { fixRecommendation, autoFixResult, iterations, prUrl: skillPrUrl, agentRootCause, agentInvestigationFindings } = await this.repair(classification, errorData, skillStore);
         if (skillStore && autoFixTargetRepo && errorData) {
             const fixSucceeded = !!(autoFixResult?.success && autoFixResult.validationStatus === 'passed');
@@ -4367,6 +4461,12 @@ function setSuccessOutput(result, errorData, autoFixResult, flakiness) {
                 },
             }
             : {}),
+        ...(result.autoFixSkipped
+            ? {
+                autoFixSkipped: true,
+                autoFixSkippedReason: result.autoFixSkippedReason || '',
+            }
+            : {}),
         ...(flakiness?.isFlaky
             ? {
                 flakiness: {
@@ -4383,6 +4483,7 @@ function setSuccessOutput(result, errorData, autoFixResult, flakiness) {
             logSize: errorData.logs?.reduce((sum, l) => sum + l.length, 0) ?? 0,
             hasFixRecommendation: !!result.fixRecommendation,
             autoFixApplied: autoFixResult?.success || false,
+            autoFixSkipped: !!result.autoFixSkipped,
         },
     };
     core.setOutput('verdict', result.verdict);
@@ -4424,9 +4525,16 @@ function setSuccessOutput(result, errorData, autoFixResult, flakiness) {
         core.setOutput('auto_fix_applied', 'false');
         core.setOutput('validation_status', autoFixResult?.validationStatus || 'skipped');
     }
+    core.setOutput('auto_fix_skipped', result.autoFixSkipped ? 'true' : 'false');
+    if (result.autoFixSkippedReason) {
+        core.setOutput('auto_fix_skipped_reason', result.autoFixSkippedReason);
+    }
     core.info(`Verdict: ${result.verdict}`);
     core.info(`Confidence: ${result.confidence}%`);
     core.info(`Summary: ${result.summary}`);
+    if (result.autoFixSkipped) {
+        core.info(`\n⏭️  Auto-fix intentionally skipped: ${result.autoFixSkippedReason || 'see triage_json.autoFixSkippedReason'}`);
+    }
     if (result.verdict === 'PRODUCT_ISSUE' &&
         result.suggestedSourceLocations &&
         result.suggestedSourceLocations.length > 0) {

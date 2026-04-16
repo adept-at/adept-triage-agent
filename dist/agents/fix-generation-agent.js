@@ -101,6 +101,36 @@ cy.get('my-component').shadow().find('.inner-element')
 cy.get('iframe#editor').its('0.contentDocument.body').then(cy.wrap)
 \`\`\`
 
+### No-op Patterns to Avoid
+\`\`\`javascript
+// AVOID: wrapping Cypress chains in conditionals that re-check what
+// Cypress already asserts. \`.should('not.exist')\` already waits until
+// the element is gone (or times out).
+// ❌ cy.get('body').then($body => {
+//      if ($body.find('#snackbar').length > 0) {
+//        cy.get('#snackbar').should('not.exist')  // already waits
+//      }
+//    })
+
+// PREFER: just call the assertion — Cypress handles the absent case.
+// ✅ cy.get('#snackbar').should('not.exist')
+
+// Similarly, avoid adding \`cy.wait(1000)\` as a "safety buffer" before an
+// assertion that already retries. Use an assertion-based wait or intercept.
+\`\`\`
+
+### Selector Form: Avoid Ambiguous Text Matches
+\`\`\`javascript
+// AVOID: mixing scope implicitly — \`cy.contains()\` returns the deepest
+// matching element, which may not be the one you want when multiple
+// elements contain the same text.
+// ❌ cy.contains('Success')
+
+// PREFER: scope contains() to a specific container, or use selector + text
+// ✅ cy.get('[role="dialog"]').contains('Success')
+// ✅ cy.findByRole('dialog').findByText('Success')  // @testing-library
+\`\`\`
+
 `;
 exports.WDIO_PATTERNS = `## WebDriverIO Fix Patterns
 
@@ -180,6 +210,45 @@ await el.click()
 // NEW: Re-query before action
 await $('button').waitForClickable({ timeout: 10000 })
 await $('button').click()
+\`\`\`
+
+### Selector Form: Avoid Mixed Strategies
+\`\`\`javascript
+// AVOID: combining an attribute selector with partial-text matching on the
+// SAME element. WDIO's docs call this "mixed strategies" and behavior
+// depends on version; the \`*=\` text match may or may not scan descendant
+// text of the attribute-matched element.
+// ❌ await $("[role='dialog']*=Your success text")
+// ❌ await $("header h1*=Welcome")   // explicitly forbidden in WDIO docs
+
+// PREFER: chained element queries (guaranteed to scope correctly)
+// ✅ const dialog = await $("[role='dialog']")
+//    const success = await dialog.$("*=Your success text")
+//    if (await success.isDisplayed()) { ... }
+
+// OR: XPath with explicit descendant semantics (always unambiguous)
+// ✅ await $("//*[@role='dialog']//*[contains(normalize-space(), 'Your success text')]")
+\`\`\`
+
+### No-op Patterns to Avoid
+\`\`\`javascript
+// AVOID: wrapping already-idempotent operations in existence guards.
+// Most WDIO waits already handle the absent case cleanly — adding a guard
+// creates a race window without adding safety.
+// ❌ if (await el.isExisting()) {
+//      await el.waitForExist({ reverse: true })   // already no-ops when absent
+//    }
+// The guarded form converts a real "appeared then didn't dismiss" signal
+// into silence (if the element appears between the isExisting check and
+// the wait, the wait is skipped).
+
+// PREFER: call the wait directly — reverse: true returns immediately when
+// the element doesn't exist, so no guard is needed.
+// ✅ await el.waitForExist({ timeout: 120000, reverse: true })
+
+// Similarly, don't wrap isDisplayed / isExisting in defensive try/catch
+// that just returns false — these methods already return false on missing
+// elements. Only catch when you need to distinguish stale-element errors.
 \`\`\`
 
 `;

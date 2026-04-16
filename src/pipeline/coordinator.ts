@@ -9,6 +9,7 @@ import { analyzeFailure } from '../simplified-analyzer';
 import { processWorkflowLogs } from '../services/log-processor';
 import { SkillStore, buildSkill, describeFixPattern } from '../services/skill-store';
 import { inferRootCauseCategoryFromText } from '../repair/root-cause-category';
+import { CHRONIC_FLAKINESS_THRESHOLD } from '../config/constants';
 import {
   resolveAutoFixTargetRepo,
   setSuccessOutput,
@@ -236,6 +237,32 @@ export class PipelineCoordinator {
 
     if (classification.confidence < this.inputs.confidenceThreshold) return;
     if (classification.verdict !== 'TEST_ISSUE') return;
+
+    // Chronic flakiness gate: when a spec has been auto-fixed repeatedly in
+    // the recent window, another auto-fix is likely stacking fallbacks rather
+    // than addressing the underlying synchronization/product issue. Skip the
+    // repair step and surface the classification for human investigation.
+    const chronicFlakinessSignal = skillStore
+      ? skillStore.detectFlakiness(errorData.fileName || 'unknown')
+      : undefined;
+    if (
+      chronicFlakinessSignal?.isFlaky &&
+      chronicFlakinessSignal.fixCount >= CHRONIC_FLAKINESS_THRESHOLD
+    ) {
+      const reason = `Chronic flakiness: ${chronicFlakinessSignal.message} Auto-fix skipped — likely needs human refactor (replace fixed pauses with deterministic waits, consolidate success surfaces) rather than another fallback.`;
+      core.warning(`⏭️  ${reason}`);
+      setSuccessOutput(
+        {
+          ...classification,
+          autoFixSkipped: true,
+          autoFixSkippedReason: reason,
+        },
+        errorData,
+        null,
+        chronicFlakinessSignal
+      );
+      return;
+    }
 
     const { fixRecommendation, autoFixResult, iterations, prUrl: skillPrUrl, agentRootCause, agentInvestigationFindings } = await this.repair(
       classification,

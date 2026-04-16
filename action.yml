@@ -137,6 +137,10 @@ outputs:
     description: 'Validation status: passed (local test succeeded), pending, or skipped'
   validation_url:
     description: 'URL to the validation workflow run (legacy remote validation path only)'
+  auto_fix_skipped:
+    description: 'Whether auto-fix was intentionally withheld (true/false). Set to true when the agent decides not to apply a fix despite a TEST_ISSUE verdict — typically because the spec is chronically flaky and needs human investigation rather than another fallback fix. Verdict/confidence/reasoning still reflect the honest classification; only the auto-fix step is skipped.'
+  auto_fix_skipped_reason:
+    description: 'Human-readable reason when auto_fix_skipped is true (e.g., chronic flakiness message, recommendation for human follow-up).'
 
 runs:
   using: 'node24'

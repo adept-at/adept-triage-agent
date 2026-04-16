@@ -40,6 +40,7 @@ const simplified_analyzer_1 = require("../simplified-analyzer");
 const log_processor_1 = require("../services/log-processor");
 const skill_store_1 = require("../services/skill-store");
 const root_cause_category_1 = require("../repair/root-cause-category");
+const constants_1 = require("../config/constants");
 const output_1 = require("./output");
 const validator_1 = require("./validator");
 class PipelineCoordinator {
@@ -157,6 +158,20 @@ class PipelineCoordinator {
             return;
         if (classification.verdict !== 'TEST_ISSUE')
             return;
+        const chronicFlakinessSignal = skillStore
+            ? skillStore.detectFlakiness(errorData.fileName || 'unknown')
+            : undefined;
+        if (chronicFlakinessSignal?.isFlaky &&
+            chronicFlakinessSignal.fixCount >= constants_1.CHRONIC_FLAKINESS_THRESHOLD) {
+            const reason = `Chronic flakiness: ${chronicFlakinessSignal.message} Auto-fix skipped — likely needs human refactor (replace fixed pauses with deterministic waits, consolidate success surfaces) rather than another fallback.`;
+            core.warning(`⏭️  ${reason}`);
+            (0, output_1.setSuccessOutput)({
+                ...classification,
+                autoFixSkipped: true,
+                autoFixSkippedReason: reason,
+            }, errorData, null, chronicFlakinessSignal);
+            return;
+        }
         const { fixRecommendation, autoFixResult, iterations, prUrl: skillPrUrl, agentRootCause, agentInvestigationFindings } = await this.repair(classification, errorData, skillStore);
         if (skillStore && autoFixTargetRepo && errorData) {
             const fixSucceeded = !!(autoFixResult?.success && autoFixResult.validationStatus === 'passed');

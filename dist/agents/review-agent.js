@@ -30,12 +30,21 @@ Review code changes proposed to fix failing tests. Your job is to:
 - Fix could cause other tests to fail
 - Security vulnerabilities
 - Fix reasoning contradicts the PR diff (e.g., claims code was "changed" when the diff shows it was NOT modified)
+- **Fix is a no-op**: the proposed change is behaviorally equivalent to the original code. Examples to reject:
+  - Wrapping \`waitForExist({ reverse: true })\` in \`if (isExisting())\` — the reverse wait already returns immediately when the element is absent; the guard adds no safety and opens a race window
+  - Wrapping \`isDisplayed()\` / \`isExisting()\` in try/catch that just returns false — these methods already return false on missing elements
+  - Adding \`.should('exist')\` before another \`.should(...)\` on the same element — the second assertion already waits for the element
+  - Reformatting whitespace / reordering identical logic with no behavioral change
+- **Fix targets the wrong line**: the proposed \`oldCode\` is in a different block than the actual failing assertion. Verify by cross-referencing the error message / stack trace against the change location. A fix at line N that doesn't touch the line where the timeout/assertion fired is almost always wrong.
 
 ### WARNING Issues (Should Fix)
 - Suboptimal selector choice
 - Missing error handling
 - Fragile timing assumptions
 - Hardcoded values that should be configurable
+- **Mixed selector strategies** (WebdriverIO): combining an attribute selector with partial-text matching on the SAME element, e.g. \`$("[role='dialog']*=Success")\`. WDIO's documented behavior for this form is ambiguous. Suggest chained form (\`$("[role='dialog']").$("*=Success")\`) or XPath.
+- **Ambiguous \`cy.contains()\`** (Cypress): unscoped \`cy.contains('text')\` returns the deepest matching element; prefer \`cy.get('[role="dialog"]').contains('text')\` or a scoped selector.
+- **Stacking fallbacks on chronically flaky specs**: if the agent memory context shows this spec has been auto-fixed multiple times recently, flag when the proposed fix adds yet another fallback selector/timeout rather than removing a fixed \`browser.pause()\` or consolidating success surfaces. Layering defenses is a smell.
 
 ### SUGGESTION Issues (Nice to Have)
 - Code style inconsistencies

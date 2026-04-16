@@ -106,6 +106,12 @@ function setSuccessOutput(result, errorData, autoFixResult, flakiness) {
                 },
             }
             : {}),
+        ...(result.autoFixSkipped
+            ? {
+                autoFixSkipped: true,
+                autoFixSkippedReason: result.autoFixSkippedReason || '',
+            }
+            : {}),
         ...(flakiness?.isFlaky
             ? {
                 flakiness: {
@@ -122,6 +128,7 @@ function setSuccessOutput(result, errorData, autoFixResult, flakiness) {
             logSize: errorData.logs?.reduce((sum, l) => sum + l.length, 0) ?? 0,
             hasFixRecommendation: !!result.fixRecommendation,
             autoFixApplied: autoFixResult?.success || false,
+            autoFixSkipped: !!result.autoFixSkipped,
         },
     };
     core.setOutput('verdict', result.verdict);
@@ -163,9 +170,16 @@ function setSuccessOutput(result, errorData, autoFixResult, flakiness) {
         core.setOutput('auto_fix_applied', 'false');
         core.setOutput('validation_status', autoFixResult?.validationStatus || 'skipped');
     }
+    core.setOutput('auto_fix_skipped', result.autoFixSkipped ? 'true' : 'false');
+    if (result.autoFixSkippedReason) {
+        core.setOutput('auto_fix_skipped_reason', result.autoFixSkippedReason);
+    }
     core.info(`Verdict: ${result.verdict}`);
     core.info(`Confidence: ${result.confidence}%`);
     core.info(`Summary: ${result.summary}`);
+    if (result.autoFixSkipped) {
+        core.info(`\n⏭️  Auto-fix intentionally skipped: ${result.autoFixSkippedReason || 'see triage_json.autoFixSkippedReason'}`);
+    }
     if (result.verdict === 'PRODUCT_ISSUE' &&
         result.suggestedSourceLocations &&
         result.suggestedSourceLocations.length > 0) {

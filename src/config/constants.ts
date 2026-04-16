@@ -135,3 +135,13 @@ export const FIX_VALIDATE_LOOP = {
   /** Maximum time for a single local test run (5 minutes) */
   TEST_TIMEOUT_MS: 300_000,
 } as const;
+
+/**
+ * When a spec has been auto-fixed at least this many times within the
+ * short/long flakiness window (see FLAKY_THRESHOLDS in skill-store.ts),
+ * the coordinator will skip auto-fix and surface the analysis for human
+ * review instead. The signal is that the agent is "stacking fallbacks"
+ * rather than addressing the underlying synchronization/product issue,
+ * and another auto-fix is unlikely to help.
+ */
+export const CHRONIC_FLAKINESS_THRESHOLD = 3;

@@ -71,4 +71,5 @@ export declare const FIX_VALIDATE_LOOP: {
     readonly MAX_ITERATIONS: 3;
     readonly TEST_TIMEOUT_MS: 300000;
 };
+export declare const CHRONIC_FLAKINESS_THRESHOLD = 3;
 //# sourceMappingURL=constants.d.ts.map

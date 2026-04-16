@@ -22,7 +22,7 @@ Best-effort same-workflow analysis is still supported when you target the curren
 We recommend using the major version tag for automatic updates:
 
 - **`@v1`** - Automatically gets backward-compatible updates (recommended)
-- **`@v1.46.0`** - Pin to specific version for full reproducibility
+- **`@v1.47.0`** - Pin to specific version for full reproducibility
 
 ## Quick Start
 

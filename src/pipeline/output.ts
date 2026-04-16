@@ -69,6 +69,14 @@ export function setSuccessOutput(
       reason: string;
     }[];
     fixRecommendation?: FixRecommendation;
+    /**
+     * True when the coordinator deliberately skipped auto-fix (e.g., chronic
+     * flakiness threshold reached). The classification is still honest
+     * (TEST_ISSUE etc.), but the agent is stepping back to let a human
+     * investigate rather than stacking another fallback fix.
+     */
+    autoFixSkipped?: boolean;
+    autoFixSkippedReason?: string;
   },
   errorData: { screenshots?: Array<{ name: string }>; logs?: string[] },
   autoFixResult?: ApplyResult | null,
@@ -101,6 +109,12 @@ export function setSuccessOutput(
           },
         }
       : {}),
+    ...(result.autoFixSkipped
+      ? {
+          autoFixSkipped: true,
+          autoFixSkippedReason: result.autoFixSkippedReason || '',
+        }
+      : {}),
     ...(flakiness?.isFlaky
       ? {
           flakiness: {
@@ -118,6 +132,7 @@ export function setSuccessOutput(
       logSize: errorData.logs?.reduce((sum, l) => sum + l.length, 0) ?? 0,
       hasFixRecommendation: !!result.fixRecommendation,
       autoFixApplied: autoFixResult?.success || false,
+      autoFixSkipped: !!result.autoFixSkipped,
     },
   };
 
@@ -184,9 +199,23 @@ export function setSuccessOutput(
     );
   }
 
+  // Auto-fix skip signal (chronic flakiness, etc.) — downstream Slack /
+  // dashboards key on this to distinguish "no fix available" from "fix
+  // was intentionally withheld for human review".
+  core.setOutput('auto_fix_skipped', result.autoFixSkipped ? 'true' : 'false');
+  if (result.autoFixSkippedReason) {
+    core.setOutput('auto_fix_skipped_reason', result.autoFixSkippedReason);
+  }
+
   core.info(`Verdict: ${result.verdict}`);
   core.info(`Confidence: ${result.confidence}%`);
   core.info(`Summary: ${result.summary}`);
+
+  if (result.autoFixSkipped) {
+    core.info(
+      `\n⏭️  Auto-fix intentionally skipped: ${result.autoFixSkippedReason || 'see triage_json.autoFixSkippedReason'}`
+    );
+  }
 
   if (
     result.verdict === 'PRODUCT_ISSUE' &&

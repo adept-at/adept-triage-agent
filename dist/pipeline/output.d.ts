@@ -27,6 +27,8 @@ export declare function setSuccessOutput(result: {
         reason: string;
     }[];
     fixRecommendation?: FixRecommendation;
+    autoFixSkipped?: boolean;
+    autoFixSkippedReason?: string;
 }, errorData: {
     screenshots?: Array<{
         name: string;
