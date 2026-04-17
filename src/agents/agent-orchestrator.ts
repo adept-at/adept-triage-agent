@@ -14,7 +14,7 @@ import {
   FixGenerationOutput,
   CodeChange,
 } from './fix-generation-agent';
-import { ReviewAgent, ReviewOutput } from './review-agent';
+import { ReviewAgent, ReviewOutput, ReviewIssue } from './review-agent';
 import { FixRecommendation, ErrorData, SourceFetchContext } from '../types';
 import { TriageSkill, FlakinessSignal, formatSkillsForPrompt } from '../services/skill-store';
 import { AGENT_CONFIG } from '../config/constants';
@@ -361,6 +361,10 @@ export class AgentOrchestrator {
     let lastFix: FixGenerationOutput | null = null;
     let reviewFeedback: string | null = null;
     let fixReviewChainId: string | undefined;
+    // Captures the issues from the most recent review iteration so the
+    // max-iterations fallback can refuse to ship when quality CRITICALs
+    // (trace missing/vague, strictly-stronger logic) were still open.
+    let lastReviewIssues: ReviewIssue[] = [];
 
     while (iterations < this.config.maxIterations) {
       iterations++;
@@ -501,9 +505,27 @@ export class AgentOrchestrator {
       lastResponseId,
             };
           } else {
-            reviewFeedback = review.issues
+            lastReviewIssues = review.issues;
+            const issueLines = review.issues
               .map((i) => `[${i.severity}] ${i.description}`)
               .join('\n');
+            // When the reviewer flagged a quality CRITICAL (trace/strictly-
+            // stronger), replay the prior trace in feedback so the fix-gen
+            // agent can see exactly what it said and why it was rejected.
+            // Chained `previous_response_id` makes the prior output
+            // technically reachable, but models reliably under-emit fields
+            // they "already provided" on retry — the explicit replay
+            // forces a fresh articulation.
+            const priorTrace = lastFix.failureModeTrace;
+            const blocking = review.issues.some(isBlockingCriticalIssue);
+            const traceReplay = blocking && priorTrace
+              ? `\n\nYOUR PREVIOUS failureModeTrace (reviewer rejected this — do NOT repeat the same trace verbatim; produce a concrete, value-referenced trace):\n` +
+                `- originalState: ${priorTrace.originalState || '(was empty)'}\n` +
+                `- rootMechanism: ${priorTrace.rootMechanism || '(was empty)'}\n` +
+                `- newStateAfterFix: ${priorTrace.newStateAfterFix || '(was empty)'}\n` +
+                `- whyAssertionPassesNow: ${priorTrace.whyAssertionPassesNow || '(was empty)'}`
+              : '';
+            reviewFeedback = issueLines + traceReplay;
             core.warning(`Fix not approved. Issues: ${review.issues.length}`);
             core.info(`   📝 Feedback to next iteration:\n${reviewFeedback}`);
           }
@@ -519,6 +541,25 @@ export class AgentOrchestrator {
     }
 
     if (lastFix && lastFix.confidence >= this.config.minConfidence) {
+      // Refuse to ship if the last review had any *quality* CRITICAL open
+      // (trace missing/vague, strictly-stronger logic). These gates exist
+      // precisely to catch "plausible-sounding but causally unsound fix"
+      // and the confidence-based fallback must not bypass them — otherwise
+      // the review CRITICAL becomes advisory and the whole trace-enforced
+      // review layer is decoration.
+      const blockingCriticals = lastReviewIssues.filter(isBlockingCriticalIssue);
+      if (blockingCriticals.length > 0) {
+        const reasons = blockingCriticals.map((i) => i.description).join('; ');
+        core.warning(
+          `Max iterations (${this.config.maxIterations}) reached with unresolved quality CRITICAL(s) — refusing to ship the fix. Reasons: ${reasons}`
+        );
+        return {
+          error: `Max iterations reached with unresolved quality CRITICAL(s): ${reasons}`,
+          iterations,
+          lastResponseId,
+        };
+      }
+
       core.warning(`Max iterations (${this.config.maxIterations}) reached — review never approved. Returning last fix as fallback.`);
       core.info(`   Fallback fix: confidence=${lastFix.confidence}%, changes=${lastFix.changes.length}, summary="${lastFix.summary}"`);
       core.info(`   ⚠️ This fix was NOT approved by the Review Agent — it is being applied because confidence (${lastFix.confidence}%) >= threshold (${this.config.minConfidence}%) and validation will be the final gate.`);
@@ -623,6 +664,9 @@ export class AgentOrchestrator {
       })),
       evidence: fix.evidence,
       reasoning: fix.reasoning,
+      // Forward the structured causal trace when the fix-gen agent provided
+      // one. The review agent will CRITICAL-reject if it's missing or vague.
+      ...(fix.failureModeTrace ? { failureModeTrace: fix.failureModeTrace } : {}),
     };
   }
 }
@@ -632,6 +676,29 @@ export class AgentOrchestrator {
  */
 interface AgentContextWithRaw extends AgentContext {
   _rawSourceFileContent?: string;
+}
+
+/**
+ * Detects review CRITICALs that must not be bypassed by the max-iterations
+ * fallback. These are quality checks that exist specifically to catch the
+ * "plausible-sounding but causally unsound fix" failure mode — shipping
+ * anyway would turn the review gate into decoration.
+ *
+ * Matches on the issue description because the review-agent prompt uses
+ * stable English phrasings (defined in `review-agent.ts` getSystemPrompt).
+ * A stable prefix convention (e.g. `[TRACE]`) would be more robust if we
+ * ever rewrite the prompt; for now, keyword match is adequate.
+ */
+export function isBlockingCriticalIssue(issue: ReviewIssue): boolean {
+  if (issue.severity !== 'CRITICAL') return false;
+  const d = issue.description.toLowerCase();
+  return (
+    d.includes('failuremodetrace') ||
+    d.includes('failure mode trace') ||
+    d.includes('causal trace') ||
+    d.includes('strictly stronger') ||
+    d.includes('logical strengthening')
+  );
 }
 
 /**

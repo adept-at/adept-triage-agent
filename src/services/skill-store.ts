@@ -61,9 +61,15 @@ const RETIRE_MIN_FAILURES = 3;
 
 /**
  * Strip patterns that could be interpreted as prompt injection when
- * skill fields are interpolated into LLM prompts.
+ * model-adjacent fields are interpolated into LLM prompts.
+ *
+ * Exported because the review agent applies the same treatment to
+ * `failureModeTrace` sub-fields — those can embed adversarial strings
+ * from error logs or test source that the fix-gen agent quoted into
+ * the trace, and rendering them verbatim re-opens the cross-agent
+ * injection surface this helper was built to close.
  */
-function sanitizeForPrompt(input: string, maxLength = 2000): string {
+export function sanitizeForPrompt(input: string, maxLength = 2000): string {
   if (!input) return '';
   let sanitized = input
     .replace(/## SYSTEM:/gi, '## INFO:')

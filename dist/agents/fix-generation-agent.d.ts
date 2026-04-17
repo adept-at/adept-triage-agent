@@ -12,6 +12,12 @@ export interface CodeChange {
     justification: string;
     changeType: 'SELECTOR_UPDATE' | 'WAIT_ADDITION' | 'LOGIC_CHANGE' | 'ASSERTION_UPDATE' | 'OTHER';
 }
+export interface FailureModeTraceOutput {
+    originalState: string;
+    rootMechanism: string;
+    newStateAfterFix: string;
+    whyAssertionPassesNow: string;
+}
 export interface FixGenerationOutput {
     changes: CodeChange[];
     confidence: number;
@@ -20,6 +26,7 @@ export interface FixGenerationOutput {
     evidence: string[];
     risks: string[];
     alternatives?: string[];
+    failureModeTrace?: FailureModeTraceOutput;
 }
 export interface FixGenerationInput {
     analysis: AnalysisOutput;

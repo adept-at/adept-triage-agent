@@ -38,12 +38,22 @@ export declare function iterativeFixValidateLoop(inputs: ActionInputs, repoDetai
     prUrl?: string;
     agentRootCause?: string;
     agentInvestigationFindings?: string;
+    autoFixSkipped?: boolean;
+    autoFixSkippedReason?: string;
 }>;
+export declare function requiredConfidence(fix: FixRecommendation, baseMinConfidence: number): {
+    required: number;
+    reasons: string[];
+};
 export declare function fixFingerprint(fix: FixRecommendation): string;
+export interface AttemptAutoFixOutcome {
+    applied: ApplyResult | null;
+    skipReason?: string;
+}
 export declare function attemptAutoFix(inputs: ActionInputs, fixRecommendation: FixRecommendation, octokit: Octokit, repoDetails: {
     owner: string;
     repo: string;
 }, errorData?: {
     fileName?: string;
-}): Promise<ApplyResult | null>;
+}): Promise<AttemptAutoFixOutcome>;
 //# sourceMappingURL=validator.d.ts.map

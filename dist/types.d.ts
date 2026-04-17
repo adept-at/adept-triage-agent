@@ -68,6 +68,14 @@ export interface AnalysisResult {
     category?: string;
     fixRecommendation?: FixRecommendation;
     responseId?: string;
+    autoFixSkipped?: boolean;
+    autoFixSkippedReason?: string;
+}
+export interface FailureModeTrace {
+    originalState: string;
+    rootMechanism: string;
+    newStateAfterFix: string;
+    whyAssertionPassesNow: string;
 }
 export interface FixRecommendation {
     confidence: number;
@@ -81,6 +89,7 @@ export interface FixRecommendation {
     }[];
     evidence: string[];
     reasoning: string;
+    failureModeTrace?: FailureModeTrace;
 }
 export interface SourceLocation {
     file: string;

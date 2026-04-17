@@ -7,7 +7,7 @@ import { AUTO_FIX, DEFAULT_PRODUCT_REPO } from './config/constants';
 import { parseRepoString } from './utils/repo-utils';
 import { PipelineCoordinator } from './pipeline/coordinator';
 
-export { fixFingerprint } from './pipeline/validator';
+export { fixFingerprint, requiredConfidence } from './pipeline/validator';
 export { setSuccessOutput, setInconclusiveOutput, setErrorOutput, resolveAutoFixTargetRepo } from './pipeline/output';
 
 async function run(): Promise<void> {

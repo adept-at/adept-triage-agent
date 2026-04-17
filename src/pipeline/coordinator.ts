@@ -41,6 +41,16 @@ export interface RepairResult {
   prUrl?: string;
   agentRootCause?: string;
   agentInvestigationFindings?: string;
+  /**
+   * Set when a policy gate (blast-radius scaling, etc.) intentionally held
+   * back an auto-fix that would otherwise have been applied. Surfaced on
+   * the run output (`auto_fix_skipped` / `auto_fix_skipped_reason`) so
+   * downstream Slack / dashboards can tell safety-withheld fixes apart from
+   * "no fix possible". Chronic-flakiness skips are set at execute() time
+   * and don't pass through this struct.
+   */
+  autoFixSkipped?: boolean;
+  autoFixSkippedReason?: string;
 }
 
 interface PipelineCoordinatorDeps {
@@ -145,6 +155,8 @@ export class PipelineCoordinator {
     let prUrl: string | undefined;
     let agentRootCause: string | undefined;
     let agentInvestigationFindings: string | undefined;
+    let autoFixSkipped: boolean | undefined;
+    let autoFixSkippedReason: string | undefined;
 
     // LOCAL validation path: clone + apply + test in-container, push/PR on pass.
     // Requires ENABLE_LOCAL_VALIDATION explicitly true. Without this gate, a
@@ -174,6 +186,8 @@ export class PipelineCoordinator {
       prUrl = loopResult.prUrl;
       agentRootCause = loopResult.agentRootCause;
       agentInvestigationFindings = loopResult.agentInvestigationFindings;
+      autoFixSkipped = loopResult.autoFixSkipped;
+      autoFixSkippedReason = loopResult.autoFixSkippedReason;
     } else {
       const singleResult = await generateFixRecommendation(
         this.inputs,
@@ -190,17 +204,32 @@ export class PipelineCoordinator {
       agentRootCause = singleResult?.agentRootCause;
       agentInvestigationFindings = singleResult?.agentInvestigationFindings;
       if (fixRecommendation && this.inputs.enableAutoFix && autoFixTargetRepo) {
-        autoFixResult = await attemptAutoFix(
+        const outcome = await attemptAutoFix(
           this.inputs,
           fixRecommendation,
           this.octokit,
           autoFixTargetRepo,
           errorData
         );
+        autoFixResult = outcome.applied;
+        if (outcome.skipReason) {
+          autoFixSkipped = true;
+          autoFixSkippedReason = outcome.skipReason;
+        }
       }
     }
 
-    return { fixRecommendation, autoFixResult, investigationContext, iterations, prUrl, agentRootCause, agentInvestigationFindings };
+    return {
+      fixRecommendation,
+      autoFixResult,
+      investigationContext,
+      iterations,
+      prUrl,
+      agentRootCause,
+      agentInvestigationFindings,
+      autoFixSkipped,
+      autoFixSkippedReason,
+    };
   }
 
   async execute(): Promise<void> {
@@ -264,11 +293,16 @@ export class PipelineCoordinator {
       return;
     }
 
-    const { fixRecommendation, autoFixResult, iterations, prUrl: skillPrUrl, agentRootCause, agentInvestigationFindings } = await this.repair(
-      classification,
-      errorData,
-      skillStore
-    );
+    const {
+      fixRecommendation,
+      autoFixResult,
+      iterations,
+      prUrl: skillPrUrl,
+      agentRootCause,
+      agentInvestigationFindings,
+      autoFixSkipped: repairAutoFixSkipped,
+      autoFixSkippedReason: repairAutoFixSkippedReason,
+    } = await this.repair(classification, errorData, skillStore);
 
     if (skillStore && autoFixTargetRepo && errorData) {
       const fixSucceeded = !!(autoFixResult?.success && autoFixResult.validationStatus === 'passed');
@@ -328,6 +362,12 @@ export class PipelineCoordinator {
     const result: AnalysisResult = { ...classification };
     if (fixRecommendation) {
       result.fixRecommendation = fixRecommendation;
+    }
+    if (repairAutoFixSkipped) {
+      result.autoFixSkipped = true;
+      if (repairAutoFixSkippedReason) {
+        result.autoFixSkippedReason = repairAutoFixSkippedReason;
+      }
     }
 
     const flakinessSignal = skillStore

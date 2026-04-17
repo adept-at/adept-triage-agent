@@ -35,6 +35,7 @@ var __importStar = (this && this.__importStar) || (function () {
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.generateFixRecommendation = generateFixRecommendation;
 exports.iterativeFixValidateLoop = iterativeFixValidateLoop;
+exports.requiredConfidence = requiredConfidence;
 exports.fixFingerprint = fixFingerprint;
 exports.attemptAutoFix = attemptAutoFix;
 const core = __importStar(require("@actions/core"));
@@ -103,6 +104,8 @@ async function iterativeFixValidateLoop(inputs, repoDetails, autoFixTargetRepo, 
     let completedIterations = 0;
     let agentRootCause;
     let agentInvestigationFindings;
+    let autoFixSkipped = false;
+    let autoFixSkippedReason;
     let previousAttempt;
     const failedFixFingerprints = new Set();
     const minConfidence = inputs.autoFixMinConfidence ?? constants_1.AUTO_FIX.DEFAULT_MIN_CONFIDENCE;
@@ -136,9 +139,21 @@ async function iterativeFixValidateLoop(inputs, repoDetails, autoFixTargetRepo, 
                 agentRootCause = fixResult.agentRootCause;
             if (fixResult.agentInvestigationFindings)
                 agentInvestigationFindings = fixResult.agentInvestigationFindings;
-            if (fixRecommendation.confidence < minConfidence ||
-                !fixRecommendation.proposedChanges?.length) {
-                core.info(`Iteration ${iteration + 1}: fix rejected — confidence ${fixRecommendation.confidence}% below ${minConfidence}% or no changes`);
+            if (!fixRecommendation.proposedChanges?.length) {
+                core.info(`Iteration ${iteration + 1}: fix rejected — no changes proposed`);
+                break;
+            }
+            const { required: iterRequired, reasons: iterReasons } = requiredConfidence(fixRecommendation, minConfidence);
+            if (fixRecommendation.confidence < iterRequired) {
+                const suffix = iterReasons.length
+                    ? ` (blast-radius scaling: ${iterReasons.join('; ')})`
+                    : '';
+                const reason = `Blast-radius gate: confidence ${fixRecommendation.confidence}% < required ${iterRequired}%${suffix}`;
+                core.info(`Iteration ${iteration + 1}: fix rejected — ${reason}`);
+                if (iterReasons.length > 0) {
+                    autoFixSkipped = true;
+                    autoFixSkippedReason = reason;
+                }
                 break;
             }
             const fingerprint = fixFingerprint(fixRecommendation);
@@ -153,7 +168,7 @@ async function iterativeFixValidateLoop(inputs, repoDetails, autoFixTargetRepo, 
                 const baseline = await validator.baselineCheck();
                 if (baseline.passed) {
                     core.info('✅ Baseline check passed — test passes without fix. Failure was likely transient.');
-                    return { fixRecommendation: null, autoFixResult: null, iterations: 0, agentRootCause, agentInvestigationFindings };
+                    return { fixRecommendation: null, autoFixResult: null, iterations: 0, agentRootCause, agentInvestigationFindings, autoFixSkipped, autoFixSkippedReason };
                 }
                 core.info('❌ Baseline check confirmed failure — proceeding with fix.');
             }
@@ -185,7 +200,7 @@ async function iterativeFixValidateLoop(inputs, repoDetails, autoFixTargetRepo, 
                         branchName: pushResult.branchName,
                         validationStatus: 'passed',
                     };
-                    return { fixRecommendation, autoFixResult, iterations: iteration + 1, prUrl: pushResult.prUrl, agentRootCause, agentInvestigationFindings };
+                    return { fixRecommendation, autoFixResult, iterations: iteration + 1, prUrl: pushResult.prUrl, agentRootCause, agentInvestigationFindings, autoFixSkipped, autoFixSkippedReason };
                 }
                 catch (pushError) {
                     core.warning(`Test passed but push/PR creation failed: ${pushError}`);
@@ -196,7 +211,7 @@ async function iterativeFixValidateLoop(inputs, repoDetails, autoFixTargetRepo, 
                         validationStatus: 'passed',
                     };
                 }
-                return { fixRecommendation, autoFixResult, iterations: iteration + 1, agentRootCause, agentInvestigationFindings };
+                return { fixRecommendation, autoFixResult, iterations: iteration + 1, agentRootCause, agentInvestigationFindings, autoFixSkipped, autoFixSkippedReason };
             }
             core.warning(`\n❌ Test FAILED on iteration ${iteration + 1} (exit code: ${testResult.exitCode}, ${testResult.durationMs}ms)`);
             failedFixFingerprints.add(fingerprint);
@@ -219,7 +234,32 @@ async function iterativeFixValidateLoop(inputs, repoDetails, autoFixTargetRepo, 
             await validator.cleanup();
         }
     }
-    return { fixRecommendation, autoFixResult, iterations: completedIterations, agentRootCause, agentInvestigationFindings };
+    return { fixRecommendation, autoFixResult, iterations: completedIterations, agentRootCause, agentInvestigationFindings, autoFixSkipped, autoFixSkippedReason };
+}
+function normalizeFileForPatternMatch(path) {
+    return ('/' + path.replace(/^\.\//, '').replace(/\\/g, '/')).toLowerCase();
+}
+function requiredConfidence(fix, baseMinConfidence) {
+    const reasons = [];
+    let required = baseMinConfidence;
+    const files = new Set(fix.proposedChanges.map((c) => c.file));
+    const sharedMatches = [...files].filter((f) => {
+        const normalized = normalizeFileForPatternMatch(f);
+        return constants_1.BLAST_RADIUS.SHARED_CODE_PATTERNS.some((p) => normalized.includes(p));
+    });
+    if (sharedMatches.length > 0) {
+        required += constants_1.BLAST_RADIUS.SHARED_CODE_BOOST;
+        reasons.push(`touches shared code (${sharedMatches.join(', ')}) — +${constants_1.BLAST_RADIUS.SHARED_CODE_BOOST}`);
+    }
+    if (files.size >= 2) {
+        required += constants_1.BLAST_RADIUS.MULTI_FILE_BOOST;
+        reasons.push(`spans ${files.size} files — +${constants_1.BLAST_RADIUS.MULTI_FILE_BOOST}`);
+    }
+    const effectiveMax = Math.max(baseMinConfidence, constants_1.BLAST_RADIUS.MAX_REQUIRED_CONFIDENCE);
+    if (required > effectiveMax) {
+        required = effectiveMax;
+    }
+    return { required, reasons };
 }
 function fixFingerprint(fix) {
     const normalize = (s) => s.replace(/\s+/g, ' ').trim();
@@ -230,19 +270,32 @@ function fixFingerprint(fix) {
 }
 async function attemptAutoFix(inputs, fixRecommendation, octokit, repoDetails, errorData) {
     core.info('\n🤖 Auto-fix is enabled, attempting to apply fix...');
+    const baseMin = inputs.autoFixMinConfidence ?? constants_1.AUTO_FIX.DEFAULT_MIN_CONFIDENCE;
+    const { required, reasons } = requiredConfidence(fixRecommendation, baseMin);
+    if (fixRecommendation.confidence < required) {
+        const suffix = reasons.length
+            ? ` (blast-radius scaling: ${reasons.join('; ')})`
+            : '';
+        const skipMessage = `confidence ${fixRecommendation.confidence}% below required ${required}%${suffix}`;
+        core.info(`⏭️ Auto-fix skipped: ${skipMessage}`);
+        return {
+            applied: null,
+            skipReason: reasons.length > 0 ? `Blast-radius gate: ${skipMessage}` : undefined,
+        };
+    }
     const fixApplier = (0, fix_applier_1.createFixApplier)({
         octokit,
         owner: repoDetails.owner,
         repo: repoDetails.repo,
         baseBranch: inputs.branch || inputs.autoFixBaseBranch || 'main',
-        minConfidence: inputs.autoFixMinConfidence ?? constants_1.AUTO_FIX.DEFAULT_MIN_CONFIDENCE,
+        minConfidence: required,
         enableValidation: inputs.enableValidation,
         validationWorkflow: inputs.validationWorkflow,
         validationTestCommand: inputs.validationTestCommand,
     });
     if (!fixApplier.canApply(fixRecommendation)) {
-        core.info('⏭️ Auto-fix skipped: confidence below threshold or no changes proposed');
-        return null;
+        core.info('⏭️ Auto-fix skipped: no changes proposed');
+        return { applied: null };
     }
     try {
         const result = await fixApplier.applyFix(fixRecommendation);
@@ -293,11 +346,11 @@ async function attemptAutoFix(inputs, fixRecommendation, octokit, repoDetails, e
         else {
             core.warning(`❌ Auto-fix failed: ${result.error}`);
         }
-        return result;
+        return { applied: result };
     }
     catch (error) {
         core.warning(`Auto-fix error: ${error}`);
-        return null;
+        return { applied: null };
     }
 }
 //# sourceMappingURL=validator.js.map

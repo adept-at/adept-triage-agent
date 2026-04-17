@@ -34,6 +34,7 @@ var __importStar = (this && this.__importStar) || (function () {
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.SkillStore = exports.MAX_SKILLS = void 0;
+exports.sanitizeForPrompt = sanitizeForPrompt;
 exports.normalizeFramework = normalizeFramework;
 exports.buildSkill = buildSkill;
 exports.describeFixPattern = describeFixPattern;

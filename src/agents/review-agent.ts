@@ -13,6 +13,25 @@ import { OpenAIClient } from '../openai-client';
 import { AnalysisOutput } from './analysis-agent';
 import { CodeReadingOutput } from './code-reading-agent';
 import { FixGenerationOutput } from './fix-generation-agent';
+import { sanitizeForPrompt } from '../services/skill-store';
+
+/**
+ * Length cap for individual `failureModeTrace` sub-fields when rendered into
+ * the review prompt. Generous enough for a concrete multi-sentence trace,
+ * tight enough that a runaway model can't blow up the review token budget.
+ */
+const TRACE_FIELD_MAX_CHARS = 1000;
+
+/**
+ * Render one trace sub-field for the review prompt: sanitize prompt-injection
+ * patterns, cap length, and fall back to the "EMPTY — flag CRITICAL" marker
+ * so the reviewer targets the specific missing field.
+ */
+function formatTraceField(value: string | undefined): string {
+  if (!value) return '(EMPTY — flag CRITICAL)';
+  const sanitized = sanitizeForPrompt(value, TRACE_FIELD_MAX_CHARS);
+  return sanitized || '(EMPTY — flag CRITICAL)';
+}
 
 /**
  * An issue found during review
@@ -105,6 +124,17 @@ Review code changes proposed to fix failing tests. Your job is to:
   - Adding \`.should('exist')\` before another \`.should(...)\` on the same element — the second assertion already waits for the element
   - Reformatting whitespace / reordering identical logic with no behavioral change
 - **Fix targets the wrong line**: the proposed \`oldCode\` is in a different block than the actual failing assertion. Verify by cross-referencing the error message / stack trace against the change location. A fix at line N that doesn't touch the line where the timeout/assertion fired is almost always wrong.
+- **Missing or vague failureModeTrace**: the fix recommendation MUST include a \`failureModeTrace\` object with four fields (\`originalState\`, \`rootMechanism\`, \`newStateAfterFix\`, \`whyAssertionPassesNow\`). Reject if any field is:
+  - Missing, empty, or a placeholder like "timing issue" / "flaky test" / "more robust"
+  - Generic prose without specific references to values/events from the failure logs
+  - A tautology (e.g., "originalState: the assertion failed" — restates the symptom without explaining the mechanism)
+  - Inconsistent with the proposed code change (e.g., trace describes changing when pausedTime is captured, but the code only changes the assertion condition)
+  The trace is the agent's own hypothesis about what the fix does; without it, we cannot verify the fix is causally sound.
+- **Logical strengthening without justification**: if the new condition is **strictly stronger** than the original (i.e., logically AND of the original requirement + an additional requirement, a tightened tolerance, or an additional assertion), the fix cannot make a failing test pass unless the added requirement is *guaranteed* to hold in the exact scenario that caused the original failure. Reject unless \`whyAssertionPassesNow\` specifically justifies this. Examples:
+  - Original \`|diff| <= 0.25\` fails → "fix" \`paused && |diff| <= 0.5\`. The \`paused\` AND-clause is new; \`0.25 → 0.5\` widens but is dominated by the added AND. If \`paused\` wasn't true in the failure scenario, the fix makes things worse.
+  - Original \`cy.get('[role="dialog"]').should('be.visible')\` times out → "fix" adds \`.should('be.visible').and('contain.text', 'Success')\`. The \`.and()\` adds a requirement; doesn't help if the dialog was never visible.
+  - Original \`element.click()\` fails because element doesn't exist → "fix" adds \`.waitForClickable()\` before click. This is NOT strictly stronger — the wait gives the element time to appear. OK.
+  If the code changes the runtime state BEFORE the check (e.g., adds a wait for a state transition, removes a stale-element source), that's a different direction and generally helps. If the code only changes the CHECK itself by adding constraints, it almost certainly doesn't help.
 
 ### WARNING Issues (Should Fix)
 - Suboptimal selector choice
@@ -166,9 +196,27 @@ You MUST respond with a JSON object matching this schema:
       `- **Summary:** ${input.proposedFix.summary}`,
       `- **Confidence:** ${input.proposedFix.confidence}%`,
       `- **Reasoning:** ${input.proposedFix.reasoning}`,
-      '',
-      '### Code Changes',
     );
+
+    const trace = input.proposedFix.failureModeTrace;
+    if (trace) {
+      parts.push(
+        '',
+        '### Failure Mode Trace (MUST audit for quality)',
+        `- **originalState:** ${formatTraceField(trace.originalState)}`,
+        `- **rootMechanism:** ${formatTraceField(trace.rootMechanism)}`,
+        `- **newStateAfterFix:** ${formatTraceField(trace.newStateAfterFix)}`,
+        `- **whyAssertionPassesNow:** ${formatTraceField(trace.whyAssertionPassesNow)}`
+      );
+    } else {
+      parts.push(
+        '',
+        '### Failure Mode Trace',
+        '- **MISSING** — the fix did not provide a failureModeTrace. Per the system rules, flag this as CRITICAL and reject the fix.'
+      );
+    }
+
+    parts.push('', '### Code Changes');
 
     // Add each change
     for (let i = 0; i < input.proposedFix.changes.length; i++) {
@@ -263,6 +311,8 @@ You MUST respond with a JSON object matching this schema:
       '4. Look for potential side effects',
       '5. Assess overall likelihood of success',
       '6. CRITICAL: If PR changes are provided, verify the fix reasoning is consistent with the diff — if the fix claims code was "changed" or "updated" but the diff does NOT show that change, flag as CRITICAL issue',
+      '7. CRITICAL: Inspect `failureModeTrace`. If missing or any field is vague/generic/tautological, flag a CRITICAL issue citing which field is inadequate.',
+      '8. CRITICAL: Determine if the new condition/assertion is **strictly stronger** than the original. If yes, verify `whyAssertionPassesNow` justifies why the added requirement is guaranteed to hold in the failure scenario. If it does not, flag a CRITICAL issue — a strictly stronger condition cannot turn a failing assertion into a passing one.',
       '',
       'Respond with the JSON object as specified in the system prompt.'
     );

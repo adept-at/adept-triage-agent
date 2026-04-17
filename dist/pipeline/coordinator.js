@@ -115,6 +115,8 @@ class PipelineCoordinator {
         let prUrl;
         let agentRootCause;
         let agentInvestigationFindings;
+        let autoFixSkipped;
+        let autoFixSkippedReason;
         if (this.inputs.enableAutoFix &&
             this.inputs.enableValidation &&
             this.inputs.enableLocalValidation &&
@@ -127,6 +129,8 @@ class PipelineCoordinator {
             prUrl = loopResult.prUrl;
             agentRootCause = loopResult.agentRootCause;
             agentInvestigationFindings = loopResult.agentInvestigationFindings;
+            autoFixSkipped = loopResult.autoFixSkipped;
+            autoFixSkippedReason = loopResult.autoFixSkippedReason;
         }
         else {
             const singleResult = await (0, validator_1.generateFixRecommendation)(this.inputs, this.repoDetails, errorData, this.openaiClient, this.octokit, undefined, undefined, skillStore, investigationContext);
@@ -134,10 +138,25 @@ class PipelineCoordinator {
             agentRootCause = singleResult?.agentRootCause;
             agentInvestigationFindings = singleResult?.agentInvestigationFindings;
             if (fixRecommendation && this.inputs.enableAutoFix && autoFixTargetRepo) {
-                autoFixResult = await (0, validator_1.attemptAutoFix)(this.inputs, fixRecommendation, this.octokit, autoFixTargetRepo, errorData);
+                const outcome = await (0, validator_1.attemptAutoFix)(this.inputs, fixRecommendation, this.octokit, autoFixTargetRepo, errorData);
+                autoFixResult = outcome.applied;
+                if (outcome.skipReason) {
+                    autoFixSkipped = true;
+                    autoFixSkippedReason = outcome.skipReason;
+                }
             }
         }
-        return { fixRecommendation, autoFixResult, investigationContext, iterations, prUrl, agentRootCause, agentInvestigationFindings };
+        return {
+            fixRecommendation,
+            autoFixResult,
+            investigationContext,
+            iterations,
+            prUrl,
+            agentRootCause,
+            agentInvestigationFindings,
+            autoFixSkipped,
+            autoFixSkippedReason,
+        };
     }
     async execute() {
         const errorData = await (0, log_processor_1.processWorkflowLogs)(this.octokit, this.artifactFetcher, this.inputs, this.repoDetails);
@@ -172,7 +191,7 @@ class PipelineCoordinator {
             }, errorData, null, chronicFlakinessSignal);
             return;
         }
-        const { fixRecommendation, autoFixResult, iterations, prUrl: skillPrUrl, agentRootCause, agentInvestigationFindings } = await this.repair(classification, errorData, skillStore);
+        const { fixRecommendation, autoFixResult, iterations, prUrl: skillPrUrl, agentRootCause, agentInvestigationFindings, autoFixSkipped: repairAutoFixSkipped, autoFixSkippedReason: repairAutoFixSkippedReason, } = await this.repair(classification, errorData, skillStore);
         if (skillStore && autoFixTargetRepo && errorData) {
             const fixSucceeded = !!(autoFixResult?.success && autoFixResult.validationStatus === 'passed');
             const fixAttempted = !!fixRecommendation;
@@ -221,6 +240,12 @@ class PipelineCoordinator {
         const result = { ...classification };
         if (fixRecommendation) {
             result.fixRecommendation = fixRecommendation;
+        }
+        if (repairAutoFixSkipped) {
+            result.autoFixSkipped = true;
+            if (repairAutoFixSkippedReason) {
+                result.autoFixSkippedReason = repairAutoFixSkippedReason;
+            }
         }
         const flakinessSignal = skillStore
             ? skillStore.detectFlakiness(errorData.fileName || 'unknown')

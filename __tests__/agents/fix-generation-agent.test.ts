@@ -395,6 +395,166 @@ describe('FixGenerationAgent', () => {
     });
   });
 
+  describe('failureModeTrace', () => {
+    it('parses the causal trace when the model returns one', async () => {
+      const mockResponse = {
+        changes: [
+          {
+            file: 'test/specs/video.spec.ts',
+            line: 100,
+            oldCode: 'expect(diff).toBeLessThan(0.25)',
+            newCode: 'await browser.waitUntil(async () => (await player.paused()) === true);\nconst pausedTime = await player.currentTime();',
+            justification: 'Capture pausedTime only after pause transition',
+            changeType: 'LOGIC_CHANGE',
+          },
+        ],
+        confidence: 82,
+        summary: 'Wait for paused state before capturing baseline',
+        reasoning: 'pausedTime was captured before the pause transition completed',
+        evidence: ['log: currentTime=6.02, pausedTime=0.0'],
+        risks: [],
+        failureModeTrace: {
+          originalState: 'currentTime=6.02s, pausedTime=0.0s, drift 6.02 > tolerance 0.25',
+          rootMechanism: 'pausedTime captured immediately after click, before player transitioned to paused',
+          newStateAfterFix: 'pausedTime captured only after player.paused()===true',
+          whyAssertionPassesNow: 'drift is now measured from the true pause moment, bounded by the event-loop latency (< 50ms) which is far below tolerance',
+        },
+      };
+
+      mockOpenAIClient.generateWithCustomPrompt = jest
+        .fn()
+        .mockResolvedValue({ text: JSON.stringify(mockResponse), responseId: 'r' });
+
+      const context = createAgentContext({
+        errorMessage: 'expected 6.02 to be less than 0.25',
+        testFile: 'test/specs/video.spec.ts',
+        testName: 'should pause within tolerance',
+        framework: 'webdriverio',
+      });
+
+      const result = await agent.execute(
+        { analysis: mockAnalysis, investigation: mockInvestigation },
+        context
+      );
+
+      expect(result.success).toBe(true);
+      expect(result.data?.failureModeTrace).toBeDefined();
+      expect(result.data?.failureModeTrace?.originalState).toContain('6.02');
+      expect(result.data?.failureModeTrace?.rootMechanism).toContain('paused');
+      expect(result.data?.failureModeTrace?.whyAssertionPassesNow).toContain('tolerance');
+    });
+
+    it('tolerates a missing failureModeTrace (parser does not fail) but leaves the field undefined', async () => {
+      const mockResponse = {
+        changes: [
+          {
+            file: 'test.cy.ts',
+            line: 10,
+            oldCode: 'old',
+            newCode: 'new',
+            justification: 'fix',
+            changeType: 'SELECTOR_UPDATE',
+          },
+        ],
+        confidence: 80,
+        summary: 'fix',
+        reasoning: 'reason',
+        evidence: [],
+        risks: [],
+      };
+
+      mockOpenAIClient.generateWithCustomPrompt = jest
+        .fn()
+        .mockResolvedValue({ text: JSON.stringify(mockResponse), responseId: 'r' });
+
+      const context = createAgentContext({
+        errorMessage: 'err',
+        testFile: 'test.cy.ts',
+        testName: 'test',
+      });
+
+      const result = await agent.execute(
+        { analysis: mockAnalysis, investigation: mockInvestigation },
+        context
+      );
+
+      expect(result.success).toBe(true);
+      expect(result.data?.failureModeTrace).toBeUndefined();
+    });
+
+    it('fills missing trace sub-fields with empty strings so the review agent can flag them', async () => {
+      const mockResponse = {
+        changes: [
+          {
+            file: 'test.cy.ts',
+            line: 10,
+            oldCode: 'old',
+            newCode: 'new',
+            justification: 'fix',
+            changeType: 'SELECTOR_UPDATE',
+          },
+        ],
+        confidence: 80,
+        summary: 'fix',
+        reasoning: 'reason',
+        evidence: [],
+        risks: [],
+        failureModeTrace: {
+          originalState: 'timing issue',
+        },
+      };
+
+      mockOpenAIClient.generateWithCustomPrompt = jest
+        .fn()
+        .mockResolvedValue({ text: JSON.stringify(mockResponse), responseId: 'r' });
+
+      const context = createAgentContext({
+        errorMessage: 'err',
+        testFile: 'test.cy.ts',
+        testName: 'test',
+      });
+
+      const result = await agent.execute(
+        { analysis: mockAnalysis, investigation: mockInvestigation },
+        context
+      );
+
+      expect(result.success).toBe(true);
+      expect(result.data?.failureModeTrace).toEqual({
+        originalState: 'timing issue',
+        rootMechanism: '',
+        newStateAfterFix: '',
+        whyAssertionPassesNow: '',
+      });
+    });
+
+    it('includes the failureModeTrace schema section in the system prompt', async () => {
+      const mockFixResponse = JSON.stringify({
+        changes: [{
+          file: 'test.ts', line: 10, oldCode: 'old', newCode: 'new',
+          justification: 'fix', changeType: 'OTHER',
+        }],
+        confidence: 80, summary: 'fix', reasoning: 'reason', evidence: [], risks: [],
+      });
+
+      mockOpenAIClient.generateWithCustomPrompt = jest
+        .fn()
+        .mockResolvedValueOnce({ text: mockFixResponse, responseId: 'r' });
+
+      await agent.execute(
+        { analysis: mockAnalysis, investigation: mockInvestigation },
+        createAgentContext({ errorMessage: 'e', testFile: 't', testName: 't' })
+      );
+
+      const call = mockOpenAIClient.generateWithCustomPrompt.mock.calls[0][0];
+      expect(call.systemPrompt).toContain('failureModeTrace');
+      expect(call.systemPrompt).toContain('originalState');
+      expect(call.systemPrompt).toContain('rootMechanism');
+      expect(call.systemPrompt).toContain('whyAssertionPassesNow');
+      expect(call.systemPrompt).toContain('strictly stronger');
+    });
+  });
+
   describe('framework-specialized prompts', () => {
     it('should include Cypress-specific patterns for cypress framework', async () => {
       const cypressContext = createAgentContext({

@@ -34,6 +34,7 @@ var __importStar = (this && this.__importStar) || (function () {
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.AgentOrchestrator = exports.DEFAULT_ORCHESTRATOR_CONFIG = void 0;
+exports.isBlockingCriticalIssue = isBlockingCriticalIssue;
 exports.createOrchestrator = createOrchestrator;
 const core = __importStar(require("@actions/core"));
 const analysis_agent_1 = require("./analysis-agent");
@@ -240,6 +241,7 @@ class AgentOrchestrator {
         let lastFix = null;
         let reviewFeedback = null;
         let fixReviewChainId;
+        let lastReviewIssues = [];
         while (iterations < this.config.maxIterations) {
             iterations++;
             core.info(`🔧 Step 4: Running Fix Generation Agent (iteration ${iterations})...`);
@@ -358,9 +360,20 @@ class AgentOrchestrator {
                         };
                     }
                     else {
-                        reviewFeedback = review.issues
+                        lastReviewIssues = review.issues;
+                        const issueLines = review.issues
                             .map((i) => `[${i.severity}] ${i.description}`)
                             .join('\n');
+                        const priorTrace = lastFix.failureModeTrace;
+                        const blocking = review.issues.some(isBlockingCriticalIssue);
+                        const traceReplay = blocking && priorTrace
+                            ? `\n\nYOUR PREVIOUS failureModeTrace (reviewer rejected this — do NOT repeat the same trace verbatim; produce a concrete, value-referenced trace):\n` +
+                                `- originalState: ${priorTrace.originalState || '(was empty)'}\n` +
+                                `- rootMechanism: ${priorTrace.rootMechanism || '(was empty)'}\n` +
+                                `- newStateAfterFix: ${priorTrace.newStateAfterFix || '(was empty)'}\n` +
+                                `- whyAssertionPassesNow: ${priorTrace.whyAssertionPassesNow || '(was empty)'}`
+                            : '';
+                        reviewFeedback = issueLines + traceReplay;
                         core.warning(`Fix not approved. Issues: ${review.issues.length}`);
                         core.info(`   📝 Feedback to next iteration:\n${reviewFeedback}`);
                     }
@@ -375,6 +388,16 @@ class AgentOrchestrator {
             }
         }
         if (lastFix && lastFix.confidence >= this.config.minConfidence) {
+            const blockingCriticals = lastReviewIssues.filter(isBlockingCriticalIssue);
+            if (blockingCriticals.length > 0) {
+                const reasons = blockingCriticals.map((i) => i.description).join('; ');
+                core.warning(`Max iterations (${this.config.maxIterations}) reached with unresolved quality CRITICAL(s) — refusing to ship the fix. Reasons: ${reasons}`);
+                return {
+                    error: `Max iterations reached with unresolved quality CRITICAL(s): ${reasons}`,
+                    iterations,
+                    lastResponseId,
+                };
+            }
             core.warning(`Max iterations (${this.config.maxIterations}) reached — review never approved. Returning last fix as fallback.`);
             core.info(`   Fallback fix: confidence=${lastFix.confidence}%, changes=${lastFix.changes.length}, summary="${lastFix.summary}"`);
             core.info(`   ⚠️ This fix was NOT approved by the Review Agent — it is being applied because confidence (${lastFix.confidence}%) >= threshold (${this.config.minConfidence}%) and validation will be the final gate.`);
@@ -449,10 +472,21 @@ class AgentOrchestrator {
             })),
             evidence: fix.evidence,
             reasoning: fix.reasoning,
+            ...(fix.failureModeTrace ? { failureModeTrace: fix.failureModeTrace } : {}),
         };
     }
 }
 exports.AgentOrchestrator = AgentOrchestrator;
+function isBlockingCriticalIssue(issue) {
+    if (issue.severity !== 'CRITICAL')
+        return false;
+    const d = issue.description.toLowerCase();
+    return (d.includes('failuremodetrace') ||
+        d.includes('failure mode trace') ||
+        d.includes('causal trace') ||
+        d.includes('strictly stronger') ||
+        d.includes('logical strengthening'));
+}
 function addLineNumbers(source) {
     if (!source)
         return source;

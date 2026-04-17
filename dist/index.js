@@ -41,6 +41,7 @@ var __importStar = (this && this.__importStar) || (function () {
 })();
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.AgentOrchestrator = exports.DEFAULT_ORCHESTRATOR_CONFIG = void 0;
+exports.isBlockingCriticalIssue = isBlockingCriticalIssue;
 exports.createOrchestrator = createOrchestrator;
 const core = __importStar(__nccwpck_require__(37484));
 const analysis_agent_1 = __nccwpck_require__(27216);
@@ -247,6 +248,7 @@ class AgentOrchestrator {
         let lastFix = null;
         let reviewFeedback = null;
         let fixReviewChainId;
+        let lastReviewIssues = [];
         while (iterations < this.config.maxIterations) {
             iterations++;
             core.info(`🔧 Step 4: Running Fix Generation Agent (iteration ${iterations})...`);
@@ -365,9 +367,20 @@ class AgentOrchestrator {
                         };
                     }
                     else {
-                        reviewFeedback = review.issues
+                        lastReviewIssues = review.issues;
+                        const issueLines = review.issues
                             .map((i) => `[${i.severity}] ${i.description}`)
                             .join('\n');
+                        const priorTrace = lastFix.failureModeTrace;
+                        const blocking = review.issues.some(isBlockingCriticalIssue);
+                        const traceReplay = blocking && priorTrace
+                            ? `\n\nYOUR PREVIOUS failureModeTrace (reviewer rejected this — do NOT repeat the same trace verbatim; produce a concrete, value-referenced trace):\n` +
+                                `- originalState: ${priorTrace.originalState || '(was empty)'}\n` +
+                                `- rootMechanism: ${priorTrace.rootMechanism || '(was empty)'}\n` +
+                                `- newStateAfterFix: ${priorTrace.newStateAfterFix || '(was empty)'}\n` +
+                                `- whyAssertionPassesNow: ${priorTrace.whyAssertionPassesNow || '(was empty)'}`
+                            : '';
+                        reviewFeedback = issueLines + traceReplay;
                         core.warning(`Fix not approved. Issues: ${review.issues.length}`);
                         core.info(`   📝 Feedback to next iteration:\n${reviewFeedback}`);
                     }
@@ -382,6 +395,16 @@ class AgentOrchestrator {
             }
         }
         if (lastFix && lastFix.confidence >= this.config.minConfidence) {
+            const blockingCriticals = lastReviewIssues.filter(isBlockingCriticalIssue);
+            if (blockingCriticals.length > 0) {
+                const reasons = blockingCriticals.map((i) => i.description).join('; ');
+                core.warning(`Max iterations (${this.config.maxIterations}) reached with unresolved quality CRITICAL(s) — refusing to ship the fix. Reasons: ${reasons}`);
+                return {
+                    error: `Max iterations reached with unresolved quality CRITICAL(s): ${reasons}`,
+                    iterations,
+                    lastResponseId,
+                };
+            }
             core.warning(`Max iterations (${this.config.maxIterations}) reached — review never approved. Returning last fix as fallback.`);
             core.info(`   Fallback fix: confidence=${lastFix.confidence}%, changes=${lastFix.changes.length}, summary="${lastFix.summary}"`);
             core.info(`   ⚠️ This fix was NOT approved by the Review Agent — it is being applied because confidence (${lastFix.confidence}%) >= threshold (${this.config.minConfidence}%) and validation will be the final gate.`);
@@ -456,10 +479,21 @@ class AgentOrchestrator {
             })),
             evidence: fix.evidence,
             reasoning: fix.reasoning,
+            ...(fix.failureModeTrace ? { failureModeTrace: fix.failureModeTrace } : {}),
         };
     }
 }
 exports.AgentOrchestrator = AgentOrchestrator;
+function isBlockingCriticalIssue(issue) {
+    if (issue.severity !== 'CRITICAL')
+        return false;
+    const d = issue.description.toLowerCase();
+    return (d.includes('failuremodetrace') ||
+        d.includes('failure mode trace') ||
+        d.includes('causal trace') ||
+        d.includes('strictly stronger') ||
+        d.includes('logical strengthening'));
+}
 function addLineNumbers(source) {
     if (!source)
         return source;
@@ -1761,8 +1795,32 @@ You MUST respond with a JSON object matching this schema:
   "reasoning": "<detailed explanation of why this fix will work>",
   "evidence": ["<evidence supporting this fix>"],
   "risks": ["<potential risks or things to watch for>"],
-  "alternatives": ["<other approaches that could work>"]
+  "alternatives": ["<other approaches that could work>"],
+  "failureModeTrace": {
+    "originalState": "<concrete runtime state at the moment of failure — reference specific values from the error message / logs (e.g., 'currentTime was 6.02s, pausedTime was 0.0s, drift 6.02 > tolerance 0.25'). Do NOT write generic phrases like 'timing issue' or 'flaky wait'.>",
+    "rootMechanism": "<the specific causal chain that produced the failure. Describe WHY the runtime state above led to the assertion failing. Be concrete: 'pausedTime was captured immediately after clicking pause, but the player had not yet transitioned to paused, so pausedTime reflected the click moment (0s) not the actual pause moment'.>",
+    "newStateAfterFix": "<what specifically is different in the runtime state after your fix runs. Tie this to the code change: 'After the fix, pausedTime is captured only after player.paused === true, so it reflects the actual pause moment and currentTime stays within tolerance of it'.>",
+    "whyAssertionPassesNow": "<why the failing assertion will now succeed. If your new condition is logically STRONGER than the original (e.g., adds an AND-clause), you MUST explain why the added requirement is guaranteed to hold in the exact failure scenario. A fix that only tightens conditions will not make a failing test pass.>"
+  }
 }
+
+## CRITICAL — failureModeTrace is REQUIRED
+
+Your fix will be REJECTED by the review agent if failureModeTrace is missing, abstract, or if it doesn't demonstrably address the specific failure mode. Before writing the trace, ask yourself:
+
+1. **Does my fix CHANGE the runtime state at the moment of failure, or just WRAP the existing check?**
+   - Example of wrapping (bad): original \`|diff| <= 0.25\` fails → "fix" makes it \`paused && |diff| <= 0.5\`. The \`paused\` check is an AND-clause; if the original failed because \`paused\` wasn't true, the fix makes it harder to satisfy, not easier.
+   - Example of changing state (good): original captures \`pausedTime\` before the pause event fires → "fix" adds \`waitUntil(() => paused)\` BEFORE capturing, so \`pausedTime\` reflects the actual pause.
+
+2. **Is my new condition strictly stronger than the original?**
+   - If yes, and the original was failing, the fix will not help unless the added requirement is guaranteed to hold in the failure scenario.
+   - "Strictly stronger" means: every state that satisfies the new condition also satisfies the original, but not vice versa.
+   - Examples of strictly stronger: AND-ing a new requirement, tightening a tolerance, adding an additional assertion.
+   - Examples of weakening (often the right move): OR-ing a fallback, widening a tolerance, removing an overly-strict assertion.
+
+3. **Does my trace reference CONCRETE values from the failure logs?**
+   - Pull specific numbers and element states from the error message and log excerpts.
+   - If you can't reference specifics, you probably don't understand the failure well enough to fix it — escalate by returning lower confidence.
 
 ## CRITICAL — oldCode MATCHING
 
@@ -1965,6 +2023,16 @@ class FixGenerationAgent extends base_agent_1.BaseAgent {
                     return null;
                 }
             }
+            let failureModeTrace;
+            if (parsed.failureModeTrace && typeof parsed.failureModeTrace === 'object') {
+                const t = parsed.failureModeTrace;
+                failureModeTrace = {
+                    originalState: typeof t.originalState === 'string' ? t.originalState : '',
+                    rootMechanism: typeof t.rootMechanism === 'string' ? t.rootMechanism : '',
+                    newStateAfterFix: typeof t.newStateAfterFix === 'string' ? t.newStateAfterFix : '',
+                    whyAssertionPassesNow: typeof t.whyAssertionPassesNow === 'string' ? t.whyAssertionPassesNow : '',
+                };
+            }
             return {
                 changes,
                 confidence: typeof parsed.confidence === 'number' ? parsed.confidence : 50,
@@ -1975,6 +2043,7 @@ class FixGenerationAgent extends base_agent_1.BaseAgent {
                 alternatives: Array.isArray(parsed.alternatives)
                     ? parsed.alternatives
                     : undefined,
+                failureModeTrace,
             };
         }
         catch (error) {
@@ -2204,6 +2273,14 @@ exports.InvestigationAgent = InvestigationAgent;
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.ReviewAgent = void 0;
 const base_agent_1 = __nccwpck_require__(46575);
+const skill_store_1 = __nccwpck_require__(60215);
+const TRACE_FIELD_MAX_CHARS = 1000;
+function formatTraceField(value) {
+    if (!value)
+        return '(EMPTY — flag CRITICAL)';
+    const sanitized = (0, skill_store_1.sanitizeForPrompt)(value, TRACE_FIELD_MAX_CHARS);
+    return sanitized || '(EMPTY — flag CRITICAL)';
+}
 class ReviewAgent extends base_agent_1.BaseAgent {
     constructor(openaiClient, config) {
         super(openaiClient, 'ReviewAgent', config);
@@ -2238,6 +2315,17 @@ Review code changes proposed to fix failing tests. Your job is to:
   - Adding \`.should('exist')\` before another \`.should(...)\` on the same element — the second assertion already waits for the element
   - Reformatting whitespace / reordering identical logic with no behavioral change
 - **Fix targets the wrong line**: the proposed \`oldCode\` is in a different block than the actual failing assertion. Verify by cross-referencing the error message / stack trace against the change location. A fix at line N that doesn't touch the line where the timeout/assertion fired is almost always wrong.
+- **Missing or vague failureModeTrace**: the fix recommendation MUST include a \`failureModeTrace\` object with four fields (\`originalState\`, \`rootMechanism\`, \`newStateAfterFix\`, \`whyAssertionPassesNow\`). Reject if any field is:
+  - Missing, empty, or a placeholder like "timing issue" / "flaky test" / "more robust"
+  - Generic prose without specific references to values/events from the failure logs
+  - A tautology (e.g., "originalState: the assertion failed" — restates the symptom without explaining the mechanism)
+  - Inconsistent with the proposed code change (e.g., trace describes changing when pausedTime is captured, but the code only changes the assertion condition)
+  The trace is the agent's own hypothesis about what the fix does; without it, we cannot verify the fix is causally sound.
+- **Logical strengthening without justification**: if the new condition is **strictly stronger** than the original (i.e., logically AND of the original requirement + an additional requirement, a tightened tolerance, or an additional assertion), the fix cannot make a failing test pass unless the added requirement is *guaranteed* to hold in the exact scenario that caused the original failure. Reject unless \`whyAssertionPassesNow\` specifically justifies this. Examples:
+  - Original \`|diff| <= 0.25\` fails → "fix" \`paused && |diff| <= 0.5\`. The \`paused\` AND-clause is new; \`0.25 → 0.5\` widens but is dominated by the added AND. If \`paused\` wasn't true in the failure scenario, the fix makes things worse.
+  - Original \`cy.get('[role="dialog"]').should('be.visible')\` times out → "fix" adds \`.should('be.visible').and('contain.text', 'Success')\`. The \`.and()\` adds a requirement; doesn't help if the dialog was never visible.
+  - Original \`element.click()\` fails because element doesn't exist → "fix" adds \`.waitForClickable()\` before click. This is NOT strictly stronger — the wait gives the element time to appear. OK.
+  If the code changes the runtime state BEFORE the check (e.g., adds a wait for a state transition, removes a stale-element source), that's a different direction and generally helps. If the code only changes the CHECK itself by adding constraints, it almost certainly doesn't help.
 
 ### WARNING Issues (Should Fix)
 - Suboptimal selector choice
@@ -2282,7 +2370,15 @@ You MUST respond with a JSON object matching this schema:
         if (context.delegationContext) {
             parts.push('### Orchestrator Briefing', context.delegationContext, '');
         }
-        parts.push('## Fix Review Request', '', '### Root Cause Being Fixed', `- **Category:** ${input.analysis.rootCauseCategory}`, `- **Explanation:** ${input.analysis.explanation}`, '', '### Proposed Fix', `- **Summary:** ${input.proposedFix.summary}`, `- **Confidence:** ${input.proposedFix.confidence}%`, `- **Reasoning:** ${input.proposedFix.reasoning}`, '', '### Code Changes');
+        parts.push('## Fix Review Request', '', '### Root Cause Being Fixed', `- **Category:** ${input.analysis.rootCauseCategory}`, `- **Explanation:** ${input.analysis.explanation}`, '', '### Proposed Fix', `- **Summary:** ${input.proposedFix.summary}`, `- **Confidence:** ${input.proposedFix.confidence}%`, `- **Reasoning:** ${input.proposedFix.reasoning}`);
+        const trace = input.proposedFix.failureModeTrace;
+        if (trace) {
+            parts.push('', '### Failure Mode Trace (MUST audit for quality)', `- **originalState:** ${formatTraceField(trace.originalState)}`, `- **rootMechanism:** ${formatTraceField(trace.rootMechanism)}`, `- **newStateAfterFix:** ${formatTraceField(trace.newStateAfterFix)}`, `- **whyAssertionPassesNow:** ${formatTraceField(trace.whyAssertionPassesNow)}`);
+        }
+        else {
+            parts.push('', '### Failure Mode Trace', '- **MISSING** — the fix did not provide a failureModeTrace. Per the system rules, flag this as CRITICAL and reject the fix.');
+        }
+        parts.push('', '### Code Changes');
         for (let i = 0; i < input.proposedFix.changes.length; i++) {
             const change = input.proposedFix.changes[i];
             parts.push('', `#### Change ${i + 1}: ${change.file}`, `Line: ${change.line}`, `Type: ${change.changeType}`, `Justification: ${change.justification}`, '', '**Old Code:**', '```', change.oldCode, '```', '', '**New Code:**', '```', change.newCode, '```');
@@ -2321,7 +2417,7 @@ You MUST respond with a JSON object matching this schema:
         if (context.skillsPrompt) {
             parts.push('', context.skillsPrompt);
         }
-        parts.push('', '## Review Instructions', '1. For each change, verify oldCode appears EXACTLY in the file', '2. Check that newCode is syntactically valid', '3. Verify the fix addresses the root cause', '4. Look for potential side effects', '5. Assess overall likelihood of success', '6. CRITICAL: If PR changes are provided, verify the fix reasoning is consistent with the diff — if the fix claims code was "changed" or "updated" but the diff does NOT show that change, flag as CRITICAL issue', '', 'Respond with the JSON object as specified in the system prompt.');
+        parts.push('', '## Review Instructions', '1. For each change, verify oldCode appears EXACTLY in the file', '2. Check that newCode is syntactically valid', '3. Verify the fix addresses the root cause', '4. Look for potential side effects', '5. Assess overall likelihood of success', '6. CRITICAL: If PR changes are provided, verify the fix reasoning is consistent with the diff — if the fix claims code was "changed" or "updated" but the diff does NOT show that change, flag as CRITICAL issue', '7. CRITICAL: Inspect `failureModeTrace`. If missing or any field is vague/generic/tautological, flag a CRITICAL issue citing which field is inadequate.', '8. CRITICAL: Determine if the new condition/assertion is **strictly stronger** than the original. If yes, verify `whyAssertionPassesNow` justifies why the added requirement is guaranteed to hold in the failure scenario. If it does not, flag a CRITICAL issue — a strictly stronger condition cannot turn a failing assertion into a passing one.', '', 'Respond with the JSON object as specified in the system prompt.');
         return parts.join('\n');
     }
     parseResponse(response) {
@@ -3248,7 +3344,7 @@ exports.ArtifactFetcher = ArtifactFetcher;
 "use strict";
 
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.CHRONIC_FLAKINESS_THRESHOLD = exports.FIX_VALIDATE_LOOP = exports.AGENT_CONFIG = exports.DEFAULT_PRODUCT_URL = exports.DEFAULT_PRODUCT_REPO = exports.AUTO_FIX = exports.TEST_ISSUE_CATEGORIES = exports.ERROR_TYPES = exports.FORMATTING = exports.ARTIFACTS = exports.SHORT_SHA_LENGTH = exports.OPENAI = exports.CONFIDENCE = exports.LOG_LIMITS = void 0;
+exports.BLAST_RADIUS = exports.CHRONIC_FLAKINESS_THRESHOLD = exports.FIX_VALIDATE_LOOP = exports.AGENT_CONFIG = exports.DEFAULT_PRODUCT_URL = exports.DEFAULT_PRODUCT_REPO = exports.AUTO_FIX = exports.TEST_ISSUE_CATEGORIES = exports.ERROR_TYPES = exports.FORMATTING = exports.ARTIFACTS = exports.SHORT_SHA_LENGTH = exports.OPENAI = exports.CONFIDENCE = exports.LOG_LIMITS = void 0;
 exports.LOG_LIMITS = {
     GITHUB_MAX_SIZE: 50_000,
     ARTIFACT_SOFT_CAP: 20_000,
@@ -3321,6 +3417,25 @@ exports.FIX_VALIDATE_LOOP = {
     TEST_TIMEOUT_MS: 300_000,
 };
 exports.CHRONIC_FLAKINESS_THRESHOLD = 3;
+exports.BLAST_RADIUS = {
+    SHARED_CODE_PATTERNS: [
+        '/pageobjects/',
+        '/page-objects/',
+        '/pages/',
+        '/screens/',
+        '/helpers/',
+        '/utils/',
+        '/commands/',
+        '/fixtures/',
+        '/support/',
+        '/shared/',
+        '/common/',
+        '/step-definitions/',
+    ],
+    SHARED_CODE_BOOST: 10,
+    MULTI_FILE_BOOST: 5,
+    MAX_REQUIRED_CONFIDENCE: 95,
+};
 //# sourceMappingURL=constants.js.map
 
 /***/ }),
@@ -3364,7 +3479,7 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.resolveAutoFixTargetRepo = exports.setErrorOutput = exports.setInconclusiveOutput = exports.setSuccessOutput = exports.fixFingerprint = void 0;
+exports.resolveAutoFixTargetRepo = exports.setErrorOutput = exports.setInconclusiveOutput = exports.setSuccessOutput = exports.requiredConfidence = exports.fixFingerprint = void 0;
 exports.run = run;
 const core = __importStar(__nccwpck_require__(37484));
 const rest_1 = __nccwpck_require__(65772);
@@ -3375,6 +3490,7 @@ const repo_utils_1 = __nccwpck_require__(74843);
 const coordinator_1 = __nccwpck_require__(334);
 var validator_1 = __nccwpck_require__(34670);
 Object.defineProperty(exports, "fixFingerprint", ({ enumerable: true, get: function () { return validator_1.fixFingerprint; } }));
+Object.defineProperty(exports, "requiredConfidence", ({ enumerable: true, get: function () { return validator_1.requiredConfidence; } }));
 var output_1 = __nccwpck_require__(12639);
 Object.defineProperty(exports, "setSuccessOutput", ({ enumerable: true, get: function () { return output_1.setSuccessOutput; } }));
 Object.defineProperty(exports, "setInconclusiveOutput", ({ enumerable: true, get: function () { return output_1.setInconclusiveOutput; } }));
@@ -4149,6 +4265,8 @@ class PipelineCoordinator {
         let prUrl;
         let agentRootCause;
         let agentInvestigationFindings;
+        let autoFixSkipped;
+        let autoFixSkippedReason;
         if (this.inputs.enableAutoFix &&
             this.inputs.enableValidation &&
             this.inputs.enableLocalValidation &&
@@ -4161,6 +4279,8 @@ class PipelineCoordinator {
             prUrl = loopResult.prUrl;
             agentRootCause = loopResult.agentRootCause;
             agentInvestigationFindings = loopResult.agentInvestigationFindings;
+            autoFixSkipped = loopResult.autoFixSkipped;
+            autoFixSkippedReason = loopResult.autoFixSkippedReason;
         }
         else {
             const singleResult = await (0, validator_1.generateFixRecommendation)(this.inputs, this.repoDetails, errorData, this.openaiClient, this.octokit, undefined, undefined, skillStore, investigationContext);
@@ -4168,10 +4288,25 @@ class PipelineCoordinator {
             agentRootCause = singleResult?.agentRootCause;
             agentInvestigationFindings = singleResult?.agentInvestigationFindings;
             if (fixRecommendation && this.inputs.enableAutoFix && autoFixTargetRepo) {
-                autoFixResult = await (0, validator_1.attemptAutoFix)(this.inputs, fixRecommendation, this.octokit, autoFixTargetRepo, errorData);
+                const outcome = await (0, validator_1.attemptAutoFix)(this.inputs, fixRecommendation, this.octokit, autoFixTargetRepo, errorData);
+                autoFixResult = outcome.applied;
+                if (outcome.skipReason) {
+                    autoFixSkipped = true;
+                    autoFixSkippedReason = outcome.skipReason;
+                }
             }
         }
-        return { fixRecommendation, autoFixResult, investigationContext, iterations, prUrl, agentRootCause, agentInvestigationFindings };
+        return {
+            fixRecommendation,
+            autoFixResult,
+            investigationContext,
+            iterations,
+            prUrl,
+            agentRootCause,
+            agentInvestigationFindings,
+            autoFixSkipped,
+            autoFixSkippedReason,
+        };
     }
     async execute() {
         const errorData = await (0, log_processor_1.processWorkflowLogs)(this.octokit, this.artifactFetcher, this.inputs, this.repoDetails);
@@ -4206,7 +4341,7 @@ class PipelineCoordinator {
             }, errorData, null, chronicFlakinessSignal);
             return;
         }
-        const { fixRecommendation, autoFixResult, iterations, prUrl: skillPrUrl, agentRootCause, agentInvestigationFindings } = await this.repair(classification, errorData, skillStore);
+        const { fixRecommendation, autoFixResult, iterations, prUrl: skillPrUrl, agentRootCause, agentInvestigationFindings, autoFixSkipped: repairAutoFixSkipped, autoFixSkippedReason: repairAutoFixSkippedReason, } = await this.repair(classification, errorData, skillStore);
         if (skillStore && autoFixTargetRepo && errorData) {
             const fixSucceeded = !!(autoFixResult?.success && autoFixResult.validationStatus === 'passed');
             const fixAttempted = !!fixRecommendation;
@@ -4255,6 +4390,12 @@ class PipelineCoordinator {
         const result = { ...classification };
         if (fixRecommendation) {
             result.fixRecommendation = fixRecommendation;
+        }
+        if (repairAutoFixSkipped) {
+            result.autoFixSkipped = true;
+            if (repairAutoFixSkippedReason) {
+                result.autoFixSkippedReason = repairAutoFixSkippedReason;
+            }
         }
         const flakinessSignal = skillStore
             ? skillStore.detectFlakiness(errorData.fileName || 'unknown')
@@ -4614,6 +4755,7 @@ var __importStar = (this && this.__importStar) || (function () {
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.generateFixRecommendation = generateFixRecommendation;
 exports.iterativeFixValidateLoop = iterativeFixValidateLoop;
+exports.requiredConfidence = requiredConfidence;
 exports.fixFingerprint = fixFingerprint;
 exports.attemptAutoFix = attemptAutoFix;
 const core = __importStar(__nccwpck_require__(37484));
@@ -4682,6 +4824,8 @@ async function iterativeFixValidateLoop(inputs, repoDetails, autoFixTargetRepo, 
     let completedIterations = 0;
     let agentRootCause;
     let agentInvestigationFindings;
+    let autoFixSkipped = false;
+    let autoFixSkippedReason;
     let previousAttempt;
     const failedFixFingerprints = new Set();
     const minConfidence = inputs.autoFixMinConfidence ?? constants_1.AUTO_FIX.DEFAULT_MIN_CONFIDENCE;
@@ -4715,9 +4859,21 @@ async function iterativeFixValidateLoop(inputs, repoDetails, autoFixTargetRepo, 
                 agentRootCause = fixResult.agentRootCause;
             if (fixResult.agentInvestigationFindings)
                 agentInvestigationFindings = fixResult.agentInvestigationFindings;
-            if (fixRecommendation.confidence < minConfidence ||
-                !fixRecommendation.proposedChanges?.length) {
-                core.info(`Iteration ${iteration + 1}: fix rejected — confidence ${fixRecommendation.confidence}% below ${minConfidence}% or no changes`);
+            if (!fixRecommendation.proposedChanges?.length) {
+                core.info(`Iteration ${iteration + 1}: fix rejected — no changes proposed`);
+                break;
+            }
+            const { required: iterRequired, reasons: iterReasons } = requiredConfidence(fixRecommendation, minConfidence);
+            if (fixRecommendation.confidence < iterRequired) {
+                const suffix = iterReasons.length
+                    ? ` (blast-radius scaling: ${iterReasons.join('; ')})`
+                    : '';
+                const reason = `Blast-radius gate: confidence ${fixRecommendation.confidence}% < required ${iterRequired}%${suffix}`;
+                core.info(`Iteration ${iteration + 1}: fix rejected — ${reason}`);
+                if (iterReasons.length > 0) {
+                    autoFixSkipped = true;
+                    autoFixSkippedReason = reason;
+                }
                 break;
             }
             const fingerprint = fixFingerprint(fixRecommendation);
@@ -4732,7 +4888,7 @@ async function iterativeFixValidateLoop(inputs, repoDetails, autoFixTargetRepo, 
                 const baseline = await validator.baselineCheck();
                 if (baseline.passed) {
                     core.info('✅ Baseline check passed — test passes without fix. Failure was likely transient.');
-                    return { fixRecommendation: null, autoFixResult: null, iterations: 0, agentRootCause, agentInvestigationFindings };
+                    return { fixRecommendation: null, autoFixResult: null, iterations: 0, agentRootCause, agentInvestigationFindings, autoFixSkipped, autoFixSkippedReason };
                 }
                 core.info('❌ Baseline check confirmed failure — proceeding with fix.');
             }
@@ -4764,7 +4920,7 @@ async function iterativeFixValidateLoop(inputs, repoDetails, autoFixTargetRepo, 
                         branchName: pushResult.branchName,
                         validationStatus: 'passed',
                     };
-                    return { fixRecommendation, autoFixResult, iterations: iteration + 1, prUrl: pushResult.prUrl, agentRootCause, agentInvestigationFindings };
+                    return { fixRecommendation, autoFixResult, iterations: iteration + 1, prUrl: pushResult.prUrl, agentRootCause, agentInvestigationFindings, autoFixSkipped, autoFixSkippedReason };
                 }
                 catch (pushError) {
                     core.warning(`Test passed but push/PR creation failed: ${pushError}`);
@@ -4775,7 +4931,7 @@ async function iterativeFixValidateLoop(inputs, repoDetails, autoFixTargetRepo, 
                         validationStatus: 'passed',
                     };
                 }
-                return { fixRecommendation, autoFixResult, iterations: iteration + 1, agentRootCause, agentInvestigationFindings };
+                return { fixRecommendation, autoFixResult, iterations: iteration + 1, agentRootCause, agentInvestigationFindings, autoFixSkipped, autoFixSkippedReason };
             }
             core.warning(`\n❌ Test FAILED on iteration ${iteration + 1} (exit code: ${testResult.exitCode}, ${testResult.durationMs}ms)`);
             failedFixFingerprints.add(fingerprint);
@@ -4798,7 +4954,32 @@ async function iterativeFixValidateLoop(inputs, repoDetails, autoFixTargetRepo, 
             await validator.cleanup();
         }
     }
-    return { fixRecommendation, autoFixResult, iterations: completedIterations, agentRootCause, agentInvestigationFindings };
+    return { fixRecommendation, autoFixResult, iterations: completedIterations, agentRootCause, agentInvestigationFindings, autoFixSkipped, autoFixSkippedReason };
+}
+function normalizeFileForPatternMatch(path) {
+    return ('/' + path.replace(/^\.\//, '').replace(/\\/g, '/')).toLowerCase();
+}
+function requiredConfidence(fix, baseMinConfidence) {
+    const reasons = [];
+    let required = baseMinConfidence;
+    const files = new Set(fix.proposedChanges.map((c) => c.file));
+    const sharedMatches = [...files].filter((f) => {
+        const normalized = normalizeFileForPatternMatch(f);
+        return constants_1.BLAST_RADIUS.SHARED_CODE_PATTERNS.some((p) => normalized.includes(p));
+    });
+    if (sharedMatches.length > 0) {
+        required += constants_1.BLAST_RADIUS.SHARED_CODE_BOOST;
+        reasons.push(`touches shared code (${sharedMatches.join(', ')}) — +${constants_1.BLAST_RADIUS.SHARED_CODE_BOOST}`);
+    }
+    if (files.size >= 2) {
+        required += constants_1.BLAST_RADIUS.MULTI_FILE_BOOST;
+        reasons.push(`spans ${files.size} files — +${constants_1.BLAST_RADIUS.MULTI_FILE_BOOST}`);
+    }
+    const effectiveMax = Math.max(baseMinConfidence, constants_1.BLAST_RADIUS.MAX_REQUIRED_CONFIDENCE);
+    if (required > effectiveMax) {
+        required = effectiveMax;
+    }
+    return { required, reasons };
 }
 function fixFingerprint(fix) {
     const normalize = (s) => s.replace(/\s+/g, ' ').trim();
@@ -4809,19 +4990,32 @@ function fixFingerprint(fix) {
 }
 async function attemptAutoFix(inputs, fixRecommendation, octokit, repoDetails, errorData) {
     core.info('\n🤖 Auto-fix is enabled, attempting to apply fix...');
+    const baseMin = inputs.autoFixMinConfidence ?? constants_1.AUTO_FIX.DEFAULT_MIN_CONFIDENCE;
+    const { required, reasons } = requiredConfidence(fixRecommendation, baseMin);
+    if (fixRecommendation.confidence < required) {
+        const suffix = reasons.length
+            ? ` (blast-radius scaling: ${reasons.join('; ')})`
+            : '';
+        const skipMessage = `confidence ${fixRecommendation.confidence}% below required ${required}%${suffix}`;
+        core.info(`⏭️ Auto-fix skipped: ${skipMessage}`);
+        return {
+            applied: null,
+            skipReason: reasons.length > 0 ? `Blast-radius gate: ${skipMessage}` : undefined,
+        };
+    }
     const fixApplier = (0, fix_applier_1.createFixApplier)({
         octokit,
         owner: repoDetails.owner,
         repo: repoDetails.repo,
         baseBranch: inputs.branch || inputs.autoFixBaseBranch || 'main',
-        minConfidence: inputs.autoFixMinConfidence ?? constants_1.AUTO_FIX.DEFAULT_MIN_CONFIDENCE,
+        minConfidence: required,
         enableValidation: inputs.enableValidation,
         validationWorkflow: inputs.validationWorkflow,
         validationTestCommand: inputs.validationTestCommand,
     });
     if (!fixApplier.canApply(fixRecommendation)) {
-        core.info('⏭️ Auto-fix skipped: confidence below threshold or no changes proposed');
-        return null;
+        core.info('⏭️ Auto-fix skipped: no changes proposed');
+        return { applied: null };
     }
     try {
         const result = await fixApplier.applyFix(fixRecommendation);
@@ -4872,11 +5066,11 @@ async function attemptAutoFix(inputs, fixRecommendation, octokit, repoDetails, e
         else {
             core.warning(`❌ Auto-fix failed: ${result.error}`);
         }
-        return result;
+        return { applied: result };
     }
     catch (error) {
         core.warning(`Auto-fix error: ${error}`);
-        return null;
+        return { applied: null };
     }
 }
 //# sourceMappingURL=validator.js.map
@@ -7154,6 +7348,7 @@ var __importStar = (this && this.__importStar) || (function () {
 })();
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.SkillStore = exports.MAX_SKILLS = void 0;
+exports.sanitizeForPrompt = sanitizeForPrompt;
 exports.normalizeFramework = normalizeFramework;
 exports.buildSkill = buildSkill;
 exports.describeFixPattern = describeFixPattern;

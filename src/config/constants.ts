@@ -145,3 +145,51 @@ export const FIX_VALIDATE_LOOP = {
  * and another auto-fix is unlikely to help.
  */
 export const CHRONIC_FLAKINESS_THRESHOLD = 3;
+
+/**
+ * Blast-radius confidence scaling.
+ *
+ * A fix that touches a widely-shared file (page objects, helpers, commands,
+ * fixtures) can break many tests at once, so we require higher confidence
+ * than a spec-local fix. Likewise, a fix that spans multiple files is less
+ * tightly scoped than a single-file change and deserves more scrutiny.
+ *
+ * Usage: validator/coordinator adds these offsets to the base
+ * `minConfidence` (DEFAULT_MIN_CONFIDENCE or user override) when computing
+ * the required confidence for the current fix. Values are additive and
+ * capped at 95 so we never demand a confidence the model cannot emit.
+ */
+export const BLAST_RADIUS = {
+  /**
+   * Directory fragments that indicate shared code (test infra, page objects,
+   * helpers). Matched case-insensitively against the file path with a leading
+   * slash prepended, so `test/PageObjects/X.ts` and `PageObjects/X.ts` both
+   * match `/pageobjects/`. Paths list canonical lowercase fragments.
+   */
+  SHARED_CODE_PATTERNS: [
+    '/pageobjects/',
+    '/page-objects/',
+    '/pages/',
+    '/screens/',
+    '/helpers/',
+    '/utils/',
+    '/commands/',
+    '/fixtures/',
+    '/support/',
+    '/shared/',
+    '/common/',
+    '/step-definitions/',
+  ] as readonly string[],
+  /** Added to minConfidence when any proposedChange touches shared code. */
+  SHARED_CODE_BOOST: 10,
+  /** Added to minConfidence when the fix spans 2+ distinct files. */
+  MULTI_FILE_BOOST: 5,
+  /**
+   * Cap for the *scaling* portion of requiredConfidence — we never push the
+   * threshold beyond this via blast-radius boosts, because the model rarely
+   * emits >95 and doing so would reject viable fixes. Callers passing a
+   * higher explicit floor (e.g. `autoFixMinConfidence = 100`) are honored
+   * — the cap never demotes the caller's explicit threshold.
+   */
+  MAX_REQUIRED_CONFIDENCE: 95,
+} as const;

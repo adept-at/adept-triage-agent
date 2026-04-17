@@ -311,6 +311,133 @@ describe('ReviewAgent', () => {
     });
   });
 
+  describe('failureModeTrace surfacing and rules', () => {
+    const passingReview: ReviewOutput = {
+      approved: true,
+      issues: [],
+      assessment: 'ok',
+      fixConfidence: 90,
+    };
+
+    it('renders the causal trace in the user prompt when the fix includes one', async () => {
+      mockOpenAIClient.generateWithCustomPrompt = jest
+        .fn()
+        .mockResolvedValue({ text: JSON.stringify(passingReview), responseId: 'r' });
+
+      const fixWithTrace: FixGenerationOutput = {
+        ...mockProposedFix,
+        failureModeTrace: {
+          originalState: 'currentTime=6.02s, pausedTime=0.0s',
+          rootMechanism: 'pausedTime captured before player actually paused',
+          newStateAfterFix: 'capture happens after player.paused === true',
+          whyAssertionPassesNow: 'drift now measured from the true pause',
+        },
+      };
+
+      const context = createAgentContext({
+        errorMessage: 'err',
+        testFile: 'test.cy.ts',
+        testName: 'test',
+      });
+
+      await agent.execute(
+        { proposedFix: fixWithTrace, analysis: mockAnalysis },
+        context
+      );
+
+      const call = mockOpenAIClient.generateWithCustomPrompt.mock.calls[0][0];
+      const userContent = Array.isArray(call.userContent)
+        ? call.userContent.map((c: any) => c.text || '').join('\n')
+        : call.userContent;
+      expect(userContent).toContain('Failure Mode Trace (MUST audit for quality)');
+      expect(userContent).toContain('currentTime=6.02s');
+      expect(userContent).toContain('pausedTime captured before player actually paused');
+    });
+
+    it('renders MISSING banner in the user prompt when no trace is provided', async () => {
+      mockOpenAIClient.generateWithCustomPrompt = jest
+        .fn()
+        .mockResolvedValue({ text: JSON.stringify(passingReview), responseId: 'r' });
+
+      const context = createAgentContext({
+        errorMessage: 'err',
+        testFile: 'test.cy.ts',
+        testName: 'test',
+      });
+
+      await agent.execute(
+        { proposedFix: mockProposedFix, analysis: mockAnalysis },
+        context
+      );
+
+      const call = mockOpenAIClient.generateWithCustomPrompt.mock.calls[0][0];
+      const userContent = Array.isArray(call.userContent)
+        ? call.userContent.map((c: any) => c.text || '').join('\n')
+        : call.userContent;
+      expect(userContent).toContain('### Failure Mode Trace');
+      expect(userContent).toContain('MISSING');
+      expect(userContent).toContain('flag this as CRITICAL');
+    });
+
+    it('renders EMPTY markers for individual missing sub-fields so the reviewer can target them', async () => {
+      mockOpenAIClient.generateWithCustomPrompt = jest
+        .fn()
+        .mockResolvedValue({ text: JSON.stringify(passingReview), responseId: 'r' });
+
+      const fixWithPartialTrace: FixGenerationOutput = {
+        ...mockProposedFix,
+        failureModeTrace: {
+          originalState: 'something concrete',
+          rootMechanism: '',
+          newStateAfterFix: '',
+          whyAssertionPassesNow: '',
+        },
+      };
+
+      const context = createAgentContext({
+        errorMessage: 'err',
+        testFile: 'test.cy.ts',
+        testName: 'test',
+      });
+
+      await agent.execute(
+        { proposedFix: fixWithPartialTrace, analysis: mockAnalysis },
+        context
+      );
+
+      const call = mockOpenAIClient.generateWithCustomPrompt.mock.calls[0][0];
+      const userContent = Array.isArray(call.userContent)
+        ? call.userContent.map((c: any) => c.text || '').join('\n')
+        : call.userContent;
+      expect(userContent).toContain('originalState:** something concrete');
+      expect(userContent).toContain('rootMechanism:** (EMPTY — flag CRITICAL)');
+      expect(userContent).toContain('newStateAfterFix:** (EMPTY — flag CRITICAL)');
+      expect(userContent).toContain('whyAssertionPassesNow:** (EMPTY — flag CRITICAL)');
+    });
+
+    it('system prompt includes rules for missing trace and logical strengthening', async () => {
+      mockOpenAIClient.generateWithCustomPrompt = jest
+        .fn()
+        .mockResolvedValue({ text: JSON.stringify(passingReview), responseId: 'r' });
+
+      const context = createAgentContext({
+        errorMessage: 'err',
+        testFile: 'test.cy.ts',
+        testName: 'test',
+      });
+
+      await agent.execute(
+        { proposedFix: mockProposedFix, analysis: mockAnalysis },
+        context
+      );
+
+      const call = mockOpenAIClient.generateWithCustomPrompt.mock.calls[0][0];
+      expect(call.systemPrompt).toContain('Missing or vague failureModeTrace');
+      expect(call.systemPrompt).toContain('Logical strengthening without justification');
+      expect(call.systemPrompt).toContain('strictly stronger');
+    });
+  });
+
   describe('ReviewIssue interface', () => {
     it('should support all severity levels', () => {
       const severities: ReviewIssue['severity'][] = [

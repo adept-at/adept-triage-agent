@@ -290,8 +290,32 @@ You MUST respond with a JSON object matching this schema:
   "reasoning": "<detailed explanation of why this fix will work>",
   "evidence": ["<evidence supporting this fix>"],
   "risks": ["<potential risks or things to watch for>"],
-  "alternatives": ["<other approaches that could work>"]
+  "alternatives": ["<other approaches that could work>"],
+  "failureModeTrace": {
+    "originalState": "<concrete runtime state at the moment of failure — reference specific values from the error message / logs (e.g., 'currentTime was 6.02s, pausedTime was 0.0s, drift 6.02 > tolerance 0.25'). Do NOT write generic phrases like 'timing issue' or 'flaky wait'.>",
+    "rootMechanism": "<the specific causal chain that produced the failure. Describe WHY the runtime state above led to the assertion failing. Be concrete: 'pausedTime was captured immediately after clicking pause, but the player had not yet transitioned to paused, so pausedTime reflected the click moment (0s) not the actual pause moment'.>",
+    "newStateAfterFix": "<what specifically is different in the runtime state after your fix runs. Tie this to the code change: 'After the fix, pausedTime is captured only after player.paused === true, so it reflects the actual pause moment and currentTime stays within tolerance of it'.>",
+    "whyAssertionPassesNow": "<why the failing assertion will now succeed. If your new condition is logically STRONGER than the original (e.g., adds an AND-clause), you MUST explain why the added requirement is guaranteed to hold in the exact failure scenario. A fix that only tightens conditions will not make a failing test pass.>"
+  }
 }
+
+## CRITICAL — failureModeTrace is REQUIRED
+
+Your fix will be REJECTED by the review agent if failureModeTrace is missing, abstract, or if it doesn't demonstrably address the specific failure mode. Before writing the trace, ask yourself:
+
+1. **Does my fix CHANGE the runtime state at the moment of failure, or just WRAP the existing check?**
+   - Example of wrapping (bad): original \`|diff| <= 0.25\` fails → "fix" makes it \`paused && |diff| <= 0.5\`. The \`paused\` check is an AND-clause; if the original failed because \`paused\` wasn't true, the fix makes it harder to satisfy, not easier.
+   - Example of changing state (good): original captures \`pausedTime\` before the pause event fires → "fix" adds \`waitUntil(() => paused)\` BEFORE capturing, so \`pausedTime\` reflects the actual pause.
+
+2. **Is my new condition strictly stronger than the original?**
+   - If yes, and the original was failing, the fix will not help unless the added requirement is guaranteed to hold in the failure scenario.
+   - "Strictly stronger" means: every state that satisfies the new condition also satisfies the original, but not vice versa.
+   - Examples of strictly stronger: AND-ing a new requirement, tightening a tolerance, adding an additional assertion.
+   - Examples of weakening (often the right move): OR-ing a fallback, widening a tolerance, removing an overly-strict assertion.
+
+3. **Does my trace reference CONCRETE values from the failure logs?**
+   - Pull specific numbers and element states from the error message and log excerpts.
+   - If you can't reference specifics, you probably don't understand the failure well enough to fix it — escalate by returning lower confidence.
 
 ## CRITICAL — oldCode MATCHING
 
@@ -347,6 +371,17 @@ export interface CodeChange {
 }
 
 /**
+ * Structured causal trace that every fix must carry. See types.ts
+ * FailureModeTrace for full documentation.
+ */
+export interface FailureModeTraceOutput {
+  originalState: string;
+  rootMechanism: string;
+  newStateAfterFix: string;
+  whyAssertionPassesNow: string;
+}
+
+/**
  * Output from the Fix Generation Agent
  */
 export interface FixGenerationOutput {
@@ -364,6 +399,12 @@ export interface FixGenerationOutput {
   risks: string[];
   /** Alternative approaches considered */
   alternatives?: string[];
+  /**
+   * Required for v1.48+: structured causal trace the review agent uses to
+   * verify the fix actually addresses the failure mode. Omission is a
+   * CRITICAL issue at review time.
+   */
+  failureModeTrace?: FailureModeTraceOutput;
 }
 
 /**
@@ -670,6 +711,21 @@ export class FixGenerationAgent extends BaseAgent<
         }
       }
 
+      // Parse the optional-but-strongly-encouraged failureModeTrace. Keep
+      // parsing lenient (accept partial traces, normalize to strings) — the
+      // review agent is responsible for enforcing completeness.
+      let failureModeTrace: FailureModeTraceOutput | undefined;
+      if (parsed.failureModeTrace && typeof parsed.failureModeTrace === 'object') {
+        const t = parsed.failureModeTrace;
+        failureModeTrace = {
+          originalState: typeof t.originalState === 'string' ? t.originalState : '',
+          rootMechanism: typeof t.rootMechanism === 'string' ? t.rootMechanism : '',
+          newStateAfterFix: typeof t.newStateAfterFix === 'string' ? t.newStateAfterFix : '',
+          whyAssertionPassesNow:
+            typeof t.whyAssertionPassesNow === 'string' ? t.whyAssertionPassesNow : '',
+        };
+      }
+
       return {
         changes,
         confidence:
@@ -681,6 +737,7 @@ export class FixGenerationAgent extends BaseAgent<
         alternatives: Array.isArray(parsed.alternatives)
           ? parsed.alternatives
           : undefined,
+        failureModeTrace,
       };
     } catch (error) {
       this.log(`Failed to parse response: ${error}`, 'warning');

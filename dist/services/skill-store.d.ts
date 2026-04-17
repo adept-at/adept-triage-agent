@@ -34,6 +34,7 @@ export interface FlakinessSignal {
     message: string;
 }
 export declare const MAX_SKILLS = 100;
+export declare function sanitizeForPrompt(input: string, maxLength?: number): string;
 export declare class SkillStore {
     private skills;
     private loaded;

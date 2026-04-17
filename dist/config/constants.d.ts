@@ -72,4 +72,10 @@ export declare const FIX_VALIDATE_LOOP: {
     readonly TEST_TIMEOUT_MS: 300000;
 };
 export declare const CHRONIC_FLAKINESS_THRESHOLD = 3;
+export declare const BLAST_RADIUS: {
+    readonly SHARED_CODE_PATTERNS: readonly string[];
+    readonly SHARED_CODE_BOOST: 10;
+    readonly MULTI_FILE_BOOST: 5;
+    readonly MAX_REQUIRED_CONFIDENCE: 95;
+};
 //# sourceMappingURL=constants.d.ts.map

@@ -7,7 +7,7 @@ import { buildRepairContext } from '../repair-context';
 import { SimplifiedRepairAgent } from '../repair/simplified-repair-agent';
 import { createFixApplier, ApplyResult, generateFixBranchName } from '../repair/fix-applier';
 import { LocalFixValidator } from '../services/local-fix-validator';
-import { AUTO_FIX, FIX_VALIDATE_LOOP, DEFAULT_PRODUCT_URL } from '../config/constants';
+import { AUTO_FIX, BLAST_RADIUS, FIX_VALIDATE_LOOP, DEFAULT_PRODUCT_URL } from '../config/constants';
 import { SkillStore } from '../services/skill-store';
 import { parseRepoString } from '../utils/repo-utils';
 
@@ -118,6 +118,14 @@ export async function iterativeFixValidateLoop(
   prUrl?: string;
   agentRootCause?: string;
   agentInvestigationFindings?: string;
+  /**
+   * Set when a policy gate (blast-radius scaling, etc.) intentionally held
+   * back an auto-fix that would otherwise have been applied. Coordinator
+   * forwards these to the run output so downstream consumers can tell
+   * "fix was withheld for safety" apart from "no fix possible".
+   */
+  autoFixSkipped?: boolean;
+  autoFixSkippedReason?: string;
 }> {
   const maxIterations = FIX_VALIDATE_LOOP.MAX_ITERATIONS;
   let fixRecommendation: FixRecommendation | null = null;
@@ -125,6 +133,8 @@ export async function iterativeFixValidateLoop(
   let completedIterations = 0;
   let agentRootCause: string | undefined;
   let agentInvestigationFindings: string | undefined;
+  let autoFixSkipped = false;
+  let autoFixSkippedReason: string | undefined;
   let previousAttempt:
     | { iteration: number; previousFix: FixRecommendation; validationLogs: string }
     | undefined;
@@ -180,13 +190,31 @@ export async function iterativeFixValidateLoop(
       if (fixResult.agentRootCause) agentRootCause = fixResult.agentRootCause;
       if (fixResult.agentInvestigationFindings) agentInvestigationFindings = fixResult.agentInvestigationFindings;
 
-      if (
-        fixRecommendation.confidence < minConfidence ||
-        !fixRecommendation.proposedChanges?.length
-      ) {
+      if (!fixRecommendation.proposedChanges?.length) {
+        core.info(`Iteration ${iteration + 1}: fix rejected — no changes proposed`);
+        break;
+      }
+
+      const { required: iterRequired, reasons: iterReasons } = requiredConfidence(
+        fixRecommendation,
+        minConfidence
+      );
+      if (fixRecommendation.confidence < iterRequired) {
+        const suffix = iterReasons.length
+          ? ` (blast-radius scaling: ${iterReasons.join('; ')})`
+          : '';
+        const reason = `Blast-radius gate: confidence ${fixRecommendation.confidence}% < required ${iterRequired}%${suffix}`;
         core.info(
-          `Iteration ${iteration + 1}: fix rejected — confidence ${fixRecommendation.confidence}% below ${minConfidence}% or no changes`
+          `Iteration ${iteration + 1}: fix rejected — ${reason}`
         );
+        // Only record the skip when the threshold was actually raised by
+        // blast-radius scaling. When it's just the base threshold, there
+        // is no "policy held this back" story to surface — the model
+        // simply didn't reach the user-configured bar.
+        if (iterReasons.length > 0) {
+          autoFixSkipped = true;
+          autoFixSkippedReason = reason;
+        }
         break;
       }
 
@@ -209,7 +237,7 @@ export async function iterativeFixValidateLoop(
         const baseline = await validator.baselineCheck();
         if (baseline.passed) {
           core.info('✅ Baseline check passed — test passes without fix. Failure was likely transient.');
-          return { fixRecommendation: null, autoFixResult: null, iterations: 0, agentRootCause, agentInvestigationFindings };
+          return { fixRecommendation: null, autoFixResult: null, iterations: 0, agentRootCause, agentInvestigationFindings, autoFixSkipped, autoFixSkippedReason };
         }
         core.info('❌ Baseline check confirmed failure — proceeding with fix.');
       }
@@ -251,7 +279,7 @@ export async function iterativeFixValidateLoop(
             validationStatus: 'passed',
           };
 
-          return { fixRecommendation, autoFixResult, iterations: iteration + 1, prUrl: pushResult.prUrl, agentRootCause, agentInvestigationFindings };
+          return { fixRecommendation, autoFixResult, iterations: iteration + 1, prUrl: pushResult.prUrl, agentRootCause, agentInvestigationFindings, autoFixSkipped, autoFixSkippedReason };
         } catch (pushError) {
           core.warning(`Test passed but push/PR creation failed: ${pushError}`);
           autoFixResult = {
@@ -262,7 +290,7 @@ export async function iterativeFixValidateLoop(
           };
         }
 
-        return { fixRecommendation, autoFixResult, iterations: iteration + 1, agentRootCause, agentInvestigationFindings };
+        return { fixRecommendation, autoFixResult, iterations: iteration + 1, agentRootCause, agentInvestigationFindings, autoFixSkipped, autoFixSkippedReason };
       }
 
       core.warning(
@@ -288,7 +316,70 @@ export async function iterativeFixValidateLoop(
     }
   }
 
-  return { fixRecommendation, autoFixResult, iterations: completedIterations, agentRootCause, agentInvestigationFindings };
+  return { fixRecommendation, autoFixResult, iterations: completedIterations, agentRootCause, agentInvestigationFindings, autoFixSkipped, autoFixSkippedReason };
+}
+
+/**
+ * Normalize a file path so shared-code pattern matching is robust to:
+ *   - leading "./" (model-emitted relative paths)
+ *   - missing leading slash (bare `helpers/auth.ts`)
+ *   - Windows-style separators (unlikely in GH API output, but cheap to handle)
+ *   - mixed case (`PageObjects/` vs `/pageobjects/`)
+ * The returned string always starts with `/` and is lowercase, so callers can
+ * rely on `.includes('/pageobjects/')` semantics.
+ */
+function normalizeFileForPatternMatch(path: string): string {
+  return ('/' + path.replace(/^\.\//, '').replace(/\\/g, '/')).toLowerCase();
+}
+
+/**
+ * Compute the confidence required to apply an auto-fix, scaling the base
+ * threshold up when the fix touches shared code (page objects, helpers,
+ * commands, etc.) or spans multiple files. A fix in those surfaces can
+ * cascade to many tests, so we demand more certainty before shipping it.
+ *
+ * Returns an object so call-sites can surface *why* the threshold went up
+ * in logs / skip reasons, which is useful for auditing the policy.
+ */
+export function requiredConfidence(
+  fix: FixRecommendation,
+  baseMinConfidence: number
+): { required: number; reasons: string[] } {
+  const reasons: string[] = [];
+  let required = baseMinConfidence;
+
+  const files = new Set(fix.proposedChanges.map((c) => c.file));
+  const sharedMatches = [...files].filter((f) => {
+    const normalized = normalizeFileForPatternMatch(f);
+    return BLAST_RADIUS.SHARED_CODE_PATTERNS.some((p) => normalized.includes(p));
+  });
+
+  if (sharedMatches.length > 0) {
+    required += BLAST_RADIUS.SHARED_CODE_BOOST;
+    reasons.push(
+      `touches shared code (${sharedMatches.join(', ')}) — +${BLAST_RADIUS.SHARED_CODE_BOOST}`
+    );
+  }
+
+  if (files.size >= 2) {
+    required += BLAST_RADIUS.MULTI_FILE_BOOST;
+    reasons.push(
+      `spans ${files.size} files — +${BLAST_RADIUS.MULTI_FILE_BOOST}`
+    );
+  }
+
+  // Cap the *scaled* threshold but never demote the caller's explicit floor.
+  // If someone passes `baseMinConfidence = 100`, honor it: preserving the
+  // explicit intent matters more than our "model rarely emits >95" heuristic.
+  const effectiveMax = Math.max(
+    baseMinConfidence,
+    BLAST_RADIUS.MAX_REQUIRED_CONFIDENCE
+  );
+  if (required > effectiveMax) {
+    required = effectiveMax;
+  }
+
+  return { required, reasons };
 }
 
 /**
@@ -303,32 +394,69 @@ export function fixFingerprint(fix: FixRecommendation): string {
     .join('\n');
 }
 
+/**
+ * Outcome wrapper so callers can distinguish:
+ *   - "applied (or attempted)"  → `applied` is the ApplyResult
+ *   - "intentionally held back by a policy gate" → `applied: null` + `skipReason`
+ *   - "no apply happened for other reasons (no changes, internal error)" → both undefined
+ *
+ * The `skipReason` mirrors the `autoFixSkipped` signal from
+ * `iterativeFixValidateLoop` and is surfaced on the run output so downstream
+ * Slack / dashboards can tell safety-withheld fixes apart from other skips.
+ */
+export interface AttemptAutoFixOutcome {
+  applied: ApplyResult | null;
+  skipReason?: string;
+}
+
 export async function attemptAutoFix(
   inputs: ActionInputs,
   fixRecommendation: FixRecommendation,
   octokit: Octokit,
   repoDetails: { owner: string; repo: string },
   errorData?: { fileName?: string }
-): Promise<ApplyResult | null> {
+): Promise<AttemptAutoFixOutcome> {
   core.info('\n🤖 Auto-fix is enabled, attempting to apply fix...');
+
+  const baseMin =
+    inputs.autoFixMinConfidence ?? AUTO_FIX.DEFAULT_MIN_CONFIDENCE;
+  const { required, reasons } = requiredConfidence(
+    fixRecommendation,
+    baseMin
+  );
+  if (fixRecommendation.confidence < required) {
+    const suffix = reasons.length
+      ? ` (blast-radius scaling: ${reasons.join('; ')})`
+      : '';
+    const skipMessage = `confidence ${fixRecommendation.confidence}% below required ${required}%${suffix}`;
+    core.info(`⏭️ Auto-fix skipped: ${skipMessage}`);
+    // Only tag this as a policy-withheld skip when blast-radius actually
+    // raised the bar. A plain "confidence below user threshold" skip is
+    // "no viable fix", not a safety hold-back.
+    return {
+      applied: null,
+      skipReason: reasons.length > 0 ? `Blast-radius gate: ${skipMessage}` : undefined,
+    };
+  }
 
   const fixApplier = createFixApplier({
     octokit,
     owner: repoDetails.owner,
     repo: repoDetails.repo,
     baseBranch: inputs.branch || inputs.autoFixBaseBranch || 'main',
-    minConfidence:
-      inputs.autoFixMinConfidence ?? AUTO_FIX.DEFAULT_MIN_CONFIDENCE,
+    minConfidence: required,
     enableValidation: inputs.enableValidation,
     validationWorkflow: inputs.validationWorkflow,
     validationTestCommand: inputs.validationTestCommand,
   });
 
+  // Outer gate already enforced `confidence >= required`, so the canApply
+  // confidence check is redundant here — only the "no proposed changes"
+  // branch can actually fire. Keep the call because canApply is the
+  // applier's canonical readiness check, but make the log truthful.
   if (!fixApplier.canApply(fixRecommendation)) {
-    core.info(
-      '⏭️ Auto-fix skipped: confidence below threshold or no changes proposed'
-    );
-    return null;
+    core.info('⏭️ Auto-fix skipped: no changes proposed');
+    return { applied: null };
   }
 
   try {
@@ -393,10 +521,10 @@ export async function attemptAutoFix(
       core.warning(`❌ Auto-fix failed: ${result.error}`);
     }
 
-    return result;
+    return { applied: result };
   } catch (error) {
     core.warning(`Auto-fix error: ${error}`);
-    return null;
+    return { applied: null };
   }
 }
 

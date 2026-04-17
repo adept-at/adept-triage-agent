@@ -4,7 +4,7 @@ import { AnalysisOutput } from './analysis-agent';
 import { CodeReadingOutput } from './code-reading-agent';
 import { InvestigationOutput } from './investigation-agent';
 import { FixGenerationOutput } from './fix-generation-agent';
-import { ReviewOutput } from './review-agent';
+import { ReviewOutput, ReviewIssue } from './review-agent';
 import { FixRecommendation, ErrorData, SourceFetchContext } from '../types';
 import { TriageSkill, FlakinessSignal } from '../services/skill-store';
 export interface OrchestratorConfig {
@@ -47,5 +47,6 @@ export declare class AgentOrchestrator {
     private buildDelegationContext;
     private convertToFixRecommendation;
 }
+export declare function isBlockingCriticalIssue(issue: ReviewIssue): boolean;
 export declare function createOrchestrator(openaiClient: OpenAIClient, config?: Partial<OrchestratorConfig>, sourceFetchContext?: SourceFetchContext): AgentOrchestrator;
 //# sourceMappingURL=agent-orchestrator.d.ts.map

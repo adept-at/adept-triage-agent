@@ -26,6 +26,8 @@ export interface RepairResult {
     prUrl?: string;
     agentRootCause?: string;
     agentInvestigationFindings?: string;
+    autoFixSkipped?: boolean;
+    autoFixSkippedReason?: string;
 }
 interface PipelineCoordinatorDeps {
     octokit: Octokit;
