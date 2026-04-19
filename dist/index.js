@@ -3781,20 +3781,31 @@ When analyzing screenshots (if provided):
 - Look for visual bugs, layout issues, or incorrect rendering
 - IMPORTANT: If the screenshot shows a login page WITHOUT a password field, username field, or login form, the app failed to render — this is a PRODUCT_ISSUE, not a selector problem
 - If the screenshot shows an error page, blank page, or unexpected page instead of the expected page, this is a PRODUCT_ISSUE
+- "Empty-state" UI (e.g. "No data", "No content", "No transcript for this video", "Please contact your administrator") is NOT by itself product evidence. Many apps render this string as a loading-fallback when the API call hasn't returned, errored transiently, or returned an unexpected shape. Treat it as evidence of test/timing/transient issues by default. Only treat empty-state as PRODUCT_ISSUE evidence when (a) the same empty-state appears in EVERY browser of a multi-browser run, OR (b) logs contain a concrete app-side error (stack trace, network 4xx/5xx, console error) corroborating the empty state.
 
 Screenshots often contain crucial error information that logs might miss. If an error is visible in a screenshot, it should be a key factor in your analysis.
 
-CROSS-BROWSER EVIDENCE (CRITICAL):
-When the same test suite runs across multiple browsers in the same CI run:
-- If ALL browsers fail with the same error: likely a real PRODUCT_ISSUE or a universal test problem
-- If SOME browsers pass and others fail: almost always a TEST_ISSUE (timing, scroll behavior, intersection observer differences between browser engines) or a TRANSIENT issue (API timeout, cache miss that affected one browser's run but not another's). Modern JavaScript behaves identically across browsers — browser-specific product bugs are extremely rare.
-- If one browser shows "No data" or empty state while another shows data: this is more likely a transient backend issue (API timeout, slow CDN) than a browser-specific rendering bug. Classify based on whether it reproduces, not on a single occurrence.
-- Do NOT classify as PRODUCT_ISSUE solely because one browser fails — check if other browsers in the same run passed first.
+CROSS-BROWSER EVIDENCE (CRITICAL — HARD RULE, NO OVERRIDE):
+When the same test suite runs across multiple browsers in the same CI run, the cross-browser pass/fail pattern is the strongest single signal available. It must NOT be overridden by screenshot or log-snippet evidence taken from a single failing browser.
+
+- If ALL browsers fail with the same error: likely a real PRODUCT_ISSUE or a universal test problem.
+- If SOME browsers pass and others fail: this is almost always a TEST_ISSUE (timing, scroll behavior, intersection observer differences) or a TRANSIENT/INFRASTRUCTURE issue (API timeout, cache miss, slow CDN, stale Sauce Labs session). Modern JavaScript behaves identically across browsers — browser-specific product bugs in test-relevant code are extremely rare.
+
+HARD RULE — when ANY browser passed and ANOTHER failed in the same run, you MUST NOT classify as PRODUCT_ISSUE unless ALL of the following are true. If even one is missing, classify as TEST_ISSUE or INCONCLUSIVE:
+
+1. Logs from the failing browser contain a CONCRETE app-side error: a stack trace originating from app code, a network request returning 4xx/5xx with a meaningful body, or a JavaScript console error from the application. Empty-state UI strings, loading spinners, and "no data" messages do NOT satisfy this requirement — they can all be loading-fallback content.
+2. The screenshot evidence is a stack trace, error overlay, 4xx/5xx page, or otherwise unambiguous bug evidence — NOT an empty-state, "no content", "please contact your administrator", spinner, or otherwise loading/fallback UI.
+3. Your reasoning explicitly identifies a plausible browser-specific mechanism (e.g., a Web API not implemented in that browser, a known engine bug in a relevant subsystem). "Edge failed and Firefox passed" is not a mechanism.
+
+If those conditions are not met, the empty-state UI in one browser while another passed is evidence of a test/timing/transient issue, NOT product behavior. The default verdict in this scenario is TEST_ISSUE (likely synchronization) or INCONCLUSIVE (recommend a re-run before further investigation).
+
+When in doubt with cross-browser pass/fail data, prefer INCONCLUSIVE over PRODUCT_ISSUE. INCONCLUSIVE costs a re-run; a wrong PRODUCT_ISSUE verdict routes a flake to product engineering.
 
 COMMON MISCLASSIFICATION PATTERNS TO AVOID:
 - Don't classify as TEST_ISSUE just because error happens in test file - check if it's exposing a real product bug
 - Don't classify as PRODUCT_ISSUE just because of a timeout - many timeouts are test synchronization issues
-- Don't classify as PRODUCT_ISSUE when one browser fails but others pass in the same run — this is almost always test timing or a transient issue
+- Don't classify as PRODUCT_ISSUE when one browser fails but others pass in the same run — this is almost always test timing or a transient issue (see HARD RULE in CROSS-BROWSER EVIDENCE above)
+- Don't override the cross-browser HARD RULE by saying "however, the screenshot shows…". An empty-state UI in the failing browser, while another browser passed, is the canonical signature of transient/timing issues, NOT of product bugs. Resist this override.
 - GraphQL/API errors during tests often indicate real product issues, not test problems
 - "Element not found" can be either - check if UI actually rendered correctly in screenshots
 
