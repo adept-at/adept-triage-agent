@@ -219,6 +219,7 @@ class PipelineCoordinator {
                     priorSkillCount: skillStore.countForSpec(errorData.fileName || 'unknown'),
                     investigationFindings: currentFindings,
                     rootCauseChain: `${rootCause} → ${fixRecommendation.summary?.slice(0, 80)}`,
+                    failureModeTrace: fixRecommendation.failureModeTrace,
                 });
                 const saveSucceeded = await skillStore.save(skill).catch((err) => {
                     core.warning(`Failed to save skill: ${err}`);

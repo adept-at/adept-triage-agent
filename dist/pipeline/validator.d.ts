@@ -48,6 +48,17 @@ export declare function requiredConfidence(fix: FixRecommendation, baseMinConfid
     reasons: string[];
 };
 export declare function fixFingerprint(fix: FixRecommendation): string;
+export interface FixResultForRetry {
+    agentRootCause?: string;
+    agentInvestigationFindings?: string;
+}
+export declare function buildNextPreviousAttempt(nextIteration: number, previousFix: FixRecommendation, fixResult: FixResultForRetry, validationLogs: string): {
+    iteration: number;
+    previousFix: FixRecommendation;
+    validationLogs: string;
+    priorAgentRootCause?: string;
+    priorAgentInvestigationFindings?: string;
+};
 export interface AttemptAutoFixOutcome {
     applied: ApplyResult | null;
     skipReason?: string;

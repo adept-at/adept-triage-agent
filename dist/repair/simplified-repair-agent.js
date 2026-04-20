@@ -34,6 +34,7 @@ var __importStar = (this && this.__importStar) || (function () {
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.SimplifiedRepairAgent = void 0;
+exports.summarizeInvestigationForRetry = summarizeInvestigationForRetry;
 exports.buildPriorAttemptContext = buildPriorAttemptContext;
 const core = __importStar(require("@actions/core"));
 const fs = __importStar(require("fs"));
@@ -45,6 +46,61 @@ const base_agent_1 = require("../agents/base-agent");
 const fix_generation_agent_1 = require("../agents/fix-generation-agent");
 const skill_store_1 = require("../services/skill-store");
 const root_cause_category_1 = require("./root-cause-category");
+function summarizeInvestigationForRetry(investigation) {
+    if (!investigation)
+        return undefined;
+    const parts = [];
+    const primary = investigation.primaryFinding;
+    if (primary) {
+        parts.push(`Primary finding: [${primary.severity}] ${primary.description}`);
+        if (primary.relationToError) {
+            parts.push(`  → Relation to error: ${primary.relationToError}`);
+        }
+        if (primary.evidence?.length) {
+            parts.push(`  → Evidence: ${primary.evidence.slice(0, 3).join('; ')}`);
+        }
+    }
+    if (typeof investigation.isTestCodeFixable === 'boolean') {
+        parts.push(`Is test-code fixable: ${investigation.isTestCodeFixable}`);
+    }
+    if (investigation.recommendedApproach) {
+        parts.push(`Recommended approach: ${investigation.recommendedApproach}`);
+    }
+    if (investigation.verdictOverride) {
+        const v = investigation.verdictOverride;
+        parts.push(`Verdict override: ${v.suggestedLocation} (${v.confidence}% confidence)`);
+        if (v.evidence?.length) {
+            parts.push(`  → Evidence: ${v.evidence.slice(0, 3).join('; ')}`);
+        }
+    }
+    if (investigation.selectorsToUpdate?.length) {
+        parts.push('Selectors flagged for update:');
+        for (const s of investigation.selectorsToUpdate.slice(0, 5)) {
+            const replacement = s.suggestedReplacement
+                ? ` → suggested: \`${s.suggestedReplacement}\``
+                : '';
+            parts.push(`  - \`${s.current}\`: ${s.reason}${replacement}`);
+        }
+    }
+    if (investigation.findings?.length) {
+        const isPrimary = (f) => {
+            if (!primary)
+                return false;
+            if (f === primary)
+                return true;
+            return (f.description === primary.description && f.severity === primary.severity);
+        };
+        const secondary = investigation.findings.filter((f) => !isPrimary(f)).slice(0, 3);
+        if (secondary.length > 0) {
+            parts.push('Other findings:');
+            for (const f of secondary) {
+                const rel = f.relationToError ? ` (${f.relationToError})` : '';
+                parts.push(`  - [${f.severity}] ${f.description}${rel}`);
+            }
+        }
+    }
+    return parts.length > 0 ? parts.join('\n') : undefined;
+}
 function buildPriorAttemptContext(prior, opts = {}) {
     const logBudget = opts.logBudget ?? 8000;
     const prevChanges = prior.previousFix.proposedChanges
@@ -182,21 +238,7 @@ class SimplifiedRepairAgent {
                 const analysis = result.agentResults.analysis?.data;
                 const investigation = result.agentResults.investigation?.data;
                 const agentRootCause = analysis?.rootCauseCategory;
-                const investigationParts = [];
-                if (investigation?.primaryFinding) {
-                    investigationParts.push(investigation.primaryFinding.description);
-                }
-                if (investigation?.recommendedApproach) {
-                    investigationParts.push(`Approach: ${investigation.recommendedApproach}`);
-                }
-                if (investigation?.findings?.length) {
-                    for (const f of investigation.findings.slice(0, 3)) {
-                        investigationParts.push(`[${f.severity}] ${f.description}`);
-                    }
-                }
-                const agentInvestigationFindings = investigationParts.length > 0
-                    ? investigationParts.join('\n')
-                    : undefined;
+                const agentInvestigationFindings = summarizeInvestigationForRetry(investigation);
                 return { fix: result.fix, lastResponseId: result.lastResponseId, agentRootCause, agentInvestigationFindings };
             }
             core.info(`🤖 Agentic approach failed: ${result.error || 'No fix generated'}`);

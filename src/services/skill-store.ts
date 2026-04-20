@@ -1,5 +1,6 @@
 import * as core from '@actions/core';
 import * as crypto from 'crypto';
+import { FailureModeTrace } from '../types';
 
 /**
  * A recorded fix pattern that the agent can recall on future runs.
@@ -38,6 +39,20 @@ export interface TriageSkill {
   classificationOutcome?: 'correct' | 'incorrect' | 'unknown';
   rootCauseChain?: string;
   repoContext?: string;
+
+  /**
+   * Causal trace from the fix-gen agent that produced this fix (introduced
+   * in v1.48.1, persisted to skills in v1.49.1). When present, future runs
+   * against similar failures can surface this as a template for how the
+   * prior successful fix reasoned about the failure — "originalState →
+   * rootMechanism → newStateAfterFix → whyAssertionPassesNow." Without
+   * this, prior causal reasoning was lost after the originating run.
+   *
+   * Optional for backward compatibility: skills saved before v1.49.1 don't
+   * have it, and a fix that shipped without a trace (legacy fallback)
+   * doesn't have one to persist either.
+   */
+  failureModeTrace?: FailureModeTrace;
 }
 
 export interface FlakinessSignal {
@@ -639,6 +654,13 @@ export function buildSkill(params: {
   investigationFindings?: string;
   rootCauseChain?: string;
   repoContext?: string;
+  /**
+   * R3: persist the fix-gen agent's causal trace so prior reasoning
+   * survives across runs. When the originating fix shipped without one
+   * (legacy / single-shot fallback), leave undefined — the skill is
+   * still useful without it.
+   */
+  failureModeTrace?: FailureModeTrace;
 }): TriageSkill {
   return {
     id: crypto.randomUUID(),
@@ -663,6 +685,11 @@ export function buildSkill(params: {
     classificationOutcome: 'unknown',
     rootCauseChain: params.rootCauseChain ?? '',
     repoContext: params.repoContext ?? '',
+    // Only set failureModeTrace on the skill when we actually have one.
+    // Leaving it undefined (rather than setting an empty object) keeps
+    // DynamoDB items lean and makes the "skill has trace?" check simple
+    // (`skill.failureModeTrace` is truthy or not).
+    ...(params.failureModeTrace ? { failureModeTrace: params.failureModeTrace } : {}),
   };
 }
 
@@ -741,13 +768,33 @@ export function formatSkillsForPrompt(
       '',
       'The following patterns were applied in prior runs. Not all were validated — use them as context, not guarantees.',
       'CONSIDER these approaches as starting points. If you see a better approach, explain why and use it instead.',
+      'When a prior fix includes a causal trace, use it as a reasoning template — the trace shows how the prior successful fix diagnosed the failure (originalState → rootMechanism → newStateAfterFix → whyAssertionPassesNow). Your own failureModeTrace does NOT need to copy the prior one; it should reflect the CURRENT failure\'s concrete values.',
     ].join('\n'),
     review: [
       '### Agent Memory: Prior Successful Fixes',
       '',
       'Check if the proposed fix aligns with patterns that have worked before.',
       'Flag if the fix contradicts a prior pattern without justification.',
+      'When a prior fix includes a causal trace, compare the CURRENT fix\'s failureModeTrace to it. A new trace that is markedly weaker than the prior trace for the same kind of failure is a WARNING signal — the current fix may not have reasoned as rigorously as the prior successful one.',
     ].join('\n'),
+  };
+
+  // R3: surface the persisted causal trace for downstream agents that
+  // reason about fix correctness. Investigation deliberately does NOT get
+  // the trace — its job is fresh evidence gathering and a prior trace
+  // would anchor its findings. Fix-gen benefits because the trace shows
+  // how the prior successful fix reasoned about the same kind of failure.
+  // Review benefits because review enforces trace quality on the CURRENT
+  // fix; seeing a prior high-quality trace gives the reviewer a template
+  // to compare against.
+  const includeTrace = role === 'fix_generation' || role === 'review';
+
+  // Per-sub-field truncation so the trace block doesn't dominate the
+  // skill context. 200 chars × 4 fields × 3 skills ≈ 2.4K chars of trace.
+  const TRACE_FIELD_MAX = 200;
+  const renderTraceField = (field?: string): string => {
+    if (!field) return '(empty)';
+    return sanitizeForPrompt(field, TRACE_FIELD_MAX);
   };
 
   const entries = skills.map((s, i) => {
@@ -759,7 +806,7 @@ export function formatSkillsForPrompt(
       ? `, classification: ${s.classificationOutcome}`
       : '';
 
-    return [
+    const lines: string[] = [
       `**Fix ${i + 1}** (${s.createdAt.split('T')[0]}, ${s.confidence}% confidence, ${s.iterations} iteration${s.iterations !== 1 ? 's' : ''})`,
       `- Spec: ${sanitizeForPrompt(s.spec)}`,
       `- Error: ${sanitizeForPrompt(s.errorPattern)}`,
@@ -767,7 +814,20 @@ export function formatSkillsForPrompt(
       `- Pattern: ${sanitizeForPrompt(s.fix.pattern)}`,
       `- Change type: ${sanitizeForPrompt(s.fix.changeType)} in ${sanitizeForPrompt(s.fix.file)}`,
       `- Track record: ${trackRecord}${outcome}`,
-    ].join('\n');
+    ];
+
+    if (includeTrace && s.failureModeTrace) {
+      const t = s.failureModeTrace;
+      lines.push(
+        '- Prior causal trace (how the successful fix reasoned):',
+        `  - originalState: ${renderTraceField(t.originalState)}`,
+        `  - rootMechanism: ${renderTraceField(t.rootMechanism)}`,
+        `  - newStateAfterFix: ${renderTraceField(t.newStateAfterFix)}`,
+        `  - whyAssertionPassesNow: ${renderTraceField(t.whyAssertionPassesNow)}`
+      );
+    }
+
+    return lines.join('\n');
   });
 
   const parts = [headers[role], '', ...entries];

@@ -4420,6 +4420,7 @@ class PipelineCoordinator {
                     priorSkillCount: skillStore.countForSpec(errorData.fileName || 'unknown'),
                     investigationFindings: currentFindings,
                     rootCauseChain: `${rootCause} → ${fixRecommendation.summary?.slice(0, 80)}`,
+                    failureModeTrace: fixRecommendation.failureModeTrace,
                 });
                 const saveSucceeded = await skillStore.save(skill).catch((err) => {
                     core.warning(`Failed to save skill: ${err}`);
@@ -4808,6 +4809,7 @@ exports.generateFixRecommendation = generateFixRecommendation;
 exports.iterativeFixValidateLoop = iterativeFixValidateLoop;
 exports.requiredConfidence = requiredConfidence;
 exports.fixFingerprint = fixFingerprint;
+exports.buildNextPreviousAttempt = buildNextPreviousAttempt;
 exports.attemptAutoFix = attemptAutoFix;
 const core = __importStar(__nccwpck_require__(37484));
 const github = __importStar(__nccwpck_require__(93228));
@@ -4989,13 +4991,7 @@ async function iterativeFixValidateLoop(inputs, repoDetails, autoFixTargetRepo, 
             await validator.reset();
             if (iteration < maxIterations - 1) {
                 core.info('Feeding failure logs + prior agent reasoning back into repair agent for next attempt...');
-                previousAttempt = {
-                    iteration: iteration + 1,
-                    previousFix: fixRecommendation,
-                    validationLogs: testResult.logs,
-                    priorAgentRootCause: agentRootCause,
-                    priorAgentInvestigationFindings: agentInvestigationFindings,
-                };
+                previousAttempt = buildNextPreviousAttempt(iteration + 1, fixRecommendation, fixResult, testResult.logs);
             }
             else {
                 core.warning(`\n🛑 All ${maxIterations} fix attempts exhausted. Giving up.`);
@@ -5040,6 +5036,15 @@ function fixFingerprint(fix) {
         .map((c) => `${c.file}::${normalize(c.oldCode)}::${normalize(c.newCode)}`)
         .sort()
         .join('\n');
+}
+function buildNextPreviousAttempt(nextIteration, previousFix, fixResult, validationLogs) {
+    return {
+        iteration: nextIteration,
+        previousFix,
+        validationLogs,
+        priorAgentRootCause: fixResult.agentRootCause,
+        priorAgentInvestigationFindings: fixResult.agentInvestigationFindings,
+    };
 }
 async function attemptAutoFix(inputs, fixRecommendation, octokit, repoDetails, errorData) {
     core.info('\n🤖 Auto-fix is enabled, attempting to apply fix...');
@@ -5869,6 +5874,7 @@ var __importStar = (this && this.__importStar) || (function () {
 })();
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.SimplifiedRepairAgent = void 0;
+exports.summarizeInvestigationForRetry = summarizeInvestigationForRetry;
 exports.buildPriorAttemptContext = buildPriorAttemptContext;
 const core = __importStar(__nccwpck_require__(37484));
 const fs = __importStar(__nccwpck_require__(79896));
@@ -5880,6 +5886,61 @@ const base_agent_1 = __nccwpck_require__(46575);
 const fix_generation_agent_1 = __nccwpck_require__(39302);
 const skill_store_1 = __nccwpck_require__(60215);
 const root_cause_category_1 = __nccwpck_require__(21406);
+function summarizeInvestigationForRetry(investigation) {
+    if (!investigation)
+        return undefined;
+    const parts = [];
+    const primary = investigation.primaryFinding;
+    if (primary) {
+        parts.push(`Primary finding: [${primary.severity}] ${primary.description}`);
+        if (primary.relationToError) {
+            parts.push(`  → Relation to error: ${primary.relationToError}`);
+        }
+        if (primary.evidence?.length) {
+            parts.push(`  → Evidence: ${primary.evidence.slice(0, 3).join('; ')}`);
+        }
+    }
+    if (typeof investigation.isTestCodeFixable === 'boolean') {
+        parts.push(`Is test-code fixable: ${investigation.isTestCodeFixable}`);
+    }
+    if (investigation.recommendedApproach) {
+        parts.push(`Recommended approach: ${investigation.recommendedApproach}`);
+    }
+    if (investigation.verdictOverride) {
+        const v = investigation.verdictOverride;
+        parts.push(`Verdict override: ${v.suggestedLocation} (${v.confidence}% confidence)`);
+        if (v.evidence?.length) {
+            parts.push(`  → Evidence: ${v.evidence.slice(0, 3).join('; ')}`);
+        }
+    }
+    if (investigation.selectorsToUpdate?.length) {
+        parts.push('Selectors flagged for update:');
+        for (const s of investigation.selectorsToUpdate.slice(0, 5)) {
+            const replacement = s.suggestedReplacement
+                ? ` → suggested: \`${s.suggestedReplacement}\``
+                : '';
+            parts.push(`  - \`${s.current}\`: ${s.reason}${replacement}`);
+        }
+    }
+    if (investigation.findings?.length) {
+        const isPrimary = (f) => {
+            if (!primary)
+                return false;
+            if (f === primary)
+                return true;
+            return (f.description === primary.description && f.severity === primary.severity);
+        };
+        const secondary = investigation.findings.filter((f) => !isPrimary(f)).slice(0, 3);
+        if (secondary.length > 0) {
+            parts.push('Other findings:');
+            for (const f of secondary) {
+                const rel = f.relationToError ? ` (${f.relationToError})` : '';
+                parts.push(`  - [${f.severity}] ${f.description}${rel}`);
+            }
+        }
+    }
+    return parts.length > 0 ? parts.join('\n') : undefined;
+}
 function buildPriorAttemptContext(prior, opts = {}) {
     const logBudget = opts.logBudget ?? 8000;
     const prevChanges = prior.previousFix.proposedChanges
@@ -6017,21 +6078,7 @@ class SimplifiedRepairAgent {
                 const analysis = result.agentResults.analysis?.data;
                 const investigation = result.agentResults.investigation?.data;
                 const agentRootCause = analysis?.rootCauseCategory;
-                const investigationParts = [];
-                if (investigation?.primaryFinding) {
-                    investigationParts.push(investigation.primaryFinding.description);
-                }
-                if (investigation?.recommendedApproach) {
-                    investigationParts.push(`Approach: ${investigation.recommendedApproach}`);
-                }
-                if (investigation?.findings?.length) {
-                    for (const f of investigation.findings.slice(0, 3)) {
-                        investigationParts.push(`[${f.severity}] ${f.description}`);
-                    }
-                }
-                const agentInvestigationFindings = investigationParts.length > 0
-                    ? investigationParts.join('\n')
-                    : undefined;
+                const agentInvestigationFindings = summarizeInvestigationForRetry(investigation);
                 return { fix: result.fix, lastResponseId: result.lastResponseId, agentRootCause, agentInvestigationFindings };
             }
             core.info(`🤖 Agentic approach failed: ${result.error || 'No fix generated'}`);
@@ -7838,6 +7885,7 @@ function buildSkill(params) {
         classificationOutcome: 'unknown',
         rootCauseChain: params.rootCauseChain ?? '',
         repoContext: params.repoContext ?? '',
+        ...(params.failureModeTrace ? { failureModeTrace: params.failureModeTrace } : {}),
     };
 }
 function describeFixPattern(changes) {
@@ -7887,13 +7935,22 @@ function formatSkillsForPrompt(skills, role, flakiness) {
             '',
             'The following patterns were applied in prior runs. Not all were validated — use them as context, not guarantees.',
             'CONSIDER these approaches as starting points. If you see a better approach, explain why and use it instead.',
+            'When a prior fix includes a causal trace, use it as a reasoning template — the trace shows how the prior successful fix diagnosed the failure (originalState → rootMechanism → newStateAfterFix → whyAssertionPassesNow). Your own failureModeTrace does NOT need to copy the prior one; it should reflect the CURRENT failure\'s concrete values.',
         ].join('\n'),
         review: [
             '### Agent Memory: Prior Successful Fixes',
             '',
             'Check if the proposed fix aligns with patterns that have worked before.',
             'Flag if the fix contradicts a prior pattern without justification.',
+            'When a prior fix includes a causal trace, compare the CURRENT fix\'s failureModeTrace to it. A new trace that is markedly weaker than the prior trace for the same kind of failure is a WARNING signal — the current fix may not have reasoned as rigorously as the prior successful one.',
         ].join('\n'),
+    };
+    const includeTrace = role === 'fix_generation' || role === 'review';
+    const TRACE_FIELD_MAX = 200;
+    const renderTraceField = (field) => {
+        if (!field)
+            return '(empty)';
+        return sanitizeForPrompt(field, TRACE_FIELD_MAX);
     };
     const entries = skills.map((s, i) => {
         const successes = s.successCount ?? 0;
@@ -7903,7 +7960,7 @@ function formatSkillsForPrompt(skills, role, flakiness) {
         const outcome = s.classificationOutcome && s.classificationOutcome !== 'unknown'
             ? `, classification: ${s.classificationOutcome}`
             : '';
-        return [
+        const lines = [
             `**Fix ${i + 1}** (${s.createdAt.split('T')[0]}, ${s.confidence}% confidence, ${s.iterations} iteration${s.iterations !== 1 ? 's' : ''})`,
             `- Spec: ${sanitizeForPrompt(s.spec)}`,
             `- Error: ${sanitizeForPrompt(s.errorPattern)}`,
@@ -7911,7 +7968,12 @@ function formatSkillsForPrompt(skills, role, flakiness) {
             `- Pattern: ${sanitizeForPrompt(s.fix.pattern)}`,
             `- Change type: ${sanitizeForPrompt(s.fix.changeType)} in ${sanitizeForPrompt(s.fix.file)}`,
             `- Track record: ${trackRecord}${outcome}`,
-        ].join('\n');
+        ];
+        if (includeTrace && s.failureModeTrace) {
+            const t = s.failureModeTrace;
+            lines.push('- Prior causal trace (how the successful fix reasoned):', `  - originalState: ${renderTraceField(t.originalState)}`, `  - rootMechanism: ${renderTraceField(t.rootMechanism)}`, `  - newStateAfterFix: ${renderTraceField(t.newStateAfterFix)}`, `  - whyAssertionPassesNow: ${renderTraceField(t.whyAssertionPassesNow)}`);
+        }
+        return lines.join('\n');
     });
     const parts = [headers[role], '', ...entries];
     if (flakiness?.isFlaky) {

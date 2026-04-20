@@ -164,6 +164,83 @@ describe('buildSkill', () => {
     expect(skill.id).toBeDefined();
     expect(skill.createdAt).toBeDefined();
   });
+
+  // ---------------------------------------------------------------------------
+  // R3: failureModeTrace persistence
+  // ---------------------------------------------------------------------------
+  it('persists failureModeTrace when provided', () => {
+    const trace = {
+      originalState: 'element absent at t=3s',
+      rootMechanism: 'product lazy-loads after 5s',
+      newStateAfterFix: 'wait extended to 10s',
+      whyAssertionPassesNow: 'product always ready within 10s',
+    };
+    const skill = buildSkill({
+      repo: 'adept-at/test-repo',
+      spec: 'test.ts',
+      testName: 'my test',
+      framework: 'webdriverio',
+      errorMessage: 'element not clickable',
+      rootCauseCategory: 'TIMEOUT',
+      fix: { file: 'test.ts', changeType: 'WAIT_ADDITION', summary: 'add wait', pattern: 'waitForClickable' },
+      confidence: 85,
+      iterations: 1,
+      prUrl: '',
+      validatedLocally: true,
+      priorSkillCount: 0,
+      failureModeTrace: trace,
+    });
+
+    expect(skill.failureModeTrace).toEqual(trace);
+  });
+
+  it('leaves failureModeTrace undefined when not provided (no empty object)', () => {
+    const skill = buildSkill({
+      repo: 'adept-at/test-repo',
+      spec: 'test.ts',
+      testName: 'my test',
+      framework: 'webdriverio',
+      errorMessage: 'boom',
+      rootCauseCategory: 'UNKNOWN',
+      fix: { file: 'test.ts', changeType: 'OTHER', summary: 'x', pattern: 'x' },
+      confidence: 70,
+      iterations: 1,
+      prUrl: '',
+      validatedLocally: false,
+      priorSkillCount: 0,
+    });
+
+    expect(skill.failureModeTrace).toBeUndefined();
+    // The key should not even be present in the object — keeps DynamoDB
+    // items lean and makes `skill.failureModeTrace` truthy-checks work.
+    expect(Object.prototype.hasOwnProperty.call(skill, 'failureModeTrace')).toBe(false);
+  });
+
+  it('persists a partially-populated trace (e.g. only originalState has content)', () => {
+    const skill = buildSkill({
+      repo: 'adept-at/test-repo',
+      spec: 'test.ts',
+      testName: 'my test',
+      framework: 'cypress',
+      errorMessage: 'boom',
+      rootCauseCategory: 'UNKNOWN',
+      fix: { file: 'test.cy.ts', changeType: 'OTHER', summary: 'x', pattern: 'x' },
+      confidence: 70,
+      iterations: 1,
+      prUrl: '',
+      validatedLocally: true,
+      priorSkillCount: 0,
+      failureModeTrace: {
+        originalState: 'concrete value captured',
+        rootMechanism: '',
+        newStateAfterFix: '',
+        whyAssertionPassesNow: '',
+      },
+    });
+
+    expect(skill.failureModeTrace?.originalState).toBe('concrete value captured');
+    expect(skill.failureModeTrace?.rootMechanism).toBe('');
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -442,6 +519,109 @@ describe('formatSkillsForPrompt', () => {
     const result = formatSkillsForPrompt([skill], 'fix_generation');
     expect(result).toContain('1 iteration)');
     expect(result).not.toContain('1 iterations');
+  });
+
+  // ---------------------------------------------------------------------------
+  // R3: failureModeTrace rendering per role
+  // ---------------------------------------------------------------------------
+  const sampleTrace = {
+    originalState: 'player.currentTime was 6.02s, pausedTime captured as 0.0s',
+    rootMechanism: 'pausedTime captured before player.paused went true',
+    newStateAfterFix: 'pausedTime captured only after player.paused === true',
+    whyAssertionPassesNow: 'drift is now <= event-loop latency (<50ms), below tolerance',
+  };
+
+  it('renders prior causal trace for fix_generation role when trace is present', () => {
+    const skill = makeSkill({ failureModeTrace: sampleTrace });
+    const result = formatSkillsForPrompt([skill], 'fix_generation');
+    expect(result).toContain('Prior causal trace');
+    expect(result).toContain('originalState: player.currentTime was 6.02s');
+    expect(result).toContain('rootMechanism: pausedTime captured before');
+    expect(result).toContain('newStateAfterFix: pausedTime captured only after');
+    expect(result).toContain('whyAssertionPassesNow: drift is now');
+  });
+
+  it('renders prior causal trace for review role when trace is present', () => {
+    const skill = makeSkill({ failureModeTrace: sampleTrace });
+    const result = formatSkillsForPrompt([skill], 'review');
+    expect(result).toContain('Prior causal trace');
+    expect(result).toContain('originalState:');
+    expect(result).toContain('whyAssertionPassesNow:');
+  });
+
+  it('does NOT render trace for investigation role (anchoring avoidance)', () => {
+    const skill = makeSkill({ failureModeTrace: sampleTrace });
+    const result = formatSkillsForPrompt([skill], 'investigation');
+    expect(result).not.toContain('Prior causal trace');
+    expect(result).not.toContain('originalState:');
+  });
+
+  it('does NOT render trace when the skill has no failureModeTrace (backward compat)', () => {
+    const skill = makeSkill(); // no failureModeTrace
+    const result = formatSkillsForPrompt([skill], 'fix_generation');
+    expect(result).not.toContain('Prior causal trace');
+    expect(result).not.toContain('originalState:');
+  });
+
+  it('renders "(empty)" placeholder for missing trace sub-fields', () => {
+    const skill = makeSkill({
+      failureModeTrace: {
+        originalState: 'concrete value',
+        rootMechanism: '',
+        newStateAfterFix: '',
+        whyAssertionPassesNow: '',
+      },
+    });
+    const result = formatSkillsForPrompt([skill], 'fix_generation');
+    expect(result).toContain('originalState: concrete value');
+    expect(result).toContain('rootMechanism: (empty)');
+    expect(result).toContain('newStateAfterFix: (empty)');
+    expect(result).toContain('whyAssertionPassesNow: (empty)');
+  });
+
+  it('truncates very long trace sub-fields to keep the skill block compact', () => {
+    const longField = 'x'.repeat(500);
+    const skill = makeSkill({
+      failureModeTrace: {
+        originalState: longField,
+        rootMechanism: longField,
+        newStateAfterFix: longField,
+        whyAssertionPassesNow: longField,
+      },
+    });
+    const result = formatSkillsForPrompt([skill], 'fix_generation');
+    // Each field capped at 200 chars, and sanitizeForPrompt appends "... [truncated]"
+    // so no rendered field should be the full 500-char input.
+    expect(result).not.toContain('x'.repeat(500));
+    expect(result).toContain('x'.repeat(200));
+    expect(result).toContain('[truncated]');
+  });
+
+  it('fix_generation header mentions the trace as a reasoning template', () => {
+    const result = formatSkillsForPrompt([makeSkill()], 'fix_generation');
+    expect(result).toContain('causal trace');
+    expect(result).toContain('reasoning template');
+  });
+
+  it('review header mentions comparing current trace to prior', () => {
+    const result = formatSkillsForPrompt([makeSkill()], 'review');
+    expect(result).toContain('causal trace');
+    expect(result).toContain('markedly weaker');
+  });
+
+  it('renders trace for the skill with a trace but omits it for the skill without', () => {
+    const withTrace = makeSkill({
+      id: 'with-trace',
+      failureModeTrace: sampleTrace,
+    });
+    const withoutTrace = makeSkill({
+      id: 'without-trace',
+    });
+    const result = formatSkillsForPrompt([withTrace, withoutTrace], 'fix_generation');
+
+    // The trace block should appear exactly once (for the first skill).
+    const traceOccurrences = result.split('Prior causal trace').length - 1;
+    expect(traceOccurrences).toBe(1);
   });
 });
 

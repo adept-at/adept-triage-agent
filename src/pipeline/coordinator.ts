@@ -333,6 +333,12 @@ export class PipelineCoordinator {
           priorSkillCount: skillStore.countForSpec(errorData.fileName || 'unknown'),
           investigationFindings: currentFindings,
           rootCauseChain: `${rootCause} → ${fixRecommendation!.summary?.slice(0, 80)}`,
+          // R3: persist the causal trace so future runs against the same
+          // spec can see how the prior successful fix reasoned about the
+          // failure (originalState → rootMechanism → newStateAfterFix →
+          // whyAssertionPassesNow). Undefined on skills from pre-v1.49.1
+          // or from the single-shot fallback path — both are fine.
+          failureModeTrace: fixRecommendation!.failureModeTrace,
         });
 
         const saveSucceeded = await skillStore.save(skill).catch((err) => {

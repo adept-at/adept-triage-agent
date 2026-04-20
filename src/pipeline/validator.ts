@@ -311,20 +311,21 @@ export async function iterativeFixValidateLoop(
 
       if (iteration < maxIterations - 1) {
         core.info('Feeding failure logs + prior agent reasoning back into repair agent for next attempt...');
-        previousAttempt = {
-          iteration: iteration + 1,
-          previousFix: fixRecommendation,
-          validationLogs: testResult.logs,
-          // R4: preserve the prior iteration's agent reasoning so the next
-          // iteration's analysis + investigation can actively diverge from
-          // it rather than silently re-discovering the same root-cause
-          // category + approach. Without this, the outer loop's iteration
-          // 2 tends to reproduce iteration 1's conclusions because the
-          // fresh agents only saw the error logs, not the prior reasoning
-          // that led to the failed fix.
-          priorAgentRootCause: agentRootCause,
-          priorAgentInvestigationFindings: agentInvestigationFindings,
-        };
+        // R4 + v1.49.1: delegate to buildNextPreviousAttempt so the
+        // "source prior-agent fields from fixResult, NOT from the outer
+        // accumulator" contract is enforced by the function signature.
+        // See the helper's docstring for the rationale. Summary: the
+        // outer agentRootCause / agentInvestigationFindings vars are a
+        // last-non-empty accumulator used for the final return + skill
+        // save, NOT a per-iteration snapshot. Using them here would
+        // attribute iteration N-1's findings to iteration N whenever
+        // iteration N produced no findings (single-shot fallback etc).
+        previousAttempt = buildNextPreviousAttempt(
+          iteration + 1,
+          fixRecommendation,
+          fixResult,
+          testResult.logs
+        );
       } else {
         core.warning(`\n🛑 All ${maxIterations} fix attempts exhausted. Giving up.`);
       }
@@ -411,6 +412,55 @@ export function fixFingerprint(fix: FixRecommendation): string {
     .map((c) => `${c.file}::${normalize(c.oldCode)}::${normalize(c.newCode)}`)
     .sort()
     .join('\n');
+}
+
+/**
+ * The minimal shape of `generateFixRecommendation`'s return value that the
+ * retry-context builder cares about. Kept narrow so tests don't have to
+ * fabricate a full result object just to exercise the threading semantic.
+ */
+export interface FixResultForRetry {
+  agentRootCause?: string;
+  agentInvestigationFindings?: string;
+}
+
+/**
+ * Build the `previousAttempt` object that's threaded into the NEXT
+ * iteration of `iterativeFixValidateLoop`. This helper exists specifically
+ * to enforce the staleness-avoidance contract identified in the v1.49.1
+ * review:
+ *
+ *   The prior-iteration agent reasoning MUST come from `fixResult`
+ *   (the just-completed iteration's output), NOT from any outer-scope
+ *   accumulator. If iteration N returned no investigation findings —
+ *   e.g. single-shot fallback, sparse agentic run, orchestrator error —
+ *   iteration N+1 must see "no prior findings", not iteration N-1's
+ *   stale findings presented as if iteration N had concluded them.
+ *
+ * The function signature pins this contract into the type system: the
+ * only way to populate the prior fields is to pass the current
+ * iteration's `FixResultForRetry`. An outer-scope accumulator cannot
+ * leak in by accident.
+ */
+export function buildNextPreviousAttempt(
+  nextIteration: number,
+  previousFix: FixRecommendation,
+  fixResult: FixResultForRetry,
+  validationLogs: string
+): {
+  iteration: number;
+  previousFix: FixRecommendation;
+  validationLogs: string;
+  priorAgentRootCause?: string;
+  priorAgentInvestigationFindings?: string;
+} {
+  return {
+    iteration: nextIteration,
+    previousFix,
+    validationLogs,
+    priorAgentRootCause: fixResult.agentRootCause,
+    priorAgentInvestigationFindings: fixResult.agentInvestigationFindings,
+  };
 }
 
 /**

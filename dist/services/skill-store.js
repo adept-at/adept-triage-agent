@@ -455,6 +455,7 @@ function buildSkill(params) {
         classificationOutcome: 'unknown',
         rootCauseChain: params.rootCauseChain ?? '',
         repoContext: params.repoContext ?? '',
+        ...(params.failureModeTrace ? { failureModeTrace: params.failureModeTrace } : {}),
     };
 }
 function describeFixPattern(changes) {
@@ -504,13 +505,22 @@ function formatSkillsForPrompt(skills, role, flakiness) {
             '',
             'The following patterns were applied in prior runs. Not all were validated — use them as context, not guarantees.',
             'CONSIDER these approaches as starting points. If you see a better approach, explain why and use it instead.',
+            'When a prior fix includes a causal trace, use it as a reasoning template — the trace shows how the prior successful fix diagnosed the failure (originalState → rootMechanism → newStateAfterFix → whyAssertionPassesNow). Your own failureModeTrace does NOT need to copy the prior one; it should reflect the CURRENT failure\'s concrete values.',
         ].join('\n'),
         review: [
             '### Agent Memory: Prior Successful Fixes',
             '',
             'Check if the proposed fix aligns with patterns that have worked before.',
             'Flag if the fix contradicts a prior pattern without justification.',
+            'When a prior fix includes a causal trace, compare the CURRENT fix\'s failureModeTrace to it. A new trace that is markedly weaker than the prior trace for the same kind of failure is a WARNING signal — the current fix may not have reasoned as rigorously as the prior successful one.',
         ].join('\n'),
+    };
+    const includeTrace = role === 'fix_generation' || role === 'review';
+    const TRACE_FIELD_MAX = 200;
+    const renderTraceField = (field) => {
+        if (!field)
+            return '(empty)';
+        return sanitizeForPrompt(field, TRACE_FIELD_MAX);
     };
     const entries = skills.map((s, i) => {
         const successes = s.successCount ?? 0;
@@ -520,7 +530,7 @@ function formatSkillsForPrompt(skills, role, flakiness) {
         const outcome = s.classificationOutcome && s.classificationOutcome !== 'unknown'
             ? `, classification: ${s.classificationOutcome}`
             : '';
-        return [
+        const lines = [
             `**Fix ${i + 1}** (${s.createdAt.split('T')[0]}, ${s.confidence}% confidence, ${s.iterations} iteration${s.iterations !== 1 ? 's' : ''})`,
             `- Spec: ${sanitizeForPrompt(s.spec)}`,
             `- Error: ${sanitizeForPrompt(s.errorPattern)}`,
@@ -528,7 +538,12 @@ function formatSkillsForPrompt(skills, role, flakiness) {
             `- Pattern: ${sanitizeForPrompt(s.fix.pattern)}`,
             `- Change type: ${sanitizeForPrompt(s.fix.changeType)} in ${sanitizeForPrompt(s.fix.file)}`,
             `- Track record: ${trackRecord}${outcome}`,
-        ].join('\n');
+        ];
+        if (includeTrace && s.failureModeTrace) {
+            const t = s.failureModeTrace;
+            lines.push('- Prior causal trace (how the successful fix reasoned):', `  - originalState: ${renderTraceField(t.originalState)}`, `  - rootMechanism: ${renderTraceField(t.rootMechanism)}`, `  - newStateAfterFix: ${renderTraceField(t.newStateAfterFix)}`, `  - whyAssertionPassesNow: ${renderTraceField(t.whyAssertionPassesNow)}`);
+        }
+        return lines.join('\n');
     });
     const parts = [headers[role], '', ...entries];
     if (flakiness?.isFlaky) {

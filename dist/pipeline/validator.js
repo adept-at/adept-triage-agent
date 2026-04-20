@@ -37,6 +37,7 @@ exports.generateFixRecommendation = generateFixRecommendation;
 exports.iterativeFixValidateLoop = iterativeFixValidateLoop;
 exports.requiredConfidence = requiredConfidence;
 exports.fixFingerprint = fixFingerprint;
+exports.buildNextPreviousAttempt = buildNextPreviousAttempt;
 exports.attemptAutoFix = attemptAutoFix;
 const core = __importStar(require("@actions/core"));
 const github = __importStar(require("@actions/github"));
@@ -218,13 +219,7 @@ async function iterativeFixValidateLoop(inputs, repoDetails, autoFixTargetRepo, 
             await validator.reset();
             if (iteration < maxIterations - 1) {
                 core.info('Feeding failure logs + prior agent reasoning back into repair agent for next attempt...');
-                previousAttempt = {
-                    iteration: iteration + 1,
-                    previousFix: fixRecommendation,
-                    validationLogs: testResult.logs,
-                    priorAgentRootCause: agentRootCause,
-                    priorAgentInvestigationFindings: agentInvestigationFindings,
-                };
+                previousAttempt = buildNextPreviousAttempt(iteration + 1, fixRecommendation, fixResult, testResult.logs);
             }
             else {
                 core.warning(`\n🛑 All ${maxIterations} fix attempts exhausted. Giving up.`);
@@ -269,6 +264,15 @@ function fixFingerprint(fix) {
         .map((c) => `${c.file}::${normalize(c.oldCode)}::${normalize(c.newCode)}`)
         .sort()
         .join('\n');
+}
+function buildNextPreviousAttempt(nextIteration, previousFix, fixResult, validationLogs) {
+    return {
+        iteration: nextIteration,
+        previousFix,
+        validationLogs,
+        priorAgentRootCause: fixResult.agentRootCause,
+        priorAgentInvestigationFindings: fixResult.agentInvestigationFindings,
+    };
 }
 async function attemptAutoFix(inputs, fixRecommendation, octokit, repoDetails, errorData) {
     core.info('\n🤖 Auto-fix is enabled, attempting to apply fix...');

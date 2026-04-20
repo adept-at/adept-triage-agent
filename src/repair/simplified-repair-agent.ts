@@ -12,6 +12,7 @@ import {
 } from '../agents';
 import { getFrameworkLabel } from '../agents/base-agent';
 import { CYPRESS_PATTERNS, WDIO_PATTERNS } from '../agents/fix-generation-agent';
+import { InvestigationOutput } from '../agents/investigation-agent';
 import { TriageSkill, FlakinessSignal, formatSkillsForPrompt } from '../services/skill-store';
 import { inferRootCauseCategoryFromText } from './root-cause-category';
 
@@ -50,6 +51,94 @@ export interface PriorAttemptContext {
  * @param logBudget Max chars of validation logs to include. Agentic path
  *   uses 8000; single-shot path uses 6000.
  */
+/**
+ * Collapse an `InvestigationOutput` into the structured-but-flat string
+ * that `buildPriorAttemptContext` renders into the next iteration's
+ * context under "Investigation findings:". The goal is to preserve as
+ * much actionable signal as possible from the prior investigation —
+ * verdict overrides, selector-update recommendations, isTestCodeFixable,
+ * and per-finding evidence — so the fresh pipeline on iteration N+1 can
+ * actively challenge or refine those conclusions rather than drifting
+ * back to the same primary description.
+ *
+ * Historical note (pre-v1.49.1): this block was inline in tryAgenticRepair
+ * and only captured primaryFinding.description, recommendedApproach, and
+ * secondary findings' severity+description. selectorsToUpdate,
+ * verdictOverride, isTestCodeFixable, and per-finding evidence were
+ * silently dropped — the "carry prior reasoning forward" feature only
+ * carried a sliver of it.
+ */
+export function summarizeInvestigationForRetry(
+  investigation: InvestigationOutput | undefined
+): string | undefined {
+  if (!investigation) return undefined;
+
+  const parts: string[] = [];
+  const primary = investigation.primaryFinding;
+
+  if (primary) {
+    parts.push(`Primary finding: [${primary.severity}] ${primary.description}`);
+    if (primary.relationToError) {
+      parts.push(`  → Relation to error: ${primary.relationToError}`);
+    }
+    if (primary.evidence?.length) {
+      parts.push(`  → Evidence: ${primary.evidence.slice(0, 3).join('; ')}`);
+    }
+  }
+
+  if (typeof investigation.isTestCodeFixable === 'boolean') {
+    parts.push(`Is test-code fixable: ${investigation.isTestCodeFixable}`);
+  }
+
+  if (investigation.recommendedApproach) {
+    parts.push(`Recommended approach: ${investigation.recommendedApproach}`);
+  }
+
+  if (investigation.verdictOverride) {
+    const v = investigation.verdictOverride;
+    parts.push(
+      `Verdict override: ${v.suggestedLocation} (${v.confidence}% confidence)`
+    );
+    if (v.evidence?.length) {
+      parts.push(`  → Evidence: ${v.evidence.slice(0, 3).join('; ')}`);
+    }
+  }
+
+  if (investigation.selectorsToUpdate?.length) {
+    parts.push('Selectors flagged for update:');
+    for (const s of investigation.selectorsToUpdate.slice(0, 5)) {
+      const replacement = s.suggestedReplacement
+        ? ` → suggested: \`${s.suggestedReplacement}\``
+        : '';
+      parts.push(`  - \`${s.current}\`: ${s.reason}${replacement}`);
+    }
+  }
+
+  if (investigation.findings?.length) {
+    // Secondary findings — skip the one marked as primary to avoid
+    // repeating it. We match by identity first (ref-equal); if the
+    // orchestrator ever returns a cloned primary, fall back to matching
+    // description + severity.
+    const isPrimary = (f: typeof investigation.findings[number]): boolean => {
+      if (!primary) return false;
+      if (f === primary) return true;
+      return (
+        f.description === primary.description && f.severity === primary.severity
+      );
+    };
+    const secondary = investigation.findings.filter((f) => !isPrimary(f)).slice(0, 3);
+    if (secondary.length > 0) {
+      parts.push('Other findings:');
+      for (const f of secondary) {
+        const rel = f.relationToError ? ` (${f.relationToError})` : '';
+        parts.push(`  - [${f.severity}] ${f.description}${rel}`);
+      }
+    }
+  }
+
+  return parts.length > 0 ? parts.join('\n') : undefined;
+}
+
 export function buildPriorAttemptContext(
   prior: PriorAttemptContext,
   opts: { logBudget?: number } = {}
@@ -347,22 +436,7 @@ export class SimplifiedRepairAgent {
         const analysis = result.agentResults.analysis?.data;
         const investigation = result.agentResults.investigation?.data;
         const agentRootCause = analysis?.rootCauseCategory;
-
-        const investigationParts: string[] = [];
-        if (investigation?.primaryFinding) {
-          investigationParts.push(investigation.primaryFinding.description);
-        }
-        if (investigation?.recommendedApproach) {
-          investigationParts.push(`Approach: ${investigation.recommendedApproach}`);
-        }
-        if (investigation?.findings?.length) {
-          for (const f of investigation.findings.slice(0, 3)) {
-            investigationParts.push(`[${f.severity}] ${f.description}`);
-          }
-        }
-        const agentInvestigationFindings = investigationParts.length > 0
-          ? investigationParts.join('\n')
-          : undefined;
+        const agentInvestigationFindings = summarizeInvestigationForRetry(investigation);
 
         return { fix: result.fix, lastResponseId: result.lastResponseId, agentRootCause, agentInvestigationFindings };
       }
