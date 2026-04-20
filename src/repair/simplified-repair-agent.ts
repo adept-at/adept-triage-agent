@@ -26,6 +26,104 @@ export interface RepairAgentConfig {
 }
 
 /**
+ * Shape of the prior-attempt payload that's threaded through both the
+ * agentic repair path and the single-shot repair path. Keeping this in one
+ * place prevents the two callers from drifting apart (they did, before R4).
+ */
+export interface PriorAttemptContext {
+  iteration: number;
+  previousFix: FixRecommendation;
+  validationLogs: string;
+  priorAgentRootCause?: string;
+  priorAgentInvestigationFindings?: string;
+}
+
+/**
+ * Render a prior failed attempt into a block that goes into the next
+ * iteration's error context. This is intentionally richer than the
+ * pre-R4 version: in addition to the diff + logs, it surfaces the
+ * agents' own prior reasoning (root cause, investigation findings,
+ * failureModeTrace, fix reasoning) so the fresh pipeline can actively
+ * diverge from it rather than silently re-discovering the same
+ * conclusions that led to the failed fix.
+ *
+ * @param logBudget Max chars of validation logs to include. Agentic path
+ *   uses 8000; single-shot path uses 6000.
+ */
+export function buildPriorAttemptContext(
+  prior: PriorAttemptContext,
+  opts: { logBudget?: number } = {}
+): string {
+  const logBudget = opts.logBudget ?? 8000;
+  const prevChanges = prior.previousFix.proposedChanges
+    .map(
+      (c) =>
+        `File: ${c.file}\noldCode:\n\`\`\`\n${c.oldCode}\n\`\`\`\nnewCode:\n\`\`\`\n${c.newCode}\n\`\`\``
+    )
+    .join('\n---\n');
+
+  const sections: string[] = [
+    `\n\n## PREVIOUS FIX ATTEMPT #${prior.iteration} — FAILED VALIDATION`,
+    '',
+    'The following fix was applied and the test was re-run, but it still failed.',
+  ];
+
+  // Surface the prior iteration's agent reasoning so the fresh pipeline
+  // can see — and explicitly challenge — the conclusions that produced
+  // the failed fix. Without this, the outer loop's iteration 2 tends to
+  // reproduce iteration 1's conclusions because the fresh agents only
+  // see the error logs, not the reasoning chain that was applied.
+  const hasPriorReasoning =
+    prior.priorAgentRootCause ||
+    prior.priorAgentInvestigationFindings ||
+    prior.previousFix.failureModeTrace ||
+    prior.previousFix.reasoning;
+
+  if (hasPriorReasoning) {
+    sections.push('', "### Prior iteration's agent reasoning (the chain that produced the failed fix)");
+    if (prior.priorAgentRootCause) {
+      sections.push(`- **Root cause (from analysis):** ${prior.priorAgentRootCause}`);
+    }
+    if (prior.priorAgentInvestigationFindings) {
+      sections.push(`- **Investigation findings:** ${prior.priorAgentInvestigationFindings}`);
+    }
+    if (prior.previousFix.reasoning) {
+      sections.push(`- **Fix-gen's reasoning:** ${prior.previousFix.reasoning}`);
+    }
+    if (prior.previousFix.failureModeTrace) {
+      const t = prior.previousFix.failureModeTrace;
+      sections.push(
+        '- **Fix-gen\'s own causal trace (failureModeTrace):**',
+        `  - originalState: ${t.originalState || '(empty)'}`,
+        `  - rootMechanism: ${t.rootMechanism || '(empty)'}`,
+        `  - newStateAfterFix: ${t.newStateAfterFix || '(empty)'}`,
+        `  - whyAssertionPassesNow: ${t.whyAssertionPassesNow || '(empty)'}`
+      );
+    }
+  }
+
+  sections.push(
+    '',
+    '### Previous Fix That Was Tried',
+    prevChanges,
+    '',
+    '### Validation Failure Logs (tail)',
+    '```',
+    prior.validationLogs.slice(0, logBudget),
+    '```',
+    '',
+    '### Instructions for this iteration',
+    'The prior reasoning chain above led to a fix that did NOT resolve the failure. You MUST try a DIFFERENT approach. Concretely:',
+    '1. Was the root-cause diagnosis wrong? Re-analyze from scratch; do NOT anchor on the prior category.',
+    '2. Was the fix mechanism wrong even if the root cause was right? The fix may have changed the wrong state.',
+    '3. Does the validation failure log reveal a distinct failure signature from the original — i.e., did the fix create a new problem?',
+    'Do NOT repeat the same fix or minor variants of it.'
+  );
+
+  return sections.join('\n');
+}
+
+/**
  * Simplified repair agent that generates fix recommendations
  * Supports both single-shot and agentic (multi-agent) repair modes
  */
@@ -93,6 +191,20 @@ export class SimplifiedRepairAgent {
       iteration: number;
       previousFix: FixRecommendation;
       validationLogs: string;
+      /**
+       * Agent-reported root cause from the prior failed iteration. When
+       * present, gets rendered into the next iteration's error context so
+       * analysis and investigation can explicitly reject / refine it
+       * rather than re-discovering the same category.
+       */
+      priorAgentRootCause?: string;
+      /**
+       * Agent-reported investigation findings from the prior failed
+       * iteration. Same intent as priorAgentRootCause — give the fresh
+       * pipeline the context its prior self reasoned through, so it can
+       * actively diverge rather than drift back to the same conclusion.
+       */
+      priorAgentInvestigationFindings?: string;
     },
     previousResponseId?: string,
     skills?: { relevant: TriageSkill[]; flakiness?: FlakinessSignal },
@@ -148,6 +260,20 @@ export class SimplifiedRepairAgent {
       iteration: number;
       previousFix: FixRecommendation;
       validationLogs: string;
+      /**
+       * Agent-reported root cause from the prior failed iteration. When
+       * present, gets rendered into the next iteration's error context so
+       * analysis and investigation can explicitly reject / refine it
+       * rather than re-discovering the same category.
+       */
+      priorAgentRootCause?: string;
+      /**
+       * Agent-reported investigation findings from the prior failed
+       * iteration. Same intent as priorAgentRootCause — give the fresh
+       * pipeline the context its prior self reasoned through, so it can
+       * actively diverge rather than drift back to the same conclusion.
+       */
+      priorAgentInvestigationFindings?: string;
     },
     previousResponseId?: string,
     skills?: { relevant: TriageSkill[]; flakiness?: FlakinessSignal },
@@ -161,10 +287,7 @@ export class SimplifiedRepairAgent {
       // Build agent context from repair context
       let enrichedErrorMessage = repairContext.errorMessage;
       if (previousAttempt) {
-        const prevChanges = previousAttempt.previousFix.proposedChanges
-          .map((c) => `File: ${c.file}\nOld:\n${c.oldCode}\nNew:\n${c.newCode}`)
-          .join('\n---\n');
-        enrichedErrorMessage += `\n\n## PREVIOUS FIX ATTEMPT (iteration ${previousAttempt.iteration}) — FAILED VALIDATION\n\nThe following fix was applied and the test was re-run, but it still failed.\n\n### Previous Fix:\n${prevChanges}\n\n### Validation Failure Logs:\n${previousAttempt.validationLogs.slice(0, 8000)}\n\nYou MUST try a DIFFERENT approach. Do NOT repeat the same fix.`;
+        enrichedErrorMessage += buildPriorAttemptContext(previousAttempt);
       }
 
       const agentContext = createAgentContext({
@@ -265,6 +388,20 @@ export class SimplifiedRepairAgent {
       iteration: number;
       previousFix: FixRecommendation;
       validationLogs: string;
+      /**
+       * Agent-reported root cause from the prior failed iteration. When
+       * present, gets rendered into the next iteration's error context so
+       * analysis and investigation can explicitly reject / refine it
+       * rather than re-discovering the same category.
+       */
+      priorAgentRootCause?: string;
+      /**
+       * Agent-reported investigation findings from the prior failed
+       * iteration. Same intent as priorAgentRootCause — give the fresh
+       * pipeline the context its prior self reasoned through, so it can
+       * actively diverge rather than drift back to the same conclusion.
+       */
+      priorAgentInvestigationFindings?: string;
     },
     skills?: { relevant: TriageSkill[]; flakiness?: FlakinessSignal }
   ): Promise<{ fix: FixRecommendation; agentRootCause?: string } | null> {
@@ -573,6 +710,20 @@ export class SimplifiedRepairAgent {
       iteration: number;
       previousFix: FixRecommendation;
       validationLogs: string;
+      /**
+       * Agent-reported root cause from the prior failed iteration. When
+       * present, gets rendered into the next iteration's error context so
+       * analysis and investigation can explicitly reject / refine it
+       * rather than re-discovering the same category.
+       */
+      priorAgentRootCause?: string;
+      /**
+       * Agent-reported investigation findings from the prior failed
+       * iteration. Same intent as priorAgentRootCause — give the fresh
+       * pipeline the context its prior self reasoned through, so it can
+       * actively diverge rather than drift back to the same conclusion.
+       */
+      priorAgentInvestigationFindings?: string;
     },
     skills?: { relevant: TriageSkill[]; flakiness?: FlakinessSignal }
   ): string {
@@ -759,26 +910,7 @@ ${lines.length > 150 ? `\n... (${lines.length - 150} more lines)` : ''}
     }
 
     if (previousAttempt) {
-      const prevChanges = previousAttempt.previousFix.proposedChanges
-        .map(
-          (c) =>
-            `File: ${c.file}\noldCode:\n\`\`\`\n${c.oldCode}\n\`\`\`\nnewCode:\n\`\`\`\n${c.newCode}\n\`\`\``
-        )
-        .join('\n---\n');
-
-      contextInfo += `\n\n## PREVIOUS FIX ATTEMPT #${previousAttempt.iteration} — FAILED VALIDATION
-
-The following fix was applied to a branch and the test was re-run on Sauce Labs, but it **still failed**.
-
-### Previous Fix That Was Tried:
-${prevChanges}
-
-### Validation Failure Logs (tail):
-\`\`\`
-${previousAttempt.validationLogs.slice(0, 6000)}
-\`\`\`
-
-**CRITICAL: You MUST try a DIFFERENT approach.** Analyze WHY the previous fix failed and address the root cause. Do NOT repeat the same change.`;
+      contextInfo += buildPriorAttemptContext(previousAttempt, { logBudget: 6000 });
     }
 
     const frameworkPatterns = errorData?.framework === 'cypress'

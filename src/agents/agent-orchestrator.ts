@@ -475,6 +475,11 @@ export class AgentOrchestrator {
           {
             proposedFix: lastFix,
             analysis,
+            // Pass investigation so review can audit the fix against
+            // recommendedApproach, primaryFinding, selectorsToUpdate, and
+            // verdictOverride. Without this, review is blind to everything
+            // investigation concluded.
+            investigation,
             codeContext: codeReadingResult.data,
           },
           context,

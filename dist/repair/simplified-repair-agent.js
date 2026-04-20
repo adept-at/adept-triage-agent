@@ -34,6 +34,7 @@ var __importStar = (this && this.__importStar) || (function () {
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.SimplifiedRepairAgent = void 0;
+exports.buildPriorAttemptContext = buildPriorAttemptContext;
 const core = __importStar(require("@actions/core"));
 const fs = __importStar(require("fs"));
 const openai_client_1 = require("../openai-client");
@@ -44,6 +45,39 @@ const base_agent_1 = require("../agents/base-agent");
 const fix_generation_agent_1 = require("../agents/fix-generation-agent");
 const skill_store_1 = require("../services/skill-store");
 const root_cause_category_1 = require("./root-cause-category");
+function buildPriorAttemptContext(prior, opts = {}) {
+    const logBudget = opts.logBudget ?? 8000;
+    const prevChanges = prior.previousFix.proposedChanges
+        .map((c) => `File: ${c.file}\noldCode:\n\`\`\`\n${c.oldCode}\n\`\`\`\nnewCode:\n\`\`\`\n${c.newCode}\n\`\`\``)
+        .join('\n---\n');
+    const sections = [
+        `\n\n## PREVIOUS FIX ATTEMPT #${prior.iteration} — FAILED VALIDATION`,
+        '',
+        'The following fix was applied and the test was re-run, but it still failed.',
+    ];
+    const hasPriorReasoning = prior.priorAgentRootCause ||
+        prior.priorAgentInvestigationFindings ||
+        prior.previousFix.failureModeTrace ||
+        prior.previousFix.reasoning;
+    if (hasPriorReasoning) {
+        sections.push('', "### Prior iteration's agent reasoning (the chain that produced the failed fix)");
+        if (prior.priorAgentRootCause) {
+            sections.push(`- **Root cause (from analysis):** ${prior.priorAgentRootCause}`);
+        }
+        if (prior.priorAgentInvestigationFindings) {
+            sections.push(`- **Investigation findings:** ${prior.priorAgentInvestigationFindings}`);
+        }
+        if (prior.previousFix.reasoning) {
+            sections.push(`- **Fix-gen's reasoning:** ${prior.previousFix.reasoning}`);
+        }
+        if (prior.previousFix.failureModeTrace) {
+            const t = prior.previousFix.failureModeTrace;
+            sections.push('- **Fix-gen\'s own causal trace (failureModeTrace):**', `  - originalState: ${t.originalState || '(empty)'}`, `  - rootMechanism: ${t.rootMechanism || '(empty)'}`, `  - newStateAfterFix: ${t.newStateAfterFix || '(empty)'}`, `  - whyAssertionPassesNow: ${t.whyAssertionPassesNow || '(empty)'}`);
+        }
+    }
+    sections.push('', '### Previous Fix That Was Tried', prevChanges, '', '### Validation Failure Logs (tail)', '```', prior.validationLogs.slice(0, logBudget), '```', '', '### Instructions for this iteration', 'The prior reasoning chain above led to a fix that did NOT resolve the failure. You MUST try a DIFFERENT approach. Concretely:', '1. Was the root-cause diagnosis wrong? Re-analyze from scratch; do NOT anchor on the prior category.', '2. Was the fix mechanism wrong even if the root cause was right? The fix may have changed the wrong state.', '3. Does the validation failure log reveal a distinct failure signature from the original — i.e., did the fix create a new problem?', 'Do NOT repeat the same fix or minor variants of it.');
+    return sections.join('\n');
+}
 class SimplifiedRepairAgent {
     openaiClient;
     sourceFetchContext;
@@ -101,10 +135,7 @@ class SimplifiedRepairAgent {
         try {
             let enrichedErrorMessage = repairContext.errorMessage;
             if (previousAttempt) {
-                const prevChanges = previousAttempt.previousFix.proposedChanges
-                    .map((c) => `File: ${c.file}\nOld:\n${c.oldCode}\nNew:\n${c.newCode}`)
-                    .join('\n---\n');
-                enrichedErrorMessage += `\n\n## PREVIOUS FIX ATTEMPT (iteration ${previousAttempt.iteration}) — FAILED VALIDATION\n\nThe following fix was applied and the test was re-run, but it still failed.\n\n### Previous Fix:\n${prevChanges}\n\n### Validation Failure Logs:\n${previousAttempt.validationLogs.slice(0, 8000)}\n\nYou MUST try a DIFFERENT approach. Do NOT repeat the same fix.`;
+                enrichedErrorMessage += buildPriorAttemptContext(previousAttempt);
             }
             const agentContext = (0, agents_1.createAgentContext)({
                 errorMessage: enrichedErrorMessage,
@@ -499,22 +530,7 @@ ${lines.length > 150 ? `\n... (${lines.length - 150} more lines)` : ''}
             contextInfo += `\n\n⚠️ FLAKINESS SIGNAL: ${skills.flakiness.message}`;
         }
         if (previousAttempt) {
-            const prevChanges = previousAttempt.previousFix.proposedChanges
-                .map((c) => `File: ${c.file}\noldCode:\n\`\`\`\n${c.oldCode}\n\`\`\`\nnewCode:\n\`\`\`\n${c.newCode}\n\`\`\``)
-                .join('\n---\n');
-            contextInfo += `\n\n## PREVIOUS FIX ATTEMPT #${previousAttempt.iteration} — FAILED VALIDATION
-
-The following fix was applied to a branch and the test was re-run on Sauce Labs, but it **still failed**.
-
-### Previous Fix That Was Tried:
-${prevChanges}
-
-### Validation Failure Logs (tail):
-\`\`\`
-${previousAttempt.validationLogs.slice(0, 6000)}
-\`\`\`
-
-**CRITICAL: You MUST try a DIFFERENT approach.** Analyze WHY the previous fix failed and address the root cause. Do NOT repeat the same change.`;
+            contextInfo += buildPriorAttemptContext(previousAttempt, { logBudget: 6000 });
         }
         const frameworkPatterns = errorData?.framework === 'cypress'
             ? fix_generation_agent_1.CYPRESS_PATTERNS

@@ -6,6 +6,7 @@ import {
 import { createAgentContext } from '../../src/agents/base-agent';
 import { AnalysisOutput } from '../../src/agents/analysis-agent';
 import { FixGenerationOutput } from '../../src/agents/fix-generation-agent';
+import { InvestigationOutput } from '../../src/agents/investigation-agent';
 import { OpenAIClient } from '../../src/openai-client';
 
 // Mock OpenAIClient
@@ -435,6 +436,383 @@ describe('ReviewAgent', () => {
       expect(call.systemPrompt).toContain('Missing or vague failureModeTrace');
       expect(call.systemPrompt).toContain('Logical strengthening without justification');
       expect(call.systemPrompt).toContain('strictly stronger');
+    });
+  });
+
+  describe('R2: expanded analysis rendering', () => {
+    const passingReview: ReviewOutput = {
+      approved: true,
+      issues: [],
+      assessment: 'ok',
+      fixConfidence: 90,
+    };
+
+    const getUserContent = () => {
+      const call = mockOpenAIClient.generateWithCustomPrompt.mock.calls[0][0];
+      return Array.isArray(call.userContent)
+        ? call.userContent.map((c: any) => c.text || '').join('\n')
+        : (call.userContent as string);
+    };
+
+    beforeEach(() => {
+      mockOpenAIClient.generateWithCustomPrompt = jest
+        .fn()
+        .mockResolvedValue({ text: JSON.stringify(passingReview), responseId: 'r' });
+    });
+
+    it('renders analysis.confidence, issueLocation, suggestedApproach in the user prompt', async () => {
+      await agent.execute(
+        { proposedFix: mockProposedFix, analysis: mockAnalysis },
+        createAgentContext({
+          errorMessage: 'err',
+          testFile: 'test.cy.ts',
+          testName: 'test',
+        })
+      );
+
+      const userContent = getUserContent();
+      expect(userContent).toContain('Analysis Confidence:** 85%');
+      expect(userContent).toContain('Issue Location:** TEST_CODE');
+      expect(userContent).toContain('Suggested Approach');
+      expect(userContent).toContain('Update selector');
+    });
+
+    it('renders analysis.patterns when any pattern is flagged', async () => {
+      const analysisWithPatterns: AnalysisOutput = {
+        ...mockAnalysis,
+        patterns: {
+          ...mockAnalysis.patterns,
+          hasTimeout: true,
+          hasVisibilityIssue: true,
+        },
+      };
+
+      await agent.execute(
+        { proposedFix: mockProposedFix, analysis: analysisWithPatterns },
+        createAgentContext({
+          errorMessage: 'err',
+          testFile: 'test.cy.ts',
+          testName: 'test',
+        })
+      );
+
+      const userContent = getUserContent();
+      expect(userContent).toContain('Patterns flagged');
+      expect(userContent).toContain('hasTimeout');
+      expect(userContent).toContain('hasVisibilityIssue');
+      expect(userContent).not.toContain('hasNetworkCall');
+    });
+
+    it('omits Patterns line when nothing is flagged', async () => {
+      await agent.execute(
+        { proposedFix: mockProposedFix, analysis: mockAnalysis },
+        createAgentContext({
+          errorMessage: 'err',
+          testFile: 'test.cy.ts',
+          testName: 'test',
+        })
+      );
+
+      const userContent = getUserContent();
+      expect(userContent).not.toContain('Patterns flagged');
+    });
+
+    it('renders analysis.selectors when non-empty', async () => {
+      await agent.execute(
+        { proposedFix: mockProposedFix, analysis: mockAnalysis },
+        createAgentContext({
+          errorMessage: 'err',
+          testFile: 'test.cy.ts',
+          testName: 'test',
+        })
+      );
+
+      const userContent = getUserContent();
+      expect(userContent).toContain('Selectors identified by analysis');
+      expect(userContent).toContain('[data-testid="submit"]');
+    });
+
+    it('shows CRITICAL CONTEXT banner when analysis flags issueLocation=APP_CODE', async () => {
+      const analysisAppCode: AnalysisOutput = {
+        ...mockAnalysis,
+        issueLocation: 'APP_CODE',
+      };
+
+      await agent.execute(
+        { proposedFix: mockProposedFix, analysis: analysisAppCode },
+        createAgentContext({
+          errorMessage: 'err',
+          testFile: 'test.cy.ts',
+          testName: 'test',
+        })
+      );
+
+      const userContent = getUserContent();
+      expect(userContent).toContain('CRITICAL CONTEXT');
+      expect(userContent).toContain('issueLocation=APP_CODE');
+    });
+
+    it('does NOT show CRITICAL CONTEXT banner when analysis is TEST_CODE', async () => {
+      await agent.execute(
+        { proposedFix: mockProposedFix, analysis: mockAnalysis },
+        createAgentContext({
+          errorMessage: 'err',
+          testFile: 'test.cy.ts',
+          testName: 'test',
+        })
+      );
+
+      const userContent = getUserContent();
+      expect(userContent).not.toContain('CRITICAL CONTEXT');
+    });
+
+    it('system prompt cites the new CRITICAL rules for issueLocation + verdictOverride', async () => {
+      await agent.execute(
+        { proposedFix: mockProposedFix, analysis: mockAnalysis },
+        createAgentContext({
+          errorMessage: 'err',
+          testFile: 'test.cy.ts',
+          testName: 'test',
+        })
+      );
+
+      const call = mockOpenAIClient.generateWithCustomPrompt.mock.calls[0][0];
+      expect(call.systemPrompt).toContain('issueLocation=APP_CODE');
+      expect(call.systemPrompt).toContain('verdictOverride');
+      expect(call.systemPrompt).toContain('recommendedApproach');
+    });
+
+    it('user-prompt instructions include items 9, 10, 11, 12', async () => {
+      await agent.execute(
+        { proposedFix: mockProposedFix, analysis: mockAnalysis },
+        createAgentContext({
+          errorMessage: 'err',
+          testFile: 'test.cy.ts',
+          testName: 'test',
+        })
+      );
+
+      const userContent = getUserContent();
+      expect(userContent).toMatch(/9\. CRITICAL: If analysis flagged .issueLocation=APP_CODE/);
+      expect(userContent).toMatch(/10\. CRITICAL: If investigation provided a .verdictOverride/);
+      expect(userContent).toMatch(/11\. If investigation provided .recommendedApproach/);
+      expect(userContent).toMatch(/12\. If investigation listed multiple findings/);
+    });
+  });
+
+  describe('R1: investigation output rendering', () => {
+    const passingReview: ReviewOutput = {
+      approved: true,
+      issues: [],
+      assessment: 'ok',
+      fixConfidence: 90,
+    };
+
+    const mockInvestigation: InvestigationOutput = {
+      findings: [
+        {
+          type: 'SELECTOR_CHANGE',
+          severity: 'HIGH',
+          description: 'Selector no longer matches after PR diff',
+          evidence: ['PR shows data-testid renamed'],
+          relationToError: 'Direct cause of failure',
+        },
+        {
+          type: 'TIMING_ISSUE',
+          severity: 'MEDIUM',
+          description: 'Wait condition may also be too short',
+          evidence: ['timeout was 3s'],
+          relationToError: 'Contributing factor',
+        },
+      ],
+      primaryFinding: {
+        type: 'SELECTOR_CHANGE',
+        severity: 'HIGH',
+        description: 'Selector no longer matches after PR diff',
+        evidence: ['PR shows data-testid renamed'],
+        relationToError: 'Direct cause of failure',
+      },
+      isTestCodeFixable: true,
+      recommendedApproach: 'Update the selector to the new data-testid value.',
+      selectorsToUpdate: [
+        {
+          current: '[data-testid="submit"]',
+          reason: 'Renamed to submit-button',
+          suggestedReplacement: '[data-testid="submit-button"]',
+        },
+      ],
+      confidence: 88,
+    };
+
+    const getUserContent = () => {
+      const call = mockOpenAIClient.generateWithCustomPrompt.mock.calls[0][0];
+      return Array.isArray(call.userContent)
+        ? call.userContent.map((c: any) => c.text || '').join('\n')
+        : (call.userContent as string);
+    };
+
+    beforeEach(() => {
+      mockOpenAIClient.generateWithCustomPrompt = jest
+        .fn()
+        .mockResolvedValue({ text: JSON.stringify(passingReview), responseId: 'r' });
+    });
+
+    it('renders Investigation Agent Findings section when investigation is provided', async () => {
+      await agent.execute(
+        {
+          proposedFix: mockProposedFix,
+          analysis: mockAnalysis,
+          investigation: mockInvestigation,
+        },
+        createAgentContext({
+          errorMessage: 'err',
+          testFile: 'test.cy.ts',
+          testName: 'test',
+        })
+      );
+
+      const userContent = getUserContent();
+      expect(userContent).toContain('Investigation Agent Findings');
+      expect(userContent).toContain('Investigation Confidence:** 88%');
+      expect(userContent).toContain('Is Test Code Fixable:** true');
+      expect(userContent).toContain('Recommended Approach');
+      expect(userContent).toContain('Update the selector');
+    });
+
+    it('renders primary finding with severity and relation-to-error', async () => {
+      await agent.execute(
+        {
+          proposedFix: mockProposedFix,
+          analysis: mockAnalysis,
+          investigation: mockInvestigation,
+        },
+        createAgentContext({
+          errorMessage: 'err',
+          testFile: 'test.cy.ts',
+          testName: 'test',
+        })
+      );
+
+      const userContent = getUserContent();
+      expect(userContent).toContain('Primary Finding');
+      expect(userContent).toContain('Selector no longer matches after PR diff');
+      expect(userContent).toContain('Severity: HIGH');
+      expect(userContent).toContain('Direct cause of failure');
+    });
+
+    it('renders full ranked findings list when investigation has multiple findings', async () => {
+      await agent.execute(
+        {
+          proposedFix: mockProposedFix,
+          analysis: mockAnalysis,
+          investigation: mockInvestigation,
+        },
+        createAgentContext({
+          errorMessage: 'err',
+          testFile: 'test.cy.ts',
+          testName: 'test',
+        })
+      );
+
+      const userContent = getUserContent();
+      expect(userContent).toContain('All Findings (ranked)');
+      expect(userContent).toContain('[HIGH] SELECTOR_CHANGE');
+      expect(userContent).toContain('[MEDIUM] TIMING_ISSUE');
+      expect(userContent).toContain('Wait condition may also be too short');
+    });
+
+    it('omits ranked findings block when investigation has only one finding', async () => {
+      const singleFindingInvestigation: InvestigationOutput = {
+        ...mockInvestigation,
+        findings: [mockInvestigation.findings[0]],
+      };
+
+      await agent.execute(
+        {
+          proposedFix: mockProposedFix,
+          analysis: mockAnalysis,
+          investigation: singleFindingInvestigation,
+        },
+        createAgentContext({
+          errorMessage: 'err',
+          testFile: 'test.cy.ts',
+          testName: 'test',
+        })
+      );
+
+      const userContent = getUserContent();
+      expect(userContent).toContain('Primary Finding');
+      expect(userContent).not.toContain('All Findings (ranked)');
+    });
+
+    it('renders selectorsToUpdate with current, reason, and suggestedReplacement', async () => {
+      await agent.execute(
+        {
+          proposedFix: mockProposedFix,
+          analysis: mockAnalysis,
+          investigation: mockInvestigation,
+        },
+        createAgentContext({
+          errorMessage: 'err',
+          testFile: 'test.cy.ts',
+          testName: 'test',
+        })
+      );
+
+      const userContent = getUserContent();
+      expect(userContent).toContain('Selectors Investigation Said Need Updating');
+      expect(userContent).toContain('[data-testid="submit"]');
+      expect(userContent).toContain('Renamed to submit-button');
+      expect(userContent).toContain('[data-testid="submit-button"]');
+    });
+
+    it('renders verdictOverride banner when investigation provides one', async () => {
+      const investigationWithOverride: InvestigationOutput = {
+        ...mockInvestigation,
+        verdictOverride: {
+          suggestedLocation: 'APP_CODE',
+          confidence: 85,
+          evidence: [
+            'Product API returned 500 during transcript fetch',
+            'Same error in 3 other specs this run',
+          ],
+        },
+      };
+
+      await agent.execute(
+        {
+          proposedFix: mockProposedFix,
+          analysis: mockAnalysis,
+          investigation: investigationWithOverride,
+        },
+        createAgentContext({
+          errorMessage: 'err',
+          testFile: 'test.cy.ts',
+          testName: 'test',
+        })
+      );
+
+      const userContent = getUserContent();
+      expect(userContent).toContain('Verdict Override from Investigation');
+      expect(userContent).toContain('APP_CODE');
+      expect(userContent).toContain('85% confidence');
+      expect(userContent).toContain('Product API returned 500');
+    });
+
+    it('does NOT render Investigation section when investigation is absent (backward compat)', async () => {
+      await agent.execute(
+        { proposedFix: mockProposedFix, analysis: mockAnalysis },
+        createAgentContext({
+          errorMessage: 'err',
+          testFile: 'test.cy.ts',
+          testName: 'test',
+        })
+      );
+
+      const userContent = getUserContent();
+      expect(userContent).not.toContain('Investigation Agent Findings');
+      expect(userContent).not.toContain('Selectors Investigation Said Need Updating');
+      expect(userContent).not.toContain('Verdict Override from Investigation');
     });
   });
 

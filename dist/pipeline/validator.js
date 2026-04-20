@@ -217,11 +217,13 @@ async function iterativeFixValidateLoop(inputs, repoDetails, autoFixTargetRepo, 
             failedFixFingerprints.add(fingerprint);
             await validator.reset();
             if (iteration < maxIterations - 1) {
-                core.info('Feeding failure logs back into repair agent for next attempt...');
+                core.info('Feeding failure logs + prior agent reasoning back into repair agent for next attempt...');
                 previousAttempt = {
                     iteration: iteration + 1,
                     previousFix: fixRecommendation,
                     validationLogs: testResult.logs,
+                    priorAgentRootCause: agentRootCause,
+                    priorAgentInvestigationFindings: agentInvestigationFindings,
                 };
             }
             else {

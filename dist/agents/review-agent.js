@@ -55,6 +55,9 @@ Review code changes proposed to fix failing tests. Your job is to:
   - Original \`cy.get('[role="dialog"]').should('be.visible')\` times out → "fix" adds \`.should('be.visible').and('contain.text', 'Success')\`. The \`.and()\` adds a requirement; doesn't help if the dialog was never visible.
   - Original \`element.click()\` fails because element doesn't exist → "fix" adds \`.waitForClickable()\` before click. This is NOT strictly stronger — the wait gives the element time to appear. OK.
   If the code changes the runtime state BEFORE the check (e.g., adds a wait for a state transition, removes a stale-element source), that's a different direction and generally helps. If the code only changes the CHECK itself by adding constraints, it almost certainly doesn't help.
+- **Fix contradicts analysis \`issueLocation=APP_CODE\`** without addressing why the analysis agent believed the failure was product-side. When upstream reasoning said the bug lives in product code and the fix only modifies test code, the fix is likely papering over a real product regression. Reject unless the fix explicitly explains why the test-side change is appropriate despite the APP_CODE verdict (e.g., "the test was asserting on outdated product behavior; the product change is intentional and the test needs to adapt").
+- **Fix contradicts investigation \`verdictOverride\`**. Investigation can override the classification when its evidence points to a different failure location. If \`verdictOverride.suggestedLocation=APP_CODE\` and the fix modifies test code anyway without citing investigation's evidence as misleading, reject as CRITICAL — the override exists precisely to catch this case.
+- **Fix ignores investigation's \`recommendedApproach\`** when the approach conflicts with what was actually changed. Missing a piece of the recommendation is a WARNING; directly contradicting it (e.g., investigation said "widen the tolerance" and the fix tightens it) is CRITICAL.
 
 ### WARNING Issues (Should Fix)
 - Suboptimal selector choice
@@ -99,7 +102,43 @@ You MUST respond with a JSON object matching this schema:
         if (context.delegationContext) {
             parts.push('### Orchestrator Briefing', context.delegationContext, '');
         }
-        parts.push('## Fix Review Request', '', '### Root Cause Being Fixed', `- **Category:** ${input.analysis.rootCauseCategory}`, `- **Explanation:** ${input.analysis.explanation}`, '', '### Proposed Fix', `- **Summary:** ${input.proposedFix.summary}`, `- **Confidence:** ${input.proposedFix.confidence}%`, `- **Reasoning:** ${input.proposedFix.reasoning}`);
+        parts.push('## Fix Review Request', '', '### Analysis Agent Findings', `- **Root Cause Category:** ${input.analysis.rootCauseCategory}`, `- **Analysis Confidence:** ${input.analysis.confidence}%`, `- **Issue Location:** ${input.analysis.issueLocation}`, `- **Explanation:** ${input.analysis.explanation}`, `- **Suggested Approach (what analysis said the fix should do):** ${input.analysis.suggestedApproach}`);
+        const patterns = input.analysis.patterns;
+        if (patterns) {
+            const flaggedPatterns = Object.entries(patterns)
+                .filter(([, v]) => v === true)
+                .map(([k]) => k);
+            if (flaggedPatterns.length > 0) {
+                parts.push(`- **Patterns flagged:** ${flaggedPatterns.join(', ')}`);
+            }
+        }
+        if (input.analysis.selectors && input.analysis.selectors.length > 0) {
+            parts.push(`- **Selectors identified by analysis:** ${input.analysis.selectors.map((s) => `\`${s}\``).join(', ')}`);
+        }
+        if (input.analysis.issueLocation === 'APP_CODE') {
+            parts.push('', '⚠️ **CRITICAL CONTEXT:** Analysis flagged `issueLocation=APP_CODE`. A test-code fix is only appropriate if investigation explicitly identified a test-side workaround is valid. Be highly skeptical of any fix that modifies test code without addressing why analysis thought the problem was product-side.');
+        }
+        if (input.investigation) {
+            const inv = input.investigation;
+            parts.push('', '### Investigation Agent Findings (audit the fix AGAINST these)', `- **Investigation Confidence:** ${inv.confidence}%`, `- **Is Test Code Fixable:** ${inv.isTestCodeFixable}`, `- **Recommended Approach:** ${inv.recommendedApproach}`);
+            if (inv.primaryFinding) {
+                parts.push(`- **Primary Finding:** ${inv.primaryFinding.description}`, `  - Severity: ${inv.primaryFinding.severity}`, `  - Relation to error: ${inv.primaryFinding.relationToError}`);
+            }
+            if (inv.findings && inv.findings.length > 1) {
+                parts.push('', '#### All Findings (ranked)');
+                inv.findings.forEach((f, i) => {
+                    parts.push(`${i + 1}. [${f.severity}] ${f.type}: ${f.description}`, `   - Relation to error: ${f.relationToError}`);
+                });
+            }
+            if (inv.selectorsToUpdate && inv.selectorsToUpdate.length > 0) {
+                parts.push('', '#### Selectors Investigation Said Need Updating', ...inv.selectorsToUpdate.map((s) => `- Current: \`${s.current}\` — ${s.reason}${s.suggestedReplacement ? ` → suggested: \`${s.suggestedReplacement}\`` : ''}`));
+            }
+            if (inv.verdictOverride) {
+                const o = inv.verdictOverride;
+                parts.push('', `⚠️ **Verdict Override from Investigation:** ${o.suggestedLocation} (${o.confidence}% confidence)`, `Evidence: ${o.evidence.join('; ')}`, 'The investigation agent concluded the failure location may differ from analysis. Audit whether the proposed fix is consistent with this.');
+            }
+        }
+        parts.push('', '### Proposed Fix', `- **Summary:** ${input.proposedFix.summary}`, `- **Confidence:** ${input.proposedFix.confidence}%`, `- **Reasoning:** ${input.proposedFix.reasoning}`);
         const trace = input.proposedFix.failureModeTrace;
         if (trace) {
             parts.push('', '### Failure Mode Trace (MUST audit for quality)', `- **originalState:** ${formatTraceField(trace.originalState)}`, `- **rootMechanism:** ${formatTraceField(trace.rootMechanism)}`, `- **newStateAfterFix:** ${formatTraceField(trace.newStateAfterFix)}`, `- **whyAssertionPassesNow:** ${formatTraceField(trace.whyAssertionPassesNow)}`);
@@ -146,7 +185,7 @@ You MUST respond with a JSON object matching this schema:
         if (context.skillsPrompt) {
             parts.push('', context.skillsPrompt);
         }
-        parts.push('', '## Review Instructions', '1. For each change, verify oldCode appears EXACTLY in the file', '2. Check that newCode is syntactically valid', '3. Verify the fix addresses the root cause', '4. Look for potential side effects', '5. Assess overall likelihood of success', '6. CRITICAL: If PR changes are provided, verify the fix reasoning is consistent with the diff — if the fix claims code was "changed" or "updated" but the diff does NOT show that change, flag as CRITICAL issue', '7. CRITICAL: Inspect `failureModeTrace`. If missing or any field is vague/generic/tautological, flag a CRITICAL issue citing which field is inadequate.', '8. CRITICAL: Determine if the new condition/assertion is **strictly stronger** than the original. If yes, verify `whyAssertionPassesNow` justifies why the added requirement is guaranteed to hold in the failure scenario. If it does not, flag a CRITICAL issue — a strictly stronger condition cannot turn a failing assertion into a passing one.', '', 'Respond with the JSON object as specified in the system prompt.');
+        parts.push('', '## Review Instructions', '1. For each change, verify oldCode appears EXACTLY in the file', '2. Check that newCode is syntactically valid', '3. Verify the fix addresses the root cause', '4. Look for potential side effects', '5. Assess overall likelihood of success', '6. CRITICAL: If PR changes are provided, verify the fix reasoning is consistent with the diff — if the fix claims code was "changed" or "updated" but the diff does NOT show that change, flag as CRITICAL issue', '7. CRITICAL: Inspect `failureModeTrace`. If missing or any field is vague/generic/tautological, flag a CRITICAL issue citing which field is inadequate.', '8. CRITICAL: Determine if the new condition/assertion is **strictly stronger** than the original. If yes, verify `whyAssertionPassesNow` justifies why the added requirement is guaranteed to hold in the failure scenario. If it does not, flag a CRITICAL issue — a strictly stronger condition cannot turn a failing assertion into a passing one.', '9. CRITICAL: If analysis flagged `issueLocation=APP_CODE`, audit whether the proposed test-code fix is appropriate. Flag as CRITICAL if the fix modifies test code without addressing why the analysis agent believed the failure was product-side.', '10. CRITICAL: If investigation provided a `verdictOverride` (especially `APP_CODE`), verify the proposed fix is consistent with that finding. Flag as CRITICAL if the fix contradicts the verdict override evidence without explicit justification.', '11. If investigation provided `recommendedApproach` and/or `selectorsToUpdate`, verify the proposed fix covers them. Flag as WARNING if the fix omits an investigation-flagged selector or deviates from the recommended approach. Flag as CRITICAL if the fix directly contradicts the recommendation.', '12. If investigation listed multiple findings, the fix does not need to address every finding — but the reviewer should note any HIGH-severity finding the fix does not address and flag whether the missed finding is a likely cause of future failures.', '', 'Respond with the JSON object as specified in the system prompt.');
         return parts.join('\n');
     }
     parseResponse(response) {

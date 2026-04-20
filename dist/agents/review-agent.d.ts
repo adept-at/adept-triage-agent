@@ -3,6 +3,7 @@ import { OpenAIClient } from '../openai-client';
 import { AnalysisOutput } from './analysis-agent';
 import { CodeReadingOutput } from './code-reading-agent';
 import { FixGenerationOutput } from './fix-generation-agent';
+import { InvestigationOutput } from './investigation-agent';
 export interface ReviewIssue {
     severity: 'CRITICAL' | 'WARNING' | 'SUGGESTION';
     changeIndex: number;
@@ -19,6 +20,7 @@ export interface ReviewOutput {
 export interface ReviewInput {
     proposedFix: FixGenerationOutput;
     analysis: AnalysisOutput;
+    investigation?: InvestigationOutput;
     codeContext?: CodeReadingOutput;
 }
 export declare class ReviewAgent extends BaseAgent<ReviewInput, ReviewOutput> {

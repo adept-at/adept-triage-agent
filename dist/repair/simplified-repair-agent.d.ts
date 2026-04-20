@@ -6,6 +6,16 @@ export interface RepairAgentConfig {
     enableAgenticRepair?: boolean;
     orchestratorConfig?: Partial<OrchestratorConfig>;
 }
+export interface PriorAttemptContext {
+    iteration: number;
+    previousFix: FixRecommendation;
+    validationLogs: string;
+    priorAgentRootCause?: string;
+    priorAgentInvestigationFindings?: string;
+}
+export declare function buildPriorAttemptContext(prior: PriorAttemptContext, opts?: {
+    logBudget?: number;
+}): string;
 export declare class SimplifiedRepairAgent {
     private openaiClient;
     private sourceFetchContext?;
@@ -16,6 +26,8 @@ export declare class SimplifiedRepairAgent {
         iteration: number;
         previousFix: FixRecommendation;
         validationLogs: string;
+        priorAgentRootCause?: string;
+        priorAgentInvestigationFindings?: string;
     }, previousResponseId?: string, skills?: {
         relevant: TriageSkill[];
         flakiness?: FlakinessSignal;

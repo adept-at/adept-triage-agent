@@ -21,6 +21,10 @@ export async function generateFixRecommendation(
     iteration: number;
     previousFix: FixRecommendation;
     validationLogs: string;
+    /** Agent-reported root cause from the prior failed iteration (see repair-agent). */
+    priorAgentRootCause?: string;
+    /** Agent-reported investigation findings from the prior failed iteration. */
+    priorAgentInvestigationFindings?: string;
   },
   previousResponseId?: string,
   skillStore?: SkillStore,
@@ -136,7 +140,13 @@ export async function iterativeFixValidateLoop(
   let autoFixSkipped = false;
   let autoFixSkippedReason: string | undefined;
   let previousAttempt:
-    | { iteration: number; previousFix: FixRecommendation; validationLogs: string }
+    | {
+        iteration: number;
+        previousFix: FixRecommendation;
+        validationLogs: string;
+        priorAgentRootCause?: string;
+        priorAgentInvestigationFindings?: string;
+      }
     | undefined;
   const failedFixFingerprints = new Set<string>();
   const minConfidence = inputs.autoFixMinConfidence ?? AUTO_FIX.DEFAULT_MIN_CONFIDENCE;
@@ -300,11 +310,20 @@ export async function iterativeFixValidateLoop(
       await validator.reset();
 
       if (iteration < maxIterations - 1) {
-        core.info('Feeding failure logs back into repair agent for next attempt...');
+        core.info('Feeding failure logs + prior agent reasoning back into repair agent for next attempt...');
         previousAttempt = {
           iteration: iteration + 1,
           previousFix: fixRecommendation,
           validationLogs: testResult.logs,
+          // R4: preserve the prior iteration's agent reasoning so the next
+          // iteration's analysis + investigation can actively diverge from
+          // it rather than silently re-discovering the same root-cause
+          // category + approach. Without this, the outer loop's iteration
+          // 2 tends to reproduce iteration 1's conclusions because the
+          // fresh agents only saw the error logs, not the prior reasoning
+          // that led to the failed fix.
+          priorAgentRootCause: agentRootCause,
+          priorAgentInvestigationFindings: agentInvestigationFindings,
         };
       } else {
         core.warning(`\n🛑 All ${maxIterations} fix attempts exhausted. Giving up.`);

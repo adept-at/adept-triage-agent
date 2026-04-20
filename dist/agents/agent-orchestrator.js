@@ -334,6 +334,7 @@ class AgentOrchestrator {
                 const reviewResult = await this.reviewAgent.execute({
                     proposedFix: lastFix,
                     analysis,
+                    investigation,
                     codeContext: codeReadingResult.data,
                 }, context, fixReviewChainId);
                 agentResults.review = reviewResult;
