@@ -14,6 +14,25 @@ import { OpenAIClient } from '../openai-client';
 import { DEFAULT_PRODUCT_REPO } from '../config/constants';
 import { AnalysisOutput } from './analysis-agent';
 import { CodeReadingOutput } from './code-reading-agent';
+import { coerceEnum } from '../utils/text-utils';
+
+/**
+ * Whitelisted runtime values for InvestigationFinding's enum-like fields.
+ * These match the TypeScript type declarations below; exposing them as
+ * `as const` arrays lets `coerceEnum` validate parsed JSON against them
+ * at the parse boundary so downstream renderers can't accidentally emit
+ * adversarial strings as if they were types/severities.
+ */
+const FINDING_TYPES = [
+  'SELECTOR_CHANGE',
+  'MISSING_ELEMENT',
+  'TIMING_GAP',
+  'STATE_ISSUE',
+  'CODE_CHANGE',
+  'OTHER',
+] as const;
+const FINDING_SEVERITIES = ['HIGH', 'MEDIUM', 'LOW'] as const;
+const SUGGESTED_LOCATIONS = ['TEST_CODE', 'APP_CODE', 'BOTH'] as const;
 
 /**
  * A specific finding from the investigation
@@ -305,16 +324,25 @@ You MUST respond with a JSON object matching this schema:
 
       const parsed = JSON.parse(jsonMatch[0]);
 
+      // Normalize a single finding — used for both findings[] and
+      // primaryFinding so the enum whitelist is applied consistently
+      // whether primaryFinding is a ref into findings[] or a fresh
+      // object emitted alongside.
+      const normalizeFinding = (
+        f: Partial<InvestigationFinding> | null | undefined
+      ): InvestigationFinding => ({
+        type: coerceEnum(f?.type, FINDING_TYPES, 'OTHER'),
+        severity: coerceEnum(f?.severity, FINDING_SEVERITIES, 'MEDIUM'),
+        description: typeof f?.description === 'string' ? f.description : '',
+        evidence: Array.isArray(f?.evidence) ? f!.evidence : [],
+        location: f?.location,
+        relationToError:
+          typeof f?.relationToError === 'string' ? f.relationToError : '',
+      });
+
       // Validate and normalize findings
       const findings: InvestigationFinding[] = Array.isArray(parsed.findings)
-        ? parsed.findings.map((f: InvestigationFinding) => ({
-            type: f.type || 'OTHER',
-            severity: f.severity || 'MEDIUM',
-            description: f.description || '',
-            evidence: Array.isArray(f.evidence) ? f.evidence : [],
-            location: f.location,
-            relationToError: f.relationToError || '',
-          }))
+        ? parsed.findings.map(normalizeFinding)
         : [];
 
       // Normalize selectors to update
@@ -334,15 +362,26 @@ You MUST respond with a JSON object matching this schema:
 
       const verdictOverride = parsed.verdictOverride
         ? {
-            suggestedLocation: parsed.verdictOverride.suggestedLocation || 'APP_CODE',
+            suggestedLocation: coerceEnum(
+              parsed.verdictOverride.suggestedLocation,
+              SUGGESTED_LOCATIONS,
+              'APP_CODE'
+            ),
             confidence: typeof parsed.verdictOverride.confidence === 'number' ? parsed.verdictOverride.confidence : 50,
             evidence: Array.isArray(parsed.verdictOverride.evidence) ? parsed.verdictOverride.evidence : [],
           }
         : undefined;
 
+      // Normalize primaryFinding through the same pipeline so its
+      // enum fields can't bypass the whitelist. If parsed doesn't
+      // provide one, fall back to findings[0] (already normalized).
+      const primaryFinding = parsed.primaryFinding
+        ? normalizeFinding(parsed.primaryFinding)
+        : findings[0];
+
       return {
         findings,
-        primaryFinding: parsed.primaryFinding || findings[0],
+        primaryFinding,
         isTestCodeFixable: parsed.isTestCodeFixable !== false,
         recommendedApproach: parsed.recommendedApproach || '',
         selectorsToUpdate,

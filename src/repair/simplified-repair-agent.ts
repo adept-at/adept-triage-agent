@@ -13,8 +13,31 @@ import {
 import { getFrameworkLabel } from '../agents/base-agent';
 import { CYPRESS_PATTERNS, WDIO_PATTERNS } from '../agents/fix-generation-agent';
 import { InvestigationOutput } from '../agents/investigation-agent';
-import { TriageSkill, FlakinessSignal, formatSkillsForPrompt } from '../services/skill-store';
+import {
+  TriageSkill,
+  FlakinessSignal,
+  formatSkillsForPrompt,
+  sanitizeForPrompt,
+} from '../services/skill-store';
 import { inferRootCauseCategoryFromText } from './root-cause-category';
+
+/**
+ * Per-field budgets for the retry-memory payload. Each sub-field is run
+ * through `sanitizeForPrompt` with the cap below before being concatenated.
+ * Total summary budget sits around ~3–4 KB / ~1000 tokens even at worst case,
+ * which is compact next to the main prompt.
+ */
+const RETRY_CAPS = {
+  FINDING_DESCRIPTION: 500,
+  FINDING_RELATION: 300,
+  EVIDENCE_ITEM: 200,
+  RECOMMENDED_APPROACH: 500,
+  SELECTOR_FIELD: 200,
+  FIX_REASONING: 800,
+  TRACE_FIELD: 500,
+  ROOT_CAUSE: 300,
+  CODE_BLOCK: 2000,
+} as const;
 
 /**
  * Configuration for the repair agent
@@ -73,16 +96,31 @@ export function summarizeInvestigationForRetry(
 ): string | undefined {
   if (!investigation) return undefined;
 
+  // Every interpolated field passes through sanitizeForPrompt with an
+  // explicit per-field cap. The retry path feeds this string back into
+  // the next iteration's agent prompt, where it joins other model-adjacent
+  // content. Investigation output can quote error logs, test source, and
+  // product-diff text — any of which could contain prompt-injection
+  // patterns (`## SYSTEM:`, `Ignore previous`, `[INST]`, etc). Before
+  // v1.49.2 this path rendered everything raw, which re-opened the
+  // cross-agent injection surface sanitizeForPrompt was built to close
+  // on the skill-store side.
+  const s = sanitizeForPrompt;
   const parts: string[] = [];
   const primary = investigation.primaryFinding;
 
   if (primary) {
-    parts.push(`Primary finding: [${primary.severity}] ${primary.description}`);
+    parts.push(
+      `Primary finding: [${primary.severity}] ${s(primary.description, RETRY_CAPS.FINDING_DESCRIPTION)}`
+    );
     if (primary.relationToError) {
-      parts.push(`  → Relation to error: ${primary.relationToError}`);
+      parts.push(`  → Relation to error: ${s(primary.relationToError, RETRY_CAPS.FINDING_RELATION)}`);
     }
     if (primary.evidence?.length) {
-      parts.push(`  → Evidence: ${primary.evidence.slice(0, 3).join('; ')}`);
+      const items = primary.evidence
+        .slice(0, 3)
+        .map((e) => s(e, RETRY_CAPS.EVIDENCE_ITEM));
+      parts.push(`  → Evidence: ${items.join('; ')}`);
     }
   }
 
@@ -91,7 +129,9 @@ export function summarizeInvestigationForRetry(
   }
 
   if (investigation.recommendedApproach) {
-    parts.push(`Recommended approach: ${investigation.recommendedApproach}`);
+    parts.push(
+      `Recommended approach: ${s(investigation.recommendedApproach, RETRY_CAPS.RECOMMENDED_APPROACH)}`
+    );
   }
 
   if (investigation.verdictOverride) {
@@ -100,17 +140,22 @@ export function summarizeInvestigationForRetry(
       `Verdict override: ${v.suggestedLocation} (${v.confidence}% confidence)`
     );
     if (v.evidence?.length) {
-      parts.push(`  → Evidence: ${v.evidence.slice(0, 3).join('; ')}`);
+      const items = v.evidence
+        .slice(0, 3)
+        .map((e) => s(e, RETRY_CAPS.EVIDENCE_ITEM));
+      parts.push(`  → Evidence: ${items.join('; ')}`);
     }
   }
 
   if (investigation.selectorsToUpdate?.length) {
     parts.push('Selectors flagged for update:');
-    for (const s of investigation.selectorsToUpdate.slice(0, 5)) {
-      const replacement = s.suggestedReplacement
-        ? ` → suggested: \`${s.suggestedReplacement}\``
+    for (const sel of investigation.selectorsToUpdate.slice(0, 5)) {
+      const current = s(sel.current, RETRY_CAPS.SELECTOR_FIELD);
+      const reason = s(sel.reason, RETRY_CAPS.SELECTOR_FIELD);
+      const replacement = sel.suggestedReplacement
+        ? ` → suggested: \`${s(sel.suggestedReplacement, RETRY_CAPS.SELECTOR_FIELD)}\``
         : '';
-      parts.push(`  - \`${s.current}\`: ${s.reason}${replacement}`);
+      parts.push(`  - \`${current}\`: ${reason}${replacement}`);
     }
   }
 
@@ -130,8 +175,12 @@ export function summarizeInvestigationForRetry(
     if (secondary.length > 0) {
       parts.push('Other findings:');
       for (const f of secondary) {
-        const rel = f.relationToError ? ` (${f.relationToError})` : '';
-        parts.push(`  - [${f.severity}] ${f.description}${rel}`);
+        const rel = f.relationToError
+          ? ` (${s(f.relationToError, RETRY_CAPS.FINDING_RELATION)})`
+          : '';
+        parts.push(
+          `  - [${f.severity}] ${s(f.description, RETRY_CAPS.FINDING_DESCRIPTION)}${rel}`
+        );
       }
     }
   }
@@ -144,10 +193,19 @@ export function buildPriorAttemptContext(
   opts: { logBudget?: number } = {}
 ): string {
   const logBudget = opts.logBudget ?? 8000;
+  const s = sanitizeForPrompt;
+
+  // Every interpolated text field — root cause, investigation summary,
+  // fix-gen reasoning, trace sub-fields, file paths, validation logs,
+  // and the code blocks — is run through sanitizeForPrompt before
+  // being rendered into the next iteration's prompt. sanitizeForPrompt
+  // (as of v1.49.2) also escapes triple backticks, so any stray ``` in
+  // untrusted content can't break out of the fenced blocks we render
+  // below and masquerade as a new prompt section.
   const prevChanges = prior.previousFix.proposedChanges
     .map(
       (c) =>
-        `File: ${c.file}\noldCode:\n\`\`\`\n${c.oldCode}\n\`\`\`\nnewCode:\n\`\`\`\n${c.newCode}\n\`\`\``
+        `File: ${s(c.file, 200)}\noldCode:\n\`\`\`\n${s(c.oldCode, RETRY_CAPS.CODE_BLOCK)}\n\`\`\`\nnewCode:\n\`\`\`\n${s(c.newCode, RETRY_CAPS.CODE_BLOCK)}\n\`\`\``
     )
     .join('\n---\n');
 
@@ -171,22 +229,27 @@ export function buildPriorAttemptContext(
   if (hasPriorReasoning) {
     sections.push('', "### Prior iteration's agent reasoning (the chain that produced the failed fix)");
     if (prior.priorAgentRootCause) {
-      sections.push(`- **Root cause (from analysis):** ${prior.priorAgentRootCause}`);
+      sections.push(`- **Root cause (from analysis):** ${s(prior.priorAgentRootCause, RETRY_CAPS.ROOT_CAUSE)}`);
     }
     if (prior.priorAgentInvestigationFindings) {
-      sections.push(`- **Investigation findings:** ${prior.priorAgentInvestigationFindings}`);
+      // Already sanitized by summarizeInvestigationForRetry upstream; a
+      // second pass is idempotent (no double-redaction) and caps total
+      // length as defense-in-depth against runaway model output.
+      sections.push(`- **Investigation findings:** ${s(prior.priorAgentInvestigationFindings, 4000)}`);
     }
     if (prior.previousFix.reasoning) {
-      sections.push(`- **Fix-gen's reasoning:** ${prior.previousFix.reasoning}`);
+      sections.push(`- **Fix-gen's reasoning:** ${s(prior.previousFix.reasoning, RETRY_CAPS.FIX_REASONING)}`);
     }
     if (prior.previousFix.failureModeTrace) {
       const t = prior.previousFix.failureModeTrace;
+      const traceField = (v?: string): string =>
+        v ? s(v, RETRY_CAPS.TRACE_FIELD) : '(empty)';
       sections.push(
         '- **Fix-gen\'s own causal trace (failureModeTrace):**',
-        `  - originalState: ${t.originalState || '(empty)'}`,
-        `  - rootMechanism: ${t.rootMechanism || '(empty)'}`,
-        `  - newStateAfterFix: ${t.newStateAfterFix || '(empty)'}`,
-        `  - whyAssertionPassesNow: ${t.whyAssertionPassesNow || '(empty)'}`
+        `  - originalState: ${traceField(t.originalState)}`,
+        `  - rootMechanism: ${traceField(t.rootMechanism)}`,
+        `  - newStateAfterFix: ${traceField(t.newStateAfterFix)}`,
+        `  - whyAssertionPassesNow: ${traceField(t.whyAssertionPassesNow)}`
       );
     }
   }
@@ -198,7 +261,15 @@ export function buildPriorAttemptContext(
     '',
     '### Validation Failure Logs (tail)',
     '```',
-    prior.validationLogs.slice(0, logBudget),
+    // Sanitize validation logs: they're untrusted output from the
+    // test runner (Sauce Labs, WDIO/Cypress runners) and can include
+    // arbitrary text that users / pages produced. sanitizeForPrompt
+    // escapes triple backticks so logs can't close this fence, and
+    // strips known prompt-injection keyword patterns. logBudget is
+    // preserved as the length cap since logs are the largest field
+    // here and the agent wants the tail (most-recent errors), not an
+    // arbitrary middle slice.
+    s(prior.validationLogs, logBudget),
     '```',
     '',
     '### Instructions for this iteration',
@@ -754,23 +825,10 @@ export class SimplifiedRepairAgent {
     }
   }
 
-  /**
-   * Strips prompt-injection patterns and caps length for safe prompt interpolation
-   */
-  private sanitizeForPrompt(input: string, maxLength: number = 2000): string {
-    if (!input) return '';
-    let sanitized = input
-      .replace(/```/g, '\u2032\u2032\u2032')
-      .replace(/## SYSTEM:/gi, '## INFO:')
-      .replace(/Ignore previous/gi, '[filtered]')
-      .replace(/<\/?(?:system|instruction|prompt)[^>]*>/gi, '')
-      .replace(/\[INST\]|\[\/INST\]/gi, '')
-      .replace(/<<SYS>>|<<\/SYS>>/gi, '');
-    if (sanitized.length > maxLength) {
-      sanitized = sanitized.substring(0, maxLength) + '... [truncated]';
-    }
-    return sanitized;
-  }
+  // v1.49.2: the class-private sanitizeForPrompt was consolidated into
+  // the shared helper in src/services/skill-store.ts (which now also
+  // escapes triple backticks). All call sites below use the shared
+  // `sanitizeForPrompt` imported at the top of this file.
 
   /**
    * Builds the prompt for OpenAI to generate fix recommendation
@@ -802,15 +860,15 @@ export class SimplifiedRepairAgent {
     skills?: { relevant: TriageSkill[]; flakiness?: FlakinessSignal }
   ): string {
     let contextInfo = `## Test Failure Context
-- **Test File:** ${this.sanitizeForPrompt(context.testFile)}
-- **Test Name:** ${this.sanitizeForPrompt(context.testName)}
-- **Error Type:** ${this.sanitizeForPrompt(context.errorType)}
-- **Error Message:** ${this.sanitizeForPrompt(context.errorMessage, 4000)}
-- **Analyzed Repository:** ${this.sanitizeForPrompt(context.repository)}
-- **Analyzed Branch:** ${this.sanitizeForPrompt(context.branch)}
-- **Analyzed Commit SHA:** ${this.sanitizeForPrompt(context.commitSha)}
+- **Test File:** ${sanitizeForPrompt(context.testFile)}
+- **Test Name:** ${sanitizeForPrompt(context.testName)}
+- **Error Type:** ${sanitizeForPrompt(context.errorType)}
+- **Error Message:** ${sanitizeForPrompt(context.errorMessage, 4000)}
+- **Analyzed Repository:** ${sanitizeForPrompt(context.repository)}
+- **Analyzed Branch:** ${sanitizeForPrompt(context.branch)}
+- **Analyzed Commit SHA:** ${sanitizeForPrompt(context.commitSha)}
 ${
-  context.errorSelector ? `- **Failed Selector:** ${this.sanitizeForPrompt(context.errorSelector)}` : ''
+  context.errorSelector ? `- **Failed Selector:** ${sanitizeForPrompt(context.errorSelector)}` : ''
 }
 ${context.errorLine ? `- **Error Line:** ${context.errorLine}` : ''}`;
 

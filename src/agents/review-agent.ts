@@ -15,6 +15,15 @@ import { CodeReadingOutput } from './code-reading-agent';
 import { FixGenerationOutput } from './fix-generation-agent';
 import { InvestigationOutput } from './investigation-agent';
 import { sanitizeForPrompt } from '../services/skill-store';
+import { coerceEnum } from '../utils/text-utils';
+
+/**
+ * Whitelisted runtime values for ReviewIssue.severity. Enforced at
+ * parse time so a malicious model response can't land an arbitrary
+ * string on `issue.severity`, which downstream orchestrator code logs
+ * and inspects for the literal `'CRITICAL'`.
+ */
+const REVIEW_SEVERITIES = ['CRITICAL', 'WARNING', 'SUGGESTION'] as const;
 
 /**
  * Length cap for individual `failureModeTrace` sub-fields when rendered into
@@ -436,10 +445,12 @@ You MUST respond with a JSON object matching this schema:
 
       const parsed = JSON.parse(jsonMatch[0]);
 
-      // Normalize issues
+      // Normalize issues. Severity goes through coerceEnum so the
+      // downstream CRITICAL check and log rendering can't be subverted
+      // by an arbitrary adversarial string on the severity field.
       const issues: ReviewIssue[] = Array.isArray(parsed.issues)
         ? parsed.issues.map((i: ReviewIssue) => ({
-            severity: i.severity || 'WARNING',
+            severity: coerceEnum(i.severity, REVIEW_SEVERITIES, 'WARNING'),
             changeIndex: typeof i.changeIndex === 'number' ? i.changeIndex : 0,
             description: i.description || '',
             suggestion: i.suggestion,

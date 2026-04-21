@@ -44,7 +44,6 @@ export declare class SimplifiedRepairAgent {
     private extractFilePath;
     private findEnclosingFunction;
     private fetchSourceFile;
-    private sanitizeForPrompt;
     private buildPrompt;
     private getRecommendationFromAI;
     private extractChangesFromText;

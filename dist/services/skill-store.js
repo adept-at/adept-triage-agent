@@ -55,6 +55,7 @@ function sanitizeForPrompt(input, maxLength = 2000) {
     if (!input)
         return '';
     let sanitized = input
+        .replace(/```/g, '\u2032\u2032\u2032')
         .replace(/## SYSTEM:/gi, '## INFO:')
         .replace(/Ignore previous/gi, '[filtered]')
         .replace(/<\/?(?:system|instruction|prompt)[^>]*>/gi, '')
@@ -503,16 +504,16 @@ function formatSkillsForPrompt(skills, role, flakiness) {
         fix_generation: [
             '### Agent Memory: Prior Fix Patterns',
             '',
-            'The following patterns were applied in prior runs. Not all were validated — use them as context, not guarantees.',
-            'CONSIDER these approaches as starting points. If you see a better approach, explain why and use it instead.',
-            'When a prior fix includes a causal trace, use it as a reasoning template — the trace shows how the prior successful fix diagnosed the failure (originalState → rootMechanism → newStateAfterFix → whyAssertionPassesNow). Your own failureModeTrace does NOT need to copy the prior one; it should reflect the CURRENT failure\'s concrete values.',
+            'The following patterns were applied in prior runs. Not all were validated — use them as context, not guarantees. Where a pattern is from a validated (successful) fix, that is noted on the skill. Where it is from a failed attempt, treat it as "what did NOT work" rather than a template to follow.',
+            'CONSIDER validated approaches as starting points. If you see a better approach, explain why and use it instead.',
+            'When a prior **validated** fix includes a causal trace, use it as a reasoning template — the trace shows how that successful fix diagnosed the failure (originalState → rootMechanism → newStateAfterFix → whyAssertionPassesNow). Traces from unvalidated/failed attempts are NOT shown, to avoid anchoring on reasoning that did not work. Your own failureModeTrace does NOT need to copy the prior one; it should reflect the CURRENT failure\'s concrete values.',
         ].join('\n'),
         review: [
-            '### Agent Memory: Prior Successful Fixes',
+            '### Agent Memory: Prior Fixes',
             '',
-            'Check if the proposed fix aligns with patterns that have worked before.',
-            'Flag if the fix contradicts a prior pattern without justification.',
-            'When a prior fix includes a causal trace, compare the CURRENT fix\'s failureModeTrace to it. A new trace that is markedly weaker than the prior trace for the same kind of failure is a WARNING signal — the current fix may not have reasoned as rigorously as the prior successful one.',
+            'Check if the proposed fix aligns with patterns that have worked before. Each skill includes a track record ("X/Y successful") indicating whether the pattern has been validated. Traces shown in this memory come only from validated fixes.',
+            'Flag if the fix contradicts a prior validated pattern without justification.',
+            'When a prior **validated** fix includes a causal trace, compare the CURRENT fix\'s failureModeTrace to it. A new trace that is markedly weaker than the validated prior trace for the same kind of failure is a WARNING signal — the current fix may not have reasoned as rigorously as the validated predecessor.',
         ].join('\n'),
     };
     const includeTrace = role === 'fix_generation' || role === 'review';
@@ -526,7 +527,16 @@ function formatSkillsForPrompt(skills, role, flakiness) {
         const successes = s.successCount ?? 0;
         const failures = s.failCount ?? 0;
         const total = successes + failures;
-        const trackRecord = total > 0 ? `${successes}/${total} successful` : 'untested';
+        let trackRecord;
+        if (total > 0) {
+            trackRecord = `${successes}/${total} successful`;
+        }
+        else if (s.validatedLocally === true) {
+            trackRecord = 'validated on save, no runtime track record yet';
+        }
+        else {
+            trackRecord = 'untested';
+        }
         const outcome = s.classificationOutcome && s.classificationOutcome !== 'unknown'
             ? `, classification: ${s.classificationOutcome}`
             : '';
@@ -539,9 +549,10 @@ function formatSkillsForPrompt(skills, role, flakiness) {
             `- Change type: ${sanitizeForPrompt(s.fix.changeType)} in ${sanitizeForPrompt(s.fix.file)}`,
             `- Track record: ${trackRecord}${outcome}`,
         ];
-        if (includeTrace && s.failureModeTrace) {
+        const isValidated = s.validatedLocally === true || (s.successCount ?? 0) > 0;
+        if (includeTrace && s.failureModeTrace && isValidated) {
             const t = s.failureModeTrace;
-            lines.push('- Prior causal trace (how the successful fix reasoned):', `  - originalState: ${renderTraceField(t.originalState)}`, `  - rootMechanism: ${renderTraceField(t.rootMechanism)}`, `  - newStateAfterFix: ${renderTraceField(t.newStateAfterFix)}`, `  - whyAssertionPassesNow: ${renderTraceField(t.whyAssertionPassesNow)}`);
+            lines.push('- Prior causal trace (from a validated fix — use as reasoning template):', `  - originalState: ${renderTraceField(t.originalState)}`, `  - rootMechanism: ${renderTraceField(t.rootMechanism)}`, `  - newStateAfterFix: ${renderTraceField(t.newStateAfterFix)}`, `  - whyAssertionPassesNow: ${renderTraceField(t.whyAssertionPassesNow)}`);
         }
         return lines.join('\n');
     });

@@ -46,40 +46,60 @@ const base_agent_1 = require("../agents/base-agent");
 const fix_generation_agent_1 = require("../agents/fix-generation-agent");
 const skill_store_1 = require("../services/skill-store");
 const root_cause_category_1 = require("./root-cause-category");
+const RETRY_CAPS = {
+    FINDING_DESCRIPTION: 500,
+    FINDING_RELATION: 300,
+    EVIDENCE_ITEM: 200,
+    RECOMMENDED_APPROACH: 500,
+    SELECTOR_FIELD: 200,
+    FIX_REASONING: 800,
+    TRACE_FIELD: 500,
+    ROOT_CAUSE: 300,
+    CODE_BLOCK: 2000,
+};
 function summarizeInvestigationForRetry(investigation) {
     if (!investigation)
         return undefined;
+    const s = skill_store_1.sanitizeForPrompt;
     const parts = [];
     const primary = investigation.primaryFinding;
     if (primary) {
-        parts.push(`Primary finding: [${primary.severity}] ${primary.description}`);
+        parts.push(`Primary finding: [${primary.severity}] ${s(primary.description, RETRY_CAPS.FINDING_DESCRIPTION)}`);
         if (primary.relationToError) {
-            parts.push(`  → Relation to error: ${primary.relationToError}`);
+            parts.push(`  → Relation to error: ${s(primary.relationToError, RETRY_CAPS.FINDING_RELATION)}`);
         }
         if (primary.evidence?.length) {
-            parts.push(`  → Evidence: ${primary.evidence.slice(0, 3).join('; ')}`);
+            const items = primary.evidence
+                .slice(0, 3)
+                .map((e) => s(e, RETRY_CAPS.EVIDENCE_ITEM));
+            parts.push(`  → Evidence: ${items.join('; ')}`);
         }
     }
     if (typeof investigation.isTestCodeFixable === 'boolean') {
         parts.push(`Is test-code fixable: ${investigation.isTestCodeFixable}`);
     }
     if (investigation.recommendedApproach) {
-        parts.push(`Recommended approach: ${investigation.recommendedApproach}`);
+        parts.push(`Recommended approach: ${s(investigation.recommendedApproach, RETRY_CAPS.RECOMMENDED_APPROACH)}`);
     }
     if (investigation.verdictOverride) {
         const v = investigation.verdictOverride;
         parts.push(`Verdict override: ${v.suggestedLocation} (${v.confidence}% confidence)`);
         if (v.evidence?.length) {
-            parts.push(`  → Evidence: ${v.evidence.slice(0, 3).join('; ')}`);
+            const items = v.evidence
+                .slice(0, 3)
+                .map((e) => s(e, RETRY_CAPS.EVIDENCE_ITEM));
+            parts.push(`  → Evidence: ${items.join('; ')}`);
         }
     }
     if (investigation.selectorsToUpdate?.length) {
         parts.push('Selectors flagged for update:');
-        for (const s of investigation.selectorsToUpdate.slice(0, 5)) {
-            const replacement = s.suggestedReplacement
-                ? ` → suggested: \`${s.suggestedReplacement}\``
+        for (const sel of investigation.selectorsToUpdate.slice(0, 5)) {
+            const current = s(sel.current, RETRY_CAPS.SELECTOR_FIELD);
+            const reason = s(sel.reason, RETRY_CAPS.SELECTOR_FIELD);
+            const replacement = sel.suggestedReplacement
+                ? ` → suggested: \`${s(sel.suggestedReplacement, RETRY_CAPS.SELECTOR_FIELD)}\``
                 : '';
-            parts.push(`  - \`${s.current}\`: ${s.reason}${replacement}`);
+            parts.push(`  - \`${current}\`: ${reason}${replacement}`);
         }
     }
     if (investigation.findings?.length) {
@@ -94,8 +114,10 @@ function summarizeInvestigationForRetry(investigation) {
         if (secondary.length > 0) {
             parts.push('Other findings:');
             for (const f of secondary) {
-                const rel = f.relationToError ? ` (${f.relationToError})` : '';
-                parts.push(`  - [${f.severity}] ${f.description}${rel}`);
+                const rel = f.relationToError
+                    ? ` (${s(f.relationToError, RETRY_CAPS.FINDING_RELATION)})`
+                    : '';
+                parts.push(`  - [${f.severity}] ${s(f.description, RETRY_CAPS.FINDING_DESCRIPTION)}${rel}`);
             }
         }
     }
@@ -103,8 +125,9 @@ function summarizeInvestigationForRetry(investigation) {
 }
 function buildPriorAttemptContext(prior, opts = {}) {
     const logBudget = opts.logBudget ?? 8000;
+    const s = skill_store_1.sanitizeForPrompt;
     const prevChanges = prior.previousFix.proposedChanges
-        .map((c) => `File: ${c.file}\noldCode:\n\`\`\`\n${c.oldCode}\n\`\`\`\nnewCode:\n\`\`\`\n${c.newCode}\n\`\`\``)
+        .map((c) => `File: ${s(c.file, 200)}\noldCode:\n\`\`\`\n${s(c.oldCode, RETRY_CAPS.CODE_BLOCK)}\n\`\`\`\nnewCode:\n\`\`\`\n${s(c.newCode, RETRY_CAPS.CODE_BLOCK)}\n\`\`\``)
         .join('\n---\n');
     const sections = [
         `\n\n## PREVIOUS FIX ATTEMPT #${prior.iteration} — FAILED VALIDATION`,
@@ -118,20 +141,21 @@ function buildPriorAttemptContext(prior, opts = {}) {
     if (hasPriorReasoning) {
         sections.push('', "### Prior iteration's agent reasoning (the chain that produced the failed fix)");
         if (prior.priorAgentRootCause) {
-            sections.push(`- **Root cause (from analysis):** ${prior.priorAgentRootCause}`);
+            sections.push(`- **Root cause (from analysis):** ${s(prior.priorAgentRootCause, RETRY_CAPS.ROOT_CAUSE)}`);
         }
         if (prior.priorAgentInvestigationFindings) {
-            sections.push(`- **Investigation findings:** ${prior.priorAgentInvestigationFindings}`);
+            sections.push(`- **Investigation findings:** ${s(prior.priorAgentInvestigationFindings, 4000)}`);
         }
         if (prior.previousFix.reasoning) {
-            sections.push(`- **Fix-gen's reasoning:** ${prior.previousFix.reasoning}`);
+            sections.push(`- **Fix-gen's reasoning:** ${s(prior.previousFix.reasoning, RETRY_CAPS.FIX_REASONING)}`);
         }
         if (prior.previousFix.failureModeTrace) {
             const t = prior.previousFix.failureModeTrace;
-            sections.push('- **Fix-gen\'s own causal trace (failureModeTrace):**', `  - originalState: ${t.originalState || '(empty)'}`, `  - rootMechanism: ${t.rootMechanism || '(empty)'}`, `  - newStateAfterFix: ${t.newStateAfterFix || '(empty)'}`, `  - whyAssertionPassesNow: ${t.whyAssertionPassesNow || '(empty)'}`);
+            const traceField = (v) => v ? s(v, RETRY_CAPS.TRACE_FIELD) : '(empty)';
+            sections.push('- **Fix-gen\'s own causal trace (failureModeTrace):**', `  - originalState: ${traceField(t.originalState)}`, `  - rootMechanism: ${traceField(t.rootMechanism)}`, `  - newStateAfterFix: ${traceField(t.newStateAfterFix)}`, `  - whyAssertionPassesNow: ${traceField(t.whyAssertionPassesNow)}`);
         }
     }
-    sections.push('', '### Previous Fix That Was Tried', prevChanges, '', '### Validation Failure Logs (tail)', '```', prior.validationLogs.slice(0, logBudget), '```', '', '### Instructions for this iteration', 'The prior reasoning chain above led to a fix that did NOT resolve the failure. You MUST try a DIFFERENT approach. Concretely:', '1. Was the root-cause diagnosis wrong? Re-analyze from scratch; do NOT anchor on the prior category.', '2. Was the fix mechanism wrong even if the root cause was right? The fix may have changed the wrong state.', '3. Does the validation failure log reveal a distinct failure signature from the original — i.e., did the fix create a new problem?', 'Do NOT repeat the same fix or minor variants of it.');
+    sections.push('', '### Previous Fix That Was Tried', prevChanges, '', '### Validation Failure Logs (tail)', '```', s(prior.validationLogs, logBudget), '```', '', '### Instructions for this iteration', 'The prior reasoning chain above led to a fix that did NOT resolve the failure. You MUST try a DIFFERENT approach. Concretely:', '1. Was the root-cause diagnosis wrong? Re-analyze from scratch; do NOT anchor on the prior category.', '2. Was the fix mechanism wrong even if the root cause was right? The fix may have changed the wrong state.', '3. Does the validation failure log reveal a distinct failure signature from the original — i.e., did the fix create a new problem?', 'Do NOT repeat the same fix or minor variants of it.');
     return sections.join('\n');
 }
 class SimplifiedRepairAgent {
@@ -424,31 +448,16 @@ class SimplifiedRepairAgent {
             return null;
         }
     }
-    sanitizeForPrompt(input, maxLength = 2000) {
-        if (!input)
-            return '';
-        let sanitized = input
-            .replace(/```/g, '\u2032\u2032\u2032')
-            .replace(/## SYSTEM:/gi, '## INFO:')
-            .replace(/Ignore previous/gi, '[filtered]')
-            .replace(/<\/?(?:system|instruction|prompt)[^>]*>/gi, '')
-            .replace(/\[INST\]|\[\/INST\]/gi, '')
-            .replace(/<<SYS>>|<<\/SYS>>/gi, '');
-        if (sanitized.length > maxLength) {
-            sanitized = sanitized.substring(0, maxLength) + '... [truncated]';
-        }
-        return sanitized;
-    }
     buildPrompt(context, errorData, sourceFileContent, cleanFilePath, previousAttempt, skills) {
         let contextInfo = `## Test Failure Context
-- **Test File:** ${this.sanitizeForPrompt(context.testFile)}
-- **Test Name:** ${this.sanitizeForPrompt(context.testName)}
-- **Error Type:** ${this.sanitizeForPrompt(context.errorType)}
-- **Error Message:** ${this.sanitizeForPrompt(context.errorMessage, 4000)}
-- **Analyzed Repository:** ${this.sanitizeForPrompt(context.repository)}
-- **Analyzed Branch:** ${this.sanitizeForPrompt(context.branch)}
-- **Analyzed Commit SHA:** ${this.sanitizeForPrompt(context.commitSha)}
-${context.errorSelector ? `- **Failed Selector:** ${this.sanitizeForPrompt(context.errorSelector)}` : ''}
+- **Test File:** ${(0, skill_store_1.sanitizeForPrompt)(context.testFile)}
+- **Test Name:** ${(0, skill_store_1.sanitizeForPrompt)(context.testName)}
+- **Error Type:** ${(0, skill_store_1.sanitizeForPrompt)(context.errorType)}
+- **Error Message:** ${(0, skill_store_1.sanitizeForPrompt)(context.errorMessage, 4000)}
+- **Analyzed Repository:** ${(0, skill_store_1.sanitizeForPrompt)(context.repository)}
+- **Analyzed Branch:** ${(0, skill_store_1.sanitizeForPrompt)(context.branch)}
+- **Analyzed Commit SHA:** ${(0, skill_store_1.sanitizeForPrompt)(context.commitSha)}
+${context.errorSelector ? `- **Failed Selector:** ${(0, skill_store_1.sanitizeForPrompt)(context.errorSelector)}` : ''}
 ${context.errorLine ? `- **Error Line:** ${context.errorLine}` : ''}`;
         contextInfo += `\n- **Product Under Test:** ${constants_1.DEFAULT_PRODUCT_REPO}`;
         if (this.sourceFetchContext) {

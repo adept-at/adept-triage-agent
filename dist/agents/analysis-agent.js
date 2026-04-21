@@ -3,6 +3,19 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.AnalysisAgent = void 0;
 const base_agent_1 = require("./base-agent");
 const constants_1 = require("../config/constants");
+const text_utils_1 = require("../utils/text-utils");
+const ROOT_CAUSE_CATEGORIES = [
+    'SELECTOR_MISMATCH',
+    'TIMING_ISSUE',
+    'STATE_DEPENDENCY',
+    'NETWORK_ISSUE',
+    'ELEMENT_VISIBILITY',
+    'ASSERTION_MISMATCH',
+    'DATA_DEPENDENCY',
+    'ENVIRONMENT_ISSUE',
+    'UNKNOWN',
+];
+const ISSUE_LOCATIONS = ['TEST_CODE', 'APP_CODE', 'BOTH', 'UNKNOWN'];
 class AnalysisAgent extends base_agent_1.BaseAgent {
     constructor(openaiClient, config) {
         super(openaiClient, 'AnalysisAgent', config);
@@ -152,13 +165,13 @@ You MUST respond with a JSON object matching this schema:
                 ? parsed.contributingFactors
                 : [];
             return {
-                rootCauseCategory: parsed.rootCauseCategory,
-                contributingFactors: contributingFactors,
+                rootCauseCategory: (0, text_utils_1.coerceEnum)(parsed.rootCauseCategory, ROOT_CAUSE_CATEGORIES, 'UNKNOWN'),
+                contributingFactors: contributingFactors.map((c) => (0, text_utils_1.coerceEnum)(c, ROOT_CAUSE_CATEGORIES, 'UNKNOWN')),
                 confidence: parsed.confidence,
                 explanation: parsed.explanation || '',
                 selectors,
                 elements,
-                issueLocation: parsed.issueLocation || 'UNKNOWN',
+                issueLocation: (0, text_utils_1.coerceEnum)(parsed.issueLocation, ISSUE_LOCATIONS, 'UNKNOWN'),
                 patterns: {
                     hasTimeout: !!parsed.patterns?.hasTimeout,
                     hasVisibilityIssue: !!parsed.patterns?.hasVisibilityIssue,

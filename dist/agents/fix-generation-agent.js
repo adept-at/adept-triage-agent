@@ -3,6 +3,14 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.FixGenerationAgent = exports.WDIO_PATTERNS = exports.CYPRESS_PATTERNS = void 0;
 const base_agent_1 = require("./base-agent");
 const constants_1 = require("../config/constants");
+const text_utils_1 = require("../utils/text-utils");
+const CHANGE_TYPES = [
+    'SELECTOR_UPDATE',
+    'WAIT_ADDITION',
+    'LOGIC_CHANGE',
+    'ASSERTION_UPDATE',
+    'OTHER',
+];
 const COMMON_PREAMBLE = `You are an expert test engineer who specializes in fixing failing E2E tests.
 
 ## Your Task
@@ -491,7 +499,7 @@ class FixGenerationAgent extends base_agent_1.BaseAgent {
                 oldCode: c.oldCode || '',
                 newCode: c.newCode || '',
                 justification: c.justification || '',
-                changeType: c.changeType || 'OTHER',
+                changeType: (0, text_utils_1.coerceEnum)(c.changeType, CHANGE_TYPES, 'OTHER'),
             }));
             for (const change of changes) {
                 if (!change.file || !change.oldCode || !change.newCode) {

@@ -12,6 +12,29 @@ import {
 } from './base-agent';
 import { OpenAIClient } from '../openai-client';
 import { DEFAULT_PRODUCT_REPO } from '../config/constants';
+import { coerceEnum } from '../utils/text-utils';
+
+/**
+ * Whitelisted runtime values matching the RootCauseCategory type union.
+ * Enforced at parse time so a malicious model response can't land an
+ * arbitrary string (including prompt-injection text) on the
+ * `analysis.rootCauseCategory` field, which flows into investigation,
+ * fix-gen, review, skill storage, and logs.
+ */
+const ROOT_CAUSE_CATEGORIES = [
+  'SELECTOR_MISMATCH',
+  'TIMING_ISSUE',
+  'STATE_DEPENDENCY',
+  'NETWORK_ISSUE',
+  'ELEMENT_VISIBILITY',
+  'ASSERTION_MISMATCH',
+  'DATA_DEPENDENCY',
+  'ENVIRONMENT_ISSUE',
+  'UNKNOWN',
+] as const;
+
+/** Whitelisted runtime values matching AnalysisOutput.issueLocation. */
+const ISSUE_LOCATIONS = ['TEST_CODE', 'APP_CODE', 'BOTH', 'UNKNOWN'] as const;
 
 /**
  * Root cause categories
@@ -277,13 +300,23 @@ You MUST respond with a JSON object matching this schema:
         : [];
 
       return {
-        rootCauseCategory: parsed.rootCauseCategory as RootCauseCategory,
-        contributingFactors: contributingFactors as RootCauseCategory[],
+        rootCauseCategory: coerceEnum(
+          parsed.rootCauseCategory,
+          ROOT_CAUSE_CATEGORIES,
+          'UNKNOWN'
+        ),
+        contributingFactors: contributingFactors.map((c: unknown) =>
+          coerceEnum(c, ROOT_CAUSE_CATEGORIES, 'UNKNOWN')
+        ),
         confidence: parsed.confidence,
         explanation: parsed.explanation || '',
         selectors,
         elements,
-        issueLocation: parsed.issueLocation || 'UNKNOWN',
+        issueLocation: coerceEnum(
+          parsed.issueLocation,
+          ISSUE_LOCATIONS,
+          'UNKNOWN'
+        ),
         patterns: {
           hasTimeout: !!parsed.patterns?.hasTimeout,
           hasVisibilityIssue: !!parsed.patterns?.hasVisibilityIssue,

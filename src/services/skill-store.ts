@@ -83,10 +83,25 @@ const RETIRE_MIN_FAILURES = 3;
  * from error logs or test source that the fix-gen agent quoted into
  * the trace, and rendering them verbatim re-opens the cross-agent
  * injection surface this helper was built to close.
+ *
+ * Escapes applied:
+ *   1. Keyword injection patterns (`## SYSTEM:`, `Ignore previous`,
+ *      `<system>`, `[INST]`, `<<SYS>>`) — neutralize explicit
+ *      instructions the model might interpret as higher-authority.
+ *   2. **Triple backticks** (v1.49.2) — replaced with three U+2032
+ *      PRIME characters so adversarial content can't break out of a
+ *      markdown code fence. Downstream agents routinely wrap
+ *      model-adjacent text in ``` blocks (see analysis-agent.ts
+ *      rendering of context.errorMessage); without this escape, a
+ *      stray ``` inside sanitized-but-unescaped content could end
+ *      the fence and let whatever follows masquerade as a new prompt
+ *      section. This pattern was previously only in a class-private
+ *      helper; consolidating here so every caller benefits.
  */
 export function sanitizeForPrompt(input: string, maxLength = 2000): string {
   if (!input) return '';
   let sanitized = input
+    .replace(/```/g, '\u2032\u2032\u2032')
     .replace(/## SYSTEM:/gi, '## INFO:')
     .replace(/Ignore previous/gi, '[filtered]')
     .replace(/<\/?(?:system|instruction|prompt)[^>]*>/gi, '')
@@ -766,16 +781,16 @@ export function formatSkillsForPrompt(
     fix_generation: [
       '### Agent Memory: Prior Fix Patterns',
       '',
-      'The following patterns were applied in prior runs. Not all were validated — use them as context, not guarantees.',
-      'CONSIDER these approaches as starting points. If you see a better approach, explain why and use it instead.',
-      'When a prior fix includes a causal trace, use it as a reasoning template — the trace shows how the prior successful fix diagnosed the failure (originalState → rootMechanism → newStateAfterFix → whyAssertionPassesNow). Your own failureModeTrace does NOT need to copy the prior one; it should reflect the CURRENT failure\'s concrete values.',
+      'The following patterns were applied in prior runs. Not all were validated — use them as context, not guarantees. Where a pattern is from a validated (successful) fix, that is noted on the skill. Where it is from a failed attempt, treat it as "what did NOT work" rather than a template to follow.',
+      'CONSIDER validated approaches as starting points. If you see a better approach, explain why and use it instead.',
+      'When a prior **validated** fix includes a causal trace, use it as a reasoning template — the trace shows how that successful fix diagnosed the failure (originalState → rootMechanism → newStateAfterFix → whyAssertionPassesNow). Traces from unvalidated/failed attempts are NOT shown, to avoid anchoring on reasoning that did not work. Your own failureModeTrace does NOT need to copy the prior one; it should reflect the CURRENT failure\'s concrete values.',
     ].join('\n'),
     review: [
-      '### Agent Memory: Prior Successful Fixes',
+      '### Agent Memory: Prior Fixes',
       '',
-      'Check if the proposed fix aligns with patterns that have worked before.',
-      'Flag if the fix contradicts a prior pattern without justification.',
-      'When a prior fix includes a causal trace, compare the CURRENT fix\'s failureModeTrace to it. A new trace that is markedly weaker than the prior trace for the same kind of failure is a WARNING signal — the current fix may not have reasoned as rigorously as the prior successful one.',
+      'Check if the proposed fix aligns with patterns that have worked before. Each skill includes a track record ("X/Y successful") indicating whether the pattern has been validated. Traces shown in this memory come only from validated fixes.',
+      'Flag if the fix contradicts a prior validated pattern without justification.',
+      'When a prior **validated** fix includes a causal trace, compare the CURRENT fix\'s failureModeTrace to it. A new trace that is markedly weaker than the validated prior trace for the same kind of failure is a WARNING signal — the current fix may not have reasoned as rigorously as the validated predecessor.',
     ].join('\n'),
   };
 
@@ -801,7 +816,29 @@ export function formatSkillsForPrompt(
     const successes = s.successCount ?? 0;
     const failures = s.failCount ?? 0;
     const total = successes + failures;
-    const trackRecord = total > 0 ? `${successes}/${total} successful` : 'untested';
+    // Track-record wording is aligned with the trace-rendering gate
+    // (v1.49.2). Three states, each truthful:
+    //   1. `successCount + failCount > 0`: runtime counters exist →
+    //      "X/Y successful"
+    //   2. no runtime counters, but `validatedLocally === true`: the
+    //      fix did pass local validation at save time → "validated on
+    //      save, no runtime track record yet". This replaces the
+    //      misleading "untested" label for skills that HAVE been
+    //      validated but happen not to have accumulated runtime outcomes.
+    //   3. no runtime counters and not validated-at-save: genuinely
+    //      "untested".
+    // Without state 2, a skill could show `Prior causal trace (from a
+    // validated fix ...)` while simultaneously advertising itself as
+    // `untested` — an internal inconsistency flagged in the v1.49.2
+    // review.
+    let trackRecord: string;
+    if (total > 0) {
+      trackRecord = `${successes}/${total} successful`;
+    } else if (s.validatedLocally === true) {
+      trackRecord = 'validated on save, no runtime track record yet';
+    } else {
+      trackRecord = 'untested';
+    }
     const outcome = s.classificationOutcome && s.classificationOutcome !== 'unknown'
       ? `, classification: ${s.classificationOutcome}`
       : '';
@@ -816,10 +853,27 @@ export function formatSkillsForPrompt(
       `- Track record: ${trackRecord}${outcome}`,
     ];
 
-    if (includeTrace && s.failureModeTrace) {
+    // Validation gate (v1.49.2): only surface the causal trace when the
+    // skill represents a *validated* (successful) fix. Unvalidated skills
+    // — including failed trajectories saved for learning — still render
+    // all the other context (error pattern, change type, track record)
+    // because that's useful as "what was tried." But the trace is framed
+    // as "how the successful fix reasoned" and feeding a failed-attempt
+    // trace under that wording is actively misleading: downstream agents
+    // anchor on reasoning that didn't work.
+    //
+    // Validation is considered established when either the skill was
+    // validated at save time (validatedLocally === true) OR the track
+    // record shows at least one recorded success (successCount > 0).
+    // The latter covers edge cases where outcomes are recorded after
+    // save (e.g., the agentic success path records +1 after save).
+    const isValidated =
+      s.validatedLocally === true || (s.successCount ?? 0) > 0;
+
+    if (includeTrace && s.failureModeTrace && isValidated) {
       const t = s.failureModeTrace;
       lines.push(
-        '- Prior causal trace (how the successful fix reasoned):',
+        '- Prior causal trace (from a validated fix — use as reasoning template):',
         `  - originalState: ${renderTraceField(t.originalState)}`,
         `  - rootMechanism: ${renderTraceField(t.rootMechanism)}`,
         `  - newStateAfterFix: ${renderTraceField(t.newStateAfterFix)}`,

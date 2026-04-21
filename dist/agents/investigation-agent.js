@@ -3,6 +3,17 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.InvestigationAgent = void 0;
 const base_agent_1 = require("./base-agent");
 const constants_1 = require("../config/constants");
+const text_utils_1 = require("../utils/text-utils");
+const FINDING_TYPES = [
+    'SELECTOR_CHANGE',
+    'MISSING_ELEMENT',
+    'TIMING_GAP',
+    'STATE_ISSUE',
+    'CODE_CHANGE',
+    'OTHER',
+];
+const FINDING_SEVERITIES = ['HIGH', 'MEDIUM', 'LOW'];
+const SUGGESTED_LOCATIONS = ['TEST_CODE', 'APP_CODE', 'BOTH'];
 class InvestigationAgent extends base_agent_1.BaseAgent {
     constructor(openaiClient, config) {
         super(openaiClient, 'InvestigationAgent', config);
@@ -121,15 +132,16 @@ You MUST respond with a JSON object matching this schema:
                 return null;
             }
             const parsed = JSON.parse(jsonMatch[0]);
+            const normalizeFinding = (f) => ({
+                type: (0, text_utils_1.coerceEnum)(f?.type, FINDING_TYPES, 'OTHER'),
+                severity: (0, text_utils_1.coerceEnum)(f?.severity, FINDING_SEVERITIES, 'MEDIUM'),
+                description: typeof f?.description === 'string' ? f.description : '',
+                evidence: Array.isArray(f?.evidence) ? f.evidence : [],
+                location: f?.location,
+                relationToError: typeof f?.relationToError === 'string' ? f.relationToError : '',
+            });
             const findings = Array.isArray(parsed.findings)
-                ? parsed.findings.map((f) => ({
-                    type: f.type || 'OTHER',
-                    severity: f.severity || 'MEDIUM',
-                    description: f.description || '',
-                    evidence: Array.isArray(f.evidence) ? f.evidence : [],
-                    location: f.location,
-                    relationToError: f.relationToError || '',
-                }))
+                ? parsed.findings.map(normalizeFinding)
                 : [];
             const selectorsToUpdate = Array.isArray(parsed.selectorsToUpdate)
                 ? parsed.selectorsToUpdate.map((s) => ({
@@ -140,14 +152,17 @@ You MUST respond with a JSON object matching this schema:
                 : [];
             const verdictOverride = parsed.verdictOverride
                 ? {
-                    suggestedLocation: parsed.verdictOverride.suggestedLocation || 'APP_CODE',
+                    suggestedLocation: (0, text_utils_1.coerceEnum)(parsed.verdictOverride.suggestedLocation, SUGGESTED_LOCATIONS, 'APP_CODE'),
                     confidence: typeof parsed.verdictOverride.confidence === 'number' ? parsed.verdictOverride.confidence : 50,
                     evidence: Array.isArray(parsed.verdictOverride.evidence) ? parsed.verdictOverride.evidence : [],
                 }
                 : undefined;
+            const primaryFinding = parsed.primaryFinding
+                ? normalizeFinding(parsed.primaryFinding)
+                : findings[0];
             return {
                 findings,
-                primaryFinding: parsed.primaryFinding || findings[0],
+                primaryFinding,
                 isTestCodeFixable: parsed.isTestCodeFixable !== false,
                 recommendedApproach: parsed.recommendedApproach || '',
                 selectorsToUpdate,

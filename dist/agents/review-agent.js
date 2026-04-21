@@ -3,6 +3,8 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.ReviewAgent = void 0;
 const base_agent_1 = require("./base-agent");
 const skill_store_1 = require("../services/skill-store");
+const text_utils_1 = require("../utils/text-utils");
+const REVIEW_SEVERITIES = ['CRITICAL', 'WARNING', 'SUGGESTION'];
 const TRACE_FIELD_MAX_CHARS = 1000;
 function formatTraceField(value) {
     if (!value)
@@ -198,7 +200,7 @@ You MUST respond with a JSON object matching this schema:
             const parsed = JSON.parse(jsonMatch[0]);
             const issues = Array.isArray(parsed.issues)
                 ? parsed.issues.map((i) => ({
-                    severity: i.severity || 'WARNING',
+                    severity: (0, text_utils_1.coerceEnum)(i.severity, REVIEW_SEVERITIES, 'WARNING'),
                     changeIndex: typeof i.changeIndex === 'number' ? i.changeIndex : 0,
                     description: i.description || '',
                     suggestion: i.suggestion,

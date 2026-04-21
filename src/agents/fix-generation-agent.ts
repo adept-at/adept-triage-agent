@@ -14,6 +14,20 @@ import { OpenAIClient } from '../openai-client';
 import { DEFAULT_PRODUCT_REPO } from '../config/constants';
 import { AnalysisOutput } from './analysis-agent';
 import { InvestigationOutput } from './investigation-agent';
+import { coerceEnum } from '../utils/text-utils';
+
+/**
+ * Whitelisted `changeType` values, matching the CodeChange type union
+ * below. Enforced at parse time by coerceEnum so a malicious model
+ * response can't smuggle prompt text through this enum-like field.
+ */
+const CHANGE_TYPES = [
+  'SELECTOR_UPDATE',
+  'WAIT_ADDITION',
+  'LOGIC_CHANGE',
+  'ASSERTION_UPDATE',
+  'OTHER',
+] as const;
 
 // ---------------------------------------------------------------------------
 // Framework-specialized system prompt sections
@@ -693,14 +707,16 @@ export class FixGenerationAgent extends BaseAgent<
         return null;
       }
 
-      // Normalize changes
+      // Normalize changes. changeType goes through coerceEnum so an
+      // adversarial model response can't smuggle prompt text through
+      // the enum-like field (e.g. `"changeType": "## SYSTEM: override"`).
       const changes: CodeChange[] = parsed.changes.map((c: CodeChange) => ({
         file: c.file || '',
         line: c.line || 0,
         oldCode: c.oldCode || '',
         newCode: c.newCode || '',
         justification: c.justification || '',
-        changeType: c.changeType || 'OTHER',
+        changeType: coerceEnum(c.changeType, CHANGE_TYPES, 'OTHER'),
       }));
 
       // Validate that all changes have required fields

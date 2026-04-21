@@ -696,6 +696,19 @@ Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.AnalysisAgent = void 0;
 const base_agent_1 = __nccwpck_require__(46575);
 const constants_1 = __nccwpck_require__(58361);
+const text_utils_1 = __nccwpck_require__(11744);
+const ROOT_CAUSE_CATEGORIES = [
+    'SELECTOR_MISMATCH',
+    'TIMING_ISSUE',
+    'STATE_DEPENDENCY',
+    'NETWORK_ISSUE',
+    'ELEMENT_VISIBILITY',
+    'ASSERTION_MISMATCH',
+    'DATA_DEPENDENCY',
+    'ENVIRONMENT_ISSUE',
+    'UNKNOWN',
+];
+const ISSUE_LOCATIONS = ['TEST_CODE', 'APP_CODE', 'BOTH', 'UNKNOWN'];
 class AnalysisAgent extends base_agent_1.BaseAgent {
     constructor(openaiClient, config) {
         super(openaiClient, 'AnalysisAgent', config);
@@ -845,13 +858,13 @@ You MUST respond with a JSON object matching this schema:
                 ? parsed.contributingFactors
                 : [];
             return {
-                rootCauseCategory: parsed.rootCauseCategory,
-                contributingFactors: contributingFactors,
+                rootCauseCategory: (0, text_utils_1.coerceEnum)(parsed.rootCauseCategory, ROOT_CAUSE_CATEGORIES, 'UNKNOWN'),
+                contributingFactors: contributingFactors.map((c) => (0, text_utils_1.coerceEnum)(c, ROOT_CAUSE_CATEGORIES, 'UNKNOWN')),
                 confidence: parsed.confidence,
                 explanation: parsed.explanation || '',
                 selectors,
                 elements,
-                issueLocation: parsed.issueLocation || 'UNKNOWN',
+                issueLocation: (0, text_utils_1.coerceEnum)(parsed.issueLocation, ISSUE_LOCATIONS, 'UNKNOWN'),
                 patterns: {
                     hasTimeout: !!parsed.patterns?.hasTimeout,
                     hasVisibilityIssue: !!parsed.patterns?.hasVisibilityIssue,
@@ -1528,6 +1541,14 @@ Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.FixGenerationAgent = exports.WDIO_PATTERNS = exports.CYPRESS_PATTERNS = void 0;
 const base_agent_1 = __nccwpck_require__(46575);
 const constants_1 = __nccwpck_require__(58361);
+const text_utils_1 = __nccwpck_require__(11744);
+const CHANGE_TYPES = [
+    'SELECTOR_UPDATE',
+    'WAIT_ADDITION',
+    'LOGIC_CHANGE',
+    'ASSERTION_UPDATE',
+    'OTHER',
+];
 const COMMON_PREAMBLE = `You are an expert test engineer who specializes in fixing failing E2E tests.
 
 ## Your Task
@@ -2016,7 +2037,7 @@ class FixGenerationAgent extends base_agent_1.BaseAgent {
                 oldCode: c.oldCode || '',
                 newCode: c.newCode || '',
                 justification: c.justification || '',
-                changeType: c.changeType || 'OTHER',
+                changeType: (0, text_utils_1.coerceEnum)(c.changeType, CHANGE_TYPES, 'OTHER'),
             }));
             for (const change of changes) {
                 if (!change.file || !change.oldCode || !change.newCode) {
@@ -2103,6 +2124,17 @@ Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.InvestigationAgent = void 0;
 const base_agent_1 = __nccwpck_require__(46575);
 const constants_1 = __nccwpck_require__(58361);
+const text_utils_1 = __nccwpck_require__(11744);
+const FINDING_TYPES = [
+    'SELECTOR_CHANGE',
+    'MISSING_ELEMENT',
+    'TIMING_GAP',
+    'STATE_ISSUE',
+    'CODE_CHANGE',
+    'OTHER',
+];
+const FINDING_SEVERITIES = ['HIGH', 'MEDIUM', 'LOW'];
+const SUGGESTED_LOCATIONS = ['TEST_CODE', 'APP_CODE', 'BOTH'];
 class InvestigationAgent extends base_agent_1.BaseAgent {
     constructor(openaiClient, config) {
         super(openaiClient, 'InvestigationAgent', config);
@@ -2221,15 +2253,16 @@ You MUST respond with a JSON object matching this schema:
                 return null;
             }
             const parsed = JSON.parse(jsonMatch[0]);
+            const normalizeFinding = (f) => ({
+                type: (0, text_utils_1.coerceEnum)(f?.type, FINDING_TYPES, 'OTHER'),
+                severity: (0, text_utils_1.coerceEnum)(f?.severity, FINDING_SEVERITIES, 'MEDIUM'),
+                description: typeof f?.description === 'string' ? f.description : '',
+                evidence: Array.isArray(f?.evidence) ? f.evidence : [],
+                location: f?.location,
+                relationToError: typeof f?.relationToError === 'string' ? f.relationToError : '',
+            });
             const findings = Array.isArray(parsed.findings)
-                ? parsed.findings.map((f) => ({
-                    type: f.type || 'OTHER',
-                    severity: f.severity || 'MEDIUM',
-                    description: f.description || '',
-                    evidence: Array.isArray(f.evidence) ? f.evidence : [],
-                    location: f.location,
-                    relationToError: f.relationToError || '',
-                }))
+                ? parsed.findings.map(normalizeFinding)
                 : [];
             const selectorsToUpdate = Array.isArray(parsed.selectorsToUpdate)
                 ? parsed.selectorsToUpdate.map((s) => ({
@@ -2240,14 +2273,17 @@ You MUST respond with a JSON object matching this schema:
                 : [];
             const verdictOverride = parsed.verdictOverride
                 ? {
-                    suggestedLocation: parsed.verdictOverride.suggestedLocation || 'APP_CODE',
+                    suggestedLocation: (0, text_utils_1.coerceEnum)(parsed.verdictOverride.suggestedLocation, SUGGESTED_LOCATIONS, 'APP_CODE'),
                     confidence: typeof parsed.verdictOverride.confidence === 'number' ? parsed.verdictOverride.confidence : 50,
                     evidence: Array.isArray(parsed.verdictOverride.evidence) ? parsed.verdictOverride.evidence : [],
                 }
                 : undefined;
+            const primaryFinding = parsed.primaryFinding
+                ? normalizeFinding(parsed.primaryFinding)
+                : findings[0];
             return {
                 findings,
-                primaryFinding: parsed.primaryFinding || findings[0],
+                primaryFinding,
                 isTestCodeFixable: parsed.isTestCodeFixable !== false,
                 recommendedApproach: parsed.recommendedApproach || '',
                 selectorsToUpdate,
@@ -2275,6 +2311,8 @@ Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.ReviewAgent = void 0;
 const base_agent_1 = __nccwpck_require__(46575);
 const skill_store_1 = __nccwpck_require__(60215);
+const text_utils_1 = __nccwpck_require__(11744);
+const REVIEW_SEVERITIES = ['CRITICAL', 'WARNING', 'SUGGESTION'];
 const TRACE_FIELD_MAX_CHARS = 1000;
 function formatTraceField(value) {
     if (!value)
@@ -2470,7 +2508,7 @@ You MUST respond with a JSON object matching this schema:
             const parsed = JSON.parse(jsonMatch[0]);
             const issues = Array.isArray(parsed.issues)
                 ? parsed.issues.map((i) => ({
-                    severity: i.severity || 'WARNING',
+                    severity: (0, text_utils_1.coerceEnum)(i.severity, REVIEW_SEVERITIES, 'WARNING'),
                     changeIndex: typeof i.changeIndex === 'number' ? i.changeIndex : 0,
                     description: i.description || '',
                     suggestion: i.suggestion,
@@ -5886,40 +5924,60 @@ const base_agent_1 = __nccwpck_require__(46575);
 const fix_generation_agent_1 = __nccwpck_require__(39302);
 const skill_store_1 = __nccwpck_require__(60215);
 const root_cause_category_1 = __nccwpck_require__(21406);
+const RETRY_CAPS = {
+    FINDING_DESCRIPTION: 500,
+    FINDING_RELATION: 300,
+    EVIDENCE_ITEM: 200,
+    RECOMMENDED_APPROACH: 500,
+    SELECTOR_FIELD: 200,
+    FIX_REASONING: 800,
+    TRACE_FIELD: 500,
+    ROOT_CAUSE: 300,
+    CODE_BLOCK: 2000,
+};
 function summarizeInvestigationForRetry(investigation) {
     if (!investigation)
         return undefined;
+    const s = skill_store_1.sanitizeForPrompt;
     const parts = [];
     const primary = investigation.primaryFinding;
     if (primary) {
-        parts.push(`Primary finding: [${primary.severity}] ${primary.description}`);
+        parts.push(`Primary finding: [${primary.severity}] ${s(primary.description, RETRY_CAPS.FINDING_DESCRIPTION)}`);
         if (primary.relationToError) {
-            parts.push(`  → Relation to error: ${primary.relationToError}`);
+            parts.push(`  → Relation to error: ${s(primary.relationToError, RETRY_CAPS.FINDING_RELATION)}`);
         }
         if (primary.evidence?.length) {
-            parts.push(`  → Evidence: ${primary.evidence.slice(0, 3).join('; ')}`);
+            const items = primary.evidence
+                .slice(0, 3)
+                .map((e) => s(e, RETRY_CAPS.EVIDENCE_ITEM));
+            parts.push(`  → Evidence: ${items.join('; ')}`);
         }
     }
     if (typeof investigation.isTestCodeFixable === 'boolean') {
         parts.push(`Is test-code fixable: ${investigation.isTestCodeFixable}`);
     }
     if (investigation.recommendedApproach) {
-        parts.push(`Recommended approach: ${investigation.recommendedApproach}`);
+        parts.push(`Recommended approach: ${s(investigation.recommendedApproach, RETRY_CAPS.RECOMMENDED_APPROACH)}`);
     }
     if (investigation.verdictOverride) {
         const v = investigation.verdictOverride;
         parts.push(`Verdict override: ${v.suggestedLocation} (${v.confidence}% confidence)`);
         if (v.evidence?.length) {
-            parts.push(`  → Evidence: ${v.evidence.slice(0, 3).join('; ')}`);
+            const items = v.evidence
+                .slice(0, 3)
+                .map((e) => s(e, RETRY_CAPS.EVIDENCE_ITEM));
+            parts.push(`  → Evidence: ${items.join('; ')}`);
         }
     }
     if (investigation.selectorsToUpdate?.length) {
         parts.push('Selectors flagged for update:');
-        for (const s of investigation.selectorsToUpdate.slice(0, 5)) {
-            const replacement = s.suggestedReplacement
-                ? ` → suggested: \`${s.suggestedReplacement}\``
+        for (const sel of investigation.selectorsToUpdate.slice(0, 5)) {
+            const current = s(sel.current, RETRY_CAPS.SELECTOR_FIELD);
+            const reason = s(sel.reason, RETRY_CAPS.SELECTOR_FIELD);
+            const replacement = sel.suggestedReplacement
+                ? ` → suggested: \`${s(sel.suggestedReplacement, RETRY_CAPS.SELECTOR_FIELD)}\``
                 : '';
-            parts.push(`  - \`${s.current}\`: ${s.reason}${replacement}`);
+            parts.push(`  - \`${current}\`: ${reason}${replacement}`);
         }
     }
     if (investigation.findings?.length) {
@@ -5934,8 +5992,10 @@ function summarizeInvestigationForRetry(investigation) {
         if (secondary.length > 0) {
             parts.push('Other findings:');
             for (const f of secondary) {
-                const rel = f.relationToError ? ` (${f.relationToError})` : '';
-                parts.push(`  - [${f.severity}] ${f.description}${rel}`);
+                const rel = f.relationToError
+                    ? ` (${s(f.relationToError, RETRY_CAPS.FINDING_RELATION)})`
+                    : '';
+                parts.push(`  - [${f.severity}] ${s(f.description, RETRY_CAPS.FINDING_DESCRIPTION)}${rel}`);
             }
         }
     }
@@ -5943,8 +6003,9 @@ function summarizeInvestigationForRetry(investigation) {
 }
 function buildPriorAttemptContext(prior, opts = {}) {
     const logBudget = opts.logBudget ?? 8000;
+    const s = skill_store_1.sanitizeForPrompt;
     const prevChanges = prior.previousFix.proposedChanges
-        .map((c) => `File: ${c.file}\noldCode:\n\`\`\`\n${c.oldCode}\n\`\`\`\nnewCode:\n\`\`\`\n${c.newCode}\n\`\`\``)
+        .map((c) => `File: ${s(c.file, 200)}\noldCode:\n\`\`\`\n${s(c.oldCode, RETRY_CAPS.CODE_BLOCK)}\n\`\`\`\nnewCode:\n\`\`\`\n${s(c.newCode, RETRY_CAPS.CODE_BLOCK)}\n\`\`\``)
         .join('\n---\n');
     const sections = [
         `\n\n## PREVIOUS FIX ATTEMPT #${prior.iteration} — FAILED VALIDATION`,
@@ -5958,20 +6019,21 @@ function buildPriorAttemptContext(prior, opts = {}) {
     if (hasPriorReasoning) {
         sections.push('', "### Prior iteration's agent reasoning (the chain that produced the failed fix)");
         if (prior.priorAgentRootCause) {
-            sections.push(`- **Root cause (from analysis):** ${prior.priorAgentRootCause}`);
+            sections.push(`- **Root cause (from analysis):** ${s(prior.priorAgentRootCause, RETRY_CAPS.ROOT_CAUSE)}`);
         }
         if (prior.priorAgentInvestigationFindings) {
-            sections.push(`- **Investigation findings:** ${prior.priorAgentInvestigationFindings}`);
+            sections.push(`- **Investigation findings:** ${s(prior.priorAgentInvestigationFindings, 4000)}`);
         }
         if (prior.previousFix.reasoning) {
-            sections.push(`- **Fix-gen's reasoning:** ${prior.previousFix.reasoning}`);
+            sections.push(`- **Fix-gen's reasoning:** ${s(prior.previousFix.reasoning, RETRY_CAPS.FIX_REASONING)}`);
         }
         if (prior.previousFix.failureModeTrace) {
             const t = prior.previousFix.failureModeTrace;
-            sections.push('- **Fix-gen\'s own causal trace (failureModeTrace):**', `  - originalState: ${t.originalState || '(empty)'}`, `  - rootMechanism: ${t.rootMechanism || '(empty)'}`, `  - newStateAfterFix: ${t.newStateAfterFix || '(empty)'}`, `  - whyAssertionPassesNow: ${t.whyAssertionPassesNow || '(empty)'}`);
+            const traceField = (v) => v ? s(v, RETRY_CAPS.TRACE_FIELD) : '(empty)';
+            sections.push('- **Fix-gen\'s own causal trace (failureModeTrace):**', `  - originalState: ${traceField(t.originalState)}`, `  - rootMechanism: ${traceField(t.rootMechanism)}`, `  - newStateAfterFix: ${traceField(t.newStateAfterFix)}`, `  - whyAssertionPassesNow: ${traceField(t.whyAssertionPassesNow)}`);
         }
     }
-    sections.push('', '### Previous Fix That Was Tried', prevChanges, '', '### Validation Failure Logs (tail)', '```', prior.validationLogs.slice(0, logBudget), '```', '', '### Instructions for this iteration', 'The prior reasoning chain above led to a fix that did NOT resolve the failure. You MUST try a DIFFERENT approach. Concretely:', '1. Was the root-cause diagnosis wrong? Re-analyze from scratch; do NOT anchor on the prior category.', '2. Was the fix mechanism wrong even if the root cause was right? The fix may have changed the wrong state.', '3. Does the validation failure log reveal a distinct failure signature from the original — i.e., did the fix create a new problem?', 'Do NOT repeat the same fix or minor variants of it.');
+    sections.push('', '### Previous Fix That Was Tried', prevChanges, '', '### Validation Failure Logs (tail)', '```', s(prior.validationLogs, logBudget), '```', '', '### Instructions for this iteration', 'The prior reasoning chain above led to a fix that did NOT resolve the failure. You MUST try a DIFFERENT approach. Concretely:', '1. Was the root-cause diagnosis wrong? Re-analyze from scratch; do NOT anchor on the prior category.', '2. Was the fix mechanism wrong even if the root cause was right? The fix may have changed the wrong state.', '3. Does the validation failure log reveal a distinct failure signature from the original — i.e., did the fix create a new problem?', 'Do NOT repeat the same fix or minor variants of it.');
     return sections.join('\n');
 }
 class SimplifiedRepairAgent {
@@ -6264,31 +6326,16 @@ class SimplifiedRepairAgent {
             return null;
         }
     }
-    sanitizeForPrompt(input, maxLength = 2000) {
-        if (!input)
-            return '';
-        let sanitized = input
-            .replace(/```/g, '\u2032\u2032\u2032')
-            .replace(/## SYSTEM:/gi, '## INFO:')
-            .replace(/Ignore previous/gi, '[filtered]')
-            .replace(/<\/?(?:system|instruction|prompt)[^>]*>/gi, '')
-            .replace(/\[INST\]|\[\/INST\]/gi, '')
-            .replace(/<<SYS>>|<<\/SYS>>/gi, '');
-        if (sanitized.length > maxLength) {
-            sanitized = sanitized.substring(0, maxLength) + '... [truncated]';
-        }
-        return sanitized;
-    }
     buildPrompt(context, errorData, sourceFileContent, cleanFilePath, previousAttempt, skills) {
         let contextInfo = `## Test Failure Context
-- **Test File:** ${this.sanitizeForPrompt(context.testFile)}
-- **Test Name:** ${this.sanitizeForPrompt(context.testName)}
-- **Error Type:** ${this.sanitizeForPrompt(context.errorType)}
-- **Error Message:** ${this.sanitizeForPrompt(context.errorMessage, 4000)}
-- **Analyzed Repository:** ${this.sanitizeForPrompt(context.repository)}
-- **Analyzed Branch:** ${this.sanitizeForPrompt(context.branch)}
-- **Analyzed Commit SHA:** ${this.sanitizeForPrompt(context.commitSha)}
-${context.errorSelector ? `- **Failed Selector:** ${this.sanitizeForPrompt(context.errorSelector)}` : ''}
+- **Test File:** ${(0, skill_store_1.sanitizeForPrompt)(context.testFile)}
+- **Test Name:** ${(0, skill_store_1.sanitizeForPrompt)(context.testName)}
+- **Error Type:** ${(0, skill_store_1.sanitizeForPrompt)(context.errorType)}
+- **Error Message:** ${(0, skill_store_1.sanitizeForPrompt)(context.errorMessage, 4000)}
+- **Analyzed Repository:** ${(0, skill_store_1.sanitizeForPrompt)(context.repository)}
+- **Analyzed Branch:** ${(0, skill_store_1.sanitizeForPrompt)(context.branch)}
+- **Analyzed Commit SHA:** ${(0, skill_store_1.sanitizeForPrompt)(context.commitSha)}
+${context.errorSelector ? `- **Failed Selector:** ${(0, skill_store_1.sanitizeForPrompt)(context.errorSelector)}` : ''}
 ${context.errorLine ? `- **Error Line:** ${context.errorLine}` : ''}`;
         contextInfo += `\n- **Product Under Test:** ${constants_1.DEFAULT_PRODUCT_REPO}`;
         if (this.sourceFetchContext) {
@@ -7485,6 +7532,7 @@ function sanitizeForPrompt(input, maxLength = 2000) {
     if (!input)
         return '';
     let sanitized = input
+        .replace(/```/g, '\u2032\u2032\u2032')
         .replace(/## SYSTEM:/gi, '## INFO:')
         .replace(/Ignore previous/gi, '[filtered]')
         .replace(/<\/?(?:system|instruction|prompt)[^>]*>/gi, '')
@@ -7933,16 +7981,16 @@ function formatSkillsForPrompt(skills, role, flakiness) {
         fix_generation: [
             '### Agent Memory: Prior Fix Patterns',
             '',
-            'The following patterns were applied in prior runs. Not all were validated — use them as context, not guarantees.',
-            'CONSIDER these approaches as starting points. If you see a better approach, explain why and use it instead.',
-            'When a prior fix includes a causal trace, use it as a reasoning template — the trace shows how the prior successful fix diagnosed the failure (originalState → rootMechanism → newStateAfterFix → whyAssertionPassesNow). Your own failureModeTrace does NOT need to copy the prior one; it should reflect the CURRENT failure\'s concrete values.',
+            'The following patterns were applied in prior runs. Not all were validated — use them as context, not guarantees. Where a pattern is from a validated (successful) fix, that is noted on the skill. Where it is from a failed attempt, treat it as "what did NOT work" rather than a template to follow.',
+            'CONSIDER validated approaches as starting points. If you see a better approach, explain why and use it instead.',
+            'When a prior **validated** fix includes a causal trace, use it as a reasoning template — the trace shows how that successful fix diagnosed the failure (originalState → rootMechanism → newStateAfterFix → whyAssertionPassesNow). Traces from unvalidated/failed attempts are NOT shown, to avoid anchoring on reasoning that did not work. Your own failureModeTrace does NOT need to copy the prior one; it should reflect the CURRENT failure\'s concrete values.',
         ].join('\n'),
         review: [
-            '### Agent Memory: Prior Successful Fixes',
+            '### Agent Memory: Prior Fixes',
             '',
-            'Check if the proposed fix aligns with patterns that have worked before.',
-            'Flag if the fix contradicts a prior pattern without justification.',
-            'When a prior fix includes a causal trace, compare the CURRENT fix\'s failureModeTrace to it. A new trace that is markedly weaker than the prior trace for the same kind of failure is a WARNING signal — the current fix may not have reasoned as rigorously as the prior successful one.',
+            'Check if the proposed fix aligns with patterns that have worked before. Each skill includes a track record ("X/Y successful") indicating whether the pattern has been validated. Traces shown in this memory come only from validated fixes.',
+            'Flag if the fix contradicts a prior validated pattern without justification.',
+            'When a prior **validated** fix includes a causal trace, compare the CURRENT fix\'s failureModeTrace to it. A new trace that is markedly weaker than the validated prior trace for the same kind of failure is a WARNING signal — the current fix may not have reasoned as rigorously as the validated predecessor.',
         ].join('\n'),
     };
     const includeTrace = role === 'fix_generation' || role === 'review';
@@ -7956,7 +8004,16 @@ function formatSkillsForPrompt(skills, role, flakiness) {
         const successes = s.successCount ?? 0;
         const failures = s.failCount ?? 0;
         const total = successes + failures;
-        const trackRecord = total > 0 ? `${successes}/${total} successful` : 'untested';
+        let trackRecord;
+        if (total > 0) {
+            trackRecord = `${successes}/${total} successful`;
+        }
+        else if (s.validatedLocally === true) {
+            trackRecord = 'validated on save, no runtime track record yet';
+        }
+        else {
+            trackRecord = 'untested';
+        }
         const outcome = s.classificationOutcome && s.classificationOutcome !== 'unknown'
             ? `, classification: ${s.classificationOutcome}`
             : '';
@@ -7969,9 +8026,10 @@ function formatSkillsForPrompt(skills, role, flakiness) {
             `- Change type: ${sanitizeForPrompt(s.fix.changeType)} in ${sanitizeForPrompt(s.fix.file)}`,
             `- Track record: ${trackRecord}${outcome}`,
         ];
-        if (includeTrace && s.failureModeTrace) {
+        const isValidated = s.validatedLocally === true || (s.successCount ?? 0) > 0;
+        if (includeTrace && s.failureModeTrace && isValidated) {
             const t = s.failureModeTrace;
-            lines.push('- Prior causal trace (how the successful fix reasoned):', `  - originalState: ${renderTraceField(t.originalState)}`, `  - rootMechanism: ${renderTraceField(t.rootMechanism)}`, `  - newStateAfterFix: ${renderTraceField(t.newStateAfterFix)}`, `  - whyAssertionPassesNow: ${renderTraceField(t.whyAssertionPassesNow)}`);
+            lines.push('- Prior causal trace (from a validated fix — use as reasoning template):', `  - originalState: ${renderTraceField(t.originalState)}`, `  - rootMechanism: ${renderTraceField(t.rootMechanism)}`, `  - newStateAfterFix: ${renderTraceField(t.newStateAfterFix)}`, `  - whyAssertionPassesNow: ${renderTraceField(t.whyAssertionPassesNow)}`);
         }
         return lines.join('\n');
     });
@@ -8454,7 +8512,13 @@ function formatSummaryForSlack(summary, includeCodeBlocks = false) {
 
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.ANSI_ESCAPE_REGEX = void 0;
+exports.coerceEnum = coerceEnum;
 exports.ANSI_ESCAPE_REGEX = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, 'g');
+function coerceEnum(value, allowed, fallback) {
+    if (typeof value !== 'string')
+        return fallback;
+    return allowed.includes(value) ? value : fallback;
+}
 //# sourceMappingURL=text-utils.js.map
 
 /***/ }),
