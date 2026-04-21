@@ -14,7 +14,7 @@ import { OpenAIClient } from '../openai-client';
 import { DEFAULT_PRODUCT_REPO } from '../config/constants';
 import { AnalysisOutput } from './analysis-agent';
 import { CodeReadingOutput } from './code-reading-agent';
-import { coerceEnum } from '../utils/text-utils';
+import { coerceEnum, coerceEnumOrNull } from '../utils/text-utils';
 
 /**
  * Whitelisted runtime values for InvestigationFinding's enum-like fields.
@@ -360,15 +360,42 @@ You MUST respond with a JSON object matching this schema:
           )
         : [];
 
-      const verdictOverride = parsed.verdictOverride
+      // verdictOverride is a *signal*, not a default. An invalid
+      // suggestedLocation means "the model didn't give us a usable
+      // override," not "default to APP_CODE." Pre-v1.49.3 this parser
+      // used coerceEnum(..., 'APP_CODE'), so adversarial or malformed
+      // payloads turned into real APP_CODE overrides, which
+      // AgentOrchestrator then treats as a hard product-side signal
+      // and aborts repair on. v1.49.3 drops the entire override when
+      // suggestedLocation isn't whitelisted and logs a warning so a
+      // prompt-injection attempt against this specific signal is
+      // visible in run logs (otherwise a silent drop would make the
+      // pipeline indistinguishable from the model simply choosing not
+      // to emit an override).
+      const suggestedLocation = parsed.verdictOverride
+        ? coerceEnumOrNull(
+            parsed.verdictOverride.suggestedLocation,
+            SUGGESTED_LOCATIONS
+          )
+        : undefined;
+      if (parsed.verdictOverride && !suggestedLocation) {
+        this.log(
+          `Dropping verdictOverride with invalid suggestedLocation ` +
+            `(received ${typeof parsed.verdictOverride.suggestedLocation}); ` +
+            `treating as "no override" to avoid unsafe APP_CODE promotion.`,
+          'warning'
+        );
+      }
+      const verdictOverride = suggestedLocation
         ? {
-            suggestedLocation: coerceEnum(
-              parsed.verdictOverride.suggestedLocation,
-              SUGGESTED_LOCATIONS,
-              'APP_CODE'
-            ),
-            confidence: typeof parsed.verdictOverride.confidence === 'number' ? parsed.verdictOverride.confidence : 50,
-            evidence: Array.isArray(parsed.verdictOverride.evidence) ? parsed.verdictOverride.evidence : [],
+            suggestedLocation,
+            confidence:
+              typeof parsed.verdictOverride.confidence === 'number'
+                ? parsed.verdictOverride.confidence
+                : 50,
+            evidence: Array.isArray(parsed.verdictOverride.evidence)
+              ? parsed.verdictOverride.evidence
+              : [],
           }
         : undefined;
 

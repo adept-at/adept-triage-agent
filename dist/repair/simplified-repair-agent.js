@@ -56,6 +56,7 @@ const RETRY_CAPS = {
     TRACE_FIELD: 500,
     ROOT_CAUSE: 300,
     CODE_BLOCK: 2000,
+    PRIOR_INVESTIGATION_CONTEXT: 8000,
 };
 function summarizeInvestigationForRetry(investigation) {
     if (!investigation)
@@ -201,7 +202,7 @@ class SimplifiedRepairAgent {
                 }
                 core.info('🔄 Agentic repair did not produce a fix, falling back to single-shot...');
             }
-            return await this.singleShotRepair(repairContext, errorData, previousAttempt, skills);
+            return await this.singleShotRepair(repairContext, errorData, previousAttempt, skills, priorInvestigationContext);
         }
         catch (error) {
             core.warning(`Failed to generate fix recommendation: ${error}`);
@@ -274,7 +275,7 @@ class SimplifiedRepairAgent {
             return null;
         }
     }
-    async singleShotRepair(repairContext, errorData, previousAttempt, skills) {
+    async singleShotRepair(repairContext, errorData, previousAttempt, skills, priorInvestigationContext) {
         let sourceFileContent = null;
         const cleanFilePath = this.extractFilePath(repairContext.testFile);
         if (this.sourceFetchContext && cleanFilePath) {
@@ -283,7 +284,7 @@ class SimplifiedRepairAgent {
                 core.info(`  ✅ Fetched source file: ${cleanFilePath} (${sourceFileContent.length} chars)`);
             }
         }
-        const prompt = this.buildPrompt(repairContext, errorData, sourceFileContent, cleanFilePath, previousAttempt, skills);
+        const prompt = this.buildPrompt(repairContext, errorData, sourceFileContent, cleanFilePath, previousAttempt, skills, priorInvestigationContext);
         if (process.env.DEBUG_FIX_RECOMMENDATION) {
             const promptFile = `fix-prompt-${Date.now()}.md`;
             fs.writeFileSync(promptFile, prompt);
@@ -448,7 +449,7 @@ class SimplifiedRepairAgent {
             return null;
         }
     }
-    buildPrompt(context, errorData, sourceFileContent, cleanFilePath, previousAttempt, skills) {
+    buildPrompt(context, errorData, sourceFileContent, cleanFilePath, previousAttempt, skills, priorInvestigationContext) {
         let contextInfo = `## Test Failure Context
 - **Test File:** ${(0, skill_store_1.sanitizeForPrompt)(context.testFile)}
 - **Test Name:** ${(0, skill_store_1.sanitizeForPrompt)(context.testName)}
@@ -572,6 +573,10 @@ ${lines.length > 150 ? `\n... (${lines.length - 150} more lines)` : ''}
         }
         else {
             core.info('⚠️  No ErrorData provided - using minimal context');
+        }
+        if (priorInvestigationContext && priorInvestigationContext.trim()) {
+            contextInfo += `\n\n## Prior Investigation Findings for This Spec\n`;
+            contextInfo += (0, skill_store_1.sanitizeForPrompt)(priorInvestigationContext, RETRY_CAPS.PRIOR_INVESTIGATION_CONTEXT);
         }
         if (skills && skills.relevant.length > 0) {
             const skillsText = (0, skill_store_1.formatSkillsForPrompt)(skills.relevant, 'fix_generation', skills.flakiness);

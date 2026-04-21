@@ -391,7 +391,17 @@ Based on ALL the information provided (especially the PR changes if available), 
 Respond with your analysis as a JSON object.`;
 
     if (skillContext) {
-      return prompt + `\n\n### Prior Fix Patterns and Skill Signals (from skill store)\nThese patterns and signals were learned from previous runs on similar failures. Consider them as additional evidence but do not let them override the current failure context.\n${skillContext}`;
+      // v1.49.3 A1 framing: the `classificationOutcome` field below is
+      // only set to 'correct' or 'incorrect' on skills that produced a
+      // fix that validated locally. Because `findForClassifier` already
+      // filters `validatedLocally=true`, you will currently see
+      // 'correct' on most rendered skills. That is a selection-bias
+      // artifact, NOT evidence that prior classifications are
+      // universally right. The detection pipeline for 'incorrect'
+      // outcomes is still being built out. Treat the presence of
+      // 'correct' as a past success for that specific pattern — not as
+      // license to repeat the same verdict on the current failure.
+      return prompt + `\n\n### Prior Fix Patterns and Skill Signals (from skill store)\nThese patterns and signals were learned from previous runs on similar failures. Consider them as additional evidence but do not let them override the current failure context.\n\nNote on classificationOutcome: this field is currently recorded only when a fix validated locally, so values shown here are biased toward 'correct' by construction. A missing outcome is NOT evidence the prior verdict was wrong.\n${skillContext}`;
     }
 
     return prompt;

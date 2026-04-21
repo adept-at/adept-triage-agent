@@ -36,9 +36,19 @@ const TRACE_FIELD_MAX_CHARS = 1000;
  * Render one trace sub-field for the review prompt: sanitize prompt-injection
  * patterns, cap length, and fall back to the "EMPTY — flag CRITICAL" marker
  * so the reviewer targets the specific missing field.
+ *
+ * Note on type-violating inputs (v1.49.3): the value parameter is typed
+ * `string | undefined`, but upstream parsers can leave truthy non-string
+ * payloads on the underlying `failureModeTrace` sub-fields. We preserve
+ * the explicit `(EMPTY — flag CRITICAL)` sentinel for *any* non-string
+ * input — including `{}`, `42`, `true`, `[]` — so the reviewer's
+ * "missing trace" flag path fires consistently on the contract it was
+ * designed to enforce. `sanitizeForPrompt` would still gracefully
+ * coerce those values to strings, but the CRITICAL-sentinel semantics
+ * are stronger than a stringified placeholder.
  */
-function formatTraceField(value: string | undefined): string {
-  if (!value) return '(EMPTY — flag CRITICAL)';
+function formatTraceField(value: unknown): string {
+  if (typeof value !== 'string' || !value) return '(EMPTY — flag CRITICAL)';
   const sanitized = sanitizeForPrompt(value, TRACE_FIELD_MAX_CHARS);
   return sanitized || '(EMPTY — flag CRITICAL)';
 }

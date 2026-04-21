@@ -2271,11 +2271,23 @@ You MUST respond with a JSON object matching this schema:
                     suggestedReplacement: s.suggestedReplacement,
                 }))
                 : [];
-            const verdictOverride = parsed.verdictOverride
+            const suggestedLocation = parsed.verdictOverride
+                ? (0, text_utils_1.coerceEnumOrNull)(parsed.verdictOverride.suggestedLocation, SUGGESTED_LOCATIONS)
+                : undefined;
+            if (parsed.verdictOverride && !suggestedLocation) {
+                this.log(`Dropping verdictOverride with invalid suggestedLocation ` +
+                    `(received ${typeof parsed.verdictOverride.suggestedLocation}); ` +
+                    `treating as "no override" to avoid unsafe APP_CODE promotion.`, 'warning');
+            }
+            const verdictOverride = suggestedLocation
                 ? {
-                    suggestedLocation: (0, text_utils_1.coerceEnum)(parsed.verdictOverride.suggestedLocation, SUGGESTED_LOCATIONS, 'APP_CODE'),
-                    confidence: typeof parsed.verdictOverride.confidence === 'number' ? parsed.verdictOverride.confidence : 50,
-                    evidence: Array.isArray(parsed.verdictOverride.evidence) ? parsed.verdictOverride.evidence : [],
+                    suggestedLocation,
+                    confidence: typeof parsed.verdictOverride.confidence === 'number'
+                        ? parsed.verdictOverride.confidence
+                        : 50,
+                    evidence: Array.isArray(parsed.verdictOverride.evidence)
+                        ? parsed.verdictOverride.evidence
+                        : [],
                 }
                 : undefined;
             const primaryFinding = parsed.primaryFinding
@@ -2315,7 +2327,7 @@ const text_utils_1 = __nccwpck_require__(11744);
 const REVIEW_SEVERITIES = ['CRITICAL', 'WARNING', 'SUGGESTION'];
 const TRACE_FIELD_MAX_CHARS = 1000;
 function formatTraceField(value) {
-    if (!value)
+    if (typeof value !== 'string' || !value)
         return '(EMPTY — flag CRITICAL)';
     const sanitized = (0, skill_store_1.sanitizeForPrompt)(value, TRACE_FIELD_MAX_CHARS);
     return sanitized || '(EMPTY — flag CRITICAL)';
@@ -4040,7 +4052,7 @@ Based on ALL the information provided (especially the PR changes if available), 
 
 Respond with your analysis as a JSON object.`;
         if (skillContext) {
-            return prompt + `\n\n### Prior Fix Patterns and Skill Signals (from skill store)\nThese patterns and signals were learned from previous runs on similar failures. Consider them as additional evidence but do not let them override the current failure context.\n${skillContext}`;
+            return prompt + `\n\n### Prior Fix Patterns and Skill Signals (from skill store)\nThese patterns and signals were learned from previous runs on similar failures. Consider them as additional evidence but do not let them override the current failure context.\n\nNote on classificationOutcome: this field is currently recorded only when a fix validated locally, so values shown here are biased toward 'correct' by construction. A missing outcome is NOT evidence the prior verdict was wrong.\n${skillContext}`;
         }
         return prompt;
     }
@@ -5934,6 +5946,7 @@ const RETRY_CAPS = {
     TRACE_FIELD: 500,
     ROOT_CAUSE: 300,
     CODE_BLOCK: 2000,
+    PRIOR_INVESTIGATION_CONTEXT: 8000,
 };
 function summarizeInvestigationForRetry(investigation) {
     if (!investigation)
@@ -6079,7 +6092,7 @@ class SimplifiedRepairAgent {
                 }
                 core.info('🔄 Agentic repair did not produce a fix, falling back to single-shot...');
             }
-            return await this.singleShotRepair(repairContext, errorData, previousAttempt, skills);
+            return await this.singleShotRepair(repairContext, errorData, previousAttempt, skills, priorInvestigationContext);
         }
         catch (error) {
             core.warning(`Failed to generate fix recommendation: ${error}`);
@@ -6152,7 +6165,7 @@ class SimplifiedRepairAgent {
             return null;
         }
     }
-    async singleShotRepair(repairContext, errorData, previousAttempt, skills) {
+    async singleShotRepair(repairContext, errorData, previousAttempt, skills, priorInvestigationContext) {
         let sourceFileContent = null;
         const cleanFilePath = this.extractFilePath(repairContext.testFile);
         if (this.sourceFetchContext && cleanFilePath) {
@@ -6161,7 +6174,7 @@ class SimplifiedRepairAgent {
                 core.info(`  ✅ Fetched source file: ${cleanFilePath} (${sourceFileContent.length} chars)`);
             }
         }
-        const prompt = this.buildPrompt(repairContext, errorData, sourceFileContent, cleanFilePath, previousAttempt, skills);
+        const prompt = this.buildPrompt(repairContext, errorData, sourceFileContent, cleanFilePath, previousAttempt, skills, priorInvestigationContext);
         if (process.env.DEBUG_FIX_RECOMMENDATION) {
             const promptFile = `fix-prompt-${Date.now()}.md`;
             fs.writeFileSync(promptFile, prompt);
@@ -6326,7 +6339,7 @@ class SimplifiedRepairAgent {
             return null;
         }
     }
-    buildPrompt(context, errorData, sourceFileContent, cleanFilePath, previousAttempt, skills) {
+    buildPrompt(context, errorData, sourceFileContent, cleanFilePath, previousAttempt, skills, priorInvestigationContext) {
         let contextInfo = `## Test Failure Context
 - **Test File:** ${(0, skill_store_1.sanitizeForPrompt)(context.testFile)}
 - **Test Name:** ${(0, skill_store_1.sanitizeForPrompt)(context.testName)}
@@ -6450,6 +6463,10 @@ ${lines.length > 150 ? `\n... (${lines.length - 150} more lines)` : ''}
         }
         else {
             core.info('⚠️  No ErrorData provided - using minimal context');
+        }
+        if (priorInvestigationContext && priorInvestigationContext.trim()) {
+            contextInfo += `\n\n## Prior Investigation Findings for This Spec\n`;
+            contextInfo += (0, skill_store_1.sanitizeForPrompt)(priorInvestigationContext, RETRY_CAPS.PRIOR_INVESTIGATION_CONTEXT);
         }
         if (skills && skills.relevant.length > 0) {
             const skillsText = (0, skill_store_1.formatSkillsForPrompt)(skills.relevant, 'fix_generation', skills.flakiness);
@@ -7528,10 +7545,39 @@ const FLAKY_THRESHOLDS = {
 };
 const RETIRE_FAIL_RATE = 0.4;
 const RETIRE_MIN_FAILURES = 3;
+const SKILL_TELEMETRY_PREFIX = 'skill-telemetry';
+function logSkillTelemetry(role, skillIds) {
+    if (skillIds.length === 0)
+        return;
+    try {
+        core.info(`📝 ${SKILL_TELEMETRY_PREFIX} role=${role} count=${skillIds.length} ` +
+            `ids=${skillIds.join(',')}`);
+    }
+    catch {
+    }
+}
 function sanitizeForPrompt(input, maxLength = 2000) {
-    if (!input)
+    if (input === null || input === undefined)
         return '';
-    let sanitized = input
+    let normalized;
+    if (typeof input === 'string') {
+        normalized = input;
+    }
+    else {
+        try {
+            const stringified = JSON.stringify(input);
+            normalized = typeof stringified === 'string' ? stringified : String(input);
+        }
+        catch {
+            core.warning(`sanitizeForPrompt: JSON.stringify failed for typeof ${typeof input}; ` +
+                `falling back to String() — any original payload content will be ` +
+                `rendered as an opaque marker.`);
+            normalized = String(input);
+        }
+    }
+    if (!normalized)
+        return '';
+    let sanitized = normalized
         .replace(/```/g, '\u2032\u2032\u2032')
         .replace(/## SYSTEM:/gi, '## INFO:')
         .replace(/Ignore previous/gi, '[filtered]')
@@ -7858,17 +7904,27 @@ class SkillStore {
         };
     }
     countForSpec(spec) {
-        return this.skills.filter((s) => s.spec === spec).length;
+        return this.skills.filter((s) => s.spec === spec && !s.retired).length;
     }
     formatForClassifier(opts) {
         const relevant = this.findForClassifier(opts);
         if (relevant.length === 0)
             return '';
+        logSkillTelemetry('classifier', relevant.map((s) => s.id));
         return relevant
-            .map((s, i) => `${i + 1}. errorPattern: ${sanitizeForPrompt(s.errorPattern)}\n` +
-            `   rootCauseCategory: ${sanitizeForPrompt(s.rootCauseCategory)}\n` +
-            `   fix: ${sanitizeForPrompt(s.fix.summary)}\n` +
-            `   confidence: ${s.confidence}%`)
+            .map((s, i) => {
+            const lines = [
+                `${i + 1}. errorPattern: ${sanitizeForPrompt(s.errorPattern)}`,
+                `   rootCauseCategory: ${sanitizeForPrompt(s.rootCauseCategory)}`,
+                `   fix: ${sanitizeForPrompt(s.fix.summary)}`,
+                `   confidence: ${s.confidence}%`,
+            ];
+            if (s.classificationOutcome === 'correct' ||
+                s.classificationOutcome === 'incorrect') {
+                lines.push(`   classificationOutcome: ${s.classificationOutcome}`);
+            }
+            return lines.join('\n');
+        })
             .join('\n');
     }
     formatForInvestigation(opts) {
@@ -7879,8 +7935,9 @@ class SkillStore {
         }).filter(s => s.investigationFindings);
         if (relevant.length === 0)
             return '';
-        return relevant
-            .slice(0, 3)
+        const rendered = relevant.slice(0, 3);
+        logSkillTelemetry('investigation', rendered.map((s) => s.id));
+        return rendered
             .map((s, i) => {
             const date = s.createdAt.split('T')[0];
             const outcome = s.classificationOutcome ?? 'unknown';
@@ -7970,6 +8027,9 @@ function errorSimilarity(a, b) {
 function formatSkillsForPrompt(skills, role, flakiness) {
     if (skills.length === 0 && !flakiness?.isFlaky)
         return '';
+    if (skills.length > 0) {
+        logSkillTelemetry(role, skills.map((s) => s.id));
+    }
     const headers = {
         investigation: [
             '### Agent Memory: Prior Fixes for This Spec',
@@ -8513,11 +8573,19 @@ function formatSummaryForSlack(summary, includeCodeBlocks = false) {
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.ANSI_ESCAPE_REGEX = void 0;
 exports.coerceEnum = coerceEnum;
+exports.coerceEnumOrNull = coerceEnumOrNull;
 exports.ANSI_ESCAPE_REGEX = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, 'g');
 function coerceEnum(value, allowed, fallback) {
     if (typeof value !== 'string')
         return fallback;
     return allowed.includes(value) ? value : fallback;
+}
+function coerceEnumOrNull(value, allowed) {
+    if (typeof value !== 'string')
+        return undefined;
+    return allowed.includes(value)
+        ? value
+        : undefined;
 }
 //# sourceMappingURL=text-utils.js.map
 

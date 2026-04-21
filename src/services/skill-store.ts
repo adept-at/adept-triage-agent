@@ -75,6 +75,61 @@ const RETIRE_FAIL_RATE = 0.4;
 const RETIRE_MIN_FAILURES = 3;
 
 /**
+ * Grep-stable prefix for the skill-usage telemetry log line
+ * emitted by each formatter. Operators can `grep skill-telemetry`
+ * in CI logs to see which skill IDs reached which agent role on
+ * a given run. Keep this string stable — dashboards and the
+ * triage-agent-code-review skill reference it.
+ */
+const SKILL_TELEMETRY_PREFIX = 'skill-telemetry';
+
+/**
+ * Emit a structured `core.info` line whenever a formatter renders
+ * skills into a prompt. Purpose: close the v1.49.2-era verification
+ * gap where the pipeline stored and retrieved skills but had NO
+ * runtime evidence that any specific skill actually reached a model
+ * on a specific run. Without this, "skills make the agent smarter"
+ * was an unverifiable claim.
+ *
+ * Format (stable — dashboards grep for this):
+ *   📝 skill-telemetry role=<role> count=<n> ids=<id1>,<id2>,...
+ *
+ * Observability-must-not-break-functionality contract (v1.49.3 A4):
+ *   The `core.info` call is wrapped in try/catch so a pathological
+ *   logger implementation (patched @actions/core, replaced stdout,
+ *   etc.) cannot turn a successful prompt render into a thrown
+ *   exception. Silence on the log path is strictly better than
+ *   aborting the formatter — the skill content still reaches the
+ *   model, operators just lose the telemetry breadcrumb for that
+ *   invocation.
+ *
+ * Duplicate-emit note:
+ *   A single agentic run produces up to two `role=investigation`
+ *   lines because `formatSkillsForPrompt(skills, 'investigation',
+ *   ...)` is called both when preparing the Analysis Agent context
+ *   and when preparing the Investigation Agent context (same IDs,
+ *   same role label — they share the "don't anchor" framing).
+ *   Dashboards that aggregate `count by role` should dedupe by
+ *   `(run, role, sorted-ids)` tuple, not line count.
+ *
+ * @param role - which agent/step consumed the skills
+ * @param skillIds - the list of skill IDs rendered into the prompt
+ */
+function logSkillTelemetry(role: string, skillIds: string[]): void {
+  if (skillIds.length === 0) return;
+  try {
+    core.info(
+      `📝 ${SKILL_TELEMETRY_PREFIX} role=${role} count=${skillIds.length} ` +
+        `ids=${skillIds.join(',')}`
+    );
+  } catch {
+    // Intentionally swallowed — observability must never break the
+    // formatter. If telemetry disappears, the skill content still
+    // reached the model on this run.
+  }
+}
+
+/**
  * Strip patterns that could be interpreted as prompt injection when
  * model-adjacent fields are interpolated into LLM prompts.
  *
@@ -97,10 +152,57 @@ const RETIRE_MIN_FAILURES = 3;
  *      the fence and let whatever follows masquerade as a new prompt
  *      section. This pattern was previously only in a class-private
  *      helper; consolidating here so every caller benefits.
+ *
+ * Input typing (v1.49.3):
+ *   The signature accepts `unknown` because the upstream agent
+ *   parsers still leave truthy non-string payloads on fields this
+ *   helper sees (evidence arrays, selectorsToUpdate.*,
+ *   changes[].file/oldCode/newCode, etc.). Pre-v1.49.3, any non-string
+ *   would throw inside `.replace()` and blow up retry-memory
+ *   construction. Now we JSON-stringify non-strings so the evidence
+ *   isn't silently lost, then run the normal sanitization over the
+ *   stringified form. Circular references fall back to `String(...)`
+ *   so the function never throws on any input.
  */
-export function sanitizeForPrompt(input: string, maxLength = 2000): string {
-  if (!input) return '';
-  let sanitized = input
+export function sanitizeForPrompt(
+  input: unknown,
+  maxLength = 2000
+): string {
+  if (input === null || input === undefined) return '';
+
+  // Fast path: strings (the dominant case) sanitize without allocation.
+  let normalized: string;
+  if (typeof input === 'string') {
+    normalized = input;
+  } else {
+    // JSON-stringify everything else so attacker-controlled objects
+    // are neutralized to text *and* still run through the keyword
+    // and fence filters below. `String(...)` is the fallback for
+    // values JSON.stringify can't serialize (circular refs, BigInt,
+    // functions whose toJSON emits `undefined`), so this function
+    // never throws on any input.
+    try {
+      const stringified = JSON.stringify(input);
+      normalized = typeof stringified === 'string' ? stringified : String(input);
+    } catch {
+      // Circular reference, BigInt, or other JSON.stringify failure.
+      // String(...) never throws but for most objects returns the
+      // constant '[object Object]' — all original payload content is
+      // lost. Surface a warning so a prompt-injection attempt via a
+      // crafted cyclic payload is visible to operators instead of
+      // silently disappearing into the fallback sentinel.
+      core.warning(
+        `sanitizeForPrompt: JSON.stringify failed for typeof ${typeof input}; ` +
+          `falling back to String() — any original payload content will be ` +
+          `rendered as an opaque marker.`
+      );
+      normalized = String(input);
+    }
+  }
+
+  if (!normalized) return '';
+
+  let sanitized = normalized
     .replace(/```/g, '\u2032\u2032\u2032')
     .replace(/## SYSTEM:/gi, '## INFO:')
     .replace(/Ignore previous/gi, '[filtered]')
@@ -539,6 +641,20 @@ export class SkillStore {
 
   /**
    * Detect flakiness for a given spec based on skill history.
+   *
+   * Retired skills ARE counted here (v1.49.3 A3 revised). Retirement
+   * and flakiness measure different things: retirement means "this
+   * specific pattern was tried enough and failed enough that we stop
+   * *recommending* it"; flakiness means "this spec has received N
+   * distinct fix attempts in a time window and is likely chronically
+   * unstable." A spec whose prior 3 patterns all retired IS chronic
+   * flakiness — 3 distinct fix attempts within the window, all
+   * unsuccessful. Excluding retired from this count would let the
+   * chronic-flakiness gate be silently bypassed on exactly the specs
+   * it exists to catch. Retrieval helpers (findRelevant,
+   * findForClassifier) correctly exclude retired because they drive
+   * "what guidance to surface"; this helper drives "should we stop
+   * auto-fixing altogether," which is the opposite polarity.
    */
   detectFlakiness(spec: string): FlakinessSignal {
     const now = Date.now();
@@ -577,8 +693,17 @@ export class SkillStore {
     };
   }
 
+  /**
+   * Count active (non-retired) skills for the given spec.
+   *
+   * v1.49.3 A3: aligned with `findRelevant` / `findForClassifier` —
+   * retired skills are not surfaced to agents and should not inflate
+   * the "prior skill count" signal either. The value is used to seed
+   * `TriageSkill.priorSkillCount` in `buildSkill` and as a general
+   * "how much have we seen this spec" heuristic.
+   */
   countForSpec(spec: string): number {
-    return this.skills.filter((s) => s.spec === spec).length;
+    return this.skills.filter((s) => s.spec === spec && !s.retired).length;
   }
 
   formatForClassifier(opts: {
@@ -589,14 +714,39 @@ export class SkillStore {
     const relevant = this.findForClassifier(opts);
     if (relevant.length === 0) return '';
 
+    // v1.49.3 A4: emit telemetry so operators can verify which skill
+    // IDs actually reached the classifier on this run.
+    logSkillTelemetry('classifier', relevant.map((s) => s.id));
+
     return relevant
-      .map(
-        (s, i) =>
-          `${i + 1}. errorPattern: ${sanitizeForPrompt(s.errorPattern)}\n` +
-          `   rootCauseCategory: ${sanitizeForPrompt(s.rootCauseCategory)}\n` +
-          `   fix: ${sanitizeForPrompt(s.fix.summary)}\n` +
-          `   confidence: ${s.confidence}%`
-      )
+      .map((s, i) => {
+        const lines = [
+          `${i + 1}. errorPattern: ${sanitizeForPrompt(s.errorPattern)}`,
+          `   rootCauseCategory: ${sanitizeForPrompt(s.rootCauseCategory)}`,
+          `   fix: ${sanitizeForPrompt(s.fix.summary)}`,
+          `   confidence: ${s.confidence}%`,
+        ];
+        // v1.49.3 A1: surface the prior classification outcome so the
+        // classifier can actually learn from "was my last verdict
+        // correct." Pre-v1.49.3 this field was written to skills but
+        // never included in the classifier prompt, making the feedback
+        // loop one-way (store but not read).
+        //
+        // Explicit whitelist (not a truthy-plus-not-'unknown' check):
+        // guards against future migrations that seed the field with
+        // `'pending'`, `'needs_review'`, or other ad-hoc strings that
+        // would render verbatim and confuse the classifier. Matches
+        // the type contract `'correct' | 'incorrect' | 'unknown'`.
+        if (
+          s.classificationOutcome === 'correct' ||
+          s.classificationOutcome === 'incorrect'
+        ) {
+          lines.push(
+            `   classificationOutcome: ${s.classificationOutcome}`
+          );
+        }
+        return lines.join('\n');
+      })
       .join('\n');
   }
 
@@ -609,8 +759,13 @@ export class SkillStore {
 
     if (relevant.length === 0) return '';
 
-    return relevant
-      .slice(0, 3)
+    // v1.49.3 A4: emit telemetry so operators can verify which skill
+    // IDs actually reached the investigation prompt (both agentic and
+    // single-shot paths consume this string — see A2).
+    const rendered = relevant.slice(0, 3);
+    logSkillTelemetry('investigation', rendered.map((s) => s.id));
+
+    return rendered
       .map((s, i) => {
         const date = s.createdAt.split('T')[0];
         const outcome = s.classificationOutcome ?? 'unknown';
@@ -769,6 +924,14 @@ export function formatSkillsForPrompt(
   flakiness?: FlakinessSignal
 ): string {
   if (skills.length === 0 && !flakiness?.isFlaky) return '';
+
+  // v1.49.3 A4: emit telemetry so operators can verify which skill
+  // IDs actually reached each agent role on this run. Skipping when
+  // skills.length === 0 — we already handle the flakiness-only case
+  // above — so the log only fires when actual skill data is rendered.
+  if (skills.length > 0) {
+    logSkillTelemetry(role, skills.map((s) => s.id));
+  }
 
   const headers: Record<typeof role, string> = {
     investigation: [

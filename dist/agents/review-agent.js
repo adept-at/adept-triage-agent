@@ -7,7 +7,7 @@ const text_utils_1 = require("../utils/text-utils");
 const REVIEW_SEVERITIES = ['CRITICAL', 'WARNING', 'SUGGESTION'];
 const TRACE_FIELD_MAX_CHARS = 1000;
 function formatTraceField(value) {
-    if (!value)
+    if (typeof value !== 'string' || !value)
         return '(EMPTY — flag CRITICAL)';
     const sanitized = (0, skill_store_1.sanitizeForPrompt)(value, TRACE_FIELD_MAX_CHARS);
     return sanitized || '(EMPTY — flag CRITICAL)';

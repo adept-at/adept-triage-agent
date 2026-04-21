@@ -36,3 +36,30 @@ export function coerceEnum<T extends string>(
   if (typeof value !== 'string') return fallback;
   return (allowed as readonly string[]).includes(value) ? (value as T) : fallback;
 }
+
+/**
+ * Nullable sibling of `coerceEnum`. Returns the input when it matches an
+ * allowed value, otherwise `undefined`.
+ *
+ * Why this exists (v1.49.3): some enum fields have no safe default.
+ * `InvestigationOutput.verdictOverride.suggestedLocation` is a concrete
+ * example — `coerceEnum(..., 'APP_CODE')` was promoting any invalid or
+ * adversarial value to a real `APP_CODE` override, and `AgentOrchestrator`
+ * then treated that as a hard product-side signal and aborted repair.
+ * Returning `undefined` lets the caller drop the override entirely when
+ * the model didn't emit a whitelisted value, which is the semantically
+ * safe behavior for "I don't know what this is."
+ *
+ * Use `coerceEnum` when the field always needs a value (e.g. severity on
+ * an already-captured finding). Use `coerceEnumOrNull` when the field is
+ * an override/signal that should only fire on known-good input.
+ */
+export function coerceEnumOrNull<T extends string>(
+  value: unknown,
+  allowed: readonly T[]
+): T | undefined {
+  if (typeof value !== 'string') return undefined;
+  return (allowed as readonly string[]).includes(value)
+    ? (value as T)
+    : undefined;
+}

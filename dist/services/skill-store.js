@@ -51,10 +51,39 @@ const FLAKY_THRESHOLDS = {
 };
 const RETIRE_FAIL_RATE = 0.4;
 const RETIRE_MIN_FAILURES = 3;
+const SKILL_TELEMETRY_PREFIX = 'skill-telemetry';
+function logSkillTelemetry(role, skillIds) {
+    if (skillIds.length === 0)
+        return;
+    try {
+        core.info(`📝 ${SKILL_TELEMETRY_PREFIX} role=${role} count=${skillIds.length} ` +
+            `ids=${skillIds.join(',')}`);
+    }
+    catch {
+    }
+}
 function sanitizeForPrompt(input, maxLength = 2000) {
-    if (!input)
+    if (input === null || input === undefined)
         return '';
-    let sanitized = input
+    let normalized;
+    if (typeof input === 'string') {
+        normalized = input;
+    }
+    else {
+        try {
+            const stringified = JSON.stringify(input);
+            normalized = typeof stringified === 'string' ? stringified : String(input);
+        }
+        catch {
+            core.warning(`sanitizeForPrompt: JSON.stringify failed for typeof ${typeof input}; ` +
+                `falling back to String() — any original payload content will be ` +
+                `rendered as an opaque marker.`);
+            normalized = String(input);
+        }
+    }
+    if (!normalized)
+        return '';
+    let sanitized = normalized
         .replace(/```/g, '\u2032\u2032\u2032')
         .replace(/## SYSTEM:/gi, '## INFO:')
         .replace(/Ignore previous/gi, '[filtered]')
@@ -381,17 +410,27 @@ class SkillStore {
         };
     }
     countForSpec(spec) {
-        return this.skills.filter((s) => s.spec === spec).length;
+        return this.skills.filter((s) => s.spec === spec && !s.retired).length;
     }
     formatForClassifier(opts) {
         const relevant = this.findForClassifier(opts);
         if (relevant.length === 0)
             return '';
+        logSkillTelemetry('classifier', relevant.map((s) => s.id));
         return relevant
-            .map((s, i) => `${i + 1}. errorPattern: ${sanitizeForPrompt(s.errorPattern)}\n` +
-            `   rootCauseCategory: ${sanitizeForPrompt(s.rootCauseCategory)}\n` +
-            `   fix: ${sanitizeForPrompt(s.fix.summary)}\n` +
-            `   confidence: ${s.confidence}%`)
+            .map((s, i) => {
+            const lines = [
+                `${i + 1}. errorPattern: ${sanitizeForPrompt(s.errorPattern)}`,
+                `   rootCauseCategory: ${sanitizeForPrompt(s.rootCauseCategory)}`,
+                `   fix: ${sanitizeForPrompt(s.fix.summary)}`,
+                `   confidence: ${s.confidence}%`,
+            ];
+            if (s.classificationOutcome === 'correct' ||
+                s.classificationOutcome === 'incorrect') {
+                lines.push(`   classificationOutcome: ${s.classificationOutcome}`);
+            }
+            return lines.join('\n');
+        })
             .join('\n');
     }
     formatForInvestigation(opts) {
@@ -402,8 +441,9 @@ class SkillStore {
         }).filter(s => s.investigationFindings);
         if (relevant.length === 0)
             return '';
-        return relevant
-            .slice(0, 3)
+        const rendered = relevant.slice(0, 3);
+        logSkillTelemetry('investigation', rendered.map((s) => s.id));
+        return rendered
             .map((s, i) => {
             const date = s.createdAt.split('T')[0];
             const outcome = s.classificationOutcome ?? 'unknown';
@@ -493,6 +533,9 @@ function errorSimilarity(a, b) {
 function formatSkillsForPrompt(skills, role, flakiness) {
     if (skills.length === 0 && !flakiness?.isFlaky)
         return '';
+    if (skills.length > 0) {
+        logSkillTelemetry(role, skills.map((s) => s.id));
+    }
     const headers = {
         investigation: [
             '### Agent Memory: Prior Fixes for This Spec',

@@ -475,4 +475,96 @@ describe('buildPriorAttemptContext (R4)', () => {
       expect(out).toContain('[truncated]');
     });
   });
+
+  // ---------------------------------------------------------------------------
+  // v1.49.3 — non-string payload robustness
+  //
+  // The code-change block previously assumed `oldCode`, `newCode`, `file`,
+  // and `reasoning` were always strings. An adversarial or malformed
+  // model response could send an object/array/number in those slots,
+  // and `sanitizeForPrompt` would then throw inside `.replace()` and
+  // blow up retry-memory construction.
+  //
+  // Fix: `sanitizeForPrompt` now JSON-stringifies non-strings before
+  // sanitizing, so these renderers degrade gracefully instead of
+  // throwing.
+  // ---------------------------------------------------------------------------
+  describe('non-string payload robustness (v1.49.3)', () => {
+    it('does not throw when proposedChanges[].oldCode is a non-string', () => {
+      const fix = makeFix({
+        proposedChanges: [
+          {
+            file: 't.ts',
+            line: 1,
+            oldCode: { malformed: true } as unknown as string,
+            newCode: 'replacement',
+            justification: 'x',
+          },
+        ],
+      });
+      expect(() =>
+        buildPriorAttemptContext(makePrior({ previousFix: fix }))
+      ).not.toThrow();
+    });
+
+    it('does not throw when proposedChanges[].newCode is a non-string', () => {
+      const fix = makeFix({
+        proposedChanges: [
+          {
+            file: 't.ts',
+            line: 1,
+            oldCode: 'original',
+            newCode: 99 as unknown as string,
+            justification: 'x',
+          },
+        ],
+      });
+      expect(() =>
+        buildPriorAttemptContext(makePrior({ previousFix: fix }))
+      ).not.toThrow();
+    });
+
+    it('does not throw when proposedChanges[].file is a non-string', () => {
+      const fix = makeFix({
+        proposedChanges: [
+          {
+            file: { path: 'weird' } as unknown as string,
+            line: 1,
+            oldCode: 'a',
+            newCode: 'b',
+            justification: 'x',
+          },
+        ],
+      });
+      expect(() =>
+        buildPriorAttemptContext(makePrior({ previousFix: fix }))
+      ).not.toThrow();
+    });
+
+    it('does not throw when priorAgentInvestigationFindings is a non-string', () => {
+      expect(() =>
+        buildPriorAttemptContext(
+          makePrior({
+            priorAgentInvestigationFindings: {
+              primaryFinding: 'object-shaped',
+            } as unknown as string,
+          })
+        )
+      ).not.toThrow();
+    });
+
+    it('does not throw when failureModeTrace fields are non-strings', () => {
+      const fix = makeFix({
+        failureModeTrace: {
+          originalState: { t: 3 } as unknown as string,
+          rootMechanism: [1, 2, 3] as unknown as string,
+          newStateAfterFix: 42 as unknown as string,
+          whyAssertionPassesNow: true as unknown as string,
+        },
+      });
+      expect(() =>
+        buildPriorAttemptContext(makePrior({ previousFix: fix }))
+      ).not.toThrow();
+    });
+  });
 });

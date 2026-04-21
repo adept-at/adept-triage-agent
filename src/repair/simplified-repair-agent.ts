@@ -37,6 +37,12 @@ const RETRY_CAPS = {
   TRACE_FIELD: 500,
   ROOT_CAUSE: 300,
   CODE_BLOCK: 2000,
+  // v1.49.3 A2: single-shot `buildPrompt` renders up to 3 prior-
+  // investigation entries, each already per-field-capped upstream
+  // in `formatForInvestigation` (4 sub-fields × 2000 chars worst
+  // case per entry). 8000 is a realistic upper bound that accepts
+  // 3 rich entries without truncation but still caps runaway output.
+  PRIOR_INVESTIGATION_CONTEXT: 8000,
 } as const;
 
 /**
@@ -397,12 +403,17 @@ export class SimplifiedRepairAgent {
         );
       }
 
-      // Single-shot repair (original logic, no conversation chaining)
+      // Single-shot repair (original logic, no conversation chaining).
+      // v1.49.3 A2: thread priorInvestigationContext so the single-shot
+      // path also sees "this spec has been investigated before" memory.
+      // Pre-v1.49.3 it was agentic-only, silently dropping the signal on
+      // the common fallback path.
       return await this.singleShotRepair(
         repairContext,
         errorData,
         previousAttempt,
-        skills
+        skills,
+        priorInvestigationContext
       );
     } catch (error) {
       core.warning(`Failed to generate fix recommendation: ${error}`);
@@ -548,7 +559,8 @@ export class SimplifiedRepairAgent {
        */
       priorAgentInvestigationFindings?: string;
     },
-    skills?: { relevant: TriageSkill[]; flakiness?: FlakinessSignal }
+    skills?: { relevant: TriageSkill[]; flakiness?: FlakinessSignal },
+    priorInvestigationContext?: string
   ): Promise<{ fix: FixRecommendation; agentRootCause?: string } | null> {
     // Try to fetch the actual source file content
     let sourceFileContent: string | null = null;
@@ -570,7 +582,8 @@ export class SimplifiedRepairAgent {
       sourceFileContent,
       cleanFilePath,
       previousAttempt,
-      skills
+      skills,
+      priorInvestigationContext
     );
 
     // Save prompt for debugging (optional)
@@ -857,7 +870,8 @@ export class SimplifiedRepairAgent {
        */
       priorAgentInvestigationFindings?: string;
     },
-    skills?: { relevant: TriageSkill[]; flakiness?: FlakinessSignal }
+    skills?: { relevant: TriageSkill[]; flakiness?: FlakinessSignal },
+    priorInvestigationContext?: string
   ): string {
     let contextInfo = `## Test Failure Context
 - **Test File:** ${sanitizeForPrompt(context.testFile)}
@@ -1032,6 +1046,24 @@ ${lines.length > 150 ? `\n... (${lines.length - 150} more lines)` : ''}
       }
     } else {
       core.info('⚠️  No ErrorData provided - using minimal context');
+    }
+
+    // v1.49.3 A2: render prior investigation memory on the single-shot
+    // path too. Pre-v1.49.3 this was agentic-only, so the common
+    // fallback path silently dropped the "we have investigated this
+    // spec before; here's what we found" signal.
+    //
+    // `.trim()` guard: skip the section when the caller passes
+    // whitespace-only (would otherwise render an empty "Prior
+    // Investigation Findings" header followed by nothing, wasting
+    // tokens and implying absence of signal where there's simply no
+    // input). Works for both "" and "   ".
+    if (priorInvestigationContext && priorInvestigationContext.trim()) {
+      contextInfo += `\n\n## Prior Investigation Findings for This Spec\n`;
+      contextInfo += sanitizeForPrompt(
+        priorInvestigationContext,
+        RETRY_CAPS.PRIOR_INVESTIGATION_CONTEXT
+      );
     }
 
     if (skills && skills.relevant.length > 0) {

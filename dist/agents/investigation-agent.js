@@ -150,11 +150,23 @@ You MUST respond with a JSON object matching this schema:
                     suggestedReplacement: s.suggestedReplacement,
                 }))
                 : [];
-            const verdictOverride = parsed.verdictOverride
+            const suggestedLocation = parsed.verdictOverride
+                ? (0, text_utils_1.coerceEnumOrNull)(parsed.verdictOverride.suggestedLocation, SUGGESTED_LOCATIONS)
+                : undefined;
+            if (parsed.verdictOverride && !suggestedLocation) {
+                this.log(`Dropping verdictOverride with invalid suggestedLocation ` +
+                    `(received ${typeof parsed.verdictOverride.suggestedLocation}); ` +
+                    `treating as "no override" to avoid unsafe APP_CODE promotion.`, 'warning');
+            }
+            const verdictOverride = suggestedLocation
                 ? {
-                    suggestedLocation: (0, text_utils_1.coerceEnum)(parsed.verdictOverride.suggestedLocation, SUGGESTED_LOCATIONS, 'APP_CODE'),
-                    confidence: typeof parsed.verdictOverride.confidence === 'number' ? parsed.verdictOverride.confidence : 50,
-                    evidence: Array.isArray(parsed.verdictOverride.evidence) ? parsed.verdictOverride.evidence : [],
+                    suggestedLocation,
+                    confidence: typeof parsed.verdictOverride.confidence === 'number'
+                        ? parsed.verdictOverride.confidence
+                        : 50,
+                    evidence: Array.isArray(parsed.verdictOverride.evidence)
+                        ? parsed.verdictOverride.evidence
+                        : [],
                 }
                 : undefined;
             const primaryFinding = parsed.primaryFinding
