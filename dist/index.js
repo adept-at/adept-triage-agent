@@ -6768,6 +6768,7 @@ function filterEnv(npmToken) {
 const DEFAULT_TEST_TIMEOUT_MS = 300_000;
 const MAX_LOG_CHARS = 20_000;
 const MAX_BUFFER = 10 * 1024 * 1024;
+const BASELINE_PASS_COUNT = 3;
 class LocalFixValidator {
     config;
     octokit;
@@ -6902,8 +6903,31 @@ class LocalFixValidator {
         core.info('✅ Setup complete');
     }
     async baselineCheck() {
-        core.info('🔍 Running baseline check — does the test pass without any fix?');
-        return this.runTest();
+        core.info(`🔍 Running baseline check — does the test pass without any fix? ` +
+            `(requires ${BASELINE_PASS_COUNT} consecutive passes)`);
+        let totalDurationMs = 0;
+        let lastResult;
+        for (let pass = 1; pass <= BASELINE_PASS_COUNT; pass++) {
+            core.info(`   Baseline pass ${pass}/${BASELINE_PASS_COUNT}...`);
+            const result = await this.runTest();
+            totalDurationMs += result.durationMs;
+            lastResult = result;
+            if (!result.passed) {
+                core.info(`   ❌ Baseline failed on pass ${pass} — short-circuiting.`);
+                return {
+                    passed: false,
+                    logs: result.logs,
+                    exitCode: result.exitCode,
+                    durationMs: totalDurationMs,
+                };
+            }
+        }
+        return {
+            passed: true,
+            logs: lastResult?.logs ?? '',
+            exitCode: lastResult?.exitCode ?? 0,
+            durationMs: totalDurationMs,
+        };
     }
     async preValidateFix(changes) {
         for (const change of changes) {
@@ -7545,7 +7569,6 @@ exports.normalizeFramework = normalizeFramework;
 exports.buildSkill = buildSkill;
 exports.describeFixPattern = describeFixPattern;
 exports.normalizeError = normalizeError;
-exports.recordClassifierMisclassifications = recordClassifierMisclassifications;
 exports.formatSkillsForPrompt = formatSkillsForPrompt;
 const core = __importStar(__nccwpck_require__(37484));
 const crypto = __importStar(__nccwpck_require__(76982));
@@ -8067,17 +8090,6 @@ function errorSimilarity(a, b) {
     }
     const union = tokensA.size + tokensB.size - intersection;
     return union === 0 ? 0 : intersection / union;
-}
-async function recordClassifierMisclassifications(skillStore, skillIds) {
-    if (skillIds.length === 0)
-        return;
-    for (const id of skillIds) {
-        try {
-            await skillStore.recordClassificationOutcome(id, 'incorrect');
-        }
-        catch {
-        }
-    }
 }
 function formatSkillsForPrompt(skills, role, flakiness) {
     if (skills.length === 0 && !flakiness?.isFlaky)

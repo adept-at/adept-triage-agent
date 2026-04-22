@@ -63,6 +63,21 @@ const DEFAULT_TEST_TIMEOUT_MS = 300_000;
 const MAX_LOG_CHARS = 20_000;
 const MAX_BUFFER = 10 * 1024 * 1024;
 
+/**
+ * Number of consecutive passes required for `baselineCheck` to conclude
+ * "the test passes without any fix." Pre-v1.50.1 this was effectively 1
+ * (single pass), which proved too noisy a signal for the A1-writer —
+ * it couldn't distinguish transient flake from genuine classifier
+ * misread. 3 consecutive passes is the point where the probability of
+ * "3 coincidental flake-passes in a row" drops low enough that the
+ * signal becomes attributable to the classifier's verdict being
+ * wrong. Lower bound: the cost of 3 test runs per gated run is non-
+ * trivial (e.g., +60-120s on typical E2E tests); upper bound: beyond
+ * ~5 the marginal confidence gain is diminishing and the cost becomes
+ * prohibitive for fast-iteration repos.
+ */
+const BASELINE_PASS_COUNT = 3;
+
 export class LocalFixValidator {
   private config: LocalValidatorConfig;
   private octokit: Octokit;
@@ -211,8 +226,46 @@ export class LocalFixValidator {
   }
 
   async baselineCheck(): Promise<TestRunResult> {
-    core.info('🔍 Running baseline check — does the test pass without any fix?');
-    return this.runTest();
+    core.info(
+      `🔍 Running baseline check — does the test pass without any fix? ` +
+        `(requires ${BASELINE_PASS_COUNT} consecutive passes)`
+    );
+
+    let totalDurationMs = 0;
+    let lastResult: TestRunResult | undefined;
+
+    for (let pass = 1; pass <= BASELINE_PASS_COUNT; pass++) {
+      core.info(`   Baseline pass ${pass}/${BASELINE_PASS_COUNT}...`);
+      const result = await this.runTest();
+      totalDurationMs += result.durationMs;
+      lastResult = result;
+
+      if (!result.passed) {
+        // Short-circuit on first failure — running further passes after a
+        // confirmed failure wastes cycles and the failing pass's logs are
+        // the ones the operator wants to see. Caller treats
+        // `passed === false` as "baseline confirmed the failure exists,
+        // proceed to repair." Exit code is propagated so downstream
+        // telemetry can distinguish OOM / SIGKILL / test-assert failures.
+        core.info(`   ❌ Baseline failed on pass ${pass} — short-circuiting.`);
+        return {
+          passed: false,
+          logs: result.logs,
+          exitCode: result.exitCode,
+          durationMs: totalDurationMs,
+        };
+      }
+    }
+
+    // All N passes succeeded. Use the last pass's logs/exitCode as the
+    // representative sample; the summed duration gives the operator the
+    // true cost of the multi-pass check (not just the final pass).
+    return {
+      passed: true,
+      logs: lastResult?.logs ?? '',
+      exitCode: lastResult?.exitCode ?? 0,
+      durationMs: totalDurationMs,
+    };
   }
 
   async preValidateFix(

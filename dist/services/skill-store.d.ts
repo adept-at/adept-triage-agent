@@ -117,6 +117,5 @@ export declare function describeFixPattern(changes: Array<{
     changeType?: string;
 }>): string;
 export declare function normalizeError(msg: string): string;
-export declare function recordClassifierMisclassifications(skillStore: SkillStore, skillIds: string[]): Promise<void>;
 export declare function formatSkillsForPrompt(skills: TriageSkill[], role: 'investigation' | 'fix_generation' | 'review', flakiness?: FlakinessSignal): string;
 //# sourceMappingURL=skill-store.d.ts.map

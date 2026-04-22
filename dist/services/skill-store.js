@@ -39,7 +39,6 @@ exports.normalizeFramework = normalizeFramework;
 exports.buildSkill = buildSkill;
 exports.describeFixPattern = describeFixPattern;
 exports.normalizeError = normalizeError;
-exports.recordClassifierMisclassifications = recordClassifierMisclassifications;
 exports.formatSkillsForPrompt = formatSkillsForPrompt;
 const core = __importStar(require("@actions/core"));
 const crypto = __importStar(require("crypto"));
@@ -561,17 +560,6 @@ function errorSimilarity(a, b) {
     }
     const union = tokensA.size + tokensB.size - intersection;
     return union === 0 ? 0 : intersection / union;
-}
-async function recordClassifierMisclassifications(skillStore, skillIds) {
-    if (skillIds.length === 0)
-        return;
-    for (const id of skillIds) {
-        try {
-            await skillStore.recordClassificationOutcome(id, 'incorrect');
-        }
-        catch {
-        }
-    }
 }
 function formatSkillsForPrompt(skills, role, flakiness) {
     if (skills.length === 0 && !flakiness?.isFlaky)

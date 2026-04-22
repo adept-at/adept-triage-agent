@@ -9,7 +9,6 @@ import {
   formatSkillsForPrompt,
   sanitizeForPrompt,
   FlakinessSignal,
-  recordClassifierMisclassifications,
 } from '../../src/services/skill-store';
 
 jest.mock('@actions/core', () => ({
@@ -2011,100 +2010,6 @@ describe('SkillStore.recordClassificationOutcome', () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// recordClassifierMisclassifications (v1.50.0 A1 writer-side)
-//
-// Closes the v1.49.3 deferred item: on the specific signal "investigation's
-// verdictOverride was honored and repair aborted," the prior skills that
-// were surfaced to the classifier for this run should be marked
-// `classificationOutcome = 'incorrect'`. Until this writer lands, the
-// classifier prompt's `classificationOutcome: correct` values are
-// uniform-by-construction (see v1.49.3 A1 framing note in
-// src/openai-client.ts); this writer is how 'incorrect' enters the
-// dataset.
-//
-// Attribution rule: write 'incorrect' against *every* skill surfaced to
-// the classifier on this run, not just the top-scoring one. The
-// classifier receives the whole set as context and we can't isolate
-// which specific skill biased the verdict. Being broad here is
-// acceptable: subsequent correct fixes on those same patterns will
-// overwrite with 'correct', so short-lived noise corrects itself.
-// ---------------------------------------------------------------------------
-describe('recordClassifierMisclassifications (v1.50.0 A1 writer-side)', () => {
-  it('no-ops on empty skillIds (returns without any store call)', async () => {
-    const store = makeStore();
-    (store as any).loaded = true;
-    (store as any).skills = [];
-
-    await recordClassifierMisclassifications(store, []);
-
-    expect(mockSend).not.toHaveBeenCalled();
-  });
-
-  it('writes classificationOutcome=incorrect for each surfaced skill', async () => {
-    const store = makeStore();
-    const a = makeSkill({ id: 'cls-1', classificationOutcome: 'correct' });
-    const b = makeSkill({ id: 'cls-2', classificationOutcome: 'unknown' });
-    (store as any).loaded = true;
-    (store as any).skills = [a, b];
-    mockSend.mockResolvedValue({});
-
-    await recordClassifierMisclassifications(store, ['cls-1', 'cls-2']);
-
-    // Two UpdateCommands, both with value 'incorrect'.
-    const updateCalls = mockSend.mock.calls
-      .map((call) => commandInput<{ ExpressionAttributeValues: { ':co': string } }>(call))
-      .filter((input) => input.ExpressionAttributeValues?.[':co'] === 'incorrect');
-    expect(updateCalls).toHaveLength(2);
-    expect(a.classificationOutcome).toBe('incorrect');
-    expect(b.classificationOutcome).toBe('incorrect');
-  });
-
-  it("continues writing remaining skills when one write fails (recordClassificationOutcome's never-reject contract)", async () => {
-    const store = makeStore();
-    const a = makeSkill({ id: 'cls-fail' });
-    const b = makeSkill({ id: 'cls-ok' });
-    (store as any).loaded = true;
-    (store as any).skills = [a, b];
-    mockSend
-      .mockRejectedValueOnce(new Error('dynamo hiccup'))
-      .mockResolvedValueOnce({});
-
-    await expect(
-      recordClassifierMisclassifications(store, ['cls-fail', 'cls-ok'])
-    ).resolves.toBeUndefined();
-
-    // Second write still happened despite first failure.
-    expect(mockSend).toHaveBeenCalledTimes(2);
-    expect(b.classificationOutcome).toBe('incorrect');
-  });
-
-  it('does not write when the skill is not in the in-memory cache (store silently skips)', async () => {
-    const store = makeStore();
-    (store as any).loaded = true;
-    (store as any).skills = [];
-
-    await recordClassifierMisclassifications(store, ['missing-1', 'missing-2']);
-
-    // recordClassificationOutcome short-circuits when skill not found,
-    // so no network call happens.
-    expect(mockSend).not.toHaveBeenCalled();
-  });
-
-  it('never rejects even when every underlying write fails', async () => {
-    const store = makeStore();
-    (store as any).loaded = true;
-    (store as any).skills = [
-      makeSkill({ id: 'x' }),
-      makeSkill({ id: 'y' }),
-    ];
-    mockSend.mockRejectedValue(new Error('dynamo down'));
-
-    await expect(
-      recordClassifierMisclassifications(store, ['x', 'y'])
-    ).resolves.toBeUndefined();
-  });
-});
 
 // ---------------------------------------------------------------------------
 // Per-run skill-telemetry summary (v1.50.0 D — CP3)
