@@ -63,12 +63,16 @@ class PipelineCoordinator {
         if (flakinessSignal?.isFlaky) {
             core.warning(`⚠️ FLAKINESS DETECTED: ${flakinessSignal.message}`);
         }
-        const skillContext = skillStore
-            ? skillStore.formatForClassifier({
+        const classifierSkills = skillStore
+            ? skillStore.findForClassifier({
                 framework: errorData.framework || 'unknown',
                 spec: errorData.fileName,
                 errorMessage: errorData.message,
             })
+            : [];
+        const classifierSkillIds = classifierSkills.map((s) => s.id);
+        const skillContext = skillStore
+            ? skillStore.formatSkillsForClassifierContext(classifierSkills)
             : '';
         const flakinessContext = flakinessSignal?.isFlaky
             ? [
@@ -86,17 +90,17 @@ class PipelineCoordinator {
         if (result.confidence < this.inputs.confidenceThreshold) {
             core.warning(`Confidence ${result.confidence}% is below threshold ${this.inputs.confidenceThreshold}%`);
             (0, output_1.setInconclusiveOutput)(result, this.inputs, errorData);
-            return { ...result, responseId: result.responseId };
+            return { ...result, responseId: result.responseId, classifierSkillIds };
         }
         if (result.verdict !== 'TEST_ISSUE') {
             (0, output_1.setSuccessOutput)(result, errorData, null, flakinessSignal);
-            return { ...result, responseId: result.responseId };
+            return { ...result, responseId: result.responseId, classifierSkillIds };
         }
         core.setOutput('verdict', result.verdict);
         core.setOutput('confidence', result.confidence.toString());
         core.setOutput('reasoning', result.reasoning);
         core.setOutput('summary', result.summary || '');
-        return { ...result, responseId: result.responseId };
+        return { ...result, responseId: result.responseId, classifierSkillIds };
     }
     async repair(_classification, errorData, skillStore) {
         const autoFixTargetRepo = this.inputs.autoFixTargetRepo
@@ -172,6 +176,14 @@ class PipelineCoordinator {
             skillStore = new skill_store_1.SkillStore(this.inputs.triageAwsRegion || 'us-east-1', this.inputs.triageDynamoTable || 'triage-skills-v1-live', autoFixTargetRepo.owner, autoFixTargetRepo.repo);
             await skillStore.load();
         }
+        try {
+            await this.runClassifyAndRepair(errorData, skillStore, autoFixTargetRepo);
+        }
+        finally {
+            skillStore?.logRunSummary();
+        }
+    }
+    async runClassifyAndRepair(errorData, skillStore, autoFixTargetRepo) {
         const classification = await this.classify(errorData, skillStore);
         if (classification.confidence < this.inputs.confidenceThreshold)
             return;

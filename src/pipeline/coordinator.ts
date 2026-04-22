@@ -31,6 +31,30 @@ export interface ClassificationResult {
   suggestedSourceLocations?: Array<{ file: string; lines: string; reason: string }>;
   responseId?: string;
   fixRecommendation?: FixRecommendation;
+  /**
+   * IDs of the skills that were surfaced to the classifier on this run
+   * (the ones rendered into the classifier prompt via
+   * `formatSkillsForClassifierContext`).
+   *
+   * Populated but currently UNUSED by any downstream consumer in
+   * v1.50.0. The A1-writer that would have flipped
+   * `classificationOutcome='incorrect'` on these IDs was deferred to
+   * v1.50.1 pending a review finding: the baseline-pass signal this
+   * writer would key on conflates transient flake with genuine
+   * classifier misread, and needs a multi-pass baseline + compensating
+   * 'correct' writer before the signal becomes semantically honest.
+   * See the v1.50.0 review transcript and the deferred-A1 items in
+   * the triage-agent-code-review SKILL.md for the design work still
+   * owed.
+   *
+   * Kept populated (rather than removed) because:
+   *   1. `findForClassifier` runs anyway to feed the classifier prompt,
+   *      so capturing the IDs is free.
+   *   2. When A1 re-lands in v1.50.1, the plumbing from `classify()`
+   *      into `ClassificationResult` won't need to be re-built — only
+   *      the consumer in `iterativeFixValidateLoop` will.
+   */
+  classifierSkillIds?: string[];
 }
 
 export interface RepairResult {
@@ -87,12 +111,23 @@ export class PipelineCoordinator {
       core.warning(`⚠️ FLAKINESS DETECTED: ${flakinessSignal.message}`);
     }
 
-    const skillContext = skillStore
-      ? skillStore.formatForClassifier({
+    // v1.50.0 A1-writer: split `findForClassifier` from the prompt
+    // renderer so we can capture the exact list of skill IDs that were
+    // surfaced to the classifier. If the baseline check later proves
+    // the classifier wrong (test passes without fix), these are the
+    // IDs that get `recordClassificationOutcome('incorrect')` against
+    // them. Single `findForClassifier` call — no duplicate work.
+    const classifierSkills = skillStore
+      ? skillStore.findForClassifier({
           framework: errorData.framework || 'unknown',
           spec: errorData.fileName,
           errorMessage: errorData.message,
         })
+      : [];
+    const classifierSkillIds = classifierSkills.map((s) => s.id);
+
+    const skillContext = skillStore
+      ? skillStore.formatSkillsForClassifierContext(classifierSkills)
       : '';
 
     const flakinessContext = flakinessSignal?.isFlaky
@@ -116,12 +151,12 @@ export class PipelineCoordinator {
         `Confidence ${result.confidence}% is below threshold ${this.inputs.confidenceThreshold}%`
       );
       setInconclusiveOutput(result, this.inputs, errorData);
-      return { ...result, responseId: result.responseId };
+      return { ...result, responseId: result.responseId, classifierSkillIds };
     }
 
     if (result.verdict !== 'TEST_ISSUE') {
       setSuccessOutput(result, errorData, null, flakinessSignal);
-      return { ...result, responseId: result.responseId };
+      return { ...result, responseId: result.responseId, classifierSkillIds };
     }
 
     core.setOutput('verdict', result.verdict);
@@ -129,7 +164,7 @@ export class PipelineCoordinator {
     core.setOutput('reasoning', result.reasoning);
     core.setOutput('summary', result.summary || '');
 
-    return { ...result, responseId: result.responseId };
+    return { ...result, responseId: result.responseId, classifierSkillIds };
   }
 
   async repair(
@@ -262,6 +297,29 @@ export class PipelineCoordinator {
       await skillStore.load();
     }
 
+    // v1.50.0 CP3 (D): single-line per-run summary of learning-loop
+    // activity must fire at EVERY exit point after skillStore was
+    // created (inconclusive / non-TEST_ISSUE / chronic-flakiness-skip
+    // / success). try/finally guarantees one summary line per run
+    // even if repair() throws. No-op when skillStore is absent.
+    try {
+      await this.runClassifyAndRepair(errorData, skillStore, autoFixTargetRepo);
+    } finally {
+      skillStore?.logRunSummary();
+    }
+  }
+
+  /**
+   * Inner body of `execute()` wrapped in a try/finally by the caller
+   * so `logRunSummary()` fires at every exit point (early return +
+   * happy path + thrown). Private because the contract mirrors
+   * `execute()`'s (void).
+   */
+  private async runClassifyAndRepair(
+    errorData: ErrorData,
+    skillStore: SkillStore | undefined,
+    autoFixTargetRepo: { owner: string; repo: string } | null
+  ): Promise<void> {
     const classification = await this.classify(errorData, skillStore);
 
     if (classification.confidence < this.inputs.confidenceThreshold) return;

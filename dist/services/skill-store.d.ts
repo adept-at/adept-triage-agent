@@ -47,6 +47,7 @@ export declare class SkillStore {
     private owner;
     private repo;
     private _cachedClient;
+    private usageStats;
     constructor(region: string, tableName: string, owner: string, repo: string);
     private getDocClient;
     load(): Promise<TriageSkill[]>;
@@ -66,6 +67,13 @@ export declare class SkillStore {
     }): TriageSkill[];
     detectFlakiness(spec: string): FlakinessSignal;
     countForSpec(spec: string): number;
+    getUsageStats(): {
+        loaded: number;
+        surfaced: number;
+        saved: number;
+    };
+    logRunSummary(): void;
+    formatSkillsForClassifierContext(relevant: TriageSkill[]): string;
     formatForClassifier(opts: {
         framework: string;
         spec?: string;
@@ -109,5 +117,6 @@ export declare function describeFixPattern(changes: Array<{
     changeType?: string;
 }>): string;
 export declare function normalizeError(msg: string): string;
+export declare function recordClassifierMisclassifications(skillStore: SkillStore, skillIds: string[]): Promise<void>;
 export declare function formatSkillsForPrompt(skills: TriageSkill[], role: 'investigation' | 'fix_generation' | 'review', flakiness?: FlakinessSignal): string;
 //# sourceMappingURL=skill-store.d.ts.map

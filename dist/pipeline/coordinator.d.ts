@@ -17,6 +17,7 @@ export interface ClassificationResult {
     }>;
     responseId?: string;
     fixRecommendation?: FixRecommendation;
+    classifierSkillIds?: string[];
 }
 export interface RepairResult {
     fixRecommendation: FixRecommendation | null;
@@ -49,6 +50,7 @@ export declare class PipelineCoordinator {
     classify(errorData: ErrorData, skillStore?: SkillStore): Promise<ClassificationResult>;
     repair(_classification: ClassificationResult, errorData: ErrorData, skillStore?: SkillStore): Promise<RepairResult>;
     execute(): Promise<void>;
+    private runClassifyAndRepair;
     private handleNoErrorData;
 }
 export {};

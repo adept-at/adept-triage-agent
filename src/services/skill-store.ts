@@ -26,8 +26,30 @@ export interface TriageSkill {
 
   confidence: number;
   iterations: number;
+  /**
+   * GitHub PR URL if the fix was applied and a PR was created (via the
+   * auto-fix path). Empty string for skills that were validated locally
+   * but never shipped as a PR (e.g., local-only runs, or runs where
+   * push/PR creation failed post-validation).
+   *
+   * When non-empty: surfaced to fix_generation and review agents as a
+   * "prior validated fix landed as this PR" trust signal (v1.50.0 B1).
+   * Not surfaced to investigation, to avoid anchoring fresh evidence
+   * gathering on a "this already shipped" narrative.
+   */
   prUrl: string;
   validatedLocally: boolean;
+  /**
+   * Snapshot of `countForSpec(spec)` at the moment this skill was saved.
+   * Dashboard / analytics field only — no runtime consumer reads this to
+   * alter agent behavior. Useful for "which specs are accumulating the
+   * most skills" queries without requiring a full-store aggregation.
+   *
+   * Because `countForSpec` excludes retired skills (v1.49.3 A3), this
+   * value is the count of non-retired same-spec skills at save time.
+   * Retired skills remain in the store for historical flakiness signal
+   * but don't inflate this counter for future skills.
+   */
   priorSkillCount: number;
 
   successCount: number;
@@ -291,6 +313,24 @@ export class SkillStore {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private _cachedClient: any;
 
+  /**
+   * Per-run usage tracker (v1.50.0 CP3 — D). Accumulates learning-loop
+   * activity so `logRunSummary()` can emit a single grep-stable line
+   * at the end of each run. Complements the per-event `skill-telemetry`
+   * logs from v1.49.3 A4 with a single-row per-run view.
+   *
+   * `surfacedIds` is a Set so multiple retrieval calls (e.g.
+   * findRelevant + findForClassifier, each possibly touching the same
+   * skill) count the skill once. This matches the operator's natural
+   * reading of "surfaced" — "this skill influenced the pipeline" —
+   * rather than "this many surfacing events happened."
+   */
+  private usageStats = {
+    loaded: 0,
+    saved: 0,
+    surfacedIds: new Set<string>(),
+  };
+
   constructor(
     region: string,
     tableName: string,
@@ -354,6 +394,7 @@ export class SkillStore {
         .map(backfillDefaults);
       this.loaded = true;
       this.loadSucceeded = true;
+      this.usageStats.loaded = this.skills.length;
       core.info(`📝 Loaded ${this.skills.length} skill(s) from DynamoDB (${this.tableName}) for ${this.owner}/${this.repo}`);
     } catch (err) {
       this.loadFailureReason = err instanceof Error ? `${err.name}: ${err.message}` : String(err);
@@ -395,6 +436,7 @@ export class SkillStore {
           Item: { pk, sk, ...skill },
         })
       );
+      this.usageStats.saved += 1;
     } catch (err) {
       this.skills = this.skills.filter((s) => s.id !== skill.id);
       core.warning(`DynamoDB skill save failed for ${this.tableName}: ${err}`);
@@ -585,7 +627,7 @@ export class SkillStore {
       return { skill, score };
     });
 
-    return scored
+    const result = scored
       .filter((s) => s.score > 0)
       .sort((a, b) => {
         const scoreDiff = b.score - a.score;
@@ -594,6 +636,8 @@ export class SkillStore {
       })
       .slice(0, limit)
       .map((s) => s.skill);
+    for (const s of result) this.usageStats.surfacedIds.add(s.id);
+    return result;
   }
 
   /**
@@ -628,7 +672,7 @@ export class SkillStore {
       return { skill, score };
     });
 
-    return scored
+    const result = scored
       .filter((s) => s.score > 0)
       .sort((a, b) => {
         const scoreDiff = b.score - a.score;
@@ -637,6 +681,8 @@ export class SkillStore {
       })
       .slice(0, 3)
       .map((s) => s.skill);
+    for (const s of result) this.usageStats.surfacedIds.add(s.id);
+    return result;
   }
 
   /**
@@ -706,12 +752,78 @@ export class SkillStore {
     return this.skills.filter((s) => s.spec === spec && !s.retired).length;
   }
 
-  formatForClassifier(opts: {
-    framework: string;
-    spec?: string;
-    errorMessage?: string;
-  }): string {
-    const relevant = this.findForClassifier(opts);
+  /**
+   * Snapshot of the per-run usage tracker (v1.50.0 CP3 — D).
+   *
+   * Returned values represent the entire run-to-date: the number of
+   * skills loaded at run start, the number of unique skills surfaced
+   * via findRelevant / findForClassifier across all roles, and the
+   * number of new skills successfully saved (failed saves do not count).
+   *
+   * Callers should treat this as read-only. No defensive clone is
+   * needed because `surfaced` is flattened to a count, not a live Set.
+   */
+  getUsageStats(): { loaded: number; surfaced: number; saved: number } {
+    return {
+      loaded: this.usageStats.loaded,
+      surfaced: this.usageStats.surfacedIds.size,
+      saved: this.usageStats.saved,
+    };
+  }
+
+  /**
+   * Emit the grep-stable per-run skill-telemetry summary line.
+   *
+   * Format (stable — operators and log pipelines match on it):
+   *   📊 skill-telemetry-summary loaded=N surfaced=M saved=K
+   *
+   * Complements the per-event `skill-telemetry role=... ids=...` lines
+   * from v1.49.3 A4 with a single-row per-run view so operators can
+   * answer "did the learning loop run this round?" without
+   * aggregating multiple lines. Emitted even when all counters are
+   * zero — explicit "no activity" is more actionable than a silent
+   * absence.
+   *
+   * Never-throw contract: wrapped in try/catch so a broken core.info
+   * (e.g. EPIPE on a closed stream) cannot destabilize end-of-run
+   * cleanup.
+   */
+  logRunSummary(): void {
+    // The entire body is wrapped in try/catch so that nothing this
+    // method does — including the getter call, template-literal
+    // construction, or the final core.info write — can throw out of
+    // the coordinator's `execute()` finally-block. If this method
+    // escaped with an exception, JavaScript finally-throw-wins
+    // semantics would mask the original error from
+    // `runClassifyAndRepair`, hiding real failures behind a
+    // telemetry issue. Losing the summary line on a broken log
+    // stream or getter is strictly better than that failure mode.
+    try {
+      const stats = this.getUsageStats();
+      core.info(
+        `📊 skill-telemetry-summary loaded=${stats.loaded} ` +
+          `surfaced=${stats.surfaced} saved=${stats.saved}`
+      );
+    } catch {
+      // Intentional swallow — never-throw contract above.
+    }
+  }
+
+  /**
+   * Pure renderer: given an already-retrieved list of classifier skills,
+   * produce the context string suitable for the classifier prompt.
+   *
+   * v1.50.0 A1-writer: split out from `formatForClassifier` so
+   * `PipelineCoordinator.classify()` can capture the *exact* list of
+   * skill IDs that were surfaced (via `findForClassifier`) and later
+   * write `recordClassificationOutcome('incorrect')` against them if
+   * the subsequent investigation contradicts the classifier's verdict.
+   *
+   * Splitting the lookup from the rendering avoids a double `findForClassifier`
+   * call on every run — the coordinator now calls the lookup once, captures
+   * the IDs, and passes the same list here for rendering.
+   */
+  formatSkillsForClassifierContext(relevant: TriageSkill[]): string {
     if (relevant.length === 0) return '';
 
     // v1.49.3 A4: emit telemetry so operators can verify which skill
@@ -748,6 +860,14 @@ export class SkillStore {
         return lines.join('\n');
       })
       .join('\n');
+  }
+
+  formatForClassifier(opts: {
+    framework: string;
+    spec?: string;
+    errorMessage?: string;
+  }): string {
+    return this.formatSkillsForClassifierContext(this.findForClassifier(opts));
   }
 
   formatForInvestigation(opts: { framework: string; spec?: string; errorMessage?: string }): string {
@@ -915,6 +1035,74 @@ function errorSimilarity(a: string, b: string): number {
 }
 
 /**
+ * Mark each of the given skill IDs with `classificationOutcome='incorrect'`.
+ *
+ * STATUS: DEFERRED — not wired to any runtime call site in v1.50.0.
+ *
+ * Intended trigger (deferred to v1.50.1 pending design work): when
+ * we have strong evidence the classifier's TEST_ISSUE verdict on a
+ * run was wrong, flip `classificationOutcome` on the skills that were
+ * surfaced to the classifier (via `findForClassifier`) from their
+ * current value to `'incorrect'` so the NEXT classifier call sees
+ * the honest signal.
+ *
+ * Why deferred: two independent reviewers of the initial v1.50.0
+ * wiring flagged that:
+ *   1. The obvious trigger — `baselineCheck.passed` from
+ *      `LocalFixValidator` — is a single test run with no retry. It
+ *      conflates "test was never broken" (classifier wrong) with
+ *      "test is flaky" (classifier right, fix moot) with "product
+ *      race self-resolved" (neither). Attribution under that signal
+ *      would over-mark `'incorrect'` on exactly the flaky specs the
+ *      tool runs on most.
+ *   2. The `'correct'` write path at
+ *      `coordinator.ts` writes against the NEW skill being saved,
+ *      not against the PRIOR classifier-surfaced skills. There is
+ *      no compensating path that ever writes `'correct'` back to
+ *      a mis-marked prior skill. So once this writer fires, the
+ *      `'incorrect'` mark is sticky — a one-way ratchet, not the
+ *      self-correcting dataset the naive design assumed.
+ *
+ * The v1.50.1 package that re-lands this helper needs all of:
+ *   - multi-pass baseline (N>=2 consecutive passes) OR a stronger
+ *     trigger like `verdictOverride=APP_CODE` at agent-orchestrator.ts
+ *   - compensating `'correct'` writer on happy-path runs where
+ *     classifier-surfaced skills guided the pipeline to a validated fix
+ *   - update to the classifier framing note in `openai-client.ts`
+ *     so the classifier stops discounting `'incorrect'` as selection-
+ *     bias artifact
+ *
+ * Kept (as unused export) because:
+ *   - the tests lock in the never-throw / empty-no-op / write-semantics
+ *     contract so the helper is correct when re-wired
+ *   - removing and re-adding would churn the git log and lose test
+ *     coverage between releases
+ *
+ * Never-reject contract: delegates to `skillStore.recordClassificationOutcome`
+ * which never rejects. If the underlying DynamoDB write fails, the write
+ * is skipped silently — `core.warning` in the store logs the failure —
+ * and we continue to the next skill. This mirrors the same convention
+ * used by `recordOutcome` in the coordinator's success path.
+ */
+export async function recordClassifierMisclassifications(
+  skillStore: SkillStore,
+  skillIds: string[]
+): Promise<void> {
+  if (skillIds.length === 0) return;
+  for (const id of skillIds) {
+    try {
+      await skillStore.recordClassificationOutcome(id, 'incorrect');
+    } catch {
+      // `recordClassificationOutcome` is documented as never-reject, but
+      // belt-and-suspenders: if a future change breaks that contract,
+      // we still record outcomes for the remaining skills. Losing the
+      // write for one skill is strictly better than aborting the loop
+      // and leaving the classifier dataset in a partially-updated state.
+    }
+  }
+}
+
+/**
  * Format skills for injection into agent prompts.
  * Different framing per agent role to avoid anchoring bias.
  */
@@ -1009,12 +1197,47 @@ export function formatSkillsForPrompt(
     const lines: string[] = [
       `**Fix ${i + 1}** (${s.createdAt.split('T')[0]}, ${s.confidence}% confidence, ${s.iterations} iteration${s.iterations !== 1 ? 's' : ''})`,
       `- Spec: ${sanitizeForPrompt(s.spec)}`,
+    ];
+
+    // v1.50.0 B1: surface testName for all three roles. Anchors the
+    // skill to a specific test case within the spec, not just the
+    // file. Sanitized against prompt-injection payloads like any
+    // other skill-derived string. Empty/missing testName is omitted
+    // entirely rather than rendered as "Test: (empty)" — the spec
+    // line alone is still informative.
+    if (s.testName && s.testName.trim()) {
+      lines.push(`- Test: ${sanitizeForPrompt(s.testName)}`);
+    }
+
+    lines.push(
       `- Error: ${sanitizeForPrompt(s.errorPattern)}`,
       `- Root cause: ${sanitizeForPrompt(s.rootCauseCategory)}`,
       `- Pattern: ${sanitizeForPrompt(s.fix.pattern)}`,
       `- Change type: ${sanitizeForPrompt(s.fix.changeType)} in ${sanitizeForPrompt(s.fix.file)}`,
-      `- Track record: ${trackRecord}${outcome}`,
-    ];
+      `- Track record: ${trackRecord}${outcome}`
+    );
+
+    // v1.50.0 B1: surface prUrl for fix_generation and review only.
+    // A non-empty prUrl means the prior fix actually shipped as a PR
+    // — a trust signal stronger than "validated locally." Investigation
+    // deliberately does NOT see this for the same reason it doesn't
+    // see the causal trace: its job is fresh evidence gathering, and
+    // "this fix landed in the repo" would anchor it toward pattern-
+    // matching over first-principles analysis.
+    //
+    // Empty/missing prUrl is omitted entirely — most skills don't
+    // have a PR URL (the auto-fix PR-creation path is one of several
+    // write paths), and rendering "Shipped as: (empty)" on every
+    // non-shipped skill would inflate the prompt with no signal.
+    const shouldRenderPrUrl =
+      (role === 'fix_generation' || role === 'review') &&
+      s.prUrl &&
+      s.prUrl.trim();
+    if (shouldRenderPrUrl) {
+      lines.push(
+        `- Shipped as: ${sanitizeForPrompt(s.prUrl)} (prior validated fix landed as this PR — strong trust signal)`
+      );
+    }
 
     // Validation gate (v1.49.2): only surface the causal trace when the
     // skill represents a *validated* (successful) fix. Unvalidated skills

@@ -39,6 +39,7 @@ exports.normalizeFramework = normalizeFramework;
 exports.buildSkill = buildSkill;
 exports.describeFixPattern = describeFixPattern;
 exports.normalizeError = normalizeError;
+exports.recordClassifierMisclassifications = recordClassifierMisclassifications;
 exports.formatSkillsForPrompt = formatSkillsForPrompt;
 const core = __importStar(require("@actions/core"));
 const crypto = __importStar(require("crypto"));
@@ -148,6 +149,11 @@ class SkillStore {
     owner;
     repo;
     _cachedClient;
+    usageStats = {
+        loaded: 0,
+        saved: 0,
+        surfacedIds: new Set(),
+    };
     constructor(region, tableName, owner, repo) {
         this.region = region;
         this.tableName = tableName;
@@ -189,6 +195,7 @@ class SkillStore {
                 .map(backfillDefaults);
             this.loaded = true;
             this.loadSucceeded = true;
+            this.usageStats.loaded = this.skills.length;
             core.info(`📝 Loaded ${this.skills.length} skill(s) from DynamoDB (${this.tableName}) for ${this.owner}/${this.repo}`);
         }
         catch (err) {
@@ -212,6 +219,7 @@ class SkillStore {
                 TableName: this.tableName,
                 Item: { pk, sk, ...skill },
             }));
+            this.usageStats.saved += 1;
         }
         catch (err) {
             this.skills = this.skills.filter((s) => s.id !== skill.id);
@@ -338,7 +346,7 @@ class SkillStore {
             }
             return { skill, score };
         });
-        return scored
+        const result = scored
             .filter((s) => s.score > 0)
             .sort((a, b) => {
             const scoreDiff = b.score - a.score;
@@ -348,6 +356,9 @@ class SkillStore {
         })
             .slice(0, limit)
             .map((s) => s.skill);
+        for (const s of result)
+            this.usageStats.surfacedIds.add(s.id);
+        return result;
     }
     findForClassifier(opts) {
         const normalized = normalizeFramework(opts.framework);
@@ -370,7 +381,7 @@ class SkillStore {
                 score += 3;
             return { skill, score };
         });
-        return scored
+        const result = scored
             .filter((s) => s.score > 0)
             .sort((a, b) => {
             const scoreDiff = b.score - a.score;
@@ -380,6 +391,9 @@ class SkillStore {
         })
             .slice(0, 3)
             .map((s) => s.skill);
+        for (const s of result)
+            this.usageStats.surfacedIds.add(s.id);
+        return result;
     }
     detectFlakiness(spec) {
         const now = Date.now();
@@ -412,8 +426,23 @@ class SkillStore {
     countForSpec(spec) {
         return this.skills.filter((s) => s.spec === spec && !s.retired).length;
     }
-    formatForClassifier(opts) {
-        const relevant = this.findForClassifier(opts);
+    getUsageStats() {
+        return {
+            loaded: this.usageStats.loaded,
+            surfaced: this.usageStats.surfacedIds.size,
+            saved: this.usageStats.saved,
+        };
+    }
+    logRunSummary() {
+        try {
+            const stats = this.getUsageStats();
+            core.info(`📊 skill-telemetry-summary loaded=${stats.loaded} ` +
+                `surfaced=${stats.surfaced} saved=${stats.saved}`);
+        }
+        catch {
+        }
+    }
+    formatSkillsForClassifierContext(relevant) {
         if (relevant.length === 0)
             return '';
         logSkillTelemetry('classifier', relevant.map((s) => s.id));
@@ -432,6 +461,9 @@ class SkillStore {
             return lines.join('\n');
         })
             .join('\n');
+    }
+    formatForClassifier(opts) {
+        return this.formatSkillsForClassifierContext(this.findForClassifier(opts));
     }
     formatForInvestigation(opts) {
         const relevant = this.findRelevant({
@@ -530,6 +562,17 @@ function errorSimilarity(a, b) {
     const union = tokensA.size + tokensB.size - intersection;
     return union === 0 ? 0 : intersection / union;
 }
+async function recordClassifierMisclassifications(skillStore, skillIds) {
+    if (skillIds.length === 0)
+        return;
+    for (const id of skillIds) {
+        try {
+            await skillStore.recordClassificationOutcome(id, 'incorrect');
+        }
+        catch {
+        }
+    }
+}
 function formatSkillsForPrompt(skills, role, flakiness) {
     if (skills.length === 0 && !flakiness?.isFlaky)
         return '';
@@ -586,12 +629,17 @@ function formatSkillsForPrompt(skills, role, flakiness) {
         const lines = [
             `**Fix ${i + 1}** (${s.createdAt.split('T')[0]}, ${s.confidence}% confidence, ${s.iterations} iteration${s.iterations !== 1 ? 's' : ''})`,
             `- Spec: ${sanitizeForPrompt(s.spec)}`,
-            `- Error: ${sanitizeForPrompt(s.errorPattern)}`,
-            `- Root cause: ${sanitizeForPrompt(s.rootCauseCategory)}`,
-            `- Pattern: ${sanitizeForPrompt(s.fix.pattern)}`,
-            `- Change type: ${sanitizeForPrompt(s.fix.changeType)} in ${sanitizeForPrompt(s.fix.file)}`,
-            `- Track record: ${trackRecord}${outcome}`,
         ];
+        if (s.testName && s.testName.trim()) {
+            lines.push(`- Test: ${sanitizeForPrompt(s.testName)}`);
+        }
+        lines.push(`- Error: ${sanitizeForPrompt(s.errorPattern)}`, `- Root cause: ${sanitizeForPrompt(s.rootCauseCategory)}`, `- Pattern: ${sanitizeForPrompt(s.fix.pattern)}`, `- Change type: ${sanitizeForPrompt(s.fix.changeType)} in ${sanitizeForPrompt(s.fix.file)}`, `- Track record: ${trackRecord}${outcome}`);
+        const shouldRenderPrUrl = (role === 'fix_generation' || role === 'review') &&
+            s.prUrl &&
+            s.prUrl.trim();
+        if (shouldRenderPrUrl) {
+            lines.push(`- Shipped as: ${sanitizeForPrompt(s.prUrl)} (prior validated fix landed as this PR — strong trust signal)`);
+        }
         const isValidated = s.validatedLocally === true || (s.successCount ?? 0) > 0;
         if (includeTrace && s.failureModeTrace && isValidated) {
             const t = s.failureModeTrace;
