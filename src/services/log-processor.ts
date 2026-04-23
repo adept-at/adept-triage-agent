@@ -395,6 +395,52 @@ async function fetchProductDiff(
 }
 
 /**
+ * Decide which product diff to surface based on the three-case rule:
+ * 1. Same-repo PR → reuse the PR diff
+ * 2. Vercel preview detected → skip (no branch input)
+ * 3. Fallthrough → use the fetched last-N-commits diff
+ */
+function selectProductDiff({
+  prNumber,
+  repoOwner,
+  repoName,
+  productRepo,
+  validationPreviewUrl,
+  prDiff,
+  fetchedProductDiff,
+  commitCount,
+}: {
+  prNumber: string | undefined;
+  repoOwner: string;
+  repoName: string;
+  productRepo: string;
+  validationPreviewUrl: string | undefined;
+  prDiff: PRDiff | null;
+  fetchedProductDiff: PRDiff | null;
+  commitCount: number;
+}): PRDiff | null {
+  if (prNumber && `${repoOwner}/${repoName}`.toLowerCase() === productRepo.toLowerCase()) {
+    core.info(`📦 Product diff sourced from PR #${prNumber} (same-repo PR path)`);
+    return prDiff;
+  }
+
+  if (validationPreviewUrl) {
+    try {
+      const url = new URL(validationPreviewUrl);
+      if (url.hostname.endsWith('.vercel.app')) {
+        core.info(`📦 Product diff skipped — preview URL detected (${url.hostname}) and no branch input available`);
+        return null;
+      }
+    } catch {
+      // fall through to Case 3
+    }
+  }
+
+  core.info(`📦 Product diff sourced from last ${commitCount} commits on ${productRepo} main`);
+  return fetchedProductDiff;
+}
+
+/**
  * Fetch all artifacts in parallel
  */
 async function fetchArtifactsParallel(
@@ -437,7 +483,24 @@ async function fetchArtifactsParallel(
 
   const productDiffPromise = fetchProductDiff(artifactFetcher, inputs);
 
-  return Promise.all([screenshotsPromise, artifactLogsPromise, prDiffPromise, productDiffPromise]);
+  const [screenshots, artifactLogs, prDiff, rawProductDiff] = await Promise.all([
+    screenshotsPromise, artifactLogsPromise, prDiffPromise, productDiffPromise,
+  ]);
+
+  const productRepo = inputs.productRepo || DEFAULT_PRODUCT_REPO;
+  const commitCount = inputs.productDiffCommits || 5;
+  const productDiff = selectProductDiff({
+    prNumber: inputs.prNumber,
+    repoOwner: diffRepoDetails.owner,
+    repoName: diffRepoDetails.repo,
+    productRepo,
+    validationPreviewUrl: inputs.validationPreviewUrl,
+    prDiff,
+    fetchedProductDiff: rawProductDiff,
+    commitCount,
+  });
+
+  return [screenshots, artifactLogs, prDiff, productDiff];
 }
 
 /**

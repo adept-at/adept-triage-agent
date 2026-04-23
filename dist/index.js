@@ -7402,6 +7402,25 @@ async function fetchProductDiff(artifactFetcher, inputs) {
         return null;
     }
 }
+function selectProductDiff({ prNumber, repoOwner, repoName, productRepo, validationPreviewUrl, prDiff, fetchedProductDiff, commitCount, }) {
+    if (prNumber && `${repoOwner}/${repoName}`.toLowerCase() === productRepo.toLowerCase()) {
+        core.info(`📦 Product diff sourced from PR #${prNumber} (same-repo PR path)`);
+        return prDiff;
+    }
+    if (validationPreviewUrl) {
+        try {
+            const url = new URL(validationPreviewUrl);
+            if (url.hostname.endsWith('.vercel.app')) {
+                core.info(`📦 Product diff skipped — preview URL detected (${url.hostname}) and no branch input available`);
+                return null;
+            }
+        }
+        catch {
+        }
+    }
+    core.info(`📦 Product diff sourced from last ${commitCount} commits on ${productRepo} main`);
+    return fetchedProductDiff;
+}
 async function fetchArtifactsParallel(artifactFetcher, runId, jobName, artifactRepoDetails, diffRepoDetails, inputs) {
     const screenshotsPromise = artifactFetcher
         .fetchScreenshots(runId, jobName, artifactRepoDetails)
@@ -7427,7 +7446,22 @@ async function fetchArtifactsParallel(artifactFetcher, runId, jobName, artifactR
     });
     const prDiffPromise = fetchDiffWithFallback(artifactFetcher, inputs, diffRepoDetails);
     const productDiffPromise = fetchProductDiff(artifactFetcher, inputs);
-    return Promise.all([screenshotsPromise, artifactLogsPromise, prDiffPromise, productDiffPromise]);
+    const [screenshots, artifactLogs, prDiff, rawProductDiff] = await Promise.all([
+        screenshotsPromise, artifactLogsPromise, prDiffPromise, productDiffPromise,
+    ]);
+    const productRepo = inputs.productRepo || constants_1.DEFAULT_PRODUCT_REPO;
+    const commitCount = inputs.productDiffCommits || 5;
+    const productDiff = selectProductDiff({
+        prNumber: inputs.prNumber,
+        repoOwner: diffRepoDetails.owner,
+        repoName: diffRepoDetails.repo,
+        productRepo,
+        validationPreviewUrl: inputs.validationPreviewUrl,
+        prDiff,
+        fetchedProductDiff: rawProductDiff,
+        commitCount,
+    });
+    return [screenshots, artifactLogs, prDiff, productDiff];
 }
 function buildErrorContext(failedJob, extractedError, artifactLogs, fullLogs, inputs) {
     const contextParts = [
