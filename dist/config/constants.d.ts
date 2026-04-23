@@ -21,10 +21,29 @@ export declare const CONFIDENCE: {
 };
 export declare const OPENAI: {
     readonly MODEL: "gpt-5.3-codex";
-    readonly MAX_COMPLETION_TOKENS: 16384;
+    readonly LEGACY_MODEL: "gpt-5.3-codex";
+    readonly UPGRADED_MODEL: "gpt-5.4";
+    readonly MAX_COMPLETION_TOKENS: 24000;
     readonly MAX_RETRIES: 3;
     readonly RETRY_DELAY_MS: 1000;
 };
+export declare const AGENT_MODEL: {
+    readonly classification: "gpt-5.3-codex";
+    readonly analysis: "gpt-5.3-codex";
+    readonly investigation: "gpt-5.3-codex";
+    readonly fixGeneration: "gpt-5.4";
+    readonly review: "gpt-5.4";
+    readonly singleShot: "gpt-5.3-codex";
+};
+export declare const REASONING_EFFORT: {
+    readonly classification: "none";
+    readonly analysis: "none";
+    readonly investigation: "none";
+    readonly fixGeneration: "xhigh";
+    readonly review: "xhigh";
+    readonly singleShot: "none";
+};
+export type ReasoningEffort = 'none' | 'low' | 'medium' | 'high' | 'xhigh';
 export declare const SHORT_SHA_LENGTH = 7;
 export declare const ARTIFACTS: {
     readonly MAX_PR_DIFF_FILES: 30;
@@ -63,7 +82,7 @@ export declare const DEFAULT_PRODUCT_URL = "https://learn.adept.at";
 export declare const AGENT_CONFIG: {
     readonly ENABLE_AGENTIC_REPAIR: boolean;
     readonly MAX_AGENT_ITERATIONS: 3;
-    readonly AGENT_TIMEOUT_MS: 120000;
+    readonly AGENT_TIMEOUT_MS: 300000;
     readonly REVIEW_REQUIRED_CONFIDENCE: 70;
     readonly INVESTIGATION_CHAIN_CONFIDENCE: 80;
 };

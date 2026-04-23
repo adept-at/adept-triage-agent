@@ -53,7 +53,7 @@ const skill_store_1 = __nccwpck_require__(60215);
 const constants_1 = __nccwpck_require__(58361);
 exports.DEFAULT_ORCHESTRATOR_CONFIG = {
     maxIterations: 3,
-    totalTimeoutMs: 120000,
+    totalTimeoutMs: 300000,
     minConfidence: 70,
     requireReview: true,
     fallbackToSingleShot: true,
@@ -70,8 +70,8 @@ class AgentOrchestrator {
         this.analysisAgent = new analysis_agent_1.AnalysisAgent(openaiClient);
         this.codeReadingAgent = new code_reading_agent_1.CodeReadingAgent(openaiClient, sourceFetchContext);
         this.investigationAgent = new investigation_agent_1.InvestigationAgent(openaiClient);
-        this.fixGenerationAgent = new fix_generation_agent_1.FixGenerationAgent(openaiClient);
-        this.reviewAgent = new review_agent_1.ReviewAgent(openaiClient);
+        this.fixGenerationAgent = new fix_generation_agent_1.FixGenerationAgent(openaiClient, this.config.modelOverrideFixGen ? { model: this.config.modelOverrideFixGen } : undefined);
+        this.reviewAgent = new review_agent_1.ReviewAgent(openaiClient, this.config.modelOverrideReview ? { model: this.config.modelOverrideReview } : undefined);
     }
     async orchestrate(context, errorData, previousResponseId, skills) {
         const startTime = Date.now();
@@ -1019,6 +1019,8 @@ class BaseAgent {
             temperature: this.config.temperature,
             responseAsJson: true,
             previousResponseId,
+            model: this.config.model,
+            reasoningEffort: this.config.reasoningEffort,
         });
         const parsed = this.parseResponse(text);
         if (!parsed) {
@@ -1875,8 +1877,14 @@ When recent product repo changes are provided (e.g. from the learn-webapp), you 
 5. If no product diff is provided or the diff is unrelated, state that explicitly in your reasoning.`;
 class FixGenerationAgent extends base_agent_1.BaseAgent {
     constructor(openaiClient, config) {
+        const resolvedModel = config?.model ?? constants_1.AGENT_MODEL.fixGeneration;
+        const resolvedEffort = resolvedModel === constants_1.OPENAI.UPGRADED_MODEL
+            ? (config?.reasoningEffort ?? constants_1.REASONING_EFFORT.fixGeneration)
+            : 'none';
         super(openaiClient, 'FixGenerationAgent', {
             ...config,
+            model: resolvedModel,
+            reasoningEffort: resolvedEffort,
             maxTokens: 6000,
         });
     }
@@ -2322,6 +2330,7 @@ exports.InvestigationAgent = InvestigationAgent;
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.ReviewAgent = void 0;
 const base_agent_1 = __nccwpck_require__(46575);
+const constants_1 = __nccwpck_require__(58361);
 const skill_store_1 = __nccwpck_require__(60215);
 const text_utils_1 = __nccwpck_require__(11744);
 const REVIEW_SEVERITIES = ['CRITICAL', 'WARNING', 'SUGGESTION'];
@@ -2334,7 +2343,15 @@ function formatTraceField(value) {
 }
 class ReviewAgent extends base_agent_1.BaseAgent {
     constructor(openaiClient, config) {
-        super(openaiClient, 'ReviewAgent', config);
+        const resolvedModel = config?.model ?? constants_1.AGENT_MODEL.review;
+        const resolvedEffort = resolvedModel === constants_1.OPENAI.UPGRADED_MODEL
+            ? (config?.reasoningEffort ?? constants_1.REASONING_EFFORT.review)
+            : 'none';
+        super(openaiClient, 'ReviewAgent', {
+            ...config,
+            model: resolvedModel,
+            reasoningEffort: resolvedEffort,
+        });
     }
     async execute(input, context, previousResponseId) {
         return this.executeWithTimeout(input, context, previousResponseId);
@@ -3434,7 +3451,7 @@ exports.ArtifactFetcher = ArtifactFetcher;
 "use strict";
 
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.BLAST_RADIUS = exports.CHRONIC_FLAKINESS_THRESHOLD = exports.FIX_VALIDATE_LOOP = exports.AGENT_CONFIG = exports.DEFAULT_PRODUCT_URL = exports.DEFAULT_PRODUCT_REPO = exports.AUTO_FIX = exports.TEST_ISSUE_CATEGORIES = exports.ERROR_TYPES = exports.FORMATTING = exports.ARTIFACTS = exports.SHORT_SHA_LENGTH = exports.OPENAI = exports.CONFIDENCE = exports.LOG_LIMITS = void 0;
+exports.BLAST_RADIUS = exports.CHRONIC_FLAKINESS_THRESHOLD = exports.FIX_VALIDATE_LOOP = exports.AGENT_CONFIG = exports.DEFAULT_PRODUCT_URL = exports.DEFAULT_PRODUCT_REPO = exports.AUTO_FIX = exports.TEST_ISSUE_CATEGORIES = exports.ERROR_TYPES = exports.FORMATTING = exports.ARTIFACTS = exports.SHORT_SHA_LENGTH = exports.REASONING_EFFORT = exports.AGENT_MODEL = exports.OPENAI = exports.CONFIDENCE = exports.LOG_LIMITS = void 0;
 exports.LOG_LIMITS = {
     GITHUB_MAX_SIZE: 50_000,
     ARTIFACT_SOFT_CAP: 20_000,
@@ -3458,9 +3475,27 @@ exports.CONFIDENCE = {
 };
 exports.OPENAI = {
     MODEL: 'gpt-5.3-codex',
-    MAX_COMPLETION_TOKENS: 16384,
+    LEGACY_MODEL: 'gpt-5.3-codex',
+    UPGRADED_MODEL: 'gpt-5.4',
+    MAX_COMPLETION_TOKENS: 24000,
     MAX_RETRIES: 3,
     RETRY_DELAY_MS: 1000,
+};
+exports.AGENT_MODEL = {
+    classification: exports.OPENAI.LEGACY_MODEL,
+    analysis: exports.OPENAI.LEGACY_MODEL,
+    investigation: exports.OPENAI.LEGACY_MODEL,
+    fixGeneration: exports.OPENAI.UPGRADED_MODEL,
+    review: exports.OPENAI.UPGRADED_MODEL,
+    singleShot: exports.OPENAI.LEGACY_MODEL,
+};
+exports.REASONING_EFFORT = {
+    classification: 'none',
+    analysis: 'none',
+    investigation: 'none',
+    fixGeneration: 'xhigh',
+    review: 'xhigh',
+    singleShot: 'none',
 };
 exports.SHORT_SHA_LENGTH = 7;
 exports.ARTIFACTS = {
@@ -3498,7 +3533,7 @@ exports.DEFAULT_PRODUCT_URL = 'https://learn.adept.at';
 exports.AGENT_CONFIG = {
     ENABLE_AGENTIC_REPAIR: process.env.ENABLE_AGENTIC_REPAIR !== 'false',
     MAX_AGENT_ITERATIONS: 3,
-    AGENT_TIMEOUT_MS: 120_000,
+    AGENT_TIMEOUT_MS: 300_000,
     REVIEW_REQUIRED_CONFIDENCE: 70,
     INVESTIGATION_CHAIN_CONFIDENCE: 80,
 };
@@ -3645,6 +3680,8 @@ function getInputs() {
         productDiffCommits: safeParseInt(core.getInput('PRODUCT_DIFF_COMMITS'), 5),
         triageAwsRegion: core.getInput('TRIAGE_AWS_REGION') || 'us-east-1',
         triageDynamoTable: core.getInput('TRIAGE_DYNAMO_TABLE') || 'triage-skills-v1-live',
+        modelOverrideFixGen: core.getInput('MODEL_OVERRIDE_FIX_GEN') || undefined,
+        modelOverrideReview: core.getInput('MODEL_OVERRIDE_REVIEW') || undefined,
     };
 }
 function resolveRepository(inputs) {
@@ -3719,8 +3756,9 @@ class OpenAIClient {
     constructor(apiKey) {
         this.openai = new openai_1.default({ apiKey });
     }
-    async analyze(errorData, examples, skillContext) {
-        const model = constants_1.OPENAI.MODEL;
+    async analyze(errorData, examples, skillContext, options) {
+        const model = options?.model ?? constants_1.OPENAI.LEGACY_MODEL;
+        const reasoningEffort = options?.reasoningEffort ?? 'none';
         core.info(`🧠 Using ${model} model for analysis (Responses API)`);
         const systemPrompt = this.getSystemPrompt();
         const userContent = this.buildUserContent(errorData, examples, skillContext);
@@ -3742,6 +3780,11 @@ class OpenAIClient {
                     input,
                     max_output_tokens: constants_1.OPENAI.MAX_COMPLETION_TOKENS,
                     text: { format: { type: 'json_object' } },
+                    ...(reasoningEffort !== 'none'
+                        ? {
+                            reasoning: { effort: reasoningEffort },
+                        }
+                        : {}),
                 });
                 const content = response.output_text;
                 if (!content) {
@@ -4220,7 +4263,8 @@ Changed Product Files:
         return new Promise(resolve => setTimeout(resolve, ms));
     }
     async generateWithCustomPrompt(params) {
-        const model = constants_1.OPENAI.MODEL;
+        const model = params.model ?? constants_1.OPENAI.LEGACY_MODEL;
+        const reasoningEffort = params.reasoningEffort ?? 'none';
         const userContent = params.responseAsJson
             ? this.ensureJsonMention(params.userContent)
             : params.userContent;
@@ -4232,6 +4276,11 @@ Changed Product Files:
             max_output_tokens: constants_1.OPENAI.MAX_COMPLETION_TOKENS,
             text: params.responseAsJson ? { format: { type: 'json_object' } } : undefined,
             ...(params.previousResponseId ? { previous_response_id: params.previousResponseId } : {}),
+            ...(reasoningEffort !== 'none'
+                ? {
+                    reasoning: { effort: reasoningEffort },
+                }
+                : {}),
         });
         const content = response.output_text;
         if (!content) {
@@ -4907,6 +4956,8 @@ async function generateFixRecommendation(inputs, repoDetails, errorData, openaiC
             branch: inputs.branch || inputs.autoFixBaseBranch || 'main',
         }, {
             enableAgenticRepair: inputs.enableAgenticRepair,
+            modelOverrideFixGen: inputs.modelOverrideFixGen,
+            modelOverrideReview: inputs.modelOverrideReview,
         });
         const skills = skillStore
             ? {
@@ -6084,6 +6135,8 @@ class SimplifiedRepairAgent {
                 totalTimeoutMs: constants_1.AGENT_CONFIG.AGENT_TIMEOUT_MS,
                 minConfidence: constants_1.AGENT_CONFIG.REVIEW_REQUIRED_CONFIDENCE,
                 ...this.config.orchestratorConfig,
+                modelOverrideFixGen: this.config.modelOverrideFixGen,
+                modelOverrideReview: this.config.modelOverrideReview,
             }, {
                 octokit: this.sourceFetchContext.octokit,
                 owner: this.sourceFetchContext.owner,

@@ -2,6 +2,7 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.ReviewAgent = void 0;
 const base_agent_1 = require("./base-agent");
+const constants_1 = require("../config/constants");
 const skill_store_1 = require("../services/skill-store");
 const text_utils_1 = require("../utils/text-utils");
 const REVIEW_SEVERITIES = ['CRITICAL', 'WARNING', 'SUGGESTION'];
@@ -14,7 +15,15 @@ function formatTraceField(value) {
 }
 class ReviewAgent extends base_agent_1.BaseAgent {
     constructor(openaiClient, config) {
-        super(openaiClient, 'ReviewAgent', config);
+        const resolvedModel = config?.model ?? constants_1.AGENT_MODEL.review;
+        const resolvedEffort = resolvedModel === constants_1.OPENAI.UPGRADED_MODEL
+            ? (config?.reasoningEffort ?? constants_1.REASONING_EFFORT.review)
+            : 'none';
+        super(openaiClient, 'ReviewAgent', {
+            ...config,
+            model: resolvedModel,
+            reasoningEffort: resolvedEffort,
+        });
     }
     async execute(input, context, previousResponseId) {
         return this.executeWithTimeout(input, context, previousResponseId);

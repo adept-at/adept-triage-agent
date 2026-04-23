@@ -6,6 +6,8 @@ import { TriageSkill, FlakinessSignal } from '../services/skill-store';
 export interface RepairAgentConfig {
     enableAgenticRepair?: boolean;
     orchestratorConfig?: Partial<OrchestratorConfig>;
+    modelOverrideFixGen?: string;
+    modelOverrideReview?: string;
 }
 export interface PriorAttemptContext {
     iteration: number;

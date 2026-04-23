@@ -73,6 +73,8 @@ async function generateFixRecommendation(inputs, repoDetails, errorData, openaiC
             branch: inputs.branch || inputs.autoFixBaseBranch || 'main',
         }, {
             enableAgenticRepair: inputs.enableAgenticRepair,
+            modelOverrideFixGen: inputs.modelOverrideFixGen,
+            modelOverrideReview: inputs.modelOverrideReview,
         });
         const skills = skillStore
             ? {

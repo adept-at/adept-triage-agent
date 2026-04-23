@@ -126,6 +126,8 @@ class BaseAgent {
             temperature: this.config.temperature,
             responseAsJson: true,
             previousResponseId,
+            model: this.config.model,
+            reasoningEffort: this.config.reasoningEffort,
         });
         const parsed = this.parseResponse(text);
         if (!parsed) {

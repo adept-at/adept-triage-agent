@@ -46,7 +46,7 @@ const skill_store_1 = require("../services/skill-store");
 const constants_1 = require("../config/constants");
 exports.DEFAULT_ORCHESTRATOR_CONFIG = {
     maxIterations: 3,
-    totalTimeoutMs: 120000,
+    totalTimeoutMs: 300000,
     minConfidence: 70,
     requireReview: true,
     fallbackToSingleShot: true,
@@ -63,8 +63,8 @@ class AgentOrchestrator {
         this.analysisAgent = new analysis_agent_1.AnalysisAgent(openaiClient);
         this.codeReadingAgent = new code_reading_agent_1.CodeReadingAgent(openaiClient, sourceFetchContext);
         this.investigationAgent = new investigation_agent_1.InvestigationAgent(openaiClient);
-        this.fixGenerationAgent = new fix_generation_agent_1.FixGenerationAgent(openaiClient);
-        this.reviewAgent = new review_agent_1.ReviewAgent(openaiClient);
+        this.fixGenerationAgent = new fix_generation_agent_1.FixGenerationAgent(openaiClient, this.config.modelOverrideFixGen ? { model: this.config.modelOverrideFixGen } : undefined);
+        this.reviewAgent = new review_agent_1.ReviewAgent(openaiClient, this.config.modelOverrideReview ? { model: this.config.modelOverrideReview } : undefined);
     }
     async orchestrate(context, errorData, previousResponseId, skills) {
         const startTime = Date.now();

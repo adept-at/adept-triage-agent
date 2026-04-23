@@ -83,6 +83,8 @@ function getInputs(): ActionInputs {
     productDiffCommits: safeParseInt(core.getInput('PRODUCT_DIFF_COMMITS'), 5),
     triageAwsRegion: core.getInput('TRIAGE_AWS_REGION') || 'us-east-1',
     triageDynamoTable: core.getInput('TRIAGE_DYNAMO_TABLE') || 'triage-skills-v1-live',
+    modelOverrideFixGen: core.getInput('MODEL_OVERRIDE_FIX_GEN') || undefined,
+    modelOverrideReview: core.getInput('MODEL_OVERRIDE_REVIEW') || undefined,
   };
 }
 

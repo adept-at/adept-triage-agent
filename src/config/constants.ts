@@ -46,15 +46,50 @@ export const CONFIDENCE = {
 
 /** OpenAI API configuration */
 export const OPENAI = {
-  /** Model to use for analysis */
+  /** @deprecated Use LEGACY_MODEL or UPGRADED_MODEL. Kept for backward compat with tests/scripts that reference OPENAI.MODEL. */
   MODEL: 'gpt-5.3-codex',
+  /** Pre-v1.51 model — used by classification, analysis, investigation, single-shot */
+  LEGACY_MODEL: 'gpt-5.3-codex',
+  /** v1.51+ model — used by fix-generation and review agents */
+  UPGRADED_MODEL: 'gpt-5.4',
   /** Maximum completion tokens */
-  MAX_COMPLETION_TOKENS: 16384,
+  MAX_COMPLETION_TOKENS: 24000,
   /** Maximum retry attempts */
   MAX_RETRIES: 3,
   /** Base retry delay in milliseconds */
   RETRY_DELAY_MS: 1000,
 } as const;
+
+/**
+ * Per-agent model selection. Entries explicitly name the legacy model
+ * for unchanged agents so reverting the upgrade is a one-line edit
+ * (flip AGENT_MODEL.fixGeneration and AGENT_MODEL.review back to
+ * OPENAI.LEGACY_MODEL).
+ */
+export const AGENT_MODEL = {
+  classification: OPENAI.LEGACY_MODEL,
+  analysis: OPENAI.LEGACY_MODEL,
+  investigation: OPENAI.LEGACY_MODEL,
+  fixGeneration: OPENAI.UPGRADED_MODEL,
+  review: OPENAI.UPGRADED_MODEL,
+  singleShot: OPENAI.LEGACY_MODEL,
+} as const;
+
+/**
+ * Per-agent reasoning effort. 'none' means no `reasoning` field in the
+ * Responses-API call — bit-exact with today's pre-v1.51 behavior. Only
+ * the upgraded agents send an effort value.
+ */
+export const REASONING_EFFORT = {
+  classification: 'none',
+  analysis: 'none',
+  investigation: 'none',
+  fixGeneration: 'xhigh',
+  review: 'xhigh',
+  singleShot: 'none',
+} as const;
+
+export type ReasoningEffort = 'none' | 'low' | 'medium' | 'high' | 'xhigh';
 
 /** Short SHA display length */
 export const SHORT_SHA_LENGTH = 7;
@@ -121,8 +156,19 @@ export const AGENT_CONFIG = {
   ENABLE_AGENTIC_REPAIR: process.env.ENABLE_AGENTIC_REPAIR !== 'false',
   /** Maximum iterations for the fix generation/review loop */
   MAX_AGENT_ITERATIONS: 3,
-  /** Total timeout for the entire agent orchestration (2 minutes) */
-  AGENT_TIMEOUT_MS: 120_000,
+  /**
+   * Total timeout for the entire agent orchestration. Bumped from
+   * 120_000 (2 min) to 300_000 (5 min) in v1.51.0 to accommodate
+   * xhigh reasoning-effort latency on fix-gen + review. A 3-iteration
+   * repair at xhigh can reach ~245s; 300s provides margin. See R3 in
+   * docs/gpt-5-4-upgrade-plan.md.
+   *
+   * This is the value passed as `totalTimeoutMs` into the orchestrator
+   * at construction time (simplified-repair-agent.ts), which overrides
+   * the `DEFAULT_ORCHESTRATOR_CONFIG.totalTimeoutMs` default — so both
+   * must be bumped for the increase to take effect in production.
+   */
+  AGENT_TIMEOUT_MS: 300_000,
   /** Minimum confidence required to accept a fix from review agent */
   REVIEW_REQUIRED_CONFIDENCE: 70,
   /** Below this confidence, chain analysis context into investigation for richer context */

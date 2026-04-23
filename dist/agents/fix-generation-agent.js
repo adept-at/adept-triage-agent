@@ -337,8 +337,14 @@ When recent product repo changes are provided (e.g. from the learn-webapp), you 
 5. If no product diff is provided or the diff is unrelated, state that explicitly in your reasoning.`;
 class FixGenerationAgent extends base_agent_1.BaseAgent {
     constructor(openaiClient, config) {
+        const resolvedModel = config?.model ?? constants_1.AGENT_MODEL.fixGeneration;
+        const resolvedEffort = resolvedModel === constants_1.OPENAI.UPGRADED_MODEL
+            ? (config?.reasoningEffort ?? constants_1.REASONING_EFFORT.fixGeneration)
+            : 'none';
         super(openaiClient, 'FixGenerationAgent', {
             ...config,
+            model: resolvedModel,
+            reasoningEffort: resolvedEffort,
             maxTokens: 6000,
         });
     }

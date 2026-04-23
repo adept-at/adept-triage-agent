@@ -229,6 +229,10 @@ export interface ActionInputs {
   triageAwsRegion?: string;
   /** DynamoDB table name for skill store */
   triageDynamoTable?: string;
+  /** Override model for fix-generation agent (rollback lever) */
+  modelOverrideFixGen?: string;
+  /** Override model for review agent (rollback lever) */
+  modelOverrideReview?: string;
 }
 
 export interface PRDiff {

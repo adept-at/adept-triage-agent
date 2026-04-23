@@ -53,6 +53,10 @@ export interface RepairAgentConfig {
   enableAgenticRepair?: boolean;
   /** Orchestrator configuration (for agentic mode) */
   orchestratorConfig?: Partial<OrchestratorConfig>;
+  /** Override model for fix-generation agent (rollback lever) */
+  modelOverrideFixGen?: string;
+  /** Override model for review agent (rollback lever) */
+  modelOverrideReview?: string;
 }
 
 /**
@@ -330,6 +334,8 @@ export class SimplifiedRepairAgent {
           totalTimeoutMs: AGENT_CONFIG.AGENT_TIMEOUT_MS,
           minConfidence: AGENT_CONFIG.REVIEW_REQUIRED_CONFIDENCE,
           ...this.config.orchestratorConfig,
+          modelOverrideFixGen: this.config.modelOverrideFixGen,
+          modelOverrideReview: this.config.modelOverrideReview,
         },
         {
           octokit: this.sourceFetchContext.octokit,

@@ -135,6 +135,8 @@ export interface ActionInputs {
     productDiffCommits?: number;
     triageAwsRegion?: string;
     triageDynamoTable?: string;
+    modelOverrideFixGen?: string;
+    modelOverrideReview?: string;
 }
 export interface PRDiff {
     files: PRDiffFile[];

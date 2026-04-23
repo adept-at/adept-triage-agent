@@ -182,6 +182,8 @@ class SimplifiedRepairAgent {
                 totalTimeoutMs: constants_1.AGENT_CONFIG.AGENT_TIMEOUT_MS,
                 minConfidence: constants_1.AGENT_CONFIG.REVIEW_REQUIRED_CONFIDENCE,
                 ...this.config.orchestratorConfig,
+                modelOverrideFixGen: this.config.modelOverrideFixGen,
+                modelOverrideReview: this.config.modelOverrideReview,
             }, {
                 octokit: this.sourceFetchContext.octokit,
                 owner: this.sourceFetchContext.owner,

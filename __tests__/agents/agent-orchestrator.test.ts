@@ -23,7 +23,7 @@ describe('AgentOrchestrator', () => {
   describe('DEFAULT_ORCHESTRATOR_CONFIG', () => {
     it('should have sensible default values', () => {
       expect(DEFAULT_ORCHESTRATOR_CONFIG.maxIterations).toBe(3);
-      expect(DEFAULT_ORCHESTRATOR_CONFIG.totalTimeoutMs).toBe(120000);
+      expect(DEFAULT_ORCHESTRATOR_CONFIG.totalTimeoutMs).toBe(300000);
       expect(DEFAULT_ORCHESTRATOR_CONFIG.minConfidence).toBe(70);
       expect(DEFAULT_ORCHESTRATOR_CONFIG.requireReview).toBe(true);
       expect(DEFAULT_ORCHESTRATOR_CONFIG.fallbackToSingleShot).toBe(true);

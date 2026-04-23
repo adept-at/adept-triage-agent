@@ -1,7 +1,7 @@
 import OpenAI from 'openai';
 import * as core from '@actions/core';
 import { OpenAIResponse, FewShotExample, ErrorData, PRDiff } from './types';
-import { LOG_LIMITS, OPENAI, ARTIFACTS, DEFAULT_PRODUCT_REPO } from './config/constants';
+import { LOG_LIMITS, OPENAI, ARTIFACTS, DEFAULT_PRODUCT_REPO, type ReasoningEffort } from './config/constants';
 
 export class OpenAIClient {
   private openai: OpenAI;
@@ -12,8 +12,9 @@ export class OpenAIClient {
     this.openai = new OpenAI({ apiKey });
   }
 
-  async analyze(errorData: ErrorData, examples: FewShotExample[], skillContext?: string): Promise<OpenAIResponse & { responseId: string }> {
-    const model = OPENAI.MODEL;
+  async analyze(errorData: ErrorData, examples: FewShotExample[], skillContext?: string, options?: { model?: string; reasoningEffort?: ReasoningEffort }): Promise<OpenAIResponse & { responseId: string }> {
+    const model = options?.model ?? OPENAI.LEGACY_MODEL;
+    const reasoningEffort = options?.reasoningEffort ?? 'none';
     core.info(`🧠 Using ${model} model for analysis (Responses API)`);
     
     const systemPrompt = this.getSystemPrompt();
@@ -40,6 +41,18 @@ export class OpenAIClient {
           input,
           max_output_tokens: OPENAI.MAX_COMPLETION_TOKENS,
           text: { format: { type: 'json_object' as const } },
+          ...(reasoningEffort !== 'none'
+            ? {
+                // Cast rationale: the installed OpenAI SDK's ReasoningEffort
+                // type does not yet include 'xhigh'. The API accepts it
+                // (gpt-5.4 introduced the level), so the runtime value
+                // passes through unchanged — the cast is purely to satisfy
+                // the SDK's compile-time narrower type. DO NOT narrow the
+                // input type to remove this cast; that would silently drop
+                // 'xhigh' support. Remove only when the SDK updates.
+                reasoning: { effort: reasoningEffort as 'low' | 'medium' | 'high' },
+              }
+            : {}),
         });
 
         const content = response.output_text;
@@ -639,9 +652,11 @@ Changed Product Files:
    * by the repair agent to request a structured JSON repair plan, without
    * going through the triage-specific prompt path.
    *
-   * Uses the Responses API with the model configured in OPENAI.MODEL.
-   * Note: temperature parameter is accepted for backward compatibility but
-   * is not supported by Codex models and will be ignored.
+   * Uses the Responses API. The model defaults to OPENAI.LEGACY_MODEL when
+   * not overridden. Note: temperature parameter is accepted for backward
+   * compatibility but is not supported by reasoning-class models
+   * (gpt-5.3-codex, gpt-5.4) that do not expose a temperature parameter.
+   * The value will be ignored.
    */
   async generateWithCustomPrompt(params: {
     systemPrompt: string;
@@ -649,8 +664,11 @@ Changed Product Files:
     responseAsJson?: boolean;
     temperature?: number;
     previousResponseId?: string;
+    model?: string;
+    reasoningEffort?: ReasoningEffort;
   }): Promise<{ text: string; responseId: string }> {
-    const model = OPENAI.MODEL;
+    const model = params.model ?? OPENAI.LEGACY_MODEL;
+    const reasoningEffort = params.reasoningEffort ?? 'none';
     const userContent = params.responseAsJson
       ? this.ensureJsonMention(params.userContent)
       : params.userContent;
@@ -663,6 +681,14 @@ Changed Product Files:
       max_output_tokens: OPENAI.MAX_COMPLETION_TOKENS,
       text: params.responseAsJson ? { format: { type: 'json_object' as const } } : undefined,
       ...(params.previousResponseId ? { previous_response_id: params.previousResponseId } : {}),
+      ...(reasoningEffort !== 'none'
+        ? {
+            // Cast rationale: see parallel comment in analyze(). SDK's
+            // ReasoningEffort type does not include 'xhigh' yet; the API
+            // accepts it. DO NOT narrow input type to remove this cast.
+            reasoning: { effort: reasoningEffort as 'low' | 'medium' | 'high' },
+          }
+        : {}),
     });
 
     const content = response.output_text;

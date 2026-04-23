@@ -1,4 +1,5 @@
 import { OpenAIClient } from '../openai-client';
+import { ReasoningEffort } from '../config/constants';
 export declare function getFrameworkLabel(framework?: string): string;
 export interface AgentResult<T = unknown> {
     success: boolean;
@@ -49,6 +50,8 @@ export interface AgentConfig {
     temperature: number;
     maxTokens: number;
     verbose: boolean;
+    model?: string;
+    reasoningEffort?: ReasoningEffort;
 }
 export declare const DEFAULT_AGENT_CONFIG: AgentConfig;
 export declare abstract class BaseAgent<TInput, TOutput> {

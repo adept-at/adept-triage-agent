@@ -1,11 +1,15 @@
 import OpenAI from 'openai';
 import { OpenAIResponse, FewShotExample, ErrorData } from './types';
+import { type ReasoningEffort } from './config/constants';
 export declare class OpenAIClient {
     private openai;
     private maxRetries;
     private retryDelay;
     constructor(apiKey: string);
-    analyze(errorData: ErrorData, examples: FewShotExample[], skillContext?: string): Promise<OpenAIResponse & {
+    analyze(errorData: ErrorData, examples: FewShotExample[], skillContext?: string, options?: {
+        model?: string;
+        reasoningEffort?: ReasoningEffort;
+    }): Promise<OpenAIResponse & {
         responseId: string;
     }>;
     private convertToResponsesInput;
@@ -25,6 +29,8 @@ export declare class OpenAIClient {
         responseAsJson?: boolean;
         temperature?: number;
         previousResponseId?: string;
+        model?: string;
+        reasoningEffort?: ReasoningEffort;
     }): Promise<{
         text: string;
         responseId: string;

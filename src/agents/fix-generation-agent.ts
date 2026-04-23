@@ -11,7 +11,7 @@ import {
   getFrameworkLabel,
 } from './base-agent';
 import { OpenAIClient } from '../openai-client';
-import { DEFAULT_PRODUCT_REPO } from '../config/constants';
+import { DEFAULT_PRODUCT_REPO, OPENAI, AGENT_MODEL, REASONING_EFFORT } from '../config/constants';
 import { AnalysisOutput } from './analysis-agent';
 import { InvestigationOutput } from './investigation-agent';
 import { coerceEnum } from '../utils/text-utils';
@@ -441,9 +441,16 @@ export class FixGenerationAgent extends BaseAgent<
   FixGenerationOutput
 > {
   constructor(openaiClient: OpenAIClient, config?: Partial<AgentConfig>) {
+    const resolvedModel = config?.model ?? AGENT_MODEL.fixGeneration;
+    const resolvedEffort =
+      resolvedModel === OPENAI.UPGRADED_MODEL
+        ? (config?.reasoningEffort ?? REASONING_EFFORT.fixGeneration)
+        : 'none' as const;
     super(openaiClient, 'FixGenerationAgent', {
       ...config,
-      maxTokens: 6000, // Need more tokens for code generation
+      model: resolvedModel,
+      reasoningEffort: resolvedEffort,
+      maxTokens: 6000,
     });
   }
 

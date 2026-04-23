@@ -6,6 +6,7 @@
 import * as core from '@actions/core';
 import OpenAI from 'openai';
 import { OpenAIClient } from '../openai-client';
+import { ReasoningEffort } from '../config/constants';
 
 type ChatContentPart =
   | OpenAI.Chat.Completions.ChatCompletionContentPartText
@@ -115,6 +116,10 @@ export interface AgentConfig {
   maxTokens: number;
   /** Whether to include detailed logs */
   verbose: boolean;
+  /** Override model for this agent (defaults to OPENAI.LEGACY_MODEL via openai-client) */
+  model?: string;
+  /** Reasoning effort for this agent ('none' = no reasoning field sent) */
+  reasoningEffort?: ReasoningEffort;
 }
 
 /**
@@ -272,6 +277,8 @@ export abstract class BaseAgent<TInput, TOutput> {
       temperature: this.config.temperature,
       responseAsJson: true,
       previousResponseId,
+      model: this.config.model,
+      reasoningEffort: this.config.reasoningEffort,
     });
 
     const parsed = this.parseResponse(text);

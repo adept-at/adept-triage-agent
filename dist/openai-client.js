@@ -47,8 +47,9 @@ class OpenAIClient {
     constructor(apiKey) {
         this.openai = new openai_1.default({ apiKey });
     }
-    async analyze(errorData, examples, skillContext) {
-        const model = constants_1.OPENAI.MODEL;
+    async analyze(errorData, examples, skillContext, options) {
+        const model = options?.model ?? constants_1.OPENAI.LEGACY_MODEL;
+        const reasoningEffort = options?.reasoningEffort ?? 'none';
         core.info(`🧠 Using ${model} model for analysis (Responses API)`);
         const systemPrompt = this.getSystemPrompt();
         const userContent = this.buildUserContent(errorData, examples, skillContext);
@@ -70,6 +71,11 @@ class OpenAIClient {
                     input,
                     max_output_tokens: constants_1.OPENAI.MAX_COMPLETION_TOKENS,
                     text: { format: { type: 'json_object' } },
+                    ...(reasoningEffort !== 'none'
+                        ? {
+                            reasoning: { effort: reasoningEffort },
+                        }
+                        : {}),
                 });
                 const content = response.output_text;
                 if (!content) {
@@ -548,7 +554,8 @@ Changed Product Files:
         return new Promise(resolve => setTimeout(resolve, ms));
     }
     async generateWithCustomPrompt(params) {
-        const model = constants_1.OPENAI.MODEL;
+        const model = params.model ?? constants_1.OPENAI.LEGACY_MODEL;
+        const reasoningEffort = params.reasoningEffort ?? 'none';
         const userContent = params.responseAsJson
             ? this.ensureJsonMention(params.userContent)
             : params.userContent;
@@ -560,6 +567,11 @@ Changed Product Files:
             max_output_tokens: constants_1.OPENAI.MAX_COMPLETION_TOKENS,
             text: params.responseAsJson ? { format: { type: 'json_object' } } : undefined,
             ...(params.previousResponseId ? { previous_response_id: params.previousResponseId } : {}),
+            ...(reasoningEffort !== 'none'
+                ? {
+                    reasoning: { effort: reasoningEffort },
+                }
+                : {}),
         });
         const content = response.output_text;
         if (!content) {

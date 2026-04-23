@@ -63,6 +63,8 @@ export async function generateFixRecommendation(
       },
       {
         enableAgenticRepair: inputs.enableAgenticRepair,
+        modelOverrideFixGen: inputs.modelOverrideFixGen,
+        modelOverrideReview: inputs.modelOverrideReview,
       }
     );
     const skills = skillStore

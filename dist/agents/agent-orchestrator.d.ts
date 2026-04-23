@@ -13,6 +13,8 @@ export interface OrchestratorConfig {
     minConfidence: number;
     requireReview: boolean;
     fallbackToSingleShot: boolean;
+    modelOverrideFixGen?: string;
+    modelOverrideReview?: string;
 }
 export declare const DEFAULT_ORCHESTRATOR_CONFIG: OrchestratorConfig;
 export interface OrchestrationResult {

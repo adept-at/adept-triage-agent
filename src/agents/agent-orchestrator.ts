@@ -33,6 +33,10 @@ export interface OrchestratorConfig {
   requireReview: boolean;
   /** Whether to fall back to single-shot on failure */
   fallbackToSingleShot: boolean;
+  /** Override model for fix-generation agent (rollback lever) */
+  modelOverrideFixGen?: string;
+  /** Override model for review agent (rollback lever) */
+  modelOverrideReview?: string;
 }
 
 /**
@@ -40,7 +44,10 @@ export interface OrchestratorConfig {
  */
 export const DEFAULT_ORCHESTRATOR_CONFIG: OrchestratorConfig = {
   maxIterations: 3,
-  totalTimeoutMs: 120000,
+  // Bumped in v1.51.0 from 120s to 300s to accommodate xhigh reasoning-effort
+  // latency on fix-gen + review (see R3 in gpt-5-4-upgrade-plan.md). A 3-iteration
+  // repair at xhigh can reach ~245s; 300s provides margin.
+  totalTimeoutMs: 300000,
   minConfidence: 70,
   requireReview: true,
   fallbackToSingleShot: true,
@@ -102,8 +109,10 @@ export class AgentOrchestrator {
       sourceFetchContext
     );
     this.investigationAgent = new InvestigationAgent(openaiClient);
-    this.fixGenerationAgent = new FixGenerationAgent(openaiClient);
-    this.reviewAgent = new ReviewAgent(openaiClient);
+    this.fixGenerationAgent = new FixGenerationAgent(openaiClient,
+      this.config.modelOverrideFixGen ? { model: this.config.modelOverrideFixGen } : undefined);
+    this.reviewAgent = new ReviewAgent(openaiClient,
+      this.config.modelOverrideReview ? { model: this.config.modelOverrideReview } : undefined);
   }
 
   /**
