@@ -1222,6 +1222,14 @@ class CodeReadingAgent extends base_agent_1.BaseAgent {
     cleanFilePath(rawPath) {
         if (!rawPath)
             return rawPath;
+        const lower = rawPath.toLowerCase();
+        if (lower.startsWith('http://') ||
+            lower.startsWith('https://') ||
+            lower.startsWith('//') ||
+            lower.includes('/__cypress/runner/') ||
+            lower.includes('/static/js/vendor.')) {
+            return '';
+        }
         const webpackMatch = rawPath.match(/webpack:\/\/[^/]+\/\.\/(.+)/);
         if (webpackMatch)
             return webpackMatch[1];
@@ -3933,6 +3941,23 @@ HARD RULE — when ANY browser passed and ANOTHER failed in the same run, you MU
 If those conditions are not met, the empty-state UI in one browser while another passed is evidence of a test/timing/transient issue, NOT product behavior. The default verdict in this scenario is TEST_ISSUE (likely synchronization) or INCONCLUSIVE (recommend a re-run before further investigation).
 
 When in doubt with cross-browser pass/fail data, prefer INCONCLUSIVE over PRODUCT_ISSUE. INCONCLUSIVE costs a re-run; a wrong PRODUCT_ISSUE verdict routes a flake to product engineering.
+
+CAUSAL SIGNAL vs BACKGROUND NOISE (CRITICAL):
+
+Logs from a failed test often contain two distinct classes of error:
+1. The CAUSAL error — what the test framework itself asserted against, timed out on, or otherwise declared the failure around. This has a direct causal link to the test's failure.
+2. BACKGROUND errors — console errors, XHR failures, or GraphQL errors that fired during the run but were not what the test framework was waiting on. These are often cross-cutting noise from unrelated product code that runs on every page load.
+
+When these diverge, anchor your verdict on the CAUSAL error:
+- Cypress frames its failure in a "N failing" block followed by the test name, the assertion message, and a stack trace. WDIO frames it as "FAILED in ..." followed by a stack trace. Whatever the test framework declares as the failure IS the causal signal.
+- Background errors — however loud, however hard-typed, however many times they repeat — are context, not cause. They may indicate real product bugs in other areas, but they are not necessarily what killed THIS test.
+- If the only hard-typed error you can identify is a browser console error with no clear link to what the test framework waited on, state that uncertainty explicitly. Prefer INCONCLUSIVE over committing to a PRODUCT_ISSUE verdict based on a console error that may be unrelated to the test's actual failure point.
+
+RED FLAG: if your reasoning anchors on an error that happens on EVERY page load (e.g., a console error from a component that always mounts, a GraphQL query that fires in a shared layout), that error is almost certainly NOT the cause of one specific test failing. It's background noise that predates the failure. Frequency in the logs that is disproportionate to a single test's scope (e.g., the error fires many times during navigation, page load, page unload, or before the test begins exercising the feature under test) is a strong indicator of cross-cutting background noise, not test-specific causal evidence.
+
+RULE PRECEDENCE: if this rule appears to conflict with the CAUSAL CONSISTENCY RULE below (your hypothesis must be consistent with the PR diff), the test framework's own declared failure takes precedence for the verdict. When the PR diff correlates with one error and the framework's failure declaration points at a different error, state both in your indicators and reasoning, but anchor the verdict on the framework's failure point. The framework's failure is a scoped, test-specific signal; PR-diff correlation is circumstantial.
+
+FALLBACK for crashed frameworks: if the test framework exited without declaring a specific failure (e.g., OOM kill, Cypress runner force-killed, process exit before the "N failing" block was written), there is no causal anchor to apply this rule to. In that case fall back to the infrastructure/INCONCLUSIVE path rather than promoting background errors to causal status.
 
 COMMON MISCLASSIFICATION PATTERNS TO AVOID:
 - Don't classify as TEST_ISSUE just because error happens in test file - check if it's exposing a real product bug
@@ -8520,14 +8545,31 @@ function extractErrorFromLogs(logs) {
                 /»\s+\/?(test\/.+?\.[jt]sx?)/,
                 /webpack:\/\/[^/]+\/(.+?\.(js|ts|jsx|tsx))/
             ];
-            let fileName;
-            for (const filePattern of filePatterns) {
-                const fileMatch = errorContext.match(filePattern) || cleanLogs.match(filePattern);
-                if (fileMatch && fileMatch[1]) {
-                    fileName = fileMatch[1];
-                    break;
+            const isUrlOrBundlePath = (path) => {
+                if (!path)
+                    return true;
+                const lower = path.toLowerCase();
+                return (lower.startsWith('http://') ||
+                    lower.startsWith('https://') ||
+                    lower.startsWith('//') ||
+                    lower.includes('/__cypress/runner/') ||
+                    lower.includes('/static/js/vendor.'));
+            };
+            const findValidSpecPath = (source) => {
+                for (const filePattern of filePatterns) {
+                    const globalPattern = filePattern.flags.includes('g')
+                        ? filePattern
+                        : new RegExp(filePattern.source, filePattern.flags + 'g');
+                    for (const m of source.matchAll(globalPattern)) {
+                        const candidate = m[1] || m[0];
+                        if (candidate && !isUrlOrBundlePath(candidate)) {
+                            return candidate;
+                        }
+                    }
                 }
-            }
+                return undefined;
+            };
+            const fileName = findValidSpecPath(errorContext) ?? findValidSpecPath(cleanLogs);
             let errorType = 'Error';
             if (match[0].includes('Cypress could not verify') || match[0].includes('Cypress failed to verify')) {
                 errorType = 'CypressServerVerificationError';

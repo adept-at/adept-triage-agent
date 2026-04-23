@@ -152,6 +152,14 @@ class CodeReadingAgent extends base_agent_1.BaseAgent {
     cleanFilePath(rawPath) {
         if (!rawPath)
             return rawPath;
+        const lower = rawPath.toLowerCase();
+        if (lower.startsWith('http://') ||
+            lower.startsWith('https://') ||
+            lower.startsWith('//') ||
+            lower.includes('/__cypress/runner/') ||
+            lower.includes('/static/js/vendor.')) {
+            return '';
+        }
         const webpackMatch = rawPath.match(/webpack:\/\/[^/]+\/\.\/(.+)/);
         if (webpackMatch)
             return webpackMatch[1];

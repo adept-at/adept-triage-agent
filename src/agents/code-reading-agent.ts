@@ -273,6 +273,26 @@ export class CodeReadingAgent extends BaseAgent<
   private cleanFilePath(rawPath: string): string {
     if (!rawPath) return rawPath;
 
+    // Reject HTTP(S) URLs, protocol-relative URLs, and Cypress runner
+    // bundles. These commonly appear in stack traces from the browser
+    // (Vercel previews, webpack output) and cannot be fetched from the
+    // GitHub API. Returning empty lets the fallback chain in execute()
+    // try the error-referenced-files path.
+    //
+    // Predicate must stay in sync with isUrlOrBundlePath in
+    // simplified-analyzer.ts so both extractors reject the same class
+    // of inputs.
+    const lower = rawPath.toLowerCase();
+    if (
+      lower.startsWith('http://') ||
+      lower.startsWith('https://') ||
+      lower.startsWith('//') ||
+      lower.includes('/__cypress/runner/') ||
+      lower.includes('/static/js/vendor.')
+    ) {
+      return '';
+    }
+
     // Handle webpack:// URLs
     const webpackMatch = rawPath.match(/webpack:\/\/[^/]+\/\.\/(.+)/);
     if (webpackMatch) return webpackMatch[1];

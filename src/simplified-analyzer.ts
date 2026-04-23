@@ -291,15 +291,47 @@ export function extractErrorFromLogs(logs: string): ErrorData | null {
         /webpack:\/\/[^/]+\/(.+?\.(js|ts|jsx|tsx))/  // Webpack format  
       ];
       
-      let fileName: string | undefined;
-      for (const filePattern of filePatterns) {
-        // Look in error context first, then fall back to full logs
-        const fileMatch = errorContext.match(filePattern) || cleanLogs.match(filePattern);
-        if (fileMatch && fileMatch[1]) {
-          fileName = fileMatch[1];
-          break;
+      const isUrlOrBundlePath = (path: string): boolean => {
+        if (!path) return true;
+        const lower = path.toLowerCase();
+        return (
+          lower.startsWith('http://') ||
+          lower.startsWith('https://') ||
+          lower.startsWith('//') ||
+          lower.includes('/__cypress/runner/') ||
+          lower.includes('/static/js/vendor.')
+        );
+      };
+
+      /**
+       * Try all matches of each filePattern against the source, taking
+       * the first non-URL/non-bundle match. Using matchAll (vs .match)
+       * is required: .match returns only the first match, so if a stack
+       * trace emits a URL frame BEFORE a valid spec frame (e.g., a
+       * Vercel vendor bundle URL appearing earlier in the stack than
+       * the actual cypress/e2e spec path), .match would hand back the
+       * URL, isUrlOrBundlePath would reject it, and the valid spec path
+       * later in the same string would be silently lost. matchAll
+       * exhausts all matches of the current pattern before advancing
+       * to the next pattern, so URL-before-valid-path ordering doesn't
+       * discard the valid result.
+       */
+      const findValidSpecPath = (source: string): string | undefined => {
+        for (const filePattern of filePatterns) {
+          const globalPattern = filePattern.flags.includes('g')
+            ? filePattern
+            : new RegExp(filePattern.source, filePattern.flags + 'g');
+          for (const m of source.matchAll(globalPattern)) {
+            const candidate = m[1] || m[0];
+            if (candidate && !isUrlOrBundlePath(candidate)) {
+              return candidate;
+            }
+          }
         }
-      }
+        return undefined;
+      };
+
+      const fileName = findValidSpecPath(errorContext) ?? findValidSpecPath(cleanLogs);
       
       // Get the actual error type from the match
       let errorType = 'Error';

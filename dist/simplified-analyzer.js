@@ -252,14 +252,31 @@ function extractErrorFromLogs(logs) {
                 /»\s+\/?(test\/.+?\.[jt]sx?)/,
                 /webpack:\/\/[^/]+\/(.+?\.(js|ts|jsx|tsx))/
             ];
-            let fileName;
-            for (const filePattern of filePatterns) {
-                const fileMatch = errorContext.match(filePattern) || cleanLogs.match(filePattern);
-                if (fileMatch && fileMatch[1]) {
-                    fileName = fileMatch[1];
-                    break;
+            const isUrlOrBundlePath = (path) => {
+                if (!path)
+                    return true;
+                const lower = path.toLowerCase();
+                return (lower.startsWith('http://') ||
+                    lower.startsWith('https://') ||
+                    lower.startsWith('//') ||
+                    lower.includes('/__cypress/runner/') ||
+                    lower.includes('/static/js/vendor.'));
+            };
+            const findValidSpecPath = (source) => {
+                for (const filePattern of filePatterns) {
+                    const globalPattern = filePattern.flags.includes('g')
+                        ? filePattern
+                        : new RegExp(filePattern.source, filePattern.flags + 'g');
+                    for (const m of source.matchAll(globalPattern)) {
+                        const candidate = m[1] || m[0];
+                        if (candidate && !isUrlOrBundlePath(candidate)) {
+                            return candidate;
+                        }
+                    }
                 }
-            }
+                return undefined;
+            };
+            const fileName = findValidSpecPath(errorContext) ?? findValidSpecPath(cleanLogs);
             let errorType = 'Error';
             if (match[0].includes('Cypress could not verify') || match[0].includes('Cypress failed to verify')) {
                 errorType = 'CypressServerVerificationError';
