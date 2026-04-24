@@ -1,1266 +1,677 @@
-# Adept Triage Agent - Architecture Documentation
+# Adept Triage Agent — Architecture
 
-## Overview
-
-The Adept Triage Agent is a GitHub Action that automatically analyzes test failures in CI/CD workflows and determines whether failures are caused by **TEST_ISSUE** (problems with test code) or **PRODUCT_ISSUE** (actual bugs in the application). For test issues, it can also generate fix recommendations using AI-powered analysis.
-
-### Key Features
-
-- **Intelligent Failure Classification**: Uses OpenAI GPT-5.3 Codex to analyze test failures
-- **Multimodal Analysis**: Processes screenshots, logs, test-repo PR/branch/commit diffs, and a recent product-repo commit diff (default `adept-at/learn-webapp` when `PRODUCT_REPO` is unset)
-- **Fix Recommendations**: Generates actionable fix suggestions for test issues
-- **GitHub Integration**: Seamlessly integrates with GitHub Actions workflows
-- **Configurable Confidence Thresholds**: Allows tuning of analysis certainty
-
-### Repository Contexts
-
-The action currently operates across up to three repository contexts:
-
-- `github.context.repo`: the repository where the triage workflow is running. Workflow runs, job logs, screenshots, and uploaded test artifacts are always read from here.
-- `REPOSITORY`: the app/source repository used for PR, branch, or commit diff lookup.
-- `AUTO_FIX_TARGET_REPO`: the repository where repair source files are fetched and fix branches are created.
+> **Current version:** v1.52.0
+> **Scope:** end-to-end architecture of the agent — entry point, pipeline, five-agent orchestration, skill-memory / repo-context learning loop, observability, operator surface.
+> **Audience:** engineers who need to understand the system deeply enough to extend or debug it without surprises.
 
 ---
 
-## Architecture Diagram
+## Table of contents
 
-```mermaid
-graph TB
-    subgraph "GitHub Actions Environment"
-        GHA[GitHub Actions Trigger]
-        WF[Workflow Run]
-        ARTIFACTS[Workflow Artifacts]
-    end
-
-    subgraph "Adept Triage Agent"
-        ENTRY[run - Entry Point]
-
-        subgraph "Input Processing"
-            INPUTS[getInputs]
-            REPO[resolveRepository]
-        end
-
-        subgraph "Data Gathering"
-            LP[processWorkflowLogs]
-            AF[ArtifactFetcher]
-            EXT[extractErrorFromLogs]
-        end
-
-        subgraph "Analysis Engine"
-            ANALYZE[analyzeFailure]
-            OAI[OpenAIClient]
-            CONF[calculateConfidence]
-            SUM[generateSummary]
-        end
-
-        subgraph "Fix Recommendation"
-            FIX[generateFixRecommendation]
-            RC[buildRepairContext]
-            RA[SimplifiedRepairAgent]
-            SK[SkillStore - DynamoDB]
-        end
-
-        subgraph "Output"
-            OUT_SUCCESS[setSuccessOutput]
-            OUT_INCONC[setInconclusiveOutput]
-            OUT_PENDING[PENDING Output]
-        end
-    end
-
-    subgraph "External Services"
-        OPENAI[OpenAI API - GPT-5.3 Codex]
-        GITHUB[GitHub API]
-    end
-
-    GHA --> WF
-    WF --> ARTIFACTS
-
-    GHA --> ENTRY
-    ENTRY --> INPUTS
-    ENTRY --> REPO
-
-    INPUTS --> LP
-    REPO --> LP
-
-    LP --> AF
-    LP --> EXT
-    AF --> GITHUB
-    AF --> |Screenshots| LP
-    AF --> |Test Artifact Logs| LP
-    AF --> |Test repo PR/branch/commit diff| LP
-    AF --> |Product repo recent commits diff| LP
-
-    LP --> |ErrorData| ANALYZE
-    ANALYZE --> OAI
-    OAI --> OPENAI
-    ANALYZE --> CONF
-    ANALYZE --> SUM
-
-    ANALYZE --> |TEST_ISSUE| FIX
-    FIX --> RC
-    FIX --> SK
-    SK --> |skills + flakiness| RA
-    FIX --> RA
-    RA --> OAI
-
-    ANALYZE --> |High Confidence| OUT_SUCCESS
-    ANALYZE --> |Low Confidence| OUT_INCONC
-    LP --> |Workflow Running| OUT_PENDING
-
-    OUT_SUCCESS --> |GitHub Action Outputs| GHA
-    OUT_INCONC --> |GitHub Action Outputs| GHA
-    OUT_PENDING --> |GitHub Action Outputs| GHA
-```
+1. [What it does](#what-it-does)
+2. [Repository contexts](#repository-contexts)
+3. [Runtime entry point](#runtime-entry-point)
+4. [Pipeline — coordinator + validator](#pipeline--coordinator--validator)
+5. [The five agents](#the-five-agents)
+6. [Prompt composition](#prompt-composition)
+7. [Repair paths — agentic vs single-shot](#repair-paths--agentic-vs-single-shot)
+8. [Learning loop — skill store + repo context + seeds](#learning-loop--skill-store--repo-context--seeds)
+9. [Validation paths — local vs remote](#validation-paths--local-vs-remote)
+10. [Outputs, verdicts, and error contracts](#outputs-verdicts-and-error-contracts)
+11. [Observability](#observability)
+12. [Configuration defaults](#configuration-defaults)
+13. [Invariants that must hold](#invariants-that-must-hold)
 
 ---
 
-## Detailed Flow Diagram
+## What it does
 
-```mermaid
-flowchart TD
-    START([GitHub Action Triggered]) --> GET_INPUTS[getInputs - Parse Action Inputs]
+The Adept Triage Agent is a Node 24 GitHub Action (`action.yml` → `dist/index.js` via ncc) that runs on a test-failure signal, classifies the failure as `TEST_ISSUE` or `PRODUCT_ISSUE`, and when appropriate proposes + validates + ships a fix to the test code. It learns across runs via a DynamoDB-backed skill store and a per-repo conventions file.
 
-    GET_INPUTS --> INIT_CLIENTS[Initialize Clients]
-    INIT_CLIENTS --> |Octokit| INIT_CLIENTS
-    INIT_CLIENTS --> |OpenAIClient| INIT_CLIENTS
-    INIT_CLIENTS --> |ArtifactFetcher| INIT_CLIENTS
+### Key features
 
-    INIT_CLIENTS --> PROCESS_LOGS[processWorkflowLogs]
+- **Classification** — OpenAI-powered verdict (`TEST_ISSUE`, `PRODUCT_ISSUE`, `INCONCLUSIVE`, `PENDING`, `ERROR`, `NO_FAILURE`) with 0–100 confidence.
+- **Multi-agent repair** — five agents (analysis, code-reading, investigation, fix-gen, review) collaborate in an orchestrator with an internal fix/review loop. Falls back to a single-shot repair path if agentic fails.
+- **Local-validation loop** — clones the target repo, applies fixes on disk, runs the test command up to 3 iterations, and only pushes a branch + opens a PR after the test passes.
+- **Learning loop** — skills (canonical fix patterns for a spec + error shape) are persisted to DynamoDB, retrieved by relevance, and rendered into agent prompts. Human-curated seed skills bootstrap the store.
+- **Repo conventions** — each consumer repo can commit a `.adept-triage/context.md` describing its selector strategy, wait rules, auth flow, etc. For product repos where tooling files are unwelcome, the context is bundled in the agent itself.
+- **Chronic flakiness gate** — specs that have been auto-fixed repeatedly in a window are flagged and auto-fix is skipped; the failure is surfaced for human follow-up.
 
-    subgraph "Data Gathering Phase"
-        PROCESS_LOGS --> CHECK_DIRECT{Direct Error<br/>Message?}
-        CHECK_DIRECT --> |Yes| USE_DIRECT[Use Provided Error]
-        CHECK_DIRECT --> |No| GET_RUN_ID[Determine Workflow Run ID]
+### Version milestones that shape the current design
 
-        GET_RUN_ID --> CHECK_STATUS{Workflow<br/>Completed?}
-        CHECK_STATUS --> |No| RETURN_NULL[Return null]
-        CHECK_STATUS --> |Yes| GET_JOBS[List Jobs for Workflow]
-
-        GET_JOBS --> FIND_JOB[findTargetJob]
-        FIND_JOB --> |Not Found| RETURN_NULL
-        FIND_JOB --> |Found| DOWNLOAD_LOGS[Download Job Logs]
-
-        DOWNLOAD_LOGS --> EXTRACT_ERROR[extractErrorFromLogs]
-        EXTRACT_ERROR --> FETCH_PARALLEL[Fetch Artifacts in Parallel]
-
-        FETCH_PARALLEL --> SCREENSHOTS[fetchScreenshots]
-        FETCH_PARALLEL --> TEST_ARTIFACT_LOGS[fetchTestArtifactLogs]
-        FETCH_PARALLEL --> PR_DIFF[fetchDiffWithFallback]
-        FETCH_PARALLEL --> PRODUCT_DIFF[fetchProductDiff]
-
-        SCREENSHOTS --> BUILD_CONTEXT[buildErrorContext]
-        TEST_ARTIFACT_LOGS --> BUILD_CONTEXT
-        PR_DIFF --> BUILD_CONTEXT
-        PRODUCT_DIFF --> BUILD_CONTEXT
-
-        BUILD_CONTEXT --> BUILD_SUMMARY[buildStructuredSummary]
-        BUILD_SUMMARY --> CREATE_ERROR_DATA[Create ErrorData Object]
-        USE_DIRECT --> CREATE_ERROR_DATA
-    end
-
-    CREATE_ERROR_DATA --> CHECK_ERROR{ErrorData<br/>Available?}
-    RETURN_NULL --> CHECK_RUNNING{Check Workflow<br/>Status}
-
-    CHECK_RUNNING --> |Still Running| SET_PENDING[Set PENDING Output]
-    CHECK_RUNNING --> |Other| SET_FAILED[Set Failed - No Data]
-
-    SET_PENDING --> END_PENDING([End - Pending])
-    SET_FAILED --> END_FAILED([End - Failed])
-
-    CHECK_ERROR --> |No| CHECK_RUNNING
-    CHECK_ERROR --> |Yes| ANALYZE[analyzeFailure]
-
-    subgraph "Analysis Phase"
-        ANALYZE --> BUILD_MESSAGES[Build OpenAI Messages]
-        BUILD_MESSAGES --> |System Prompt| BUILD_MESSAGES
-        BUILD_MESSAGES --> |Few-Shot Examples| BUILD_MESSAGES
-        BUILD_MESSAGES --> |User Content| BUILD_MESSAGES
-        BUILD_MESSAGES --> |Screenshots| BUILD_MESSAGES
-
-        BUILD_MESSAGES --> CALL_OPENAI[Call OpenAI API]
-        CALL_OPENAI --> |Retry Logic| CALL_OPENAI
-        CALL_OPENAI --> PARSE_RESPONSE[Parse JSON Response]
-
-        PARSE_RESPONSE --> CALC_CONF[calculateConfidence]
-        CALC_CONF --> |Base: 70| CALC_CONF
-        CALC_CONF --> |+Indicators| CALC_CONF
-        CALC_CONF --> |+Screenshots| CALC_CONF
-        CALC_CONF --> |+Logs| CALC_CONF
-        CALC_CONF --> |+PR Diff| CALC_CONF
-        CALC_CONF --> |+Framework| CALC_CONF
-        CALC_CONF --> |Max: 95| CALC_CONF
-
-        CALC_CONF --> GEN_SUMMARY[generateAnalysisSummary]
-        GEN_SUMMARY --> CHECK_VERDICT{Verdict?}
-    end
-
-    CHECK_VERDICT --> |TEST_ISSUE| ADD_EVIDENCE[Extract Evidence & Category]
-    CHECK_VERDICT --> |PRODUCT_ISSUE| ANALYSIS_RESULT[Create AnalysisResult]
-    ADD_EVIDENCE --> ANALYSIS_RESULT
-
-    ANALYSIS_RESULT --> CHECK_THRESHOLD{Confidence >= Threshold?}
-    CHECK_THRESHOLD --> |No| SET_INCONCLUSIVE[setInconclusiveOutput]
-    CHECK_THRESHOLD --> |Yes| CHECK_TEST_ISSUE{Is TEST_ISSUE?}
-    CHECK_TEST_ISSUE --> |No| SET_SUCCESS[setSuccessOutput]
-    CHECK_TEST_ISSUE --> |Yes| LOAD_SKILLS[Load SkillStore + Detect Flakiness]
-    LOAD_SKILLS --> GEN_FIX[generateFixRecommendation]
-
-    subgraph "Fix Recommendation Phase"
-        GEN_FIX --> BUILD_REPAIR[buildRepairContext]
-        BUILD_REPAIR --> |Classify Error| BUILD_REPAIR
-        BUILD_REPAIR --> |Extract Selector| BUILD_REPAIR
-
-        BUILD_REPAIR --> REPAIR_AGENT[SimplifiedRepairAgent]
-        REPAIR_AGENT --> BUILD_FIX_PROMPT[Build Fix Prompt]
-        BUILD_FIX_PROMPT --> |Include Logs| BUILD_FIX_PROMPT
-        BUILD_FIX_PROMPT --> |Include Screenshots| BUILD_FIX_PROMPT
-        BUILD_FIX_PROMPT --> |Include PR Diff| BUILD_FIX_PROMPT
-
-        BUILD_FIX_PROMPT --> CALL_AI_FIX[Call OpenAI for Fix]
-        CALL_AI_FIX --> PARSE_FIX[Parse Fix Recommendation]
-        PARSE_FIX --> CHECK_FIX_CONF{Confidence >= 50?}
-
-        CHECK_FIX_CONF --> |No| NO_FIX[Return null]
-        CHECK_FIX_CONF --> |Yes| CREATE_FIX[Create FixRecommendation]
-    end
-
-    CREATE_FIX --> ATTACH_FIX[Attach to Result]
-    NO_FIX --> SET_SUCCESS
-    ATTACH_FIX --> SET_SUCCESS
-
-    subgraph "Output Phase"
-
-        SET_SUCCESS --> OUTPUT_VERDICT[Output: verdict]
-        SET_SUCCESS --> OUTPUT_CONF[Output: confidence]
-        SET_SUCCESS --> OUTPUT_REASONING[Output: reasoning]
-        SET_SUCCESS --> OUTPUT_SUMMARY[Output: summary]
-        SET_SUCCESS --> OUTPUT_JSON[Output: triage_json]
-        SET_SUCCESS --> OUTPUT_FIX{Has Fix?}
-        OUTPUT_FIX --> |Yes| OUTPUT_FIX_DATA[Output: fix_recommendation]
-
-        SET_INCONCLUSIVE --> OUTPUT_INCONC[Output: INCONCLUSIVE verdict]
-    end
-
-    OUTPUT_VERDICT --> END_SUCCESS([End - Success])
-    OUTPUT_FIX_DATA --> END_SUCCESS
-    OUTPUT_INCONC --> END_INCONC([End - Inconclusive])
-
-    style START fill:#90EE90
-    style END_SUCCESS fill:#90EE90
-    style END_PENDING fill:#FFD700
-    style END_FAILED fill:#FF6B6B
-    style END_INCONC fill:#FFD700
-```
+| Version | Change |
+|---|---|
+| v1.37.0 | DynamoDB skill store (replaces git-branch storage). |
+| v1.43.0 | Memory hardening — atomic counters, deterministic retrieval, prune protection. |
+| v1.44.0 | `SkillStore` collapsed to a single DynamoDB-backed class; git fallback removed. |
+| v1.48.1 | `failureModeTrace` on `FixRecommendation` + blast-radius confidence scaling. |
+| v1.49.1 | `failureModeTrace` persisted to skills; outer-loop staleness bugs fixed. |
+| v1.49.2 | Prompt-injection hardening in `sanitizeForPrompt`; trace-rendering gate. |
+| v1.49.3 | Telemetry (`skill-telemetry role=...`), retired-inclusion fix in `detectFlakiness`, `sanitizeForPrompt` accepts `unknown`. |
+| v1.50.0 | Per-run telemetry summary; `testName` + `prUrl` surfaced in prompts. |
+| v1.50.1 | Multi-pass baseline check (3 consecutive passes). |
+| v1.51.0 | Fix-gen + review upgraded to `gpt-5.4` xhigh reasoning; agent timeout bumped to 300s. |
+| v1.51.1 | Extraction-quality hardening (causal vs background rule, reject URL file-attribution). |
+| **v1.52.0** | **Repo context (bundled + remote)**; **seed skills with `isSeed` pruning protection**; **`normalizeSpec` on write and read** so seeds written with relative paths match runtime absolute paths; **`summarizeSingleShotFindings`** captures investigation context on the single-shot path. |
 
 ---
 
-## Component Documentation
+## Repository contexts
 
-### Entry Point (`src/index.ts`)
+The action operates across up to three GitHub repository contexts. Understanding which is which is mandatory for getting auth right.
 
-A thin wrapper that parses Action inputs, constructs clients, and delegates to `PipelineCoordinator`.
+| Context | What it is | Read surface |
+|---|---|---|
+| `github.context.repo` | Repo where the triage **workflow** runs. | Workflow runs, job logs, screenshots, uploaded test artifacts. **Always.** |
+| `REPOSITORY` (input, default `github.repository`) | Test / app repo for PR / branch / commit **diff lookup**. | PR diffs, commit diffs. |
+| `AUTO_FIX_TARGET_REPO` (input, default `github.repository`) | Repo where repair **source files** are fetched and fix **branches** are created. | Source files (via `getContent`), commits, branches, PRs. |
 
-#### Key Functions
+The product repo is a fourth context read-only:
 
-| Function | Purpose | Inputs | Outputs |
-|----------|---------|--------|---------|
-| `run()` | Parse inputs, build clients, call `PipelineCoordinator.execute()` | None (reads from Action inputs) | GitHub Action outputs |
-| `getInputs()` | Parse Action inputs | None | `ActionInputs` |
-| `resolveRepository()` | Resolve repo from input or context | `ActionInputs` | `{ owner, repo }` |
+| Context | Default |
+|---|---|
+| `PRODUCT_REPO` (input) | `adept-at/learn-webapp` — recent commit diff is fetched for classification context so the agent can distinguish "test is broken" from "test is correctly catching a product regression." |
 
-All pipeline logic lives in dedicated modules:
-- **`src/pipeline/coordinator.ts`** — `PipelineCoordinator` class: skill store selection, `classify()`, `repair()`, `execute()`
-- **`src/pipeline/output.ts`** — `setSuccessOutput()`, `setInconclusiveOutput()`, `setErrorOutput()`, `resolveAutoFixTargetRepo()`
-- **`src/pipeline/validator.ts`** — `generateFixRecommendation()`, `iterativeFixValidateLoop()`, `attemptAutoFix()`
-
-#### Dependencies
-- `@actions/core` - GitHub Actions toolkit
-- `@actions/github` - GitHub context access
-- `@octokit/rest` - GitHub API client
+PATs are needed whenever `REPOSITORY` or `AUTO_FIX_TARGET_REPO` differs from `github.context.repo`. See `README_CROSS_REPO_PR.md` for the auth matrix.
 
 ---
 
-### Log Processor (`src/services/log-processor.ts`)
+## Runtime entry point
 
-Handles extraction and processing of workflow logs and artifacts.
+`src/index.ts` → `run()` does exactly this sequence (`src/index.ts:13-41`):
 
-#### Key Functions
+1. **`getInputs()`** — parses `ActionInputs` from `core.getInput` + `process.env`. Booleans are strict `=== 'true'`; any other string is `false`.
+2. **`new Octokit({ auth: inputs.githubToken })`**.
+3. **`resolveRepository(inputs)`** → `{ owner, repo }` via `parseRepoString`; falls back to `github.context.repo` on invalid/missing `REPOSITORY`.
+4. **`new OpenAIClient(inputs.openaiApiKey)`**.
+5. **`new ArtifactFetcher(octokit)`**.
+6. **`new PipelineCoordinator({ octokit, openaiClient, artifactFetcher, inputs, repoDetails })`**.
+7. **`await coordinator.execute()`** — all GH Action outputs are set from inside the coordinator (`setSuccessOutput` / `setInconclusiveOutput` / `setErrorOutput` in `src/pipeline/output.ts`).
 
-| Function | Purpose | Inputs | Outputs |
-|----------|---------|--------|---------|
-| `processWorkflowLogs()` | Main log processing | Octokit, ArtifactFetcher, inputs, repoDetails | `ErrorData \| null` |
-| `findTargetJob()` | Find the failed job | Jobs array, inputs, isCurrentJob | `JobInfo \| null` |
-| `fetchArtifactsParallel()` | Fetch all artifacts concurrently | ArtifactFetcher, runId, jobName, artifactRepoDetails, diffRepoDetails, inputs | Tuple: screenshots, artifact logs, test-repo diff or null, product-repo diff or null |
-| `fetchProductDiff()` | Recent commits diff for product repo | ArtifactFetcher, inputs (`productRepo` defaults to `DEFAULT_PRODUCT_REPO`) | `PRDiff \| null` |
-| `buildErrorContext()` | Combine all context | Job, error, logs, fullLogs, inputs | Combined context string |
-| `capArtifactLogs()` | Truncate large logs | Raw logs | Capped logs string |
-| `fetchDiffWithFallback()` | Try PR diff → branch diff → commit diff | ArtifactFetcher, inputs, repoDetails | `PRDiff \| null` |
-| `buildStructuredSummary()` | Create error summary | `ErrorData` | `StructuredErrorSummary` |
-
-#### Data Flow
-1. Check for direct error message input
-2. Determine workflow run ID from context
-3. Verify workflow completion status
-4. Find the target/failed job
-5. Download job logs
-6. Extract structured error from logs
-7. Fetch artifacts in parallel (screenshots, test artifact logs, test-repo PR/branch/commit diff, product-repo recent commit diff)
-8. Build combined error context
-9. Return `ErrorData` object
+The only output set directly in `index.ts` is a top-level `catch` that builds an `ERROR` verdict + `core.setFailed(...)` for anything that escapes the coordinator's own error handling. The `require.main === module` trailer catches fatal unhandled errors outside the try/catch.
 
 ---
 
-### Simplified Analyzer (`src/simplified-analyzer.ts`)
-
-Core analysis engine that uses OpenAI to classify test failures.
-
-#### Key Functions
-
-| Function | Purpose | Inputs | Outputs |
-|----------|---------|--------|---------|
-| `analyzeFailure()` | Main analysis function | OpenAIClient, ErrorData | `AnalysisResult` |
-| `extractErrorFromLogs()` | Extract error from log text | Logs string | `ErrorData \| null` |
-| `calculateConfidence()` | Calculate confidence score | OpenAIResponse, ErrorData | number (0-95) |
-| `generateSummary()` | Generate human-readable summary | OpenAIResponse, ErrorData | string |
-
-#### Error Pattern Matching (Priority Order)
-
-1. **Cypress Server Errors** (Priority 12) - Server verification failures
-2. **JavaScript Type Errors** (Priority 10) - Null/undefined property access
-3. **Cypress-specific Errors** (Priority 7-8) - Assertions, timeouts
-4. **General JavaScript Errors** (Priority 5-6) - TypeError, ReferenceError
-5. **Generic Test Failures** (Priority 1-3) - FAIL, Failed markers
-
-#### Few-Shot Examples
-The analyzer uses 7 curated examples to guide classification:
-- Intentional test failures (TEST_ISSUE)
-- WebDriver session termination (INCONCLUSIVE)
-- Server verification errors (PRODUCT_ISSUE)
-- Element visibility timeouts (TEST_ISSUE)
-- Element not found errors (TEST_ISSUE)
-- Null pointer in product code (PRODUCT_ISSUE)
-- Cypress login/deployment failure (PRODUCT_ISSUE)
-
-Note: Browser renderer crashes are handled separately via `INFRASTRUCTURE_FAILURE_PATTERNS` (short-circuits to INCONCLUSIVE without an LLM call).
-
----
-
-### OpenAI Client (`src/openai-client.ts`)
-
-Handles all communication with the OpenAI API.
-
-#### Key Functions
-
-| Function | Purpose | Inputs | Outputs |
-|----------|---------|--------|---------|
-| `analyze()` | Main analysis call | ErrorData, FewShotExamples | `OpenAIResponse` |
-| `convertToResponsesInput()` | Convert prompt parts to Responses API input | userContent | Responses API input |
-| `buildUserContent()` | Build multimodal content | ErrorData, examples | string \| ContentPart[] |
-| `getSystemPrompt()` | Get the system prompt | None | string |
-| `buildPrompt()` | Build user prompt (includes `formatPRDiffSection` and `formatProductDiffSection` when diffs exist) | ErrorData, examples | string |
-| `formatProductDiffSection()` | Format product-repo diff for classification prompt | `PRDiff` | string |
-| `parseResponse()` | Parse API response | Content string | `OpenAIResponse` |
-| `generateWithCustomPrompt()` | Generic prompt call (optional `previousResponseId` chains to prior Responses API turn) | Params object | `{ text, responseId }` |
-
-#### Configuration
-- **Model**: `gpt-5.3-codex` (GPT-5.3 Codex)
-- **Temperature**: 0.3 (deterministic)
-- **Max Completion Tokens**: 16,384
-- **Max Retries**: 3
-- **Response Format**: JSON
-
-#### Multimodal Support
-When screenshots are available:
-1. Text content is added first
-2. Screenshot analysis prompt is added
-3. Each screenshot is added as `image_url` with `detail: 'high'`
-4. Screenshot context (name, timestamp) is added after each image
-
----
-
-### Artifact Fetcher (`src/artifact-fetcher.ts`)
-
-Fetches and processes workflow artifacts from GitHub.
-
-#### Key Functions
-
-| Function | Purpose | Inputs | Outputs |
-|----------|---------|--------|---------|
-| `fetchScreenshots()` | Fetch screenshot images | runId, jobName, repoDetails | `Screenshot[]` |
-| `fetchLogs()` | Fetch job logs | runId, jobId, repoDetails | `string[]` |
-| `fetchTestArtifactLogs()` | Fetch uploaded Cypress or WebDriverIO logs | runId, jobName, repoDetails | string |
-| `fetchPRDiff()` | Fetch PR changes | prNumber, repository | `PRDiff \| null` |
-| `fetchCommitDiff()` | Fetch diff for single commit | commitSha, repository | `PRDiff \| null` |
-| `fetchBranchDiff()` | Fetch diff between branch and base | branch, baseBranch, repository | `PRDiff \| null` |
-| `fetchRecentProductDiff()` | Diff across last N commits on default branch | productRepo (owner/repo), commitCount | `PRDiff \| null` |
-| `sortFilesByRelevance()` | Sort files by relevance | PRDiffFile[] | PRDiffFile[] |
-
-#### Screenshot Detection
-Detects screenshots by:
-1. Artifact name contains: `screenshot`, `cypress`, `cy-logs`, `cy-artifacts`, `wdio`, `wdio-logs`, `webdriver`
-2. File extension: `.png`, `.jpg`, `.jpeg`, `.gif`, `.webp`
-3. File name contains: `screenshot`, `failure`, `error`, `(failed)`, or resides in a `data/` path
-4. Any image inside a `wdio`/`webdriver` artifact is treated as a screenshot
-
-#### PR Diff Sorting
-Files are sorted by relevance:
-1. Test files (highest priority)
-2. Source files
-3. Files with more changes
-4. Configuration files
-5. Alphabetical (default)
-
----
-
-### Simplified Repair Agent (`src/repair/simplified-repair-agent.ts`)
-
-Generates fix recommendations for TEST_ISSUE verdicts.
-
-#### Key Functions
-
-| Function | Purpose | Inputs | Outputs |
-|----------|---------|--------|---------|
-| `generateFixRecommendation()` | Main recommendation generator | RepairContext, ErrorData | `FixRecommendation \| null` |
-| `buildPrompt()` | Build fix prompt | RepairContext, ErrorData | string |
-| `getRecommendationFromAI()` | Get AI recommendation | Prompt, context, errorData | `AIRecommendation \| null` |
-| `extractChangesFromText()` | Fallback change extraction | Text, context | `AIChange[]` |
-| `generateSummary()` | Generate fix summary | Recommendation, context | string |
-
-#### Fix Recommendation Structure
-```typescript
-interface FixRecommendation {
-  confidence: number;        // 0-100
-  summary: string;           // Human-readable summary
-  proposedChanges: {
-    file: string;            // Path to file
-    line: number;            // Line number
-    oldCode: string;         // Current code
-    newCode: string;         // Suggested fix
-    justification: string;   // Why this fixes the issue
-  }[];
-  evidence: string[];        // Supporting evidence
-  reasoning: string;         // Detailed reasoning
-}
-```
-
----
-
-### Repair Context Builder (`src/repair-context.ts`)
-
-Builds context objects for the repair agent.
-
-#### Key Functions
-
-| Function | Purpose | Inputs | Outputs |
-|----------|---------|--------|---------|
-| `buildRepairContext()` | Build repair context | Analysis data | `RepairContext` |
-
----
-
-### Fix Applier (`src/repair/fix-applier.ts`)
-
-Applies automated fixes by creating branches and committing changes.
-
-#### Key Functions
-
-| Function | Purpose | Inputs | Outputs |
-|----------|---------|--------|---------|
-| `createFixApplier()` | Factory for fix appliers | `FixApplierConfig` | `FixApplier` |
-| `canApply()` | Check if fix meets threshold | `FixRecommendation` | boolean |
-| `applyFix()` | Apply the fix to codebase | `FixRecommendation` | `ApplyResult` |
-| `generateFixBranchName()` | Generate branch name | testFile, timestamp | string |
-
-#### ApplyResult Interface
-```typescript
-interface ApplyResult {
-  success: boolean;        // Whether fix was successfully applied
-  modifiedFiles: string[]; // Files that were modified
-  error?: string;          // Error message if fix failed
-  commitSha?: string;      // Git commit SHA if committed
-  branchName?: string;     // Branch name that was created
-  validationRunId?: number;
-  validationStatus?: 'pending' | 'passed' | 'failed' | 'skipped';
-  validationUrl?: string;
-}
-```
-
-#### FixApplierConfig Interface
-```typescript
-interface FixApplierConfig {
-  octokit: Octokit;       // Authenticated GitHub API client
-  owner: string;          // Repository owner
-  repo: string;           // Repository name
-  baseBranch: string;     // Base branch to create fix branch from
-  minConfidence: number;  // Minimum confidence threshold to apply fix
-  enableValidation?: boolean;
-  validationWorkflow?: string;
-}
-```
-
-#### Fix Application Process
-
-**Local validation path** (when `ENABLE_AUTO_FIX`, `ENABLE_VALIDATION`, and `VALIDATION_TEST_COMMAND` are all set — see `iterativeFixValidateLoop` in `src/index.ts` and `LocalFixValidator` in `src/services/local-fix-validator.ts`):
-
-1. **Confidence Check**: Verify fix recommendation meets minimum confidence threshold
-2. **Clone test repo locally**: Check out the failing branch in a temporary directory
-3. **Install dependencies**: Run `npm ci` in the clone
-4. **Iterative loop** (up to 3 attempts): LLM generates a fix → apply changes on disk → run `VALIDATION_TEST_COMMAND` locally → on success, push and create a PR; on failure, reset working tree, feed test logs back to the next iteration. **Outer iterations continue the same OpenAI conversation:** `lastResponseId` from the orchestrator is passed into the next pipeline run so agents see prior turns plus the new validation failure context (inner fix/review loops already chain within one orchestration via `previous_response_id`).
-5. **Cleanup**: Remove the temporary directory
-
-**Legacy path** (when `VALIDATION_TEST_COMMAND` is not set): create/update the fix branch and apply changes via the GitHub API, then optionally dispatch `validate-fix.yml` (or the configured validation workflow) via `workflow_dispatch` instead of running tests locally.
-
-For either path, **cleanup on failure** still applies: if a step fails, delete the branch when appropriate and return to a safe state.
-
----
-
-### Skill Store (`src/services/skill-store.ts`)
-
-Stores and retrieves historical fix patterns (skills). A single unified class backed by DynamoDB:
-
-- Table schema: `pk = REPO#<owner>/<repo>`, `sk = SKILL#<id>`, remaining attributes are flat `TriageSkill` fields
-- Outcome counter writes use atomic `ADD` expressions to avoid lost updates under concurrent readers
-- AWS credentials are supplied via the standard provider chain (OIDC-configured role, static keys, etc.)
-
-`PipelineCoordinator.execute()` constructs the store when `AUTO_FIX_TARGET_REPO` resolves (defaults to the current repo):
-
-```typescript
-skillStore = new SkillStore(
-  inputs.triageAwsRegion || 'us-east-1',
-  inputs.triageDynamoTable || 'triage-skills-v1-live',
-  autoFixTargetRepo.owner,
-  autoFixTargetRepo.repo
-);
-await skillStore.load();
-```
-
-#### How It Works
-
-1. **Loading**: The coordinator calls `load()`, which issues a paginated `Query` on the partition key until `LastEvaluatedKey` is exhausted. If the query fails, the class warns, marks `loaded=true` to avoid retry thrash, and records the failure reason. `loadSucceeded` stays `false` so subsequent `save()` calls skip the pruning step — the in-memory list is not a trustworthy view of the table.
-2. **Classification Injection**: `findForClassifier()` returns validated-only skills (non-retired, `validatedLocally === true`), scored by spec match (+15), error similarity (Jaccard, ×5), and recency bonus (+3 if used within 7 days). Results (max 3) are formatted by `formatForClassifier()` and injected into the classifier prompt alongside any flakiness signal.
-3. **Investigation Injection**: `formatForInvestigation()` returns up to 3 skills with `investigationFindings`, formatted with prior root-cause chains and classification outcomes. Injected into the repair pipeline's investigation context.
-4. **Agent Prompt Injection**: `formatSkillsForPrompt()` formats skills differently per agent role:
-   - **Investigation**: "Use as background context. Base findings on CURRENT evidence."
-   - **Fix Generation**: "CONSIDER these approaches as starting points."
-   - **Review**: "Flag if fix contradicts a prior pattern without justification."
-   - Each skill entry includes a **track record** line (`successCount/total successful`, classification outcome) so agents can weigh pattern reliability.
-5. **Relevance Matching**: `findRelevant()` scores skills by exact spec match (+10) then error-message similarity (Jaccard token overlap, ×5). Skills filtered by framework (cypress/webdriverio/unknown), retired skills excluded. Used by the repair pipeline for fix generation and review.
-6. **Flakiness Detection**: `detectFlakiness()` checks if a spec has been auto-fixed >1 time in 3 days or >2 times in 7 days. The signal is injected into agent prompts and included in the `triage_json` output.
-7. **Saving**: Skills are saved after every fix attempt (both successful and failed) to preserve trajectories. `save()` emits a `PutCommand` and returns a boolean: `true` on success, `false` if the put rejects (the in-memory list is rolled back via `filter()`). The coordinator uses the return value to gate follow-up outcome writes, so `recordOutcome` / `recordClassificationOutcome` never fire against a skill that is not in the cache.
-8. **Outcome Tracking**: After a successful save, the coordinator calls:
-   - `recordOutcome(skillId, success)` — atomic `ADD` on `successCount` or `failCount`, with `lastUsedAt` updated.
-   - `recordClassificationOutcome(skillId, 'correct')` — records that the classifier's verdict was accurate. The API accepts `'correct' | 'incorrect'`, but only `'correct'` is currently written by the pipeline; `'incorrect'` is reserved for future feedback mechanisms.
-9. **Auto-retirement**: After `recordOutcome`, if `failCount / (successCount + failCount) > 0.4` and `failCount >= 3`, a second `UpdateCommand` sets `retired: true` and the skill is excluded from all future queries.
-10. **Pruning**: `save()` enforces `MAX_SKILLS` (100) per repo. When the in-memory count exceeds the cap after a successful load, the oldest skills are deleted individually via `DeleteCommand` (the just-saved skill is protected). When `loadSucceeded === false`, the prune step is skipped to avoid deleting unknown entries.
-
-#### Key Functions
-
-**`SkillStore` class methods:**
-
-| Method | Purpose | Inputs | Outputs |
-|--------|---------|--------|---------|
-| `load()` | Fetch skills from DynamoDB (paginated). Never rejects. | None | `TriageSkill[]` |
-| `save()` | Persist a skill, prune if over `MAX_SKILLS` (when load succeeded). | `TriageSkill` | `boolean` |
-| `findRelevant()` | Score and return matching skills | framework, spec, errorMessage | `TriageSkill[]` |
-| `findForClassifier()` | Validated-only, recency-weighted skills for classification | framework, spec, errorMessage | `TriageSkill[]` (max 3) |
-| `formatForClassifier()` | Format classifier skills as numbered text | framework, spec, errorMessage | string |
-| `formatForInvestigation()` | Format skills with investigation findings | framework, spec, errorMessage | string |
-| `detectFlakiness()` | Check if spec is chronically flaky | spec name | `FlakinessSignal` |
-| `countForSpec()` | Count cached skills for a given spec | spec name | number |
-| `recordOutcome()` | Increment success/fail counter, auto-retire. Never rejects. | skillId, success | void |
-| `recordClassificationOutcome()` | Record classification correctness. Never rejects. | skillId, outcome | void |
-
-**Module-level exports (not methods):**
-
-| Function | Purpose | Inputs | Outputs |
-|----------|---------|--------|---------|
-| `buildSkill()` | Factory for creating a `TriageSkill` | fix result params | `TriageSkill` |
-| `describeFixPattern()` | Format proposed changes as a reusable pattern string | changes[] | string |
-| `normalizeFramework()` | Canonicalize framework labels for matching | raw string | `'cypress' \| 'webdriverio' \| 'unknown'` |
-| `normalizeError()` | Strip dynamic values (timeouts, SHAs, timestamps) for pattern matching | message string | string |
-| `formatSkillsForPrompt()` | Format skills for a specific agent role | skills, role, flakiness | string |
-
-#### TriageSkill Structure
-
-```typescript
-interface TriageSkill {
-  id: string;
-  createdAt: string;
-  repo: string;
-  spec: string;
-  testName: string;
-  framework: 'cypress' | 'webdriverio' | 'unknown';
-
-  errorPattern: string;        // Normalized error message
-  rootCauseCategory: string;
-
-  fix: {
-    file: string;
-    changeType: string;
-    summary: string;
-    pattern: string;           // Reusable description of the fix
-  };
-
-  confidence: number;
-  iterations: number;          // How many fix-validate iterations it took
-  prUrl: string;
-  validatedLocally: boolean;
-  priorSkillCount: number;     // How many skills existed for this spec before this one
-
-  successCount: number;        // Atomic counter — incremented on successful outcome
-  failCount: number;           // Atomic counter — incremented on failed outcome
-  lastUsedAt: string;          // ISO timestamp, updated on each outcome
-  retired: boolean;            // Auto-set when failure rate > 40% with >= 3 failures
-
-  investigationFindings?: string;       // Deep investigation notes from InvestigationAgent
-  classificationOutcome?: 'correct' | 'incorrect' | 'unknown';
-  rootCauseChain?: string;              // e.g. "SELECTOR_MISMATCH → Updated data-testid..."
-  repoContext?: string;                 // Repository-specific notes
-}
-```
-
-#### Configuration Constants
-
-| Constant | Value | Description |
-|----------|-------|-------------|
-| `MAX_SKILLS` | `100` | Maximum skills per repo — enforced on `save()`, oldest entries pruned when exceeded (only when load succeeded) |
-| `RETIRE_FAIL_RATE` | `0.4` | Auto-retirement threshold — retires a skill when `failCount / total > 0.4` |
-| `RETIRE_MIN_FAILURES` | `3` | Auto-retirement minimum — requires at least this many failures |
-| `FLAKY_THRESHOLDS.SHORT_WINDOW_DAYS` | `3` | Short flakiness window |
-| `FLAKY_THRESHOLDS.SHORT_WINDOW_MAX` | `1` | Max fixes before flagging (short) |
-| `FLAKY_THRESHOLDS.LONG_WINDOW_DAYS` | `7` | Long flakiness window |
-| `FLAKY_THRESHOLDS.LONG_WINDOW_MAX` | `2` | Max fixes before flagging (long) |
-
----
-
-### Error Classifier (`src/analysis/error-classifier.ts`)
-
-Classifies and categorizes test errors.
-
-#### Key Functions
-
-| Function | Purpose | Inputs | Outputs |
-|----------|---------|--------|---------|
-| `classifyErrorType()` | Classify error type | Error message | `ErrorType` |
-| `categorizeTestIssue()` | Categorize for fix | Error message | `TestIssueCategory` |
-| `extractSelector()` | Extract CSS selector | Error message | `string \| undefined` |
-| `extractTestIssueEvidence()` | Extract evidence | Error message | `string[]` |
-
-#### Error Types
-- `ELEMENT_NOT_FOUND`
-- `TIMEOUT`
-- `ASSERTION_FAILED`
-- `NETWORK_ERROR`
-- `ELEMENT_NOT_VISIBLE`
-- `ELEMENT_COVERED`
-- `ELEMENT_DETACHED`
-- `INVALID_ELEMENT_TYPE`
-- `UNKNOWN`
-
----
-
-### Summary Generator (`src/analysis/summary-generator.ts`)
-
-Generates human-readable summaries for various outputs.
-
-#### Key Functions
-
-| Function | Purpose | Inputs | Outputs |
-|----------|---------|--------|---------|
-| `generateAnalysisSummary()` | Generate analysis summary | OpenAIResponse, ErrorData | string |
-| `generateFixSummary()` | Generate fix summary | Recommendation, context, includeCode | string |
-
----
-
-### Configuration Constants (`src/config/constants.ts`)
-
-Centralized configuration values.
-
-#### Log Limits
-| Constant | Value | Description |
-|----------|-------|-------------|
-| `GITHUB_MAX_SIZE` | 50,000 | Max GitHub Actions log size |
-| `ARTIFACT_SOFT_CAP` | 20,000 | Soft cap for artifact logs |
-| `ERROR_CONTEXT_BEFORE` | 500 | Chars before error |
-| `ERROR_CONTEXT_AFTER` | 1,500 | Chars after error |
-| `SERVER_ERROR_CONTEXT_BEFORE` | 1,000 | Extended context before server errors |
-| `SERVER_ERROR_CONTEXT_AFTER` | 2,000 | Extended context after server errors |
-
-#### Confidence Calculation
-| Constant | Value | Description |
-|----------|-------|-------------|
-| `BASE` | 70 | Base confidence score |
-| `INDICATOR_BONUS` | 5 | Bonus per indicator |
-| `MAX_INDICATOR_BONUS` | 15 | Max indicator bonus |
-| `SCREENSHOT_BONUS` | 10 | Bonus for screenshots |
-| `MULTIPLE_SCREENSHOT_BONUS` | 5 | Bonus for multiple screenshots |
-| `LOGS_BONUS` | 5 | Bonus for logs |
-| `PR_DIFF_BONUS` | 5 | Bonus for PR diff |
-| `FRAMEWORK_BONUS` | 5 | Bonus for known framework |
-| `MAX_CONFIDENCE` | 95 | Maximum confidence cap |
-| `MIN_FIX_CONFIDENCE` | 50 | Minimum for fix recommendation |
-
-#### OpenAI Configuration
-| Constant | Value | Description |
-|----------|-------|-------------|
-| `MODEL` | `gpt-5.3-codex` | Model to use |
-| `TEMPERATURE` | 0.3 | Response temperature |
-| `MAX_COMPLETION_TOKENS` | 16,384 | Max tokens |
-| `MAX_RETRIES` | 3 | Retry attempts |
-| `RETRY_DELAY_MS` | 1,000 | Base retry delay |
-
-#### DynamoDB Skill Store Defaults
-| Constant | Value | Description |
-|----------|-------|-------------|
-| `TRIAGE_AWS_REGION` | `us-east-1` | Default AWS region for DynamoDB skill store |
-| `TRIAGE_DYNAMO_TABLE` | `triage-skills-v1-live` | Default DynamoDB table name |
-
-#### Fix-Validate Loop
-| Constant | Value | Description |
-|----------|-------|-------------|
-| `FIX_VALIDATE_LOOP.MAX_ITERATIONS` | `3` | Maximum fix-validate attempts |
-| `FIX_VALIDATE_LOOP.TEST_TIMEOUT_MS` | `300000` | Maximum time for a single local test run (5 min) |
-
----
-
-## Data Types (`src/types.ts`)
-
-### Core Types
-
-```typescript
-type Verdict = 'TEST_ISSUE' | 'PRODUCT_ISSUE' | 'INCONCLUSIVE' | 'PENDING' | 'ERROR' | 'NO_FAILURE';
-
-interface ErrorData {
-  message: string;
-  stackTrace?: string;
-  framework?: string;
-  failureType?: string;
-  context?: string;
-  testName?: string;
-  fileName?: string;
-  screenshots?: Screenshot[];
-  logs?: string[];
-  testArtifactLogs?: string;
-  prDiff?: PRDiff;
-  productDiff?: PRDiff;
-  structuredSummary?: StructuredErrorSummary;
-}
-
-interface AnalysisResult {
+## Pipeline — coordinator + validator
+
+### `PipelineCoordinator` (`src/pipeline/coordinator.ts`)
+
+One class, five methods worth knowing:
+
+- **`execute()`** — Top-level. Runs log processing, constructs `SkillStore` if AWS creds are ambient, then wraps `runClassifyAndRepair()` in `try { ... } finally { skillStore?.logRunSummary() }`. The `finally` guarantees a per-run summary line at every exit (including thrown errors).
+- **`runClassifyAndRepair()`** *(private)* — The decision tree:
+  1. `classify()` → returns `ClassificationResult`.
+  2. If `classification.confidence < confidenceThreshold` → `setInconclusiveOutput` and return (classify handles this internally).
+  3. If `verdict !== 'TEST_ISSUE'` → `setSuccessOutput` with the verdict and return.
+  4. **Chronic flakiness gate**: if `skillStore.detectFlakiness(spec)` returns `fixCount >= CHRONIC_FLAKINESS_THRESHOLD` (default `3`), skip repair entirely, set `autoFixSkipped=true` with a human-readable reason, and return. This is how we stop stacking fallback fixes on truly broken specs.
+  5. `repair()` → returns `RepairResult`.
+  6. Save a skill if a fix was attempted AND `skillStore` and `autoFixTargetRepo` are both resolved, using `buildSkill()` with the agent-reported root cause and investigation findings.
+  7. `setSuccessOutput` with the combined result.
+- **`classify()`** — Reads classifier-relevant skills (`findForClassifier`), renders them into the classifier context, calls `analyzeFailure()`, handles low-confidence / non-`TEST_ISSUE` early exits.
+- **`repair()`** — Resolves auto-fix target, fetches repo context (via `RepoContextFetcher`), branches on local-validation availability:
+  - **Local path** (all of `enableAutoFix`, `enableValidation`, `enableLocalValidation`, `validationTestCommand`, `autoFixTargetRepo` true) → `iterativeFixValidateLoop`.
+  - **Otherwise** → `generateFixRecommendation` + optional `attemptAutoFix`.
+- **`handleNoErrorData()`** — Runs when log processing yields nothing. Classifies as `NO_FAILURE` (green run), `PENDING` (still in progress), or `ERROR` (cannot determine).
+
+### `iterativeFixValidateLoop` (`src/pipeline/validator.ts`)
+
+The local-validation loop. Maximum `FIX_VALIDATE_LOOP.MAX_ITERATIONS = 3`. For each iteration:
+
+1. `generateFixRecommendation(...)` — builds a `RepairContext`, spins up `SimplifiedRepairAgent` with `enableAgenticRepair` flag and optional model overrides, calls `repairAgent.generateFixRecommendation(...)`. Returns `{ fix, agentRootCause, agentInvestigationFindings, lastResponseId }` or `null`.
+2. If `null` or no `proposedChanges` → break.
+3. **Blast-radius gate** (`requiredConfidence` in `src/pipeline/validator.ts`):
+   - `+10` to the required confidence if any changed path touches shared code (`/pageobjects/`, `/helpers/`, `/commands/`, ...).
+   - `+5` if 2+ files changed.
+   - Capped at `max(baseMin, 95)` — explicit user floor is never lowered.
+   - If the scaled threshold blocks the fix **because scaling kicked in** (not because confidence was just below the base threshold), set `autoFixSkipped=true` with the reasons; otherwise break silently.
+4. **Duplicate-fix fingerprint**: if this fix has the same `fixFingerprint(...)` as a previously failed fix in this loop, break. Prevents infinite retry-same-attempt loops.
+5. **First iteration only**: `validator.setup()` — clones the target repo, `npm ci`/`install`, optional Cypress binary cache. Then **`baselineCheck()`** — runs the test **3 consecutive times** without any fix applied. If all 3 pass, conclude the original failure was transient and return `{ fixRecommendation: null, autoFixResult: null, iterations: 0 }`. If any pass fails, short-circuit (it's a real failure).
+6. `applyFix` (on-disk patch), `runTest`.
+7. **On pass**: `pushAndCreatePR` (create branch, commit, push, open PR). Return with `autoFixResult.success = true`. Push-failure edge case: fix passed locally but push failed → return with `success=false` + `validationStatus=passed` (so operators can tell "the fix works, GitHub just rejected the push" apart from a real failure).
+8. **On fail**: add fingerprint to failed set, `validator.reset()` (git clean), build `previousAttempt` for next iteration with the failed fix diff + sanitized validation logs + prior agent reasoning. Loop.
+9. **After the loop**: `validator.cleanup()` always runs (`try { ... } finally { ... }`).
+
+### `ClassificationResult` vs `RepairResult`
+
+```ts
+interface ClassificationResult {
   verdict: Verdict;
   confidence: number;
   reasoning: string;
   summary?: string;
   indicators?: string[];
-  suggestedSourceLocations?: SourceLocation[];
-  evidence?: string[];
-  category?: string;
+  suggestedSourceLocations?: Array<{ file: string; lines: string; reason: string }>;
+  responseId?: string;              // for OpenAI Responses API chaining
   fixRecommendation?: FixRecommendation;
+  classifierSkillIds?: string[];    // surfaced skills — written for future "classification outcome" feedback loop
 }
 
-interface ActionInputs {
-  githubToken: string;
-  openaiApiKey: string;
-  errorMessage?: string;
-  workflowRunId?: string;
-  jobName?: string;
-  confidenceThreshold: number;
-  prNumber?: string;
-  commitSha?: string;
-  repository?: string;
-  productRepo: string;
-  productDiffCommits?: number;
-  testFrameworks?: string;
-  enableAutoFix?: boolean;         // Enable automatic branch creation
-  autoFixBaseBranch?: string;      // Base branch to create fix from
-  autoFixMinConfidence?: number;   // Minimum confidence for auto-fix
-  autoFixTargetRepo?: string;
-  branch?: string;
-  enableValidation?: boolean;
-  validationWorkflow?: string;
-  validationPreviewUrl?: string;
-  validationSpec?: string;
-  validationTestCommand?: string;
-  npmToken?: string;
-  enableAgenticRepair?: boolean;   // Defaults to true (action.yml default: 'true')
-  triageAwsRegion?: string;        // AWS region for DynamoDB skill store (default: us-east-1)
-  triageDynamoTable?: string;      // DynamoDB table name (default: triage-skills-v1-live)
+interface RepairResult {
+  fixRecommendation: FixRecommendation | null;
+  autoFixResult: ApplyResult | null;
+  investigationContext?: string;
+  iterations: number;
+  prUrl?: string;
+  agentRootCause?: string;
+  agentInvestigationFindings?: string;
+  autoFixSkipped?: boolean;
+  autoFixSkippedReason?: string;
 }
 ```
 
 ---
 
-## GitHub Action Outputs
+## The five agents
 
-| Output | Type | Description |
-|--------|------|-------------|
-| `verdict` | string | `TEST_ISSUE`, `PRODUCT_ISSUE`, `INCONCLUSIVE`, `PENDING`, `ERROR`, or `NO_FAILURE` |
-| `confidence` | string | Confidence percentage (0-100, capped at 95 by `MAX_CONFIDENCE` constant) |
-| `reasoning` | string | Detailed reasoning for the verdict |
-| `summary` | string | Human-readable summary |
-| `triage_json` | string | Full JSON output with all data |
-| `has_fix_recommendation` | string | `true` or `false` |
-| `fix_recommendation` | string | JSON fix recommendation (if available) |
-| `fix_summary` | string | Human-readable fix summary (if available) |
-| `fix_confidence` | string | Fix recommendation confidence (if available) |
-| `auto_fix_applied` | string | `true` or `false` - whether auto-fix branch was created |
-| `auto_fix_branch` | string | Name of the created branch (if auto-fix applied) |
-| `auto_fix_commit` | string | Last commit SHA created while applying the fix (if auto-fix applied) |
-| `auto_fix_files` | string | JSON array of modified files (if auto-fix applied) |
-| `validation_run_id` | string | Validation workflow run ID when discovered after dispatch |
-| `validation_status` | string | Validation status reported by this action: `pending`, `passed`, or `skipped` (aligns with local validation and legacy dispatch outcomes; the `ApplyResult` type also allows `failed` but no runtime path currently emits it) |
-| `validation_url` | string | URL for the dispatched validation workflow run when GitHub returns it |
+All live under `src/agents/`. All except `CodeReadingAgent` extend `BaseAgent` and make a single `generateWithCustomPrompt` call per `execute()`. The orchestrator runs them in a fixed order; the fix/review pair iterates.
+
+### Analysis agent — `analysis-agent.ts`
+
+**One-liner**: classify the failure into a whitelisted `rootCauseCategory`, `issueLocation`, patterns, selectors, and confidence.
+
+- **Input**: `AnalysisInput = { additionalContext?: string }` — orchestrator passes `{}`.
+- **Output**: `AnalysisOutput`:
+  - `rootCauseCategory`: whitelisted `SELECTOR_MISMATCH | TIMING_ISSUE | STATE_DEPENDENCY | NETWORK_ISSUE | ELEMENT_VISIBILITY | ASSERTION_MISMATCH | DATA_DEPENDENCY | ENVIRONMENT_ISSUE | UNKNOWN`.
+  - `issueLocation`: `TEST_CODE | APP_CODE | BOTH | UNKNOWN`.
+  - `contributingFactors`, `explanation`, `selectors`, `elements`, `patterns` (7 booleans), `suggestedApproach`, `confidence`.
+  - Parse-time whitelist enforcement — a malicious or drifting model response can't land an arbitrary string on `rootCauseCategory`.
+- **Downstream**: `selectors` → code reading; full output → investigation, fix-gen, review. `analysis.confidence` gates the investigation-chain behavior (below).
+- **Rejects / overrides**: none inside the agent; the orchestrator applies the investigation's `verdictOverride` gate later.
+
+### Code reading agent — `code-reading-agent.ts`
+
+**One-liner**: deterministically fetch the test file + related support / page objects / commands / PR diff files from GitHub. **No LLM.** (`getSystemPrompt()` returns `''`.)
+
+- **Input**: `{ testFile, errorSelectors?, additionalFiles? }`.
+- **Output**: `CodeReadingOutput = { testFileContent, relatedFiles[], customCommands[], pageObjects[], summary }`.
+- On a successful read, the orchestrator populates `AgentContext.sourceFileContent` (line-numbered), `AgentContext.relatedFiles`, and stashes raw content for `autoCorrectOldCode`.
+- Returns `success: false` if the test file can't be fetched — the orchestrator short-circuits the run.
+
+### Investigation agent — `investigation-agent.ts`
+
+**One-liner**: cross-reference analysis with actual code + diffs, produce structured findings, `recommendedApproach`, `selectorsToUpdate`, `isTestCodeFixable`, optional `verdictOverride`.
+
+- **Input**: `{ analysis: AnalysisOutput, codeContext?: CodeReadingOutput }`.
+- **Output**: `InvestigationOutput`:
+  - `findings[]`: each has whitelisted `type` (`SELECTOR_DRIFT | TIMING_RACE | STATE_ISSUE | CODE_CHANGE | OTHER`) and `severity` (`HIGH | MEDIUM | LOW`).
+  - `primaryFinding?`, `isTestCodeFixable`, `recommendedApproach`, `selectorsToUpdate[]`, `confidence`.
+  - `verdictOverride?` — `{ suggestedLocation: 'TEST_CODE' | 'APP_CODE' | 'BOTH', confidence, evidence[] }`. Parse-time whitelist; invalid locations cause the entire `verdictOverride` to be dropped.
+- **Verdict override gates** (applied in orchestrator immediately after investigation runs):
+  - If `verdictOverride.suggestedLocation === 'APP_CODE'` **and** `verdictOverride.confidence >= analysis.confidence` → abort repair. The agent trusted investigation over analysis.
+  - If `!isTestCodeFixable && !verdictOverride` → abort repair. The agent concluded the failure is not test-fixable.
+- **Framework-aware prompt**: WebdriverIO shows `browser.*` command prefix; Cypress shows `cy.*`.
+
+### Fix generation agent — `fix-generation-agent.ts`
+
+**One-liner**: produce `changes[]` with concrete `oldCode` / `newCode` / `changeType`, plus the causal trace and confidence.
+
+- **Input**: `{ analysis, investigation, previousFeedback? }`.
+- **Output**: `FixGenerationOutput`:
+  - `changes[]`: each `CodeChange` has whitelisted `changeType` (`SELECTOR_UPDATE | WAIT_ADDITION | LOGIC_CHANGE | ASSERTION_UPDATE | OTHER`).
+  - `confidence`, `summary`, `reasoning`, `evidence[]`, `risks[]`, `alternatives?`.
+  - **`failureModeTrace?`** — four sub-fields: `originalState`, `rootMechanism`, `newStateAfterFix`, `whyAssertionPassesNow`. This is the causal rationale the review agent audits; missing/vague trace is a CRITICAL rejection.
+- **System prompt composition**:
+  - `COMMON_PREAMBLE`
+  - Framework-specific patterns block (`CYPRESS_PATTERNS` or `WDIO_PATTERNS`; both concatenated for unknown framework)
+  - `COMMON_SUFFIX` containing the JSON output schema + `failureModeTrace` rules + `oldCode` rules (must verbatim-match source)
+- **Iteration**: driven by the orchestrator. Each iteration may receive `previousFeedback` from prior review issues or low-confidence / oldCode-validation rejections.
+
+### Review agent — `review-agent.ts`
+
+**One-liner**: approve or reject a proposed fix, auditing changes, trace quality, and PR/product consistency.
+
+- **Input**: `{ proposedFix, analysis, investigation?, codeContext? }` — orchestrator always passes `investigation` and `codeContext` when available.
+- **Output**: `{ approved, issues[] (each with severity CRITICAL/WARNING/INFO), assessment, fixConfidence, improvements? }`.
+- **Parser safety**: any CRITICAL issue forces `approved = false` even if the model says `approved: true`.
+- **Approval rules** (from system prompt): no CRITICAL issues **and** the fix addresses the root cause.
+- **CRITICAL list includes**:
+  - `oldCode` doesn't match source (hallucinated).
+  - Change is a no-op (same as original).
+  - Wrong line / wrong file.
+  - Missing or vague `failureModeTrace`.
+  - **Logical strengthening** of an assertion without justification (e.g. `should('exist')` → `should('be.visible')`).
+  - `issueLocation=APP_CODE` without justification.
+  - Fix contradicts investigation's `verdictOverride`.
+  - Fix ignores investigation's `recommendedApproach`.
+- **Orchestrator integration**: `isBlockingCriticalIssue` helper inspects the issue list; at max iterations, refuses to ship any fix that has an open quality-critical issue (trace missing/vague, strictly-stronger logic).
+
+### `AgentContext` (`src/agents/base-agent.ts`)
+
+Every field and what it's for:
+
+| Field | Role |
+|---|---|
+| `errorMessage`, `testFile`, `testName`, `errorType?`, `errorSelector?`, `stackTrace?` | Failure identity. |
+| `screenshots?` (name + base64), `logs?` | Failure artifacts. |
+| `prDiff?`, `productDiff?` | Test-repo PR diff + recent product-repo commits. |
+| `framework?` | `cypress` | `webdriverio` — drives per-agent prompt branching. |
+| `sourceFileContent?`, `relatedFiles?` | Populated by code reading agent before investigation. |
+| `skillsPrompt?` | Pre-formatted skills text (set by orchestrator for each agent role). |
+| `delegationContext?` | Per-stage briefing the orchestrator builds from prior agents' output. |
+| `includeScreenshots?` | Default `true`; orchestrator sets to `false` after investigation to conserve tokens. |
+| `investigationSummary?` | Short string used by downstream skill save. |
+| `priorInvestigationContext?` | Prior investigation findings from the skill store (for the investigation agent only). |
+| `repoContext?` | The `.adept-triage/context.md` block — prepended to every agent's system prompt. |
 
 ---
 
-## Error Handling
+## Prompt composition
 
-### Retry Logic
-- OpenAI API calls retry up to 3 times with linear backoff
-- Initial delay: 1,000ms on first retry, 2,000ms on second retry, then fail
+### System prompt
+For every agent except `CodeReadingAgent` (which doesn't call the LLM):
 
-### Graceful Degradation
-1. **Workflow still running**: Returns `PENDING` verdict
-2. **No error data**: Returns `ERROR` outputs and fails the action with a descriptive message
-3. **Low confidence**: Returns `INCONCLUSIVE` verdict
-4. **Fix generation fails**: Continues without fix recommendation
+```
+<agent role + rubric + output schema>
 
-### Error Recovery
-- Screenshots fetch failure: Continues with text-only analysis
-- Uploaded test artifact fetch failure: Uses GitHub Actions logs only
-- PR diff fetch failure: Analyzes without test-repo PR context
-- Product diff fetch failure: Analyzes without product-repo diff context
-- JSON parse failure: Falls back to text extraction
+<repo conventions block, if context.repoContext is set>
+```
+
+`BaseAgent.runAgentTask` (`src/agents/base-agent.ts:263-266`) does this concatenation automatically. Empty `repoContext` collapses to no-op. **Order matters**: the agent's role frames the task; repo conventions refine "how this repo does things." Swapping the order would risk the model treating conventions as the primary task.
+
+Fix-gen's system prompt additionally includes `CYPRESS_PATTERNS` or `WDIO_PATTERNS` (~100 lines each of canonical fix patterns) before the JSON schema.
+
+### User prompt
+
+Each agent's `buildUserPrompt` is role-specific but composes these layers when present:
+
+1. `delegationContext` (orchestrator briefing from prior stages)
+2. `errorMessage`, diffs, code slices, screenshots metadata
+3. `skillsPrompt` (prior-fix memory)
+4. Role-specific instructions
+
+### Skill-memory rendering
+
+Three entry points, different framings to prevent anchoring bias:
+
+- **`formatSkillsForPrompt(skills, role, flakiness?)`** — used by orchestrator before analysis/investigation/fix-gen/review. Role-specific header:
+  - `investigation`: "these patterns have been applied before — use as background; do NOT anchor."
+  - `fix_generation`: "validated approaches are starting points; use the causal trace as a reasoning template."
+  - `review`: "check alignment with prior validated patterns; weaker current trace is a WARNING signal."
+- **`formatForInvestigation({ framework, spec, errorMessage })`** — used by coordinator to build `investigationContext` passed through as `priorInvestigationContext`. Filters to skills that have `investigationFindings` set. Top 3 rendered as "Prior investigation for `<spec>` (<date>)".
+- **`formatSkillsForClassifierContext(skills)`** — used by coordinator for the classifier context block. Numbered lines of (errorPattern, rootCauseCategory, fix summary, confidence, optional classificationOutcome).
+
+**Trace rendering** is gated to avoid feeding "how this fix reasoned" under skills that failed:
+- Only for roles `fix_generation` and `review`.
+- Only when the skill is validated (`validatedLocally === true` OR `successCount > 0`).
+- Each trace sub-field capped at 200 chars.
+
+**Track-record wording** is three-state honest:
+- `successCount + failCount > 0` → `"X/Y successful"`.
+- No runtime counters, `validatedLocally === true` → `"validated on save, no runtime track record yet"`.
+- No runtime counters, not validated-at-save → `"untested"`.
+
+### Prior-attempt context (outer fix-validate loop)
+
+When iteration N of `iterativeFixValidateLoop` runs, `buildPriorAttemptContext(...)` renders iteration N-1's failed fix into the agent's `errorMessage` block:
+
+- The previous fix's diff (file paths, oldCode, newCode).
+- Sanitized validation-run logs (tail, 8000 chars for agentic, 6000 for single-shot).
+- `priorAgentRootCause` + `priorAgentInvestigationFindings` — forces the fresh pipeline to actively diverge rather than re-discover the same theory.
+- `previousFix.reasoning` and `previousFix.failureModeTrace` sub-fields.
+- Explicit instruction to try a *different* approach.
+
+Every field goes through `sanitizeForPrompt` — test-runner logs can contain prompt-injection patterns quoted from user code.
+
+### `sanitizeForPrompt`
+
+Defensive sanitizer applied to every model-adjacent string before it lands in a prompt. Accepts `unknown` because upstream parsers sometimes leave non-strings on evidence arrays. Applied escapes:
+
+- Triple backticks ` ``` ` → `′′′` (U+2032 primes) — can't break out of a fenced block.
+- `## SYSTEM:` → `## INFO:`.
+- `Ignore previous` → `[filtered]`.
+- `<system>...</system>`, `<instruction>...</instruction>`, `<prompt>...</prompt>` tags stripped.
+- `[INST]`, `[/INST]`, `<<SYS>>`, `<</SYS>>` removed.
+- Length-capped (default 2000); overflow ends in `... [truncated]`.
 
 ---
 
-## Usage Example
+## Repair paths — agentic vs single-shot
 
-```yaml
-- name: Analyze Test Failure
-  uses: adept-at/adept-triage-agent@v1
-  with:
-    GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-    OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-    WORKFLOW_RUN_ID: ${{ github.run_id }}
-    JOB_NAME: 'test-job'
-    CONFIDENCE_THRESHOLD: '70'
-    BRANCH: ${{ github.ref_name }}
-    COMMIT_SHA: ${{ github.sha }}
-```
+### Where the split happens
 
-### Consumer Workflow Convention (Shared Actions)
+In `SimplifiedRepairAgent.generateFixRecommendation()` (`src/repair/simplified-repair-agent.ts`):
 
-Consumer repos should standardize on shared actions from `adept-at/adept-common`:
+1. If `enableAgenticRepair === true` **AND** an orchestrator exists (constructed only when `sourceFetchContext` is available) → `tryAgenticRepair()` → `AgentOrchestrator.orchestrate()`.
+2. If agentic returns a fix → return it.
+3. If agentic returns `null` (timeout, no valid fix, pipeline error with `fallbackToSingleShot: true`) → log the fallback and call `singleShotRepair()`.
 
-- Dispatch on test failure: `adept-at/adept-common/.github/actions/triage-dispatch@main`
-- Reusable triage workflow: `adept-at/adept-common/.github/workflows/triage-failed-tests.yml@main`
-- Slack notification in triage workflow: `adept-at/adept-common/.github/actions/triage-slack-notify@main`
+### Agentic path — `AgentOrchestrator.orchestrate()`
 
-As of March 2026, all four consumer repos (`lib-cypress-canary`, `lib-wdio-8-e2e-ts`, `lib-wdio-8-multi-remote`, `learn-webapp`) use the shared dispatch action and shared reusable triage workflow. `learn-webapp` passes `GITHUB_TOKEN` as `CROSS_REPO_PAT` since its tests and source code are in the same repo.
+Happy path (`src/agents/agent-orchestrator.ts`):
+
+1. Wrap the whole pipeline in a `Promise.race` against a `totalTimeoutMs` timer (default **300,000 ms** — bumped in v1.51.0 for xhigh reasoning latency).
+2. **Analysis** — receives `skillsPrompt` pre-rendered with role `investigation` (by design — analysis shares investigation's "don't anchor" framing). Runs with `lastResponseId` as `previousResponseId` for Responses-API chaining across outer iterations.
+3. **Code reading** — no LLM, no chaining. Sets `context.sourceFileContent` (line-numbered) and `context.relatedFiles`.
+4. **Investigation** — chains to analysis **only** when `analysis.confidence < AGENT_CONFIG.INVESTIGATION_CHAIN_CONFIDENCE` (default **80**). Lower analysis confidence = pull in analysis's reasoning context; higher = start fresh to avoid cascading over-confident analysis.
+5. **Verdict gates** — abort repair if `verdictOverride.suggestedLocation === 'APP_CODE'` with high-enough confidence, or if `!isTestCodeFixable && !verdictOverride`.
+6. **Fix-gen / review loop** — up to `maxIterations` (default **3**). Each iteration:
+   - Set `delegationContext` and `skillsPrompt` for fix-gen.
+   - Run fix-gen with shared `fixReviewChainId` (Responses-API chain within the same run).
+   - `autoCorrectOldCode` tries to snap near-miss `oldCode` strings to exact source matches.
+   - If confidence `< minConfidence` (default **70**), set `reviewFeedback` and continue.
+   - If `requireReview`: run review with the same chain id.
+   - Approved + no blocking CRITICALs → return fix with `approach: 'agentic'`.
+   - Not approved → build `reviewFeedback` from issues + (if blocking CRITICAL with prior trace) explicit replay of `previousFix.failureModeTrace` → next iteration.
+7. **Max iterations fallback** — if we ran out of iterations but last fix has acceptable confidence AND no blocking quality CRITICALs, return it with a warning ("not review-approved; validation is the final gate"). Otherwise error.
+
+### Single-shot path — `SimplifiedRepairAgent.singleShotRepair()`
+
+Simpler: builds one long prompt (failure context + source + skills + repo context + prior-attempt block if any) and parses the model's response into a `FixRecommendation`. No investigation agent, no iteration.
+
+- Fetches the source file directly (via octokit `getContent`).
+- `inferRootCauseCategoryFromText(...)` — pattern-matching over error + reasoning + `errorType` to produce a whitelisted `rootCauseCategory`.
+- `summarizeSingleShotFindings(recommendation)` — produces a lightweight investigation-findings-equivalent string from the model's `rootCause + reasoning + evidence[]`, so single-shot-saved skills have useful `investigationFindings` instead of empty strings (the gap fixed in v1.52.0).
 
 ---
 
-## Auto-Fix Feature
+## Learning loop — skill store + repo context + seeds
 
-The Auto-Fix feature allows the triage agent to automatically apply AI-generated fixes by creating a new branch with the proposed changes. This enables faster remediation of test issues while keeping engineers in control of the final review and merge.
+### The `TriageSkill` data model
 
-### Overview
+Fields (`src/services/skill-store.ts`) and what they mean:
 
-When a test failure is classified as `TEST_ISSUE` and the fix recommendation meets confidence requirements, the auto-fix feature can:
-1. Create a new branch from your base branch (or work in a local clone when the local validation path is active)
-2. Apply the proposed code changes
-3. Commit the changes through the GitHub API, **or** run the **local validation** loop: clone the test repo, `npm ci`, then up to three iterations of generate-fix → apply on disk → run `VALIDATION_TEST_COMMAND` → push and open a PR when tests pass
-4. When `VALIDATION_TEST_COMMAND` is unset, optionally dispatch a validation workflow (`workflow_dispatch` to `validate-fix.yml` or the configured workflow) instead of executing tests in the runner
-5. Provide branch, PR, and validation details for downstream automation or manual review
+| Field | Set by | Purpose |
+|---|---|---|
+| `id` | `buildSkill` / seed CLI | UUID. |
+| `createdAt`, `lastUsedAt` | `buildSkill` / `recordOutcome` | Timestamps. |
+| `repo`, `spec`, `testName`, `framework` | Callers | Identity for retrieval scoring. |
+| `errorPattern` | `normalizeError(errorMessage)` | Structural shape for similarity matching. |
+| `rootCauseCategory` | Analysis / inference | One of the analysis enum values. |
+| `fix: { file, changeType, summary, pattern }` | Fix-gen / callers | What the fix was. |
+| `confidence`, `iterations` | Repair loop | At save time. |
+| `prUrl` | Coordinator (when PR created) | Trust signal for fix-gen/review; empty when local-only. |
+| `validatedLocally` | Coordinator (local path) | Gates classifier retrieval + trace rendering. |
+| `priorSkillCount` | `countForSpec` at save | Analytics only (retired-excluded, v1.49.3). |
+| `successCount` / `failCount` | `recordOutcome` (atomic `ADD`) | Track record + auto-retire trigger. |
+| `retired` | Auto-set on threshold | Excludes from retrieval. |
+| `classificationOutcome` | `recordClassificationOutcome` | `'correct'` or `'incorrect'`; only `'correct'` written today. |
+| `rootCauseChain` | Callers | Short human chain string. |
+| `investigationFindings` | `summarizeInvestigationForRetry` or `summarizeSingleShotFindings` | Rendered by `formatForInvestigation`. |
+| `repoContext?` | Callers (seeds optional) | Per-skill note; distinct from the global `.adept-triage/context.md`. |
+| `failureModeTrace?` | Fix-gen | The 4-field causal trace (v1.48.1/v1.49.1). |
+| **`isSeed?`** | Seed CLI only | Pruning + audit exemption (v1.52.0). |
 
-### Auto-Fix Decision Flow
+### DynamoDB layout
 
-```mermaid
-flowchart TD
-    START([Analysis Complete]) --> CHECK_VERDICT{Verdict?}
+- **Table**: `triage-skills-v1-live` (configurable via `TRIAGE_DYNAMO_TABLE`).
+- **Partition key** `pk` = `REPO#<owner>/<repo>`.
+- **Sort key** `sk` = `SKILL#<id>`.
+- **Auth**: AWS SDK default provider chain — the action does NOT wire OIDC or reference a role ARN in code. Consumer workflows typically use `aws-actions/configure-aws-credentials@v4` with OIDC before this action runs.
+- **`MAX_SKILLS = 100`** per partition. Enforced on `save()`.
 
-    CHECK_VERDICT --> |PRODUCT_ISSUE| SKIP_PRODUCT[Skip Auto-Fix]
-    CHECK_VERDICT --> |TEST_ISSUE| CHECK_FIX{Fix Recommendation<br/>Generated?}
+### Never-reject contracts
 
-    CHECK_FIX --> |No| SKIP_NO_FIX[Skip - No Fix Available]
-    CHECK_FIX --> |Yes| CHECK_ENABLED{ENABLE_AUTO_FIX<br/>= true?}
+`load()`, `save()`, `recordOutcome()`, `recordClassificationOutcome()` ALL have an explicit never-reject contract:
 
-    CHECK_ENABLED --> |No| OUTPUT_FIX_ONLY[Output Fix Recommendation<br/>auto_fix_applied: false]
-    CHECK_ENABLED --> |Yes| CHECK_CONFIDENCE{Fix Confidence >=<br/>AUTO_FIX_MIN_CONFIDENCE?}
+- Errors are caught, logged (warning level), and translated to sentinel states (empty cache, in-memory rollback, skipped update).
+- The coordinator awaits these without `.catch(...)` and relies on this — a DynamoDB outage must not take down triage.
 
-    CHECK_CONFIDENCE --> |No| SKIP_LOW_CONF[Skip - Confidence Below Threshold<br/>auto_fix_applied: false]
-    CHECK_CONFIDENCE --> |Yes| CHECK_CHANGES{Has Proposed<br/>Changes?}
+### Pruning — `selectSkillsToPrune`
 
-    CHECK_CHANGES --> |No| SKIP_NO_CHANGES[Skip - No Changes to Apply<br/>auto_fix_applied: false]
-    CHECK_CHANGES --> |Yes| APPLY_FIX[Apply Fix]
+When `save()` pushes the partition over `MAX_SKILLS`:
 
-    APPLY_FIX --> FETCH_BASE[Fetch Base Branch]
-    FETCH_BASE --> CREATE_BRANCH[Create Fix Branch<br/>fix/triage-agent/...]
-    CREATE_BRANCH --> APPLY_CHANGES[Apply Code Changes]
-    APPLY_CHANGES --> COMMIT[Commit Changes via<br/>GitHub API]
-    COMMIT --> VALIDATE{Local validation?<br/>ENABLE_VALIDATION +<br/>VALIDATION_TEST_COMMAND}
-    VALIDATE -->|Yes| LOCAL_VAL[Local loop<br/>iterativeFixValidateLoop<br/>clone, npm ci, up to 3x:<br/>fix → apply → run tests]
-    VALIDATE -->|No, validation on| LEGACY_VAL[Legacy: push via API +<br/>optional workflow_dispatch]
-    VALIDATE -->|No validation| OUTPUT_SUCCESS
+- Eligible = all skills except (a) the just-saved skill id and (b) any skill with `isSeed === true`.
+- Sort oldest-first by `createdAt`, then by `id` for tie-break.
+- Delete the N oldest from the eligible set (where N = overflow).
 
-    LOCAL_VAL --> LOCAL_OK{Tests<br/>passed?}
-    LOCAL_OK -->|Yes| OUTPUT_SUCCESS[Output Results<br/>auto_fix_applied: true<br/>auto_fix_branch: ...<br/>auto_fix_commit: ...<br/>PR when local path]
-    LOCAL_OK -->|No| CLEANUP[Cleanup Branch<br/>auto_fix_applied: false]
+Seeds are a hard floor — they can never be evicted by a flood of auto-saved skills. That's the whole point of the `isSeed` flag.
 
-    LEGACY_VAL --> LEGACY_OK{Success?}
-    LEGACY_OK --> |Yes| OUTPUT_SUCCESS
-    LEGACY_OK --> |No| CLEANUP
+Pruning is **skipped entirely** if `loadSucceeded === false` (the in-memory view isn't trustworthy).
 
-    SKIP_PRODUCT --> END_OUTPUT([Set Outputs])
-    SKIP_NO_FIX --> END_OUTPUT
-    OUTPUT_FIX_ONLY --> END_OUTPUT
-    SKIP_LOW_CONF --> END_OUTPUT
-    SKIP_NO_CHANGES --> END_OUTPUT
-    OUTPUT_SUCCESS --> END_OUTPUT
-    CLEANUP --> END_OUTPUT
+### Auto-retirement
 
-    style START fill:#90EE90
-    style OUTPUT_SUCCESS fill:#90EE90
-    style SKIP_PRODUCT fill:#FFD700
-    style SKIP_NO_FIX fill:#FFD700
-    style OUTPUT_FIX_ONLY fill:#87CEEB
-    style SKIP_LOW_CONF fill:#FFD700
-    style SKIP_NO_CHANGES fill:#FFD700
-    style CLEANUP fill:#FF6B6B
-    style END_OUTPUT fill:#90EE90
-```
+In `recordOutcome()`: after a failure counter bump, if `failRate > RETIRE_FAIL_RATE (0.4)` AND `failCount >= RETIRE_MIN_FAILURES (3)`, a second `UpdateCommand` sets `retired = true`. Retired skills stop being surfaced but stay in the store (flakiness signal counts them).
 
-### Auto-Fix Inputs
+### Retrieval
 
-| Input | Type | Default | Description |
-|-------|------|---------|-------------|
-| `ENABLE_AUTO_FIX` | boolean | `false` | Enable automatic branch creation with fix. Must be explicitly set to `true` to enable. |
-| `AUTO_FIX_BASE_BRANCH` | string | `main` | Base branch to create the fix branch from. |
-| `AUTO_FIX_MIN_CONFIDENCE` | number | `70` | Minimum fix confidence (0-100) required to apply auto-fix. |
+- **`normalizeSpec`** (v1.52.0) — strips GitHub Actions runner prefixes (Linux `/home/runner/work/<repo>/<repo>/`, Windows `D:\a\<repo>\<repo>\`) and leading `./`. Applied at **write time** in `buildSkill` and at **read time** in `findRelevant`, `findForClassifier`, `detectFlakiness`, `countForSpec`. This is what makes relative-path seeds match runtime absolute-path failures.
 
-### Auto-Fix Outputs
+| Method | Filter | Scoring | Limit |
+|---|---|---|---|
+| `findRelevant({ framework, spec, errorMessage, limit })` | `!retired` + framework | spec-match `+10`, error-similarity Jaccard × 5 | 5 |
+| `findForClassifier({ framework, spec, errorMessage })` | `!retired` + framework + **`validatedLocally === true`** | spec-match `+15`, error-similarity × 5, `+3` recency (lastUsedAt within 7d) | 3 |
+| `detectFlakiness(spec)` | (counts retired) | Windowed: `>1` in 3d → flaky; `>2` in 7d → flaky | — |
+| `countForSpec(spec)` | `!retired` | Count | — |
 
-| Output | Type | Description |
-|--------|------|-------------|
-| `auto_fix_applied` | string | `true` if auto-fix branch was created, `false` otherwise |
-| `auto_fix_branch` | string | Name of the created branch (e.g., `fix/triage-agent/my-test-cy-ts-20240130`) |
-| `auto_fix_commit` | string | Last commit SHA created while applying the fix |
-| `auto_fix_files` | string | JSON array of modified file paths |
+### `RepoContextFetcher` (v1.52.0)
 
-### Example: Enabling Auto-Fix
+`src/services/repo-context-fetcher.ts`. One class, one public method.
 
-```yaml
-name: Triage Failed Tests with Auto-Fix
+- **Cache key** `<owner>/<repo>@<ref>` — per-run, per-branch. Different branches on the same run don't collide.
+- **Order of operations** in `fetch(owner, repo, ref)`:
+  1. Cache hit → return.
+  2. **`getBundledRepoContext(owner, repo)`** — synchronous lookup in `bundled-repo-contexts.ts`. Case-insensitive. If hit, render and return. **No network call.**
+  3. `octokit.repos.getContent({ owner, repo, path: '.adept-triage/context.md', ref })`.
+  4. On success: decode base64, `sanitizeForPrompt(body, REPO_CONTEXT_MAX_CHARS=6500)`, wrap with `## Repository Conventions` header, cache, return.
+  5. On 404: debug-log, return `''`.
+  6. On other error: debug-log, return `''`. Never throws.
 
-on:
-  repository_dispatch:
-    types: [triage-failed-test]
+### Bundled contexts (`src/services/bundled-repo-contexts.ts`)
 
-permissions:
-  contents: write  # Required for creating branches and committing via GitHub API
+A static map of `<owner>/<repo>` → raw markdown string. Used for repos where adding tooling files to every PR is costly (high-traffic product repos). Currently bundled: `adept-at/learn-webapp`.
 
-jobs:
-  analyze:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Analyze failure with auto-fix
-        id: triage
-        uses: adept-at/adept-triage-agent@v1
-        with:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          WORKFLOW_RUN_ID: '${{ github.event.client_payload.workflow_run_id }}'
-          JOB_NAME: '${{ github.event.client_payload.job_name }}'
-          # Auto-fix configuration
-          ENABLE_AUTO_FIX: 'true'
-          AUTO_FIX_BASE_BRANCH: 'main'
-          AUTO_FIX_MIN_CONFIDENCE: '75'
+- **Map-key invariant**: all keys must be lowercase. `getBundledRepoContext` lowercases its lookup input so `Adept-At/Learn-WebApp` resolves to the same entry. A test (`__tests__/services/repo-context-fetcher.test.ts`) asserts this at runtime — it's load-bearing, not aspirational.
+- **Release coupling**: bundled contexts ship with the agent. Update = edit the template literal, `npm run all`, merge, new release. Slower than the in-repo path by design; the trade-off is clean product-repo PR histories.
+- **Sanitization**: bundled content goes through the same `sanitizeForPrompt` as remote content. Defense-in-depth against a future maintainer accidentally landing unescaped patterns.
 
-      - name: Notify about auto-fix
-        if: steps.triage.outputs.auto_fix_applied == 'true'
-        run: |
-          echo "Auto-fix applied!"
-          echo "Branch: ${{ steps.triage.outputs.auto_fix_branch }}"
-          echo "Commit: ${{ steps.triage.outputs.auto_fix_commit }}"
-          echo "Modified files: ${{ steps.triage.outputs.auto_fix_files }}"
-          echo ""
-          echo "Create a PR at: https://github.com/${{ github.repository }}/compare/${{ steps.triage.outputs.auto_fix_branch }}?expand=1"
+### Wiring into agent prompts
 
-      - name: Comment on PR with fix branch link
-        if: steps.triage.outputs.auto_fix_applied == 'true' && github.event.client_payload.pr_number
-        uses: actions/github-script@v7
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          script: |
-            const branch = '${{ steps.triage.outputs.auto_fix_branch }}';
-            const commit = '${{ steps.triage.outputs.auto_fix_commit }}';
-            const files = JSON.parse('${{ steps.triage.outputs.auto_fix_files }}');
+- **Agentic path**: coordinator calls `RepoContextFetcher.fetch(...)`, threads `repoContext` through validator → repair-agent → `createAgentContext({ repoContext })`. `BaseAgent.runAgentTask` appends it to every agent's system prompt.
+- **Single-shot path**: `repoContext` is prepended to the user prompt in `buildPrompt(...)` (before the test failure context block). The different location is intentional — single-shot has no system/user role split at the orchestrator level.
 
-            const body = `## 🤖 Auto-Fix Generated
+### Seed skills (v1.52.0)
 
-            The triage agent has generated a fix for this test failure.
+Curated, hand-written skills inserted manually via `scripts/seed-skill.ts`. Purpose: bootstrap the learning loop for a repo before it accumulates its own runtime skills.
 
-            **Branch:** \`${branch}\`
-            **Commit:** \`${commit}\`
-            **Files modified:** ${files.join(', ')}
+Seeds are normal skills with `isSeed: true` and these defaults:
 
-            [View changes](https://github.com/${{ github.repository }}/compare/${branch}) | [Create PR](https://github.com/${{ github.repository }}/compare/${branch}?expand=1)
+- `validatedLocally: true`
+- `successCount: 1`
+- `classificationOutcome: 'correct'`
 
-            > **Note:** Please review the changes carefully before merging.`;
+These defaults make seeds immediately eligible for `findForClassifier` (which requires `validatedLocally === true`) and give them a neutral starting track record. They score the same way as auto-saved skills — the `isSeed` flag only affects pruning and audit behavior.
 
-            github.rest.issues.createComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: ${{ github.event.client_payload.pr_number }},
-              body: body
-            });
-```
+**CLI**: `scripts/seed-skill.ts` takes a single file, a directory (recursive), `--list`, or `--remove <id-prefix>`. Validates `SeedInput` shape before inserting. Applies `normalizeSpec` and `normalizeError` the same way `buildSkill` does.
 
-### Safety Guardrails
+### Audit tooling
 
-The auto-fix feature includes several safety measures to prevent unintended changes:
+`scripts/audit-skills.ts` scans the entire table and flags issues at three severities:
 
-#### 1. Opt-In Only (Disabled by Default)
+| Severity | Check | Action flag |
+|---|---|---|
+| WARN | Failed trajectory (`!validatedLocally && !retired`) | `--retire-flagged` |
+| INFO | `rootCauseCategory === 'OTHER'` (legacy pre-April-2026 data) | — |
+| WARN | `classificationOutcome === 'incorrect'` (pre-v1.50.1 noisy writer) | `--clear-noisy-incorrect` |
+| INFO | Empty `investigationFindings` | — |
+| WARN | Empty or very short fix summary | — |
+| INFO | Stale (>30d no activity) | — |
+| DELETE | High fail rate (`>40%` with `>=3` attempts) not retired | `--delete-flagged` |
+| WARN | Duplicate spec+test (newer than one active skill) | `--retire-flagged` |
+| WARN | Partition over `MAX_SKILLS` | — |
 
-Auto-fix is **disabled by default**. You must explicitly set `ENABLE_AUTO_FIX: 'true'` to enable it. This ensures teams consciously decide to adopt automated fixes.
+**Seeds are skipped** for all per-skill checks and for the duplicate-group check (seeds legitimately cover multiple failure modes of the same test).
 
-```yaml
-# Auto-fix is OFF by default
-- uses: adept-at/adept-triage-agent@v1
-  with:
-    OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-    # ENABLE_AUTO_FIX defaults to 'false'
-```
+### Sister scripts
 
-#### 2. Confidence Threshold Check
-
-Auto-fix only applies when the fix recommendation confidence meets or exceeds the `AUTO_FIX_MIN_CONFIDENCE` threshold (default: 70%). Low-confidence fixes are reported but not automatically applied.
-
-```yaml
-# Only apply fixes with 80%+ confidence
-ENABLE_AUTO_FIX: 'true'
-AUTO_FIX_MIN_CONFIDENCE: '80'
-```
-
-#### 3. Pull Request Creation (Path-Dependent)
-
-- **Local validation path** (`ENABLE_AUTO_FIX`, `ENABLE_VALIDATION`, and `VALIDATION_TEST_COMMAND` all set): when local tests pass after applying the fix, the agent **opens a pull request** (after push) so the change is reviewable in GitHub. Merging still requires normal repo policies and human review.
-- **Legacy path** (no `VALIDATION_TEST_COMMAND`): the agent typically creates a **branch only** and does **not** automatically open a PR, so engineers explicitly create the PR from the branch if they want one.
-
-After auto-fix applies, engineers receive:
-- Branch name for inspection
-- Commit SHA for verification
-- List of modified files for review
-- A PR link when the local validation path succeeded, or optional validation run details if a validation workflow was dispatched on the legacy path
-
-#### 4. Required Permissions
-
-Auto-fix requires explicit `contents: write` permission in your workflow:
-
-```yaml
-permissions:
-  contents: write  # Required for auto-fix
-```
-
-Without this permission, the auto-fix will fail gracefully and the fix recommendation will still be output for manual application.
-
-#### 5. Clean Rollback on Failure
-
-If any step of the auto-fix process fails, the agent:
-- Cleans up the partially created branch
-- Reports the error in outputs
-- Sets `auto_fix_applied: false`
-
-### Configuration Constants
-
-The auto-fix feature uses these constants from `src/config/constants.ts`:
-
-| Constant | Value | Description |
-|----------|-------|-------------|
-| `AUTO_FIX.DEFAULT_MIN_CONFIDENCE` | `70` | Default minimum confidence threshold |
-| `AUTO_FIX.BRANCH_PREFIX` | `fix/triage-agent/` | Prefix for auto-fix branch names |
-
-### Branch Naming Convention
-
-Auto-fix branches follow this naming pattern:
-
-```
-fix/triage-agent/{sanitized-test-file}-{YYYYMMDD}-{suffix}
-```
-
-Example: `fix/triage-agent/login-spec-cy-ts-20240130-123`
-
-The test file name is sanitized (special characters replaced with hyphens) and truncated to 40 characters to ensure valid git branch names.
-
-### Commit Message Format
-
-Auto-fix commits include structured information:
-
-```
-fix(test): {change.justification - first 50 chars}
-
-Automated fix generated by adept-triage-agent.
-
-File: {filePath}
-Confidence: {confidence}%
-```
+- `scripts/inspect-skills.ts <id-prefix>` — dumps full skill fields for manual review.
+- `scripts/check-spec-paths.ts` — diagnostic that prints every skill's raw `spec` + `testName` + `fix.file` as persisted, useful for verifying what `normalizeSpec` will actually produce.
 
 ---
 
-## Multi-Agent Orchestration Pipeline
+## Validation paths — local vs remote
 
-Fix generation uses a 5-agent pipeline by default (`ENABLE_AGENTIC_REPAIR` defaults to `true` in `action.yml`). Set to `'false'` to fall back to a single-shot LLM call. The orchestrator is in `src/agents/agent-orchestrator.ts`.
+### Local path (authoritative — v1.45.0+)
 
-### Agent Pipeline
+Used when **all** of these are true:
 
-| Step | Agent | File | LLM? | Purpose |
-|------|-------|------|------|---------|
-| 1 | AnalysisAgent | `src/agents/analysis-agent.ts` | Yes | Classify root cause (SELECTOR_MISMATCH, TIMING_ISSUE, etc.) |
-| 2 | CodeReadingAgent | `src/agents/code-reading-agent.ts` | No | Fetch test source, helpers, and page objects from GitHub |
-| 3 | InvestigationAgent | `src/agents/investigation-agent.ts` | Yes | Deep investigation, identify fixable selectors |
-| 4 | FixGenerationAgent | `src/agents/fix-generation-agent.ts` | Yes | Generate exact oldCode → newCode changes |
-| 5 | ReviewAgent | `src/agents/review-agent.ts` | Yes | Validate fix quality, approve or reject with feedback |
+- `ENABLE_AUTO_FIX === 'true'`
+- `ENABLE_VALIDATION === 'true'`
+- `ENABLE_LOCAL_VALIDATION === 'true'` (explicit, avoids the pre-v1.45.0 bug where just setting `VALIDATION_TEST_COMMAND` implied local)
+- `VALIDATION_TEST_COMMAND` is set
+- `AUTO_FIX_TARGET_REPO` resolves
 
-Steps 4 and 5 loop up to 3 times (configurable via `AGENT_CONFIG.MAX_AGENT_ITERATIONS`). If review rejects, feedback is passed back to the fix generator.
+Flow: `iterativeFixValidateLoop` → `LocalFixValidator` clones the target repo into a temp dir, installs deps, optionally caches the Cypress binary, does a 3-consecutive-pass baseline check (`BASELINE_PASS_COUNT = 3`, v1.50.1), then per iteration applies the fix, runs the test command, and on pass pushes a branch + opens a PR.
 
-**Conversation chaining (Responses API):** All LLM agents in this pipeline share one OpenAI conversation. Each agent call passes the previous turn’s response ID as `previous_response_id`; the API returns a new `response_id` that is forwarded to the next agent. That way Fix Generation and Review (and retries) see the full prior reasoning, not only the structured outputs the orchestrator also carries in `AgentContext`. `AgentResult` includes `responseId`; `OrchestrationResult` includes `lastResponseId` for the final turn.
+`{spec}` and `{url}` in `VALIDATION_TEST_COMMAND` are substituted from `VALIDATION_SPEC` / `VALIDATION_PREVIEW_URL` (or from the `spec` in the dispatch payload).
 
-### Orchestrator Flow
+### Remote path (legacy)
 
-```
-AgentOrchestrator.orchestrate(context, errorData, previousResponseId?, skills?)
-  → Start timeout timer (120s)
-  → AnalysisAgent.execute() → root cause, confidence, selectors; capture responseId
-  → CodeReadingAgent.execute() → source files + related files (no LLM; responseId unchanged)
-  → [if skills] inject skills into context.skillsPrompt (investigation framing)
-  → InvestigationAgent.execute() → findings, recommended approach; chain responseId
-  → Loop (max 3 iterations):
-      → [if skills] inject skills into context.skillsPrompt (fix_generation framing)
-      → FixGenerationAgent.execute() → code changes, confidence; chain responseId
-      → [if confidence < threshold] → retry with feedback (same conversation)
-      → autoCorrectOldCode() → validate/correct oldCode against source
-      → [if all changes dropped] → retry with "copy oldCode exactly" feedback
-      → [if skills] inject skills into context.skillsPrompt (review framing)
-      → ReviewAgent.execute() → approved/rejected, issues; chain responseId
-      → [if approved] → return fix
-      → [if rejected] → retry with review feedback
-  → [if max iterations reached and last fix confidence >= threshold] → return last fix as fallback
-  → Convert to FixRecommendation; lastResponseId available on OrchestrationResult
-```
+Used when the local conditions aren't met and `ENABLE_AUTO_FIX === 'true'` + `ENABLE_VALIDATION === 'true'`. `attemptAutoFix` applies the fix via the GitHub API (creates a branch, commits, opens a PR), then `triggerValidation` dispatches `VALIDATION_WORKFLOW` (default `validate-fix.yml`) on the target repo. `validation_run_id` + `validation_url` are surfaced on the action output.
 
-### `autoCorrectOldCode` (v1.24.0)
+### Baseline check short-circuit
 
-After fix generation but before review, the orchestrator validates each change's `oldCode` against the actual source files (test file + related files fetched by CodeReadingAgent). Three correction strategies are attempted in order:
+On the first failing run in the 3-pass baseline, the validator short-circuits — we already know the test legitimately fails, no point running the other two. On 3/3 passes, we return `fixRecommendation: null` + `iterations: 0` — the original failure was transient and no fix is needed.
 
-1. **Strip line-number prefixes** — the LLM may copy numbered lines like `  42: const x = 1;`; strip the prefix and re-check
-2. **Whitespace-normalized matching** — collapse whitespace for fuzzy comparison, then extract the actual source region
-3. **Line-range + signature matching** — use the approximate line number and code signatures to find the correct region
+### Blast-radius confidence scaling
 
-Changes that cannot be matched are dropped. If all changes are dropped, feedback is sent to the next fix-generation iteration.
+`requiredConfidence(fix, baseMin)` scales up the required confidence based on change scope:
 
-### Agent Communication
+- `+10` if any changed path matches a shared-code fragment (`/pageobjects/`, `/helpers/`, `/commands/`, ...).
+- `+5` if the fix touches 2+ files.
+- Scaled threshold is capped at `max(baseMin, 95)`.
 
-LLM agents are linked by **OpenAI `previous_response_id`**: each call receives the prior response ID so the model retains full multi-turn reasoning. Structured handoffs still use `AgentContext` (defined in `src/agents/base-agent.ts`); the conversation thread is complementary to those fields, not replaced by them.
-
-All agents receive an `AgentContext`:
-- Error message, test file, test name
-- Error type and failed selector (if applicable)
-- Screenshots (base64), logs, stack trace
-- PR diff (files + patches) and product-repo recent commit diff when present
-- Source file content (added by CodeReadingAgent, with line numbers for the LLM)
-- Related files map (helpers, page objects — added by CodeReadingAgent)
-- Framework identifier (cypress/webdriverio)
-- `skillsPrompt` — formatted skill memory text, set by the orchestrator before each agent step (Investigation, Fix Generation, Review) using `formatSkillsForPrompt()` with role-appropriate framing
-
-Agents return `AgentResult<T>` with success/failure, typed output data, execution time, API call count, optional token usage, and **`responseId`** from the Responses API when an LLM ran.
-
-### Skill Memory Integration
-
-Skills are loaded before the orchestrator runs and injected at three points:
-
-1. **Before Investigation Agent** — skills formatted with "use as background context" framing
-2. **Before Fix Generation Agent** (each iteration) — skills formatted with "prefer proven approaches" framing
-3. **Before Review Agent** (each iteration) — skills formatted with "flag contradictions with proven patterns" framing
-
-If a flakiness signal is detected (spec auto-fixed too frequently), a warning is appended to the skill prompt and also included in the action's `triage_json` output.
-
-### Fallback Behavior
-
-If the agentic pipeline fails (timeout, all iterations rejected, agent error):
-- Falls back to single-shot repair when `AGENT_CONFIG.FALLBACK_TO_SINGLE_SHOT` is true (default)
-- If max iterations reached but the last fix has confidence >= `minConfidence`, returns that fix as a fallback (even without review approval — validation becomes the final gate)
+`auto_fix_skipped` is set **only** when scaling raised the bar — a fix that fails only the base threshold isn't flagged as "skipped by policy" because no policy kicked in.
 
 ---
 
-## Causal Consistency (v1.21.0)
+## Outputs, verdicts, and error contracts
 
-### Problem
+### Verdict values
 
-The model would sometimes fabricate causal theories contradicted by the PR diff. For example: a login failure (`#password` not found) with a PR that only changed LMS rendering code. The model would claim "the login UI was changed to passwordless" — a theory unsupported by the diff — then generate a fix for a non-existent problem.
+| Verdict | When |
+|---|---|
+| `TEST_ISSUE` | Test code problem; may trigger fix recommendation / auto-fix. |
+| `PRODUCT_ISSUE` | Real app regression; no fix proposed. |
+| `INCONCLUSIVE` | Confidence below threshold; no fix proposed. |
+| `PENDING` | The referenced workflow run hasn't finished yet (same-workflow mode). |
+| `NO_FAILURE` | No failing job detected. |
+| `ERROR` | Unrecoverable failure (missing inputs, etc.). `core.setFailed(...)`. |
 
-### Solution
+### Action outputs
 
-Added explicit **Causal Consistency Rules** to all prompt layers:
+All values are strings (GitHub Actions convention). JSON blobs are stringified JSON.
 
-| Layer | File | What was added |
-|-------|------|---------------|
-| Main analysis | `src/openai-client.ts` `getSystemPrompt()` | CAUSAL CONSISTENCY RULE — model must validate hypothesis against diff |
-| PR diff section | `src/openai-client.ts` `formatPRDiffSection()` | CAUSAL CONSISTENCY CHECK — explicit wrong/correct reasoning examples |
-| Product diff section | `src/openai-client.ts` `formatProductDiffSection()` | Recent product-repo file/patch context for classification, alongside test-repo PR diff |
-| Fix generation | `src/agents/fix-generation-agent.ts` `getSystemPrompt()` | PR DIFF CONSISTENCY — no claiming code changed if diff doesn't show it |
-| Review | `src/agents/review-agent.ts` `getSystemPrompt()` | New CRITICAL criterion — diff-contradiction means rejection |
+| Output | Set when | Content |
+|---|---|---|
+| `verdict`, `confidence`, `reasoning`, `summary`, `triage_json` | Always (even `ERROR`) | Core fields. `triage_json` is the full structured payload. |
+| `has_fix_recommendation` | `TEST_ISSUE` with fix | `true`/`false`. |
+| `fix_recommendation` | `TEST_ISSUE` with fix | Stringified JSON of fix object. |
+| `fix_summary`, `fix_confidence` | `TEST_ISSUE` with fix | Human summary + confidence. |
+| `auto_fix_applied`, `auto_fix_branch`, `auto_fix_commit`, `auto_fix_files` | Auto-fix created a branch | Note: `auto_fix_commit` not `auto_fix_commit_sha`. |
+| `validation_run_id`, `validation_status`, `validation_url` | Remote validation path | Legacy remote path only. |
+| `auto_fix_skipped`, `auto_fix_skipped_reason` | Intentional auto-fix skip | Chronic flakiness, blast-radius gate, no changes proposed, etc. |
 
-### Validation
+### Error contracts
 
-Integration test: `__tests__/integration/causal-consistency.integration.test.ts`
-
-Hits the real model with a login failure + unrelated PR diff and verifies:
-1. `analyzeFailure()` does NOT claim the login UI changed
-2. `AnalysisAgent` identifies failure as unrelated to PR changes
-3. `FixGenerationAgent` does not fabricate a "passwordless login" narrative
-4. `ReviewAgent` rejects a fix whose reasoning contradicts the diff
-
----
-
-## Development Notes
-
-### Adding New Error Patterns
-1. Add pattern to `errorPatterns` in `extractErrorFromLogs()`
-2. Assign appropriate priority (higher = matched first)
-3. Update `classifyErrorType()` if new error type
-4. Add few-shot example if distinctive pattern
-
-### Adjusting Confidence Calculation
-1. Modify constants in `src/config/constants.ts`
-2. Consider adding new bonus categories in `calculateConfidence()`
-
-### Extending Fix Recommendations
-1. Update `buildPrompt()` in `SimplifiedRepairAgent`
-2. Add new error type handling in `extractChangesFromText()`
-3. Update common patterns list in prompt
+- **`index.ts` top-level catch** — builds an `ERROR` verdict inline and calls `core.setFailed(...)`. Backstop for anything that escapes the coordinator.
+- **`setErrorOutput(reason)`** — used by `handleNoErrorData` when no failure can be located; calls `core.setFailed(reason)`.
+- **`setInconclusiveOutput`** — does NOT call `core.setFailed`; the run is a clean pass but the verdict is `INCONCLUSIVE`.
+- **Never-reject contract** applies to all `SkillStore` methods + `RepoContextFetcher.fetch` — the learning loop must never take down triage.
 
 ---
 
-## Example: Tracing a Real Failure
+## Observability
 
-**Scenario:** Button click test fails with `Element [data-testid='submit-button'] not found`
+Every grep-stable log line, what it means, and when to care.
 
-1. **Asset collection** — screenshot shows the UI rendered correctly; logs show element search timeout after 10s; PR diff shows the button component was modified.
+### Learning loop
 
-2. **Analysis** — the model sees the UI is visible (screenshot), the selector timed out (logs), and the PR changed the button's `data-testid` from `submit-button` to `submit-btn` (diff). Verdict: **TEST_ISSUE** — selector needs updating.
+| Line | Meaning |
+|---|---|
+| `📝 Loaded N skill(s) from DynamoDB (<table>) for <owner>/<repo>` | Skills loaded. If missing, check AWS creds / table / region. |
+| `📝 skill-telemetry role=<role> count=<n> ids=<csv>` | Which skills reached which prompt on this run. Proves retrieval is actually working. |
+| `📊 skill-telemetry-summary loaded=N surfaced=M saved=K` | Per-run rollup. Emitted even when all zero (explicit "no activity"). |
+| `📝 Saved validated skill <id>` / `📝 Saved failed skill trajectory <id>` | Skill persisted after a fix attempt. |
+| `🧹 Pruned N old skill(s) from DynamoDB` | `MAX_SKILLS` cap enforcement. Seeds are never pruned. |
+| `⚠️ Skill <id> retired — X% failure rate` | Auto-retirement threshold hit. |
 
-3. **Fix generation:**
+### Repo context
 
-```json
-{
-  "confidence": 85,
-  "proposedChanges": [{
-    "file": "cypress/e2e/form.test.js",
-    "oldCode": "cy.get('[data-testid=\"submit-button\"]')",
-    "newCode": "cy.get('[data-testid=\"submit-btn\"]')",
-    "justification": "Update selector to match renamed data-testid in PR"
-  }]
-}
-```
+| Line | Meaning |
+|---|---|
+| `📘 Loaded repo context from <owner/repo>/.adept-triage/context.md@<ref> (<N> chars)` | In-repo context was fetched successfully. |
+| `📘 Loaded repo context for <owner/repo> (bundled in adept-triage-agent, <N> chars)` | Bundled context was used — no remote call. |
 
-This illustrates the core value: the PR diff provides the "what changed" context that determines whether a failure is a product regression or an outdated test.
+### Pipeline / agents
+
+| Line | Meaning |
+|---|---|
+| `🤖 Starting agentic repair pipeline...` | Agentic path entered. |
+| `📊 Step 1: Running Analysis Agent...` | Orchestrator phase headers. |
+| `🤖 Agentic approach: <approach>, iterations: N, time: Xms` | Agentic success with stats. |
+| `🤖 Agentic approach failed: <reason>` | Fallback to single-shot. |
+| `🔄 Fix-Validate iteration N/3` | Local validation loop iteration. |
+| `🧪 Running test locally...` | Local validation is running the test command. |
+| `🔍 Running baseline check — does the test pass without any fix? (requires 3 consecutive passes)` | Baseline gate. |
+| `✅ Baseline check passed — test passes without fix. Failure was likely transient.` | 3/3 passes, no fix needed. |
+| `❌ Baseline failed on pass N — short-circuiting.` | Baseline proved real failure. |
+| `⚠️ FLAKINESS DETECTED: <message>` | A spec is flaky but not chronic; repair still runs. |
+| `⏭️ Chronic flakiness: <message> Auto-fix skipped` | `CHRONIC_FLAKINESS_THRESHOLD` hit; human follow-up needed. |
+| `⏭️ Auto-fix skipped: <reason>` | Blast-radius gate or similar policy withheld a fix. |
+
+---
+
+## Configuration defaults
+
+Every numeric / string default operators might want to know.
+
+| Setting | Default | Where |
+|---|---|---|
+| `CONFIDENCE_THRESHOLD` | `70` | `action.yml` input |
+| `AUTO_FIX_MIN_CONFIDENCE` | `70` | `action.yml` input |
+| `AUTO_FIX_BASE_BRANCH` | `main` | `action.yml` input |
+| `AUTO_FIX.BRANCH_PREFIX` | `fix/triage-agent/` | `src/config/constants.ts` |
+| `CHRONIC_FLAKINESS_THRESHOLD` | `3` | `src/config/constants.ts` |
+| Flakiness windows | `>1` fix in 3d OR `>2` in 7d | `src/services/skill-store.ts` `FLAKY_THRESHOLDS` |
+| `BLAST_RADIUS.SHARED_CODE_BOOST` | `+10` | `src/config/constants.ts` |
+| `BLAST_RADIUS.MULTI_FILE_BOOST` | `+5` | `src/config/constants.ts` |
+| `BLAST_RADIUS.MAX_REQUIRED_CONFIDENCE` | `95` | `src/config/constants.ts` |
+| `FIX_VALIDATE_LOOP.MAX_ITERATIONS` | `3` | `src/config/constants.ts` |
+| `FIX_VALIDATE_LOOP.TEST_TIMEOUT_MS` | `300_000` | `src/config/constants.ts` |
+| `BASELINE_PASS_COUNT` | `3` | `src/services/local-fix-validator.ts` |
+| `AGENT_CONFIG.MAX_AGENT_ITERATIONS` | `3` | `src/config/constants.ts` |
+| `AGENT_CONFIG.AGENT_TIMEOUT_MS` | `300_000` | `src/config/constants.ts` |
+| `AGENT_CONFIG.REVIEW_REQUIRED_CONFIDENCE` | `70` | `src/config/constants.ts` |
+| `AGENT_CONFIG.INVESTIGATION_CHAIN_CONFIDENCE` | `80` | `src/config/constants.ts` |
+| `MAX_SKILLS` (per repo partition) | `100` | `src/services/skill-store.ts` |
+| Skill auto-retire threshold | `failRate > 0.4` AND `failCount >= 3` | `src/services/skill-store.ts` |
+| `REPO_CONTEXT_MAX_CHARS` | `6500` | `src/services/repo-context-fetcher.ts` |
+| `OPENAI.LEGACY_MODEL` | `gpt-5.3-codex` (analysis, investigation, code-reading) | `src/config/constants.ts` |
+| `OPENAI.UPGRADED_MODEL` | `gpt-5.4` (fix-gen + review) | `src/config/constants.ts` |
+| `REASONING_EFFORT.fixGeneration` / `review` | `xhigh` | `src/config/constants.ts` |
+| `PRODUCT_REPO` | `adept-at/learn-webapp` | `action.yml` input |
+| `PRODUCT_DIFF_COMMITS` | `5` | `action.yml` input |
+| `TRIAGE_AWS_REGION` | `us-east-1` | `action.yml` input |
+| `TRIAGE_DYNAMO_TABLE` | `triage-skills-v1-live` | `action.yml` input |
+| `DEFAULT_PRODUCT_URL` | `https://learn.adept.at` | `src/config/constants.ts` |
+
+---
+
+## Invariants that must hold
+
+Things that are load-bearing across the codebase. If you break one of these, something silently degrades rather than erroring.
+
+- **`SkillStore` never rejects**. `load()`, `save()`, `recordOutcome()`, `recordClassificationOutcome()` all catch and swallow errors (with warnings). The coordinator relies on `await` without `.catch(...)`.
+- **`RepoContextFetcher.fetch` never rejects**. 404 and all other errors return `''` and the agent keeps running.
+- **`logRunSummary()` runs at every exit**. Wrapped in `try { runClassifyAndRepair(...) } finally { skillStore?.logRunSummary() }` in `execute()`. Guaranteed one summary line per run, even on throw.
+- **Bundled-context map keys must be lowercase**. Enforced by a test. `getBundledRepoContext` lowercases its lookup input.
+- **Bundled context takes precedence over in-repo context**. For repos in `BUNDLED_REPO_CONTEXTS`, the in-repo `.adept-triage/context.md` is never fetched. This is intentional — adding a repo to the bundle map is an explicit "keep it here" signal.
+- **`normalizeSpec` must be applied on both sides of equality**. Seeds write relative paths; runtime writes absolute paths. Without normalization on the read side, seeds are inert.
+- **Seeds are never pruned**. `selectSkillsToPrune` filters `!isSeed` before picking prune candidates.
+- **`validatedLocally: true` on seeds**. Without it, seeds would never surface through `findForClassifier`.
+- **Analysis `rootCauseCategory` is whitelisted at parse time**. A drifting model can't land arbitrary strings that propagate into storage + logs.
+- **Investigation `verdictOverride` trumps analysis when its confidence is >= analysis's**. Orchestrator aborts repair in this case; don't silently proceed.
+- **Review approval is parsed safely**. Any CRITICAL issue forces `approved = false` even if the model claims `approved: true`.
+- **`sanitizeForPrompt` escapes triple backticks and injection keywords**. Every model-adjacent string goes through it before entering a prompt. Test-runner logs are adversarial.
+- **`retired` skills count in `detectFlakiness` but NOT in retrieval**. Retirement means "stop recommending"; flakiness means "stop auto-fixing." Different polarities; different filters.
+
+---
+
+**Related docs**
+
+- `USAGE_GUIDE.md` — integration cookbook (consumer workflow setup, secrets, matrix jobs).
+- `agent-workflow-flowchart.md` — mermaid diagrams of the pipeline.
+- `README.md` — entry point + feature overview.
+- `RELEASE_PROCESS.md` — bundling + tagging + `v1` rolling tag.
+- `README_CROSS_REPO_PR.md` — when a PAT is needed vs `GITHUB_TOKEN`.
+- `seeds/DEPLOYED.md` — record of the v1.52.0 context + seed rollout.

@@ -1,130 +1,138 @@
-# Adept Triage Agent - Usage Guide
+# Adept Triage Agent — Usage Guide
 
-## Overview
+> Integration cookbook for adding the agent to a new repo or debugging a live triage run.
+> For the architectural overview, see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
-The Adept Triage Agent is a GitHub Action that uses AI (GPT-5.3 Codex) to automatically analyze test failures and determine whether they are **test issues** (flaky tests, timing issues) or **product issues** (actual bugs).
+**Current version**: v1.52.0
 
-The action returns a comprehensive JSON object containing the analysis results, which you can integrate into your existing notification systems, dashboards, or workflows.
+## Table of contents
 
-## Important: Workflow Architecture
+1. [Workflow architecture](#workflow-architecture)
+2. [Secrets checklist](#secrets-checklist)
+3. [Test workflow — dispatching on failure](#test-workflow--dispatching-on-failure)
+4. [Triage workflow — consuming the dispatch](#triage-workflow--consuming-the-dispatch)
+5. [Running the action directly (without the reusable workflow)](#running-the-action-directly)
+6. [Matrix jobs](#matrix-jobs)
+7. [Validation — local vs remote](#validation--local-vs-remote)
+8. [Opt-in: `.adept-triage/context.md`](#opt-in-adept-triagecontextmd)
+9. [Debugging a triage run](#debugging-a-triage-run)
+10. [Rollback and safety](#rollback-and-safety)
 
-⚠️ **The most reliable setup is to run the Adept Triage Agent in a separate workflow from your tests.**
+---
 
-For full logs, uploaded artifacts, and completed workflow context, use a two-workflow architecture:
+## Workflow architecture
 
-1. **Test Workflow**: Runs your tests and dispatches an event on failure
-2. **Triage Workflow**: Listens for the dispatch event and runs the analysis
+⚠️ **Always run triage in a separate workflow from your tests.**
 
-Best-effort same-workflow analysis is still supported when you target the current job, but it has less complete context than the recommended separate-workflow pattern.
+The test workflow fires a `repository_dispatch` event on failure; the triage workflow listens for that event. This gives triage access to:
 
-## Version Compatibility
+- Completed workflow context (not mid-run).
+- Uploaded artifacts (screenshots, logs).
+- Full job logs (not truncated).
+- Independent retry characteristics.
 
-We recommend using the major version tag for automatic updates:
-
-- **`@v1`** - Automatically gets backward-compatible updates (recommended)
-- **`@v1.47.0`** - Pin to specific version for full reproducibility
-
-## Quick Start
-
-### Step 1: Create the Triage Workflow
-
-Create `.github/workflows/triage-failed-tests.yml` — a thin wrapper that calls the shared reusable workflow from `adept-common`:
-
-```yaml
-name: Triage Failed Tests
-
-on:
-  repository_dispatch:
-    types: [triage-failed-test]
-
-permissions:
-  contents: write
-  actions: read
-
-jobs:
-  triage:
-    uses: adept-at/adept-common/.github/workflows/triage-failed-tests.yml@main
-    with:
-      workflow-run-id: ${{ github.event.client_payload.workflow_run_id }}
-      job-name: ${{ github.event.client_payload.job_name }}
-      spec: ${{ github.event.client_payload.spec }}
-      pr-number: ${{ github.event.client_payload.pr_number }}
-      commit-sha: ${{ github.event.client_payload.commit_sha }}
-      branch: ${{ github.event.client_payload.branch }}
-      repository: ${{ github.event.client_payload.repo_url }}
-      preview-url: ${{ github.event.client_payload.preview_url }}
-      test-frameworks: 'cypress'
-    secrets:
-      CROSS_REPO_PAT: ${{ secrets.CROSS_REPO_PAT }}
-      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+```
+ Test workflow fails
+        │
+        │  adept-at/adept-common/.github/actions/triage-dispatch@main
+        ▼
+ repository_dispatch  { event_type: triage-failed-test, client_payload: {...} }
+        │
+        ▼
+ Triage workflow (in the same repo)
+        │
+        │  uses: adept-at/adept-common/.github/workflows/triage-failed-tests.yml@main
+        ▼
+ adept-at/adept-triage-agent@v1
 ```
 
-The shared workflow handles input validation, workflow polling, running the triage agent, saving artifacts, and Slack notification.
+Same-workflow invocation works but has less context and is only recommended for quick iteration / local testing.
 
-For same-repo setups (tests and source in the same repo), pass `${{ secrets.GITHUB_TOKEN }}` as `CROSS_REPO_PAT`. A PAT is only required when `REPOSITORY` or `AUTO_FIX_TARGET_REPO` points to a different repo.
+---
 
-### Step 2: Update Your Test Workflow
+## Secrets checklist
 
-In your test workflow, add the shared dispatch action to trigger triage on failure:
+Set these on every consumer repo before the triage workflow will run end-to-end:
 
-```yaml
-jobs:
-  test:
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        test: [test1, test2, test3]
-    steps:
-      - name: Run Tests
-        run: npm test
+| Secret | Scope | Purpose |
+|---|---|---|
+| `OPENAI_API_KEY` | Repo | OpenAI API calls. |
+| `CROSS_REPO_PAT` | Repo | GitHub PAT with `repo` + `workflow` scopes. Passed through as `GITHUB_TOKEN` so triage can read logs/artifacts, fetch source files, and create fix branches across repos. Can be scoped to a single GitHub App if you prefer. |
+| `SLACK_WEBHOOK_URL` | Repo | For the shared Slack notification action (optional but recommended). |
+| `TRIAGE_AGENT_DYNAMO_ACCESS_ROLE_ARN` | **Org-wide** | IAM role ARN trusted by GitHub OIDC. Consumer workflows assume this role to write to the skill-store DynamoDB table. |
 
-      - name: Trigger triage analysis
-        if: failure()
-        uses: adept-at/adept-common/.github/actions/triage-dispatch@main
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          job-name: ${{ github.job }} (${{ matrix.test }})
-          spec: ${{ matrix.test }}
-          branch: ${{ github.head_ref || github.ref_name }}
-          commit-sha: ${{ github.event.pull_request.head.sha || github.sha }}
+CLI setup:
+
+```bash
+export OPENAI_API_KEY="sk-..."
+export CROSS_REPO_PAT="ghp_..."
+export SLACK_WEBHOOK_URL="https://hooks.slack.com/..."
+
+echo "$OPENAI_API_KEY"       | gh secret set OPENAI_API_KEY       --repo adept-at/YOUR-REPO
+echo "$CROSS_REPO_PAT"       | gh secret set CROSS_REPO_PAT       --repo adept-at/YOUR-REPO
+echo "$SLACK_WEBHOOK_URL"    | gh secret set SLACK_WEBHOOK_URL    --repo adept-at/YOUR-REPO
+
+# Verify
+gh secret list --repo adept-at/YOUR-REPO
 ```
 
-## Complete Example
+The org-wide `TRIAGE_AGENT_DYNAMO_ACCESS_ROLE_ARN` secret is typically set by an org admin once and shared across all consumer repos.
 
-Here's a full example showing how to integrate the triage agent with Slack notifications:
+---
 
-### Test Workflow (`.github/workflows/tests.yml`)
+## Test workflow — dispatching on failure
+
+Add a single step after artifact upload in any job you want triaged:
 
 ```yaml
-name: Run Tests
-
-on: [push, pull_request]
-
 jobs:
-  cypress:
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        containers: [spec1.cy.ts, spec2.cy.ts, spec3.cy.ts]
+  e2e:
     steps:
       - uses: actions/checkout@v4
+      - run: npm ci
+      - name: Run Cypress
+        run: npm run cy:run
 
-      - name: Run Cypress tests
-        run: npx cypress run --spec ./cypress/e2e/${{ matrix.containers }}
+      - name: Upload artifacts on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cypress-artifacts
+          path: |
+            cypress/logs/
+            cypress/screenshots/
 
       - name: Trigger triage analysis
         if: failure()
         uses: adept-at/adept-common/.github/actions/triage-dispatch@main
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
-          job-name: ${{ github.job }} (${{ matrix.containers }})
-          spec: ${{ matrix.containers }}
+          job-name: ${{ github.job }}
           pr-number: ${{ github.event.pull_request.number || '' }}
+          commit-sha: ${{ github.event.pull_request.head.sha || github.sha }}
           branch: ${{ github.head_ref || github.ref_name }}
+          spec: ./cypress/e2e/my-failing-spec.js
+          preview-url: ${{ github.event.client_payload.target_url || '' }}
 ```
 
-### Triage Workflow (`.github/workflows/triage-failed-tests.yml`)
+### `client_payload` fields the dispatch action emits
+
+| Field | Required | Purpose |
+|---|---|---|
+| `workflow_run_id` | **Yes** | The failed run id to fetch logs/artifacts from. |
+| `job_name` | **Yes** | The failing job. For matrix jobs, encode the matrix variable here. |
+| `spec` | Recommended | Test file path — used for skill-store retrieval and validation placeholders. |
+| `branch` | Recommended | Branch under test. |
+| `commit_sha` | Recommended | Commit for diff lookup when no PR. |
+| `repo_url` | Recommended | Passed as `REPOSITORY` in the reusable workflow (test-repo for diffs). |
+| `pr_number` | Optional | PR for diff lookup. |
+| `preview_url` | Optional | Preview URL for validation placeholders (`{url}`). |
+
+---
+
+## Triage workflow — consuming the dispatch
+
+The simplest setup delegates everything to the reusable workflow in `adept-at/adept-common`. Create `.github/workflows/triage-failed-tests.yml`:
 
 ```yaml
 name: Triage Failed Tests
@@ -136,6 +144,7 @@ on:
 permissions:
   contents: write
   actions: read
+  id-token: write   # required for OIDC → DynamoDB skill store
 
 jobs:
   triage:
@@ -149,417 +158,395 @@ jobs:
       branch: ${{ github.event.client_payload.branch }}
       repository: ${{ github.event.client_payload.repo_url }}
       preview-url: ${{ github.event.client_payload.preview_url }}
-      test-frameworks: 'cypress'
+      test-frameworks: cypress    # or: webdriverio
     secrets:
       CROSS_REPO_PAT: ${{ secrets.CROSS_REPO_PAT }}
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
 ```
 
-The shared workflow handles input validation, workflow polling, running the triage agent, saving artifacts, and Slack notification. No local logic needed.
+The reusable workflow handles:
 
-## Why Separate Workflows?
+- Polling for workflow-run completion (up to 10 minutes).
+- OIDC role assumption via `aws-actions/configure-aws-credentials@v4` for DynamoDB.
+- Invoking `adept-at/adept-triage-agent@v1` with the right input mapping.
+- Uploading the triage artifact.
+- Formatting + posting the Slack notification via `adept-at/adept-common/.github/actions/triage-slack-notify@main`.
 
-The triage agent needs to analyze the complete workflow run, including:
+### Slack input naming trap
 
-- All job logs
-- Test artifacts
-- Screenshots
-- Timing information
+The shared Slack action uses **hyphens**, not underscores, for its inputs:
 
-This information is only fully available after the workflow completes. Running the triage agent in a separate workflow avoids partial context and timing issues:
+| Correct | Wrong |
+|---|---|
+| `slack-webhook-url` | `slack_webhook_url` |
+| `job-name` | `job_name` |
+| `pr-number` | `pr_number` |
+| `preview-url` | `preview_url` |
+| `commit-sha` | `commit_sha` |
+| `has-fix-recommendation` | `has_fix_recommendation` |
+| `fix-confidence` | `fix_confidence` |
+| `auto-fix-applied` | `auto_fix_applied` |
+| `auto-fix-branch` | `auto_fix_branch` |
 
-- The workflow can't complete until all steps (including triage) finish
-- The triage can't run until the workflow completes
+The agent's own outputs (`action.yml`) use underscores; the Slack action uses hyphens. Easy to mix up.
 
-By using separate workflows with repository dispatch events, we ensure the test workflow completes fully before analysis begins.
+---
 
-If you point the action at the current in-progress job, it can still do a best-effort analysis from available logs, but that mode is intentionally less complete.
+## Running the action directly
 
-## Inputs
-
-| Input                  | Required | Default                    | Description                                                                                                                                                                                                                                       |
-| ---------------------- | -------- | -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `OPENAI_API_KEY`       | ✅ Yes   | -                          | Your OpenAI API key for AI analysis                                                                                                                                                                                                               |
-| `GITHUB_TOKEN`         | No       | `${{ github.token }}`      | GitHub token for API access. Use a PAT or GitHub App token when `REPOSITORY` or `AUTO_FIX_TARGET_REPO` points to a different repository. See [Cross-Repository Access](./README_CROSS_REPO_PR.md) for details. |
-| `WORKFLOW_RUN_ID`      | No       | Current run                | The workflow run ID to analyze                                                                                                                                                                                                                    |
-| `JOB_NAME`             | No       | All failed jobs            | Specific job name to analyze                                                                                                                                                                                                                      |
-| `ERROR_MESSAGE`        | No       | From logs/artifacts        | Error message to analyze (if not using artifacts)                                                                                                                                                                                                 |
-| `CONFIDENCE_THRESHOLD` | No       | `70`                       | Minimum confidence level for verdict (0-100)                                                                                                                                                                                                      |
-| `PR_NUMBER`            | No       | -                          | Pull request number to fetch diff from (enables PR diff analysis)                                                                                                                                                                                 |
-| `COMMIT_SHA`           | No       | -                          | Commit SHA associated with the test failure                                                                                                                                                                                                       |
-| `BRANCH`               | No       | -                          | Branch being tested, used for branch diff lookup when no PR number is available                                                                                                                                                                  |
-| `REPOSITORY`           | No       | `${{ github.repository }}` | App/source repository in owner/repo format for PR, branch, or commit diff lookup. Workflow runs and artifacts are still read from the repository where the action executes.                                                                    |
-| `PRODUCT_REPO`         | No       | `adept-at/learn-webapp`    | Product repository (owner/repo) for recent commit diff used in classification. Empty input resolves to this default; workflows do not need to pass it unless targeting another repo.                                                              |
-| `PRODUCT_DIFF_COMMITS` | No       | `5`                        | Number of recent product commits to include in that diff                                                                                                                                                                                          |
-| `TEST_FRAMEWORKS`      | No       | `cypress`                  | Test framework: "cypress" or "webdriverio"                                                                                                                                                                                                         |
-| `ENABLE_AUTO_FIX` | No | `false` | Enable automatic branch creation with fix |
-| `AUTO_FIX_BASE_BRANCH` | No | `main` | Base branch to create fix branch from |
-| `AUTO_FIX_MIN_CONFIDENCE` | No | `70` | Minimum fix confidence (0-100) to apply auto-fix |
-| `AUTO_FIX_TARGET_REPO` | No | `${{ github.repository }}` | Repository for fix branches (owner/repo format) |
-| `ENABLE_VALIDATION` | No | `false` | With `ENABLE_AUTO_FIX` and `VALIDATION_TEST_COMMAND`, runs local validation before push (clone, `npm ci`, apply fix, run command; push + PR on pass; up to 3 iterations). |
-| `VALIDATION_WORKFLOW` | No | `validate-fix.yml` | Used only when `VALIDATION_TEST_COMMAND` is unset (legacy remote dispatch). |
-| `VALIDATION_PREVIEW_URL` | No | - | Replaces `{url}` in `VALIDATION_TEST_COMMAND`. |
-| `VALIDATION_SPEC` | No | - | Replaces `{spec}` in `VALIDATION_TEST_COMMAND`. |
-| `VALIDATION_TEST_COMMAND` | No | - | Local test command template; `{spec}` and `{url}` placeholders. Primary validation path when set. |
-| `ENABLE_AGENTIC_REPAIR` | No | `true` | Enable multi-agent repair pipeline (enabled by default; set `'false'` to use single-shot) |
-| `NPM_TOKEN` | No | - | NPM token for private registry authentication during local validation `npm ci` |
-| **Skill Store Inputs** | | | |
-| `TRIAGE_AWS_REGION` | No | `us-east-1` | AWS region for DynamoDB skill store |
-| `TRIAGE_DYNAMO_TABLE` | No | `triage-skills-v1-live` | DynamoDB table name for skill store |
-
-## Outputs
-
-| Output        | Description                      | Example                                                     |
-| ------------- | -------------------------------- | ----------------------------------------------------------- |
-| `verdict`     | Classification of the failure    | `TEST_ISSUE`, `PRODUCT_ISSUE`, `NO_FAILURE`, `INCONCLUSIVE`, `PENDING`, or `ERROR` |
-| `confidence`  | Confidence score (0-100)         | `95`                                                        |
-| `reasoning`   | Detailed explanation             | "The test failed due to a timing issue..."                  |
-| `summary`     | Brief summary for notifications  | "🧪 Test Issue: Timing issue with auto-save indicator"      |
-| `triage_json` | Complete triage analysis as JSON | See [Output Format](#output-format)                         |
-| `has_fix_recommendation` | Boolean: fix recommendation generated (TEST_ISSUE only) | - |
-| `fix_recommendation` | Complete fix recommendation as JSON | - |
-| `fix_summary` | Human-readable fix summary | - |
-| `fix_confidence` | Fix recommendation confidence (0-100) | - |
-| `auto_fix_applied` | Whether auto-fix branch was created (true/false) | - |
-| `auto_fix_branch` | Created branch name | - |
-| `auto_fix_commit` | Last commit SHA from auto-fix | - |
-| `auto_fix_files` | JSON array of modified file paths | - |
-| `validation_run_id` | Validation workflow run ID (legacy remote path only) | - |
-| `validation_status` | `passed`, `pending`, or `skipped` | - |
-| `validation_url` | URL to validation workflow run (legacy remote path only) | - |
-
-### Special Verdicts
-
-- **`PENDING`**: The workflow is still running and analysis cannot be performed yet
-- **`INCONCLUSIVE`**: Evidence is insufficient or ambiguous — confidence fell below the threshold, the AI concluded the evidence was inconclusive, or an infrastructure failure (browser crash, session termination) was detected
-- **`ERROR`**: The action could not collect enough data or encountered a runtime failure
-
-## Complete Integration Example
-
-The recommended integration pattern uses two workflows:
-
-1. **Test Workflow**: Runs tests and dispatches events on failure
-2. **Triage Workflow**: Analyzes failures and sends notifications
-
-### Key Integration Points:
-
-1. **Test workflow dispatches an event** on failure with workflow context
-2. **Triage workflow waits** for the test workflow to complete
-3. **Triage analysis runs** and returns structured JSON results
-4. **Results are sent** to your notification systems (Slack, Discord, JIRA, etc.)
-
-Here's a real-world example with matrix strategy and Slack notifications:
-
-### Test Workflow Example
+If you don't want the reusable workflow, invoke the action directly. Example triage workflow:
 
 ```yaml
-name: preview-url-saucelabs
+name: Triage Failed Tests (direct)
 
 on:
   repository_dispatch:
-    types: [trigger-skill-preview-sauce]
+    types: [triage-failed-test]
+
+permissions:
+  contents: write
+  actions: read
+  id-token: write
 
 jobs:
-  generate-matrix:
+  triage:
     runs-on: ubuntu-latest
-    outputs:
-      matrix: ${{ steps.set-matrix.outputs.matrix }}
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
-      - name: Generate matrix
-        id: set-matrix
-        run: |
-          DIRECTORY="cypress/preview"
-          FILES=$(ls -1 "$DIRECTORY" | jq -R -s -c 'split("\n")[:-1]')
-          echo "matrix=$FILES" >> $GITHUB_OUTPUT
+      - name: Wait for workflow to complete
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.CROSS_REPO_PAT }}
+          script: |
+            const runId = '${{ github.event.client_payload.workflow_run_id }}';
+            for (let i = 0; i < 60; i++) {
+              const { data } = await github.rest.actions.getWorkflowRun({
+                owner: context.repo.owner, repo: context.repo.repo, run_id: runId,
+              });
+              if (data.status === 'completed') return;
+              await new Promise(r => setTimeout(r, 10000));
+            }
+            throw new Error('Run did not complete within 10 minutes');
 
-  previewUrlTest:
-    needs: generate-matrix
-    runs-on: ubuntu-latest
+      - name: Assume OIDC role for DynamoDB
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.TRIAGE_AGENT_DYNAMO_ACCESS_ROLE_ARN }}
+          aws-region: us-east-1
+
+      - name: Triage
+        id: triage
+        uses: adept-at/adept-triage-agent@v1
+        with:
+          GITHUB_TOKEN:       ${{ secrets.CROSS_REPO_PAT }}
+          OPENAI_API_KEY:     ${{ secrets.OPENAI_API_KEY }}
+          WORKFLOW_RUN_ID:    ${{ github.event.client_payload.workflow_run_id }}
+          JOB_NAME:           ${{ github.event.client_payload.job_name }}
+          PR_NUMBER:          ${{ github.event.client_payload.pr_number }}
+          COMMIT_SHA:         ${{ github.event.client_payload.commit_sha }}
+          BRANCH:             ${{ github.event.client_payload.branch }}
+          REPOSITORY:         ${{ github.event.client_payload.repo_url }}
+          TEST_FRAMEWORKS:    cypress
+          ENABLE_AUTO_FIX:    'true'
+          ENABLE_VALIDATION:  'true'
+          # Optional: turn on the local-validation loop
+          # ENABLE_LOCAL_VALIDATION: 'true'
+          # VALIDATION_TEST_COMMAND: 'npx cypress run --spec "{spec}" --config baseUrl={url}'
+          # VALIDATION_PREVIEW_URL: ${{ github.event.client_payload.preview_url }}
+          # VALIDATION_SPEC: ${{ github.event.client_payload.spec }}
+
+      - name: Upload triage artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: triage-result
+          path: triage-result.json
+
+      - name: Notify Slack
+        if: always()
+        uses: adept-at/adept-common/.github/actions/triage-slack-notify@main
+        with:
+          slack-webhook-url: ${{ secrets.SLACK_WEBHOOK_URL }}
+          verdict: ${{ steps.triage.outputs.verdict }}
+          confidence: ${{ steps.triage.outputs.confidence }}
+          summary: ${{ steps.triage.outputs.summary }}
+          job-name: ${{ github.event.client_payload.job_name }}
+          workflow-run-id: ${{ github.event.client_payload.workflow_run_id }}
+          pr-number: ${{ github.event.client_payload.pr_number }}
+          preview-url: ${{ github.event.client_payload.preview_url }}
+          commit-sha: ${{ github.event.client_payload.commit_sha }}
+          has-fix-recommendation: ${{ steps.triage.outputs.has_fix_recommendation }}
+          fix-confidence: ${{ steps.triage.outputs.fix_confidence }}
+          auto-fix-applied: ${{ steps.triage.outputs.auto_fix_applied }}
+          auto-fix-branch: ${{ steps.triage.outputs.auto_fix_branch }}
+```
+
+### Canonical input names (from `action.yml`)
+
+Refer to `adept-triage-agent/action.yml` for the source of truth. Common gotchas:
+
+- `AUTO_FIX_BASE_BRANCH` (not `AUTO_FIX_BRANCH`).
+- `PR_NUMBER` and `COMMIT_SHA` are top-level inputs, not `AUTO_FIX_PR_NUMBER`.
+- `BRANCH` is separate from `AUTO_FIX_BASE_BRANCH`.
+- `AUTO_FIX_TARGET_REPO` defaults to the current repo but should be set explicitly when fixes go to a different repo from where diffs are read (e.g. a canary repo testing against a product repo).
+
+---
+
+## Matrix jobs
+
+When the failing test is part of a matrix, encode the matrix variable into `job-name` and `spec` in the dispatch step:
+
+```yaml
+jobs:
+  e2e:
     strategy:
       fail-fast: false
       matrix:
-        containers: ${{ fromJson(needs.generate-matrix.outputs.matrix) }}
+        include:
+          - name: chrome
+            spec: cypress/e2e/login.spec.js
+          - name: firefox
+            spec: cypress/e2e/login.spec.js
+          - name: chrome-mobile
+            spec: cypress/e2e/mobile.spec.js
+
     steps:
-      - uses: actions/checkout@v4
-      - name: Run Cypress
-        run: |
-          npx cypress run --spec ./cypress/preview/${{ matrix.containers }}
-        env:
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      # ... test steps ...
 
       - name: Trigger triage analysis
         if: failure()
         uses: adept-at/adept-common/.github/actions/triage-dispatch@main
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
-          job-name: ${{ github.job }} (${{ matrix.containers }})
-          spec: ${{ matrix.containers }}
-          pr-number: ${{ github.event.client_payload.pr_number }}
-          preview-url: ${{ github.event.client_payload.target_url }}
+          job-name: '${{ github.job }} (${{ matrix.name }})'
+          spec: ${{ matrix.spec }}
+          pr-number: ${{ github.event.pull_request.number || '' }}
+          commit-sha: ${{ github.event.pull_request.head.sha || github.sha }}
+          branch: ${{ github.head_ref || github.ref_name }}
 ```
 
-### Corresponding Triage Workflow
+Without matrix interpolation, every matrix shard ends up with the same `job-name` and the agent can't distinguish which one actually failed.
 
-Uses the same shared reusable workflow pattern shown in the Complete Example above.
+---
 
-## Output Format
+## Validation — local vs remote
 
-The `triage_json` output contains the complete analysis as a JSON string. This is designed to be easily added as a property to your existing notification payloads, monitoring dashboards, or any other systems.
+### Local-validation loop (recommended)
 
-### Example JSON Structure:
+Clones the target repo on the triage runner, applies the fix on disk, runs the test command up to 3 times, pushes the branch + opens a PR only on pass.
 
-```json
-{
-  "verdict": "PRODUCT_ISSUE",
-  "confidence": 95,
-  "reasoning": "The test failed because a dropdown button is not visible due to being covered by another element. The CSS shows position:fixed being overlapped by a div with class 'css-gya850'. This is a z-index/layering bug in the product.",
-  "summary": "🐛 Product Issue: Dropdown button covered by overlay element",
-  "indicators": [
-    "Element has position:fixed but is covered",
-    "Cypress error: 'element is not visible'",
-    "Screenshot shows UI rendered but button not interactable"
-  ],
-  "suggestedSourceLocations": [
-    {
-      "file": "src/components/Dropdown.tsx",
-      "lines": "45-67",
-      "reason": "Component with z-index issue causing overlay problem"
-    }
-  ],
-  "metadata": {
-    "analyzedAt": "2025-07-25T18:56:27.148Z",
-    "hasScreenshots": true,
-    "logSize": 143246
-  }
-}
-```
+**All five of these must be true**:
 
-Additional fields in metadata for special cases:
+- `ENABLE_AUTO_FIX: 'true'`
+- `ENABLE_VALIDATION: 'true'`
+- `ENABLE_LOCAL_VALIDATION: 'true'`
+- `VALIDATION_TEST_COMMAND` set (template with `{spec}` and `{url}` placeholders)
+- `AUTO_FIX_TARGET_REPO` resolves (not empty)
 
-- **INCONCLUSIVE verdict**: includes `confidenceThreshold` field
-- **PENDING verdict**: includes `workflowStatus` field
-
-The `suggestedSourceLocations` field is only included for `PRODUCT_ISSUE` verdicts and provides hints about which source files might contain the bug.
-
-### Integration Example:
-
-In the workflow example above, we add the triage JSON as a property to the existing Slack notification:
-
-```json
-{
-  "text": "Your existing notification text...",
-  "triage": {
-    "verdict": "PRODUCT_ISSUE",
-    "confidence": 95
-    // ... rest of triage analysis
-  }
-}
-```
-
-This allows you to maintain your existing notification structure while enriching it with AI-powered triage insights.
-
-## Advanced Usage
-
-### Analyzing Multiple Jobs
-
-To analyze all failed jobs in a workflow:
+Example:
 
 ```yaml
-- name: Analyze All Failures
-  if: failure()
-  uses: adept-at/adept-triage-agent@v1
-  with:
-    OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-    # Omit JOB_NAME to analyze all failed jobs
-```
-
-### Change Diff Analysis
-
-The agent always attempts to fetch a **recent product-repo diff** (default repository `adept-at/learn-webapp`, last few commits). You do not need to pass `PRODUCT_REPO` unless you want a different product repository; `getInputs()` and the action default already resolve to that repo when the input is empty.
-
-When you provide a `PR_NUMBER`, `BRANCH`, or `COMMIT_SHA`, the triage agent can also:
-
-1. Fetch the relevant **test-repo** PR, branch, or commit diff from `REPOSITORY`
-2. Analyze if those changes are related to the test failure
-3. Calculate a risk score (high/medium/low/none)
-4. Use **both** test-repo and product-repo diff context in the classification prompt for more accurate `TEST_ISSUE` vs `PRODUCT_ISSUE` verdicts
-
-This is especially useful for determining if a test failure is caused by recent code changes:
-
-```yaml
-- name: Run AI triage analysis
-  uses: adept-at/adept-triage-agent@v1
-  with:
-    OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-    WORKFLOW_RUN_ID: '${{ github.event.client_payload.workflow_run_id }}'
-    PR_NUMBER: '${{ github.event.client_payload.pr_number }}' # Or use BRANCH / COMMIT_SHA for non-PR runs
-```
-
-### Using with Different Test Frameworks
-
-The action supports both Cypress and WebdriverIO test frameworks with optimized error extraction:
-
-```yaml
-# Cypress example with artifacts
-- name: Run Cypress Tests
-  run: npm run cypress:run
-
-- uses: actions/upload-artifact@v4
-  if: failure()
-  with:
-    name: cypress-artifacts
-    path: |
-      cypress/screenshots/
-      cypress/videos/
-
-- name: AI Triage
-  if: failure()
-  uses: adept-at/adept-triage-agent@v1
-  with:
-    OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-    TEST_FRAMEWORKS: 'cypress' # or 'webdriverio'
-```
-
-### Custom Confidence Thresholds
-
-Adjust the confidence threshold for more or less strict verdicts:
-
-```yaml
-- name: Strict Analysis
-  uses: adept-at/adept-triage-agent@v1
-  with:
-    OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-    CONFIDENCE_THRESHOLD: '90' # Require 90% confidence
-```
-
-### Error Extraction
-
-The action supports both Cypress and WebdriverIO, while still recognizing many Cypress-specific error patterns:
-
-```yaml
-- name: Analyze Cypress Tests
-  uses: adept-at/adept-triage-agent@v1
-  with:
-    OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-    TEST_FRAMEWORKS: 'cypress'
-```
-
-### Minimal Usage (Only Workflow ID)
-
-If you only have a workflow run ID and want the agent to automatically find the failed job:
-
-```yaml
-name: Minimal Triage
-on:
-  workflow_dispatch:
-    inputs:
-      workflow_run_id:
-        description: 'Workflow run ID to analyze'
-        required: true
-
-jobs:
   triage:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Analyze Test Failure
-        uses: adept-at/adept-triage-agent@v1
-        with:
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          WORKFLOW_RUN_ID: ${{ github.event.inputs.workflow_run_id }}
-          # No PR_NUMBER, COMMIT_SHA, or JOB_NAME needed
-          # Agent will automatically:
-          # - Find the first failed job
-          # - Collect all available logs
-          # - Fetch screenshots and artifacts
-          # - Analyze with whatever data is available
+    uses: adept-at/adept-triage-agent@v1
+    with:
+      # ... other inputs ...
+      ENABLE_AUTO_FIX:          'true'
+      ENABLE_VALIDATION:        'true'
+      ENABLE_LOCAL_VALIDATION:  'true'
+      VALIDATION_TEST_COMMAND:  'npx cypress run --spec "{spec}" --config baseUrl={url}'
+      VALIDATION_PREVIEW_URL:   ${{ github.event.client_payload.preview_url }}
+      VALIDATION_SPEC:          ${{ github.event.client_payload.spec }}
+      NPM_TOKEN:                ${{ secrets.NPM_TOKEN }}
 ```
 
-The agent handles missing optional inputs gracefully:
+Placeholder substitution:
+- `{spec}` ← `VALIDATION_SPEC` (falls back to the spec from the dispatch payload).
+- `{url}` ← `VALIDATION_PREVIEW_URL` (falls back to `https://learn.adept.at`).
 
-- **No PR_NUMBER / BRANCH / COMMIT_SHA**: Test-repo PR/branch/commit diff lookup is skipped; recent **product-repo** diff is still fetched using the default product repository (or `PRODUCT_REPO` when set), subject to GitHub API access
-- **No JOB_NAME**: Automatically finds the first failed job
-- **No COMMIT_SHA**: Not required for analysis
-- **No REPOSITORY**: Uses the current repository for diff lookup as well
+The loop runs at most `FIX_VALIDATE_LOOP.MAX_ITERATIONS = 3` iterations. Before the first iteration, a **baseline check** runs the test 3 consecutive times without any fix applied. If all 3 pass, the original failure was transient and the run exits with no fix.
 
-Even if some data collection fails (e.g., screenshots unavailable), the agent will proceed with whatever data it can gather.
+### Remote-validation path (legacy)
 
-## How It Works
+If you don't want the local loop, the agent creates the fix branch via the GitHub API and dispatches `VALIDATION_WORKFLOW` (default `validate-fix.yml`) on the target repo:
 
-1. **Data Collection**: Fetches workflow logs, screenshots, test artifacts, test-repo PR/branch/commit diff, and recent product-repo diff (default `adept-at/learn-webapp`) in parallel
-2. **Skill Memory Loading**: When `AUTO_FIX_TARGET_REPO` resolves (defaults to the current repo), loads historical fix patterns from DynamoDB and checks for flakiness signals. This happens *before* classification so skill context can feed the classifier prompt as well as repair agents
-3. **Infrastructure Check**: Short-circuits to `INCONCLUSIVE` if a browser crash or session termination is detected (no LLM call)
-4. **AI Classification**: Sends structured error summary, logs, screenshots, diffs, and any injected skill + flakiness context to GPT-5.3 Codex via the Responses API to classify as `TEST_ISSUE`, `PRODUCT_ISSUE`, or `INCONCLUSIVE`
-5. **Confidence Gating**: If confidence is below `CONFIDENCE_THRESHOLD`, returns `INCONCLUSIVE` without attempting repair
-6. **Fix Generation**: For `TEST_ISSUE` verdicts, uses either the multi-agent pipeline (Analysis → Code Reading → Investigation → Fix/Review loop with skill memory injected) or single-shot repair
-7. **Fix Application**: Depending on configuration, applies the fix via the local validation loop (clone → apply → test → push/PR) or via the GitHub API (legacy path). All fix attempts (both validated successes and failed trajectories) are saved as skills for future runs.
+```yaml
+  triage:
+    uses: adept-at/adept-triage-agent@v1
+    with:
+      ENABLE_AUTO_FIX:      'true'
+      ENABLE_VALIDATION:    'true'
+      VALIDATION_WORKFLOW:  'validate-fix.yml'
+      # ENABLE_LOCAL_VALIDATION left false
+```
 
-### Structured Error Summary (v1.5.0+)
+The target repo must implement `.github/workflows/validate-fix.yml` — it checks out the fix branch, runs the failing spec, and comments on the PR with the result.
 
-The triage agent automatically creates a structured summary of the error before sending it to OpenAI, improving accuracy and speed. This includes:
+Outputs `validation_run_id` + `validation_url` are set on the remote path.
 
-- **Error Classification**: Type (AssertionError, NetworkError, etc.) and location
-- **Test Context**: Test name, file, framework, browser, and duration
-- **Failure Indicators**: Detects network errors, null pointers, timeouts, DOM issues, assertions
-- **PR Impact Analysis**: Calculates risk score based on modified files
-- **Key Metrics**: Screenshot availability, last command, log size
+---
 
-This pre-analysis helps GPT-5.3 Codex make more accurate determinations between test issues and product bugs.
+## Opt-in: `.adept-triage/context.md`
 
-### Skill Memory and Flakiness Detection
+Each consumer repo can commit a markdown file describing its testing conventions. The agent fetches it once per run and prepends it to every agent's system prompt.
 
-When `AUTO_FIX_TARGET_REPO` resolves (defaults to the current repo), the agent loads historical fix patterns from a DynamoDB skill store using AWS credentials supplied to the action (e.g. via OIDC). These "skills" are injected into the classifier prompt and every repair agent so the multi-agent pipeline can reuse proven patterns rather than re-deriving fixes from scratch. If the DynamoDB load fails, the run continues with an empty in-memory cache and skips the pruning step to avoid deleting unknown entries.
+### File location
 
-Skills are saved for all fix attempts — both validated successes and failed trajectories. This allows the pipeline to learn from every attempt, not just successful ones.
+`.adept-triage/context.md` at the repo root, on the branch being tested (not always `main` — the agent uses `BRANCH` input, falling back to `AUTO_FIX_BASE_BRANCH`, falling back to `main`).
 
-The agent also detects **flakiness** by counting how many times a given spec has been auto-fixed recently:
-- **>1 fix in 3 days**: flagged as chronically flaky
-- **>2 fixes in 7 days**: flagged as recurring instability
+### What to include
 
-Flakiness signals are included in the `triage_json` output and injected into agent prompts so the pipeline can account for known instability.
+Target ~3000–5500 chars. Every line should change agent behavior. Good section layout:
 
-## Best Practices
+```markdown
+## Framework & runtime
+- <framework + version>
+- <test runner, browser, grid>
+- <baseUrl + env conventions>
 
-1. **Prefer separate workflows** - Same-workflow analysis is best-effort only and has less complete context
-2. **Pass meaningful context** - Include job names, test specs, PR numbers, etc. in your dispatch payload
-3. **Handle timeouts gracefully** - The wait step should have a reasonable timeout (10 minutes is usually sufficient)
-4. **Don't block on triage** - Let your test workflow complete even if triage dispatch fails
-5. **Enrich notifications** - Use the triage results to make your existing notifications more informative
+## Page objects
+- <where they live, naming, which ones are canonical>
 
-## Requirements
+## Selectors
+- <preferred attributes: data-testid, aria-label, etc.>
+- <anti-patterns: what NOT to match against>
+- <framework-specific quirks: shadow DOM, ag-Grid, etc.>
 
-- **OpenAI API Key**: Required for AI analysis
-- **GitHub Token**: Usually available as `${{ github.token }}`
-- **Node.js 24**: The action runs on Node.js 24
+## Waits / timing
+- <allowed patterns: waitUntil, waitForExist, intercepts>
+- <banned patterns: fixed cy.wait(N), global selectors on lazy-mount elements>
 
-## Troubleshooting
+## Auth & test setup
+- <login flow, cookies, beforeEach patterns>
 
-### No Screenshots Found
+## Common pitfalls
+- <recurring failure modes and their canonical fixes>
+```
 
-- Ensure artifacts are uploaded before the triage action runs
-- Check that screenshot paths match your test framework's output
+Anything longer than 6500 chars gets truncated with a `[truncated]` marker. The file goes through `sanitizeForPrompt` before injection (triple backticks escaped, injection keywords filtered) — treat it as untrusted content despite living in your org.
 
-### Low Confidence Scores
+### How it's surfaced
 
-- Provide more context via artifacts
-- Ensure logs contain the actual error messages
-- Screenshots greatly improve confidence
+- **Log line on successful fetch**: `📘 Loaded repo context from <owner/repo>/.adept-triage/context.md@<ref> (<N> chars)`.
+- **Agent behavior**: prepended to the system prompt of every agent (analysis, investigation, fix-gen, review). Single-shot path prepends to the user prompt instead (different location, same effect).
+- **Missing file / 404**: silent. The agent behaves as if the file doesn't exist. Opt-in per repo.
 
-### API Rate Limits
+### Bundled alternative (for product repos)
 
-- The action uses GPT-5.3 Codex which has generous rate limits
-- Classification typically uses 1 API call
-- Agentic repair adds 4-15 API calls depending on fix/review iterations
-- Local validation iterations multiply the repair call count (up to 3x)
+For high-traffic product repos where adding tooling files to every PR is unwelcome, the content can be bundled inside the agent via `src/services/bundled-repo-contexts.ts`. Bundled entries short-circuit the remote fetch entirely.
 
-## Support
+Currently bundled: `adept-at/learn-webapp`. Trade-off: updating a bundled context requires an agent release. If you need faster iteration, commit the file in-repo instead. See [seeds/DEPLOYED.md](seeds/DEPLOYED.md).
 
-For issues or questions:
+---
 
-- Open an issue on [GitHub](https://github.com/adept-at/adept-triage-agent)
-- Check the [example workflows](https://github.com/adept-at/adept-triage-agent/tree/main/examples)
+## Debugging a triage run
 
-## License
+### First, check the grep-stable log lines
 
-MIT License - see [LICENSE](LICENSE) file for details.
+```
+📝 Loaded N skill(s) from DynamoDB ...   → skill store connected
+📘 Loaded repo context ...               → conventions file was found
+📝 skill-telemetry role=... ids=...      → which skills reached which agent
+🤖 Agentic approach: agentic, ...        → orchestrator ran end-to-end
+🔄 Fix-Validate iteration N/3            → local validation iteration
+🧪 Running test locally...               → test command kicked off
+✅ Baseline check passed — ...           → 3/3 passes, no fix needed
+❌ Baseline failed on pass N ...         → real failure confirmed
+⏭️ Chronic flakiness: ...                → auto-fix intentionally skipped
+📊 skill-telemetry-summary loaded=... surfaced=... saved=...   → end-of-run rollup
+```
+
+The per-run summary always fires, even on errors — search for it to confirm the agent actually ran.
+
+### Common issues
+
+**"Cannot find module '@actions/core'"**
+`dist/index.js` is not bundled. Consumer is using a tag that predates ncc bundling. Pin to a newer version or `@v1`.
+
+**Action runs but no outputs appear**
+The top-level `catch` in `src/index.ts` fires only on unrecoverable errors. Check the action log for `core.setFailed` lines; the agent may have fallen through to `ERROR` with a useful `reasoning` output.
+
+**"No error data found to analyze"**
+`handleNoErrorData` branch. Either (a) the referenced `WORKFLOW_RUN_ID` doesn't have a failing job with logs, or (b) the `JOB_NAME` doesn't match any job in that run. For matrix jobs, `JOB_NAME` must include the matrix variable (e.g. `e2e (chrome)`).
+
+**`verdict=PENDING`**
+The referenced workflow run is still in progress. The reusable workflow polls for completion; direct invocations may hit this if you don't wait.
+
+**`auto_fix_skipped=true`**
+Check `auto_fix_skipped_reason`. Common reasons:
+- Chronic flakiness — spec has been auto-fixed 3+ times in the flakiness window.
+- Blast-radius gate — fix touches shared code and required confidence was raised.
+- No proposed changes — fix-gen couldn't find a valid change.
+
+**No fix despite `TEST_ISSUE` verdict**
+Either investigation's `verdictOverride` flipped the decision (`APP_CODE` with higher confidence than analysis), or `!isTestCodeFixable && !verdictOverride`. The run log will show the abort reason in the agent's output.
+
+**Skill not retrieved on a failure that matches a seed**
+Check `scripts/check-spec-paths.ts` — compare the raw stored `spec` with what `errorData.fileName` produces for your failure. `normalizeSpec` handles GHA runner prefixes but can't fix arbitrary path variations. The skill's `spec` must produce the same normalized value as your failure's path.
+
+### Useful scripts for live debugging
+
+```bash
+# What's actually in the skill store right now?
+npx tsx scripts/audit-skills.ts
+npx tsx scripts/inspect-skills.ts <id-prefix>
+
+# Verify a seed's spec format will match production
+npx tsx scripts/check-spec-paths.ts
+```
+
+All require AWS credentials in the env (same ones the action uses).
+
+---
+
+## Rollback and safety
+
+### Pin to a specific version
+
+If a release breaks your workflow:
+
+```yaml
+uses: adept-at/adept-triage-agent@v1.51.1   # previous working version
+```
+
+### Revert a repo's `.adept-triage/context.md`
+
+If a context file is causing bad fixes, either revert the PR that added it or commit a correction. The fetcher silently returns empty on 404, so deletion is also valid.
+
+### Rollback a bundled context
+
+Bundled contexts ship with the agent — fixing one requires a new agent release. If urgent:
+
+1. Edit `src/services/bundled-repo-contexts.ts` to remove the key (or change the content).
+2. `npm run all` to rebuild.
+3. PR + merge + release.
+
+### Retire a bad skill
+
+```bash
+# Identify it
+npx tsx scripts/inspect-skills.ts <id-prefix>
+
+# Retire (keeps history, stops surfacing)
+# Via audit flags:
+npx tsx scripts/audit-skills.ts --retire-flagged    # if it meets a flag criterion
+
+# Or delete a seed outright:
+npx tsx scripts/seed-skill.ts --remove <id-prefix>
+```
+
+Retired skills still contribute to `detectFlakiness` counts, which is intentional — a spec whose last N patterns all retired IS chronic flakiness, not healthy state.
+
+### Disable the agent entirely for one repo
+
+Delete `.github/workflows/triage-failed-tests.yml` from the consumer repo. Or flip `ENABLE_AUTO_FIX: 'false'` to stop auto-fix writes while keeping classification/PR-comment output.
+
+---
+
+**See also**
+
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — deep architecture.
+- [docs/agent-workflow-flowchart.md](docs/agent-workflow-flowchart.md) — visual pipeline.
+- [README_CROSS_REPO_PR.md](README_CROSS_REPO_PR.md) — cross-repo auth.
+- [RELEASE_PROCESS.md](RELEASE_PROCESS.md) — how releases are cut.
+- [seeds/DEPLOYED.md](seeds/DEPLOYED.md) — which repos have context deployed.

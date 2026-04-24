@@ -1,24 +1,25 @@
 # End-to-End Testing Plan: Triage Agent Auto-Fix + Validation Chain
 
-This document outlines practical approaches to E2E test the triage agent's dispatch → triage → auto-fix → validate chain across the four browser test repos.
+> **Last aligned with code:** v1.52.0. Cross-reference with `docs/ARCHITECTURE.md` for the authoritative validation-path gates.
+
+This document outlines practical approaches to E2E test the triage agent's dispatch → triage → auto-fix → validate chain across the consumer repos.
 
 ## Chain Overview
 
-**Primary (local):** When `ENABLE_AUTO_FIX`, `ENABLE_VALIDATION`, and `VALIDATION_TEST_COMMAND` are all set, the agent clones the test repo in the same job, applies fixes on disk, runs the test command in-container (up to 3 iterations), and only pushes the branch and opens a PR when the test passes. No `workflow_dispatch` to `validate-fix.yml` on this path.
+**Primary (local):** When **all five** of `ENABLE_AUTO_FIX`, `ENABLE_VALIDATION`, `ENABLE_LOCAL_VALIDATION`, `VALIDATION_TEST_COMMAND`, and a resolvable `AUTO_FIX_TARGET_REPO` are set, the agent clones the test repo on the runner, applies fixes on disk, runs a 3-consecutive-pass baseline check (v1.50.1), then runs the test command in-container up to 3 iterations, and only pushes the branch and opens a PR when a validated pass is achieved. No `workflow_dispatch` to `validate-fix.yml` on this path.
 
-**Legacy (remote):** If `VALIDATION_TEST_COMMAND` is not set, validation falls back to `validate-fix.yml` (workflow_dispatch): that workflow checks out the fix branch, runs the failing spec, and creates a PR if it passes.
+**Legacy (remote):** If `ENABLE_LOCAL_VALIDATION` is false (or `VALIDATION_TEST_COMMAND` is unset), validation falls back to `validate-fix.yml` (workflow_dispatch): that workflow checks out the fix branch, runs the failing spec, and creates a PR if it passes. Outputs `validation_run_id` + `validation_url` are set on this path.
 
 ```
 Test workflow fails
   → triage-dispatch fires repository_dispatch (triage-failed-test)
   → triage-failed-tests.yml receives dispatch, calls adept-triage-agent
-  → Agent analyzes failure, generates fix
-  → [Primary] Clone repo locally → apply patch → run VALIDATION_TEST_COMMAND (iterate ≤3) → push + PR only on pass
-  → [Legacy, if no VALIDATION_TEST_COMMAND] workflow_dispatch → validate-fix.yml → run spec on branch → PR if pass
+  → Agent analyzes failure, generates fix (agentic → single-shot fallback)
+  → [Primary] Clone repo locally → baseline (3-pass) → apply patch → run VALIDATION_TEST_COMMAND (iterate ≤3) → push + PR only on pass
+  → [Legacy] workflow_dispatch → validate-fix.yml → run spec on branch → PR if pass
 ```
 
-**Repos with auto-fix + validation:** lib-cypress-canary, lib-wdio-8-e2e-ts, lib-wdio-8-multi-remote, learn-webapp  
-**Repos with triage + wdio-9-bidi:** wdio-9-bidi-mux3
+**Consumer repos as of v1.52.0:** `adept-at/wdio-9-bidi-mux3`, `adept-at/lib-cypress-canary`, `adept-at/lib-wdio-8-e2e-ts`, `adept-at/lib-wdio-8-multi-remote`, `adept-at/learn-webapp`. See `seeds/DEPLOYED.md` for which have `.adept-triage/context.md` deployed and which use the bundled path.
 
 ## Key Challenges
 

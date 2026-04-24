@@ -1,350 +1,398 @@
 # Adept Triage Agent — Workflow Flowchart
 
-## Main Triage Pipeline
+> Visual reference for how a triage run flows end-to-end.
+> For textual deep-dive, see [ARCHITECTURE.md](ARCHITECTURE.md).
+> **Current version:** v1.52.0
+
+---
+
+## 1. Top-level: trigger → classify → repair → save skill → output
 
 ```mermaid
 flowchart TB
     subgraph TRIGGER["Trigger Sources"]
         T1["workflow_run<br/>(on: completed + failure)"]
-        T2["repository_dispatch<br/>(triage-failed-test)"]
+        T2["repository_dispatch<br/>(triage-failed-test) — RECOMMENDED"]
         T3["In-workflow step<br/>(if: failure())"]
     end
 
-    TRIGGER --> GHA["GitHub Action Entry<br/>src/index.ts"]
+    TRIGGER --> GHA["GitHub Action Entry<br/>src/index.ts → run()"]
 
-    GHA --> INPUTS["Parse Inputs<br/>getInputs()"]
-    INPUTS --> CLIENTS["Initialize Clients<br/>Octokit + OpenAIClient + ArtifactFetcher"]
-    CLIENTS --> LOGS["Process Workflow Logs<br/>log-processor.ts"]
+    GHA --> INPUTS["getInputs()<br/>parse ActionInputs from core.getInput"]
+    INPUTS --> DEPS["Init deps:<br/>Octokit, OpenAIClient, ArtifactFetcher"]
+    DEPS --> COORDINATOR["new PipelineCoordinator"]
+    COORDINATOR --> EXECUTE["coordinator.execute()"]
 
-    LOGS --> FETCH_DATA
-    subgraph FETCH_DATA["Data Collection"]
-        direction TB
-        WF_LOGS["Fetch Workflow Run Logs<br/>via GitHub API"]
-        ARTIFACTS["Fetch Artifacts<br/>artifact-fetcher.ts"]
-        SCREENSHOTS["Extract Screenshots<br/>(base64 encoded)"]
-        PR_DIFF["Fetch PR Diff / Branch Diff<br/>via GitHub API"]
-        WF_LOGS --> ARTIFACTS --> SCREENSHOTS
-        WF_LOGS --> PR_DIFF
-    end
+    EXECUTE --> LOGS["processWorkflowLogs<br/>fetch logs + artifacts + screenshots"]
 
-    FETCH_DATA --> NULL_CHECK{Error Data<br/>Found?}
-    NULL_CHECK -->|No| WF_STATUS{Workflow<br/>Still Running?}
-    WF_STATUS -->|Yes| PENDING["Output: PENDING"]
-    WF_STATUS -->|No| NO_DATA["Output: ERROR<br/>No error data found"]
+    LOGS --> HAS_ERR{"errorData<br/>found?"}
+    HAS_ERR -- no --> NO_ERR["handleNoErrorData()<br/>→ NO_FAILURE / PENDING / ERROR"]
+    HAS_ERR -- yes --> SKILL_LOAD["SkillStore.load()<br/>(if AWS creds in env)"]
 
-    NULL_CHECK -->|Yes| SKILLS["Load SkillStore<br/>(DynamoDB, via OIDC or configured credentials)<br/>+ detect flakiness<br/>(when AUTO_FIX_TARGET_REPO resolves)"]
+    SKILL_LOAD --> CLASSIFY_STEP["classify()"]
 
-    SKILLS --> INFRA_CHECK{"Infrastructure<br/>Failure Detected?<br/>detectInfrastructureFailure()"}
+    CLASSIFY_STEP --> CONF{"confidence >=<br/>threshold?"}
+    CONF -- no --> INCONCL["setInconclusiveOutput"]
+    CONF -- yes --> VERDICT{"verdict ==<br/>TEST_ISSUE?"}
+    VERDICT -- no --> NON_TEST["setSuccessOutput<br/>(PRODUCT_ISSUE etc.)"]
+    VERDICT -- yes --> FLAKY{"chronically<br/>flaky spec?<br/>(fixCount >= 3)"}
+    FLAKY -- yes --> CHRONIC["autoFixSkipped=true<br/>setSuccessOutput<br/>(human follow-up)"]
+    FLAKY -- no --> REPAIR_STEP["repair()"]
 
-    INFRA_CHECK -->|Yes| INCONC_INFRA["Output: INCONCLUSIVE<br/>(session/browser crash)"]
-    INFRA_CHECK -->|No| ANALYZE["Analyze with AI<br/>simplified-analyzer.ts<br/>(skill context + flakiness injected)"]
+    REPAIR_STEP --> SAVE_SKILL["Save skill to DynamoDB<br/>if fix attempted +<br/>skillStore + targetRepo"]
+    SAVE_SKILL --> OUT["setSuccessOutput<br/>+ action outputs"]
 
-    ANALYZE --> AI_CALL["OpenAI Responses API<br/>gpt-5.3-codex<br/>openai-client.ts"]
+    OUT --> SUMMARY["logRunSummary()<br/>📊 skill-telemetry-summary<br/>(always fires)"]
+    NO_ERR --> SUMMARY
+    INCONCL --> SUMMARY
+    NON_TEST --> SUMMARY
+    CHRONIC --> SUMMARY
 
-    AI_CALL --> VERDICT{Verdict?}
-
-    VERDICT -->|TEST_ISSUE| PATH_CHECK{Local validation?<br/>enableAutoFix +<br/>enableValidation +<br/>testCommand}
-    VERDICT -->|PRODUCT_ISSUE| CONFIDENCE_CHECK
-    VERDICT -->|INCONCLUSIVE| CONFIDENCE_CHECK
-
-    PATH_CHECK -->|Yes| LOCAL_LOOP["Local Fix-Validate Loop<br/>iterativeFixValidateLoop()<br/><br/>1. Clone failing branch + npm ci<br/>2. Generate fix (agentic or single-shot)<br/>   with skills injected into prompts<br/>3. Apply to local files<br/>4. Run test command in container<br/>5. If pass → push branch + create PR<br/>   + save skill to DynamoDB<br/>6. If fail → reset, iterate (up to 3x)<br/>   (fix fingerprinting deduplicates)"]
-    PATH_CHECK -->|No| FIX_REC["Generate Fix Recommendation<br/>SimplifiedRepairAgent<br/>(with skills injected)"]
-
-    FIX_REC --> AUTO_FIX_CHECK{Auto-Fix<br/>Enabled?}
-    AUTO_FIX_CHECK -->|Yes| APPLY_FIX["Apply Fix via GitHub API<br/>fix-applier.ts<br/>Create branch + commit"]
-    AUTO_FIX_CHECK -->|No| CONFIDENCE_CHECK
-
-    APPLY_FIX --> CONFIDENCE_CHECK
-    LOCAL_LOOP --> CONFIDENCE_CHECK
-
-    CONFIDENCE_CHECK{Confidence ≥<br/>Threshold?}
-    CONFIDENCE_CHECK -->|No| INCONCLUSIVE["Output: INCONCLUSIVE"]
-    CONFIDENCE_CHECK -->|Yes| FINAL_OUTPUT["Set Success Output<br/>(verdict + fix + auto-fix results)"]
+    style CHRONIC fill:#fff3cd,color:#000
+    style INCONCL fill:#f8d7da,color:#000
+    style NO_ERR fill:#f8d7da,color:#000
+    style OUT fill:#d4edda,color:#000
+    style SUMMARY fill:#cce5ff,color:#000
 ```
 
-## Multi-Agent Orchestration Pipeline
+---
 
-All LLM steps (Analysis, Investigation, Fix Generation, Review) share **one OpenAI conversation**: each call passes the prior turn’s `response_id` as `previous_response_id`, so retries and review feedback accumulate in the same thread. Outer validation iterations (test fails after an approved fix) resume that thread with additional context, not a fresh chat.
-
-Skills are also injected into the **classifier** step (`PipelineCoordinator.classify()` → `formatForClassifier`), not only into repair. When skill memory is available, relevant skills are injected into `context.skillsPrompt` before the Investigation, Fix Generation, and Review steps — each with role-appropriate framing to avoid anchoring bias. **Failed fix trajectories** (unsuccessful iterations and outcomes) are persisted as well as successful ones, so the store learns from misses and not only from merged fixes.
+## 2. Classification phase
 
 ```mermaid
 flowchart TB
-    START["AgentOrchestrator.orchestrate()<br/>agent-orchestrator.ts"] --> CONV["Single conversation chain<br/>previous_response_id per LLM turn"]
-    CONV --> TIMEOUT["Start Timeout Timer<br/>(120s default)"]
+    START["classify(errorData, skillStore)"]
+    START --> FLAK_CHECK["skillStore.detectFlakiness(spec)<br/>3d window: &gt;1 fix<br/>7d window: &gt;2 fixes"]
+    FLAK_CHECK --> FLAK_LOG{"isFlaky?"}
+    FLAK_LOG -- yes --> WARN["⚠️ FLAKINESS DETECTED"]
+    FLAK_LOG -- no --> CLASSIFIER_SKILLS
 
-    TIMEOUT --> STEP1
+    WARN --> CLASSIFIER_SKILLS["skillStore.findForClassifier({<br/>framework, spec, errorMessage })<br/>filter: validatedLocally + !retired<br/>score: +15 spec, +5×sim, +3 recent<br/>top 3"]
 
-    subgraph STEP1["Step 1: Analysis Agent"]
-        AA["analysis-agent.ts<br/>→ OpenAI Responses API"]
-        AA --> AA_OUT["Output:<br/>• Root cause category<br/>• Confidence score<br/>• Selectors & elements<br/>• Detected patterns<br/>• Suggested approach"]
-    end
+    CLASSIFIER_SKILLS --> RENDER["formatSkillsForClassifierContext<br/>📝 skill-telemetry role=classifier"]
+    RENDER --> MERGE["Merge:<br/>skillContext + flakinessContext"]
+    MERGE --> ANALYZE["analyzeFailure(openai, errorData, context)<br/>→ verdict + confidence + reasoning<br/>+ suggestedSourceLocations if PRODUCT_ISSUE"]
 
-    STEP1 -->|Pass analysis + selectors| STEP2
-
-    subgraph STEP2["Step 2: Code Reading Agent"]
-        CRA["code-reading-agent.ts<br/>→ GitHub API (file fetch)"]
-        CRA --> CRA_OUT["Output:<br/>• Test file content<br/>• Related file contents<br/>• Custom commands<br/>• Page objects"]
-    end
-
-    STEP2 -->|Pass analysis + code context| STEP3
-
-    subgraph STEP3["Step 3: Investigation Agent"]
-        IA["investigation-agent.ts<br/>→ OpenAI Responses API"]
-        IA --> IA_OUT["Output:<br/>• Findings list<br/>• isTestCodeFixable<br/>• Recommended approach<br/>• Selectors to update"]
-    end
-
-    STEP3 --> LOOP_START
-
-    subgraph LOOP["Fix Generation / Review Loop (max 3 iterations)"]
-        LOOP_START["Iteration Start"]
-        LOOP_START --> STEP4
-
-        subgraph STEP4["Step 4: Fix Generation Agent"]
-            FGA["fix-generation-agent.ts<br/>→ OpenAI Responses API"]
-            FGA --> DIFF_CHECK["PR Diff Consistency Check:<br/>Does fix reasoning match<br/>the actual diff?"]
-            DIFF_CHECK --> FGA_OUT["Output:<br/>• Code changes (oldCode → newCode)<br/>• Confidence<br/>• Evidence & reasoning"]
-        end
-
-        STEP4 --> CONF_CHECK{Confidence ≥<br/>Min Threshold?}
-        CONF_CHECK -->|No| FEEDBACK1["Feedback: Confidence too low"]
-        FEEDBACK1 --> LOOP_START
-
-        CONF_CHECK -->|Yes| AUTO_CORRECT["Step 4b: autoCorrectOldCode<br/>Validate oldCode against source<br/>Strip line prefixes / normalize WS /<br/>signature match near target line"]
-        AUTO_CORRECT --> CHANGES_LEFT{Valid changes<br/>remain?}
-        CHANGES_LEFT -->|No| FEEDBACK_AC["Feedback: oldCode did not<br/>match source — copy exactly"]
-        FEEDBACK_AC --> LOOP_START
-
-        CHANGES_LEFT -->|Yes| REVIEW_CHECK{Review<br/>Required?}
-        REVIEW_CHECK -->|No| RETURN_FIX["Return Fix"]
-
-        REVIEW_CHECK -->|Yes| STEP5
-
-        subgraph STEP5["Step 5: Review Agent"]
-            RA["review-agent.ts<br/>→ OpenAI Responses API"]
-            RA --> RA_CHECKS["Review Checks:<br/>• oldCode matches source file?<br/>• newCode syntactically valid?<br/>• Fix addresses root cause?<br/>• No side effects?<br/>• Reasoning consistent with PR diff?"]
-            RA_CHECKS --> RA_OUT["Output:<br/>• Approved (bool)<br/>• Issues (CRITICAL/WARNING)<br/>• Assessment"]
-        end
-
-        STEP5 --> APPROVED{Approved?}
-        APPROVED -->|Yes| RETURN_FIX
-        APPROVED -->|No| FEEDBACK2["Feedback: Review issues<br/>(fed back to Fix Gen)"]
-        FEEDBACK2 --> LOOP_START
-    end
-
-    RETURN_FIX --> CONVERT["Convert to FixRecommendation"]
-    CONVERT --> DONE["Return OrchestrationResult"]
-
-    LOOP -->|Max iterations reached| BEST_FIX{Last Fix ≥<br/>Min Confidence?}
-    BEST_FIX -->|Yes| RETURN_BEST["Return Last Fix<br/>(not review-approved)"]
-    BEST_FIX -->|No| FALLBACK{Fallback<br/>Enabled?}
-    FALLBACK -->|Yes| SINGLE["Fall Back to Single-Shot"]
-    FALLBACK -->|No| FAIL["Return Failed"]
+    ANALYZE --> RESULT["ClassificationResult<br/>+ classifierSkillIds"]
 ```
 
-## Causal Consistency — PR Diff Cross-Reference (v1.21.0)
+---
 
-Shows how the PR diff is validated against the model's reasoning at every stage.
+## 3. Agentic repair pipeline — the five-agent orchestrator
+
+Happy path inside `AgentOrchestrator.orchestrate()` (`src/agents/agent-orchestrator.ts`). Wrapped in a `Promise.race` against `totalTimeoutMs = 300000` (v1.51.0 for xhigh latency).
 
 ```mermaid
 flowchart TB
-    subgraph INPUT["Evidence Available"]
-        ERR["Error: #password not found<br/>(timeout in login hook)"]
-        SCREENSHOTS["Screenshots:<br/>Login page with email input"]
-        DIFF["PR Diff:<br/>LessonRenderer.tsx<br/>content-parser.ts<br/>ContentFallback.tsx"]
-    end
+    START["orchestrate(context, errorData,<br/>previousResponseId, skills)"]
+    START --> SKILL_PROMPT_A["context.skillsPrompt<br/>= formatSkillsForPrompt(skills, 'investigation', flakiness)"]
+    SKILL_PROMPT_A --> ANALYSIS["<b>Analysis Agent</b><br/>gpt-5.3-codex<br/>→ rootCauseCategory, issueLocation,<br/>selectors, confidence"]
 
-    INPUT --> ANALYSIS
+    ANALYSIS --> CODE_READ["<b>Code Reading Agent</b><br/>no LLM — direct octokit getContent<br/>→ test file + page objects + support files"]
 
-    subgraph ANALYSIS["Analysis (openai-client.ts)"]
-        direction TB
-        HYPOTHESIS["Model forms hypothesis:<br/>'#password selector not found'"]
-        CAUSAL_CHECK{"CAUSAL CONSISTENCY CHECK:<br/>Does the diff touch<br/>login/auth code?"}
-        HYPOTHESIS --> CAUSAL_CHECK
-        CAUSAL_CHECK -->|"No — diff only shows<br/>LMS rendering changes"| CORRECT["✅ Correct reasoning:<br/>'Login failure is unrelated to PR.<br/>Pre-existing environment issue<br/>or flaky test.'"]
-        CAUSAL_CHECK -->|"Yes — diff shows<br/>auth changes"| INVESTIGATE["Investigate correlation<br/>between diff and failure"]
-    end
+    CODE_READ --> CHAIN_DECIDE{"analysis.confidence<br/>&lt; 80?"}
+    CHAIN_DECIDE -- yes --> CHAIN_YES["investigationChainId =<br/>analysisResult.responseId"]
+    CHAIN_DECIDE -- no --> CHAIN_NO["investigationChainId =<br/>undefined (fresh start)"]
 
-    subgraph BAD_PATH["❌ OLD Behavior (pre-v1.21.0)"]
-        direction TB
-        BAD_THEORY["Model fabricates:<br/>'Login UI changed to passwordless'"]
-        BAD_EVIDENCE["Cherry-picks evidence:<br/>'loginWithEmail endpoint<br/>confirms new flow'"]
-        BAD_FIX["Generates fix:<br/>Rewrite login command for<br/>both auth UIs"]
-        BAD_THEORY --> BAD_EVIDENCE --> BAD_FIX
-    end
+    CHAIN_YES --> SKILL_PROMPT_I
+    CHAIN_NO --> SKILL_PROMPT_I
 
-    subgraph GOOD_PATH["✅ NEW Behavior (v1.21.0+)"]
-        direction TB
-        GOOD_THEORY["Model cross-references diff:<br/>'No auth files in diff'"]
-        GOOD_CONCLUSION["Concludes:<br/>'Pre-existing env issue.<br/>Login UI not changed by this PR.'"]
-        GOOD_FIX["Fix addresses brittleness:<br/>Add fallback selectors or<br/>improve wait strategy"]
-        GOOD_THEORY --> GOOD_CONCLUSION --> GOOD_FIX
-    end
+    SKILL_PROMPT_I["context.skillsPrompt<br/>= priorInvestigationContext<br/>+ baseInvestigationSkills"]
+    SKILL_PROMPT_I --> INVESTIGATION["<b>Investigation Agent</b><br/>gpt-5.3-codex<br/>→ findings, recommendedApproach,<br/>selectorsToUpdate, isTestCodeFixable,<br/>verdictOverride?"]
 
-    CORRECT --> GOOD_PATH
+    INVESTIGATION --> OVERRIDE{"verdictOverride<br/>APP_CODE with<br/>higher conf?"}
+    OVERRIDE -- yes --> ABORT_APP["ABORT:<br/>investigation outvoted analysis —<br/>not test-fixable"]
+    OVERRIDE -- no --> TEST_FIXABLE{"isTestCodeFixable?"}
+    TEST_FIXABLE -- no --> ABORT_TEST["ABORT:<br/>not test-code-fixable<br/>+ no override"]
+    TEST_FIXABLE -- yes --> LOOP_START
 
-    subgraph REVIEW_GATE["Review Agent Gate"]
-        REVIEW_CHECK{"Does fix reasoning<br/>contradict the diff?"}
-        REVIEW_CHECK -->|"Yes"| REJECT["❌ CRITICAL: Rejected<br/>'Fix claims login UI changed<br/>but diff shows no auth changes'"]
-        REVIEW_CHECK -->|"No"| APPROVE["✅ Approved"]
-    end
+    LOOP_START["Fix/Review loop<br/>maxIterations = 3"]
+    LOOP_START --> FIX_GEN["<b>Fix Generation Agent</b><br/>gpt-5.4 xhigh<br/>+ CYPRESS_PATTERNS / WDIO_PATTERNS<br/>→ changes[], failureModeTrace (4 fields),<br/>confidence, reasoning"]
 
-    GOOD_FIX --> REVIEW_GATE
-    BAD_FIX -.->|"Now caught by"| REVIEW_GATE
+    FIX_GEN --> AUTO_CORRECT["autoCorrectOldCode<br/>(snap near-miss oldCode to source)"]
+
+    AUTO_CORRECT --> CONF_GATE{"confidence >=<br/>70?"}
+    CONF_GATE -- no --> FEEDBACK_CONF["reviewFeedback<br/>= low-confidence msg<br/>→ next iteration"]
+    CONF_GATE -- yes --> REVIEW["<b>Review Agent</b><br/>gpt-5.4 xhigh<br/>audits: oldCode match, trace quality,<br/>logical strengthening, APP_CODE justification,<br/>verdictOverride alignment,<br/>recommendedApproach honored"]
+
+    REVIEW --> APPROVED{"approved<br/>+ no CRITICAL?"}
+    APPROVED -- yes --> SHIP["return fix<br/>approach: agentic"]
+    APPROVED -- no --> BLOCKING{"blocking<br/>CRITICAL?"}
+    BLOCKING -- yes --> TRACE_REPLAY["reviewFeedback<br/>+ prior failureModeTrace<br/>replay → next iteration"]
+    BLOCKING -- no --> REGULAR_FEEDBACK["reviewFeedback<br/>= issue lines<br/>→ next iteration"]
+
+    FEEDBACK_CONF --> LOOP_CHECK
+    TRACE_REPLAY --> LOOP_CHECK
+    REGULAR_FEEDBACK --> LOOP_CHECK
+    LOOP_CHECK{"iterations<br/>&lt; 3?"}
+    LOOP_CHECK -- yes --> FIX_GEN
+    LOOP_CHECK -- no --> MAX_ITER{"lastFix<br/>confidence OK<br/>+ no blocking<br/>CRITICAL?"}
+    MAX_ITER -- yes --> FALLBACK_SHIP["ship lastFix<br/>with warning<br/>(validation = final gate)"]
+    MAX_ITER -- no --> FAIL["return error<br/>approach: failed"]
+
+    FAIL --> SINGLE_SHOT
+    SINGLE_SHOT["Fall back to<br/>SimplifiedRepairAgent.singleShotRepair()"]
+    style SINGLE_SHOT fill:#fff3cd,color:#000
+    style ABORT_APP fill:#f8d7da,color:#000
+    style ABORT_TEST fill:#f8d7da,color:#000
+    style SHIP fill:#d4edda,color:#000
+    style FALLBACK_SHIP fill:#fff3cd,color:#000
+    style FAIL fill:#f8d7da,color:#000
 ```
 
-## Repository Integration Map
+---
+
+## 4. Prompt composition — per-agent
+
+Applied in `BaseAgent.runAgentTask` for every LLM-calling agent.
 
 ```mermaid
 flowchart LR
-    subgraph TRIAGE["adept-triage-agent<br/>(GitHub Action)"]
-        direction TB
-        ACTION["action.yml<br/>Node.js 24 Runtime"]
-        SRC["src/ TypeScript Source"]
-        DIST["dist/ Compiled Bundle"]
+    subgraph SYS["System prompt"]
+        ROLE["Agent role + rubric<br/>+ JSON output schema"]
+        PATTERNS["(fix-gen only)<br/>CYPRESS_PATTERNS /<br/>WDIO_PATTERNS"]
+        REPO_CTX[".adept-triage/context.md<br/>(remote or bundled)<br/>appended when present"]
+        ROLE --> PATTERNS
+        PATTERNS --> REPO_CTX
     end
 
-    subgraph CONSUMER_REPOS["Consumer Repositories"]
-        direction TB
-
-        subgraph LEARN["learn-webapp, lib-cypress-canary,<br/>lib-wdio-8-e2e-ts, lib-wdio-8-multi-remote<br/>(Consumer Repos)"]
-            LW_WF["Test + triage-failed-tests.yml workflows"]
-            LW_TESTS["E2E Tests<br/>• Cypress (learn-webapp, lib-cypress-canary)<br/>• WebDriverIO (lib-wdio-8-e2e-ts, multi-remote)"]
-        end
-
-        subgraph ANY_REPO["Any Repo<br/>(via examples)"]
-            AR_INLINE["Inline Usage<br/>(same workflow, best-effort)"]
-            AR_DISPATCH["Repository Dispatch<br/>(separate workflow)"]
-            AR_WF_RUN["workflow_run Trigger<br/>(separate workflow)"]
-        end
+    subgraph USER["User prompt"]
+        DELEG["delegationContext<br/>(briefing from orchestrator)"]
+        ERROR["errorMessage<br/>+ stack + logs<br/>+ screenshots"]
+        DIFFS["prDiff + productDiff"]
+        SOURCE["sourceFileContent<br/>(line-numbered)"]
+        SKILLS["skillsPrompt<br/>(role-specific framing)"]
+        PRIOR["Prior attempt context<br/>(iteration N-1 fix + logs)<br/>when retry"]
+        ROLE_INSTR["Role-specific instructions"]
+        DELEG --> ERROR
+        ERROR --> DIFFS
+        DIFFS --> SOURCE
+        SOURCE --> SKILLS
+        SKILLS --> PRIOR
+        PRIOR --> ROLE_INSTR
     end
 
-    subgraph EXTERNAL["External Services"]
-        OPENAI["OpenAI API<br/>gpt-5.3-codex<br/>Responses API"]
-        GITHUB_API["GitHub REST API<br/>• Workflow logs<br/>• Artifacts<br/>• File content<br/>• PR diffs<br/>• Branch creation"]
-        SLACK["Slack<br/>(via adept-common<br/>triage-slack-notify)"]
-    end
-
-    subgraph COMMON["adept-common<br/>(Shared Actions)"]
-        DISPATCH["triage-dispatch<br/>GitHub Action"]
-        TRIAGE_WF["triage-failed-tests.yml<br/>Reusable Workflow"]
-        NOTIFY["triage-slack-notify<br/>GitHub Action"]
-    end
-
-    LEARN -->|"if: failure() uses triage-dispatch@main"| COMMON
-    COMMON -->|"repository_dispatch: triage-failed-test"| LEARN
-    LEARN -->|"all consumer repos use shared triage workflow"| COMMON
-    LEARN -->|"uses: adept-at/adept-triage-agent@v1"| TRIAGE
-    ANY_REPO -->|"uses: adept-at/adept-triage-agent@v1"| TRIAGE
-
-    TRIAGE -->|"API calls"| OPENAI
-    TRIAGE -->|"API calls"| GITHUB_API
-    TRIAGE -->|"outputs (verdict, confidence, summary)"| COMMON
-    COMMON -->|"webhook"| SLACK
-
-    GITHUB_API -->|"logs, artifacts,<br/>screenshots, diffs"| TRIAGE
-    OPENAI -->|"analysis JSON"| TRIAGE
+    SYS --> OPENAI["generateWithCustomPrompt<br/>+ screenshots (if includeScreenshots)<br/>+ responseId (for chaining)"]
+    USER --> OPENAI
 ```
 
-## Data Flow Detail
-
-```mermaid
-flowchart LR
-    subgraph INPUTS_LAYER["Inputs"]
-        GH_TOKEN["GITHUB_TOKEN"]
-        OAI_KEY["OPENAI_API_KEY"]
-        WF_RUN_ID["WORKFLOW_RUN_ID"]
-        JOB["JOB_NAME"]
-        PR["PR_NUMBER + COMMIT_SHA"]
-        REPO["REPOSITORY + BRANCH"]
-        CONF_THRESH["CONFIDENCE_THRESHOLD"]
-        FRAMEWORKS["TEST_FRAMEWORKS<br/>(cypress | webdriverio)"]
-        AUTOFIX_IN["ENABLE_AUTO_FIX<br/>ENABLE_AGENTIC_REPAIR<br/>VALIDATION_TEST_COMMAND"]
-    end
-
-    subgraph COLLECTION["Data Collection Layer"]
-        direction TB
-        LOGS_RAW["Raw Workflow Logs"]
-        SCREENSHOTS_RAW["Screenshots (PNG → base64)"]
-        DIFF_RAW["PR/Branch/Commit Diff Patches"]
-        ERROR_MSG["Error Messages + Stack Traces"]
-        ARTIFACT_LOGS["Uploaded Test Artifact Logs"]
-    end
-
-    subgraph AI_LAYER["AI Analysis Layer"]
-        direction TB
-        PROMPT["Structured Prompt<br/>error + logs + screenshots + diff<br/>+ structured summary header"]
-        MODEL["gpt-5.3-codex<br/>Responses API<br/>JSON output format<br/>max 16384 tokens"]
-        RESPONSE["Structured JSON Response<br/>verdict + reasoning + indicators"]
-        AGENT_CHAIN["Multi-agent repair:<br/>generateWithCustomPrompt(previousResponseId)<br/>→ { text, responseId }<br/>OrchestrationResult.lastResponseId"]
-        MODEL -.-> AGENT_CHAIN
-    end
-
-    subgraph OUTPUT_LAYER["Outputs"]
-        direction TB
-        VERDICT_OUT["verdict: TEST_ISSUE | PRODUCT_ISSUE | INCONCLUSIVE | PENDING | ERROR | NO_FAILURE"]
-        CONF_OUT["confidence: 0-95"]
-        REASON_OUT["reasoning: detailed explanation"]
-        SUMMARY_OUT["summary: brief for PR comments"]
-        JSON_OUT["triage_json: complete analysis"]
-        FIX_OUT["fix_recommendation: proposed changes"]
-        AUTOFIX_OUT["auto_fix_branch: branch name"]
-        VALID_OUT["validation_status: pending | passed | failed | skipped"]
-    end
-
-    INPUTS_LAYER --> COLLECTION
-    COLLECTION --> AI_LAYER
-    AI_LAYER --> OUTPUT_LAYER
-```
-
-**`previous_response_id`:** Initial triage analysis uses the Responses API independently; the **agent repair pipeline** chains turns so each agent’s `responseId` becomes the next call’s `previousResponseId`. `AgentResult.responseId` captures per-step IDs; `OrchestrationResult.lastResponseId` is the final turn for downstream use (e.g. the next outer validation iteration).
-
-## Sub-Agent Architecture
+### Skill-memory role framing
 
 ```mermaid
 flowchart TB
-    subgraph AGENTS["Five Specialized Agents"]
-        direction TB
+    FOR_PROMPT["formatSkillsForPrompt(skills, role, flakiness)"]
+    FOR_PROMPT --> INVEST_ROLE["role='investigation'<br/>header: 'use as background,<br/>do NOT anchor'<br/>trace: HIDDEN"]
+    FOR_PROMPT --> FIX_ROLE["role='fix_generation'<br/>header: 'validated approaches<br/>as starting points'<br/>trace: SHOWN (if validated)"]
+    FOR_PROMPT --> REV_ROLE["role='review'<br/>header: 'compare current trace<br/>to validated prior'<br/>trace: SHOWN (if validated)"]
 
-        subgraph A1["AnalysisAgent"]
-            A1_IN["Input: error, logs, screenshots, PR diff"]
-            A1_WORK["Classifies root cause<br/>SELECTOR_MISMATCH | TIMING_ISSUE<br/>STATE_DEPENDENCY | NETWORK_ISSUE<br/>ELEMENT_VISIBILITY | ASSERTION_MISMATCH<br/>DATA_DEPENDENCY | ENVIRONMENT_ISSUE | UNKNOWN"]
-            A1_OUT["Output: category, confidence,<br/>selectors, patterns"]
-            A1_IN --> A1_WORK --> A1_OUT
-        end
+    INVEST_ROLE --> GATE
+    FIX_ROLE --> GATE
+    REV_ROLE --> GATE
 
-        subgraph A2["CodeReadingAgent"]
-            A2_IN["Input: test file path, selectors"]
-            A2_WORK["Fetches source via GitHub API<br/>Parses imports & helpers<br/>Finds page objects & commands<br/>(No LLM — deterministic)"]
-            A2_OUT["Output: source file content,<br/>related files, custom commands"]
-            A2_IN --> A2_WORK --> A2_OUT
-        end
+    GATE["TRACE RENDERING GATE<br/>(v1.49.2)<br/>• only for fix_gen + review<br/>• only when isValidated:<br/>  validatedLocally OR successCount > 0"]
+```
 
-        subgraph A3["InvestigationAgent"]
-            A3_IN["Input: analysis + code context"]
-            A3_WORK["Deep investigation<br/>Correlates findings<br/>Identifies fixable selectors"]
-            A3_OUT["Output: findings, isFixable,<br/>selectorsToUpdate, approach"]
-            A3_IN --> A3_WORK --> A3_OUT
-        end
+---
 
-        subgraph A4["FixGenerationAgent"]
-            A4_IN["Input: analysis + investigation<br/>+ source + PR diff + feedback"]
-            A4_WORK["Generates exact code changes<br/>oldCode → newCode<br/>Validates against PR diff"]
-            A4_OUT["Output: CodeChange[],<br/>confidence, evidence"]
-            A4_IN --> A4_WORK --> A4_OUT
-        end
+## 5. Local validation loop
 
-        subgraph A5["ReviewAgent"]
-            A5_IN["Input: proposed fix + analysis<br/>+ source + PR diff"]
-            A5_WORK["Validates fix quality<br/>Checks oldCode matches source<br/>Verifies diff consistency<br/>Flags CRITICAL/WARNING issues"]
-            A5_OUT["Output: approved/rejected,<br/>issues[], assessment"]
-            A5_IN --> A5_WORK --> A5_OUT
-        end
+```mermaid
+flowchart TB
+    START["iterativeFixValidateLoop<br/>FIX_VALIDATE_LOOP.MAX_ITERATIONS = 3"]
+
+    START --> GEN["generateFixRecommendation<br/>(agentic → single-shot fallback)"]
+    GEN --> NULL_CHK{"fix == null?"}
+    NULL_CHK -- yes --> BREAK_EMPTY["break"]
+    NULL_CHK -- no --> CHG_CHK{"proposedChanges<br/>empty?"}
+    CHG_CHK -- yes --> BREAK_EMPTY
+    CHG_CHK -- no --> BLAST
+
+    BLAST["requiredConfidence(fix, minConf)<br/>+10 shared code<br/>+5 multi-file<br/>cap: max(minConf, 95)"]
+    BLAST --> CONF_GATE{"fix.confidence<br/>>= requiredConf?"}
+    CONF_GATE -- no + scaling --> SKIPPED["autoFixSkipped=true<br/>+ reason"]
+    CONF_GATE -- no, no scaling --> BREAK_EMPTY
+    CONF_GATE -- yes --> DUP_CHK
+
+    DUP_CHK["fixFingerprint<br/>matches previous failed?"]
+    DUP_CHK -- yes --> BREAK_DUP["break<br/>(avoid retry same)"]
+    DUP_CHK -- no --> FIRST{"first<br/>iteration?"}
+
+    FIRST -- yes --> SETUP["validator.setup()<br/>clone repo + npm ci<br/>+ optional Cypress binary"]
+    SETUP --> BASELINE["baselineCheck()<br/>run test 3 consecutive times<br/>WITHOUT any fix applied"]
+    BASELINE --> BASELINE_PASS{"all 3 pass?"}
+    BASELINE_PASS -- yes --> RETURN_TRANSIENT["return:<br/>fixRecommendation: null<br/>(failure was transient)"]
+    BASELINE_PASS -- no --> APPLY["validator.applyFix(changes)"]
+
+    FIRST -- no --> APPLY
+
+    APPLY --> RUN["validator.runTest()<br/>🧪 Running test locally..."]
+    RUN --> TEST_PASS{"test passed?"}
+    TEST_PASS -- yes --> PUSH["pushAndCreatePR<br/>→ branch + commit + PR"]
+    PUSH --> PR_OK{"push OK?"}
+    PR_OK -- yes --> RETURN_SUCCESS["return: autoFixResult.success=true<br/>+ prUrl + commitSha"]
+    PR_OK -- no --> RETURN_PARTIAL["return: success=false<br/>validationStatus=passed<br/>(test works, push failed)"]
+
+    TEST_PASS -- no --> RESET["validator.reset()<br/>git checkout -- .<br/>+ git clean -fd"]
+    RESET --> ITER_CHK{"iterations<br/>< 3?"}
+    ITER_CHK -- yes --> BUILD_PRIOR["buildNextPreviousAttempt<br/>diff + logs + priorAgentRootCause<br/>+ priorAgentInvestigationFindings<br/>+ prior failureModeTrace"]
+    BUILD_PRIOR --> GEN
+    ITER_CHK -- no --> EXHAUSTED["🛑 All 3 attempts exhausted"]
+
+    EXHAUSTED --> CLEANUP
+    RETURN_SUCCESS --> CLEANUP
+    RETURN_PARTIAL --> CLEANUP
+    RETURN_TRANSIENT --> CLEANUP
+    BREAK_EMPTY --> CLEANUP
+    BREAK_DUP --> CLEANUP
+    SKIPPED --> CLEANUP
+    CLEANUP["validator.cleanup()<br/>fs.rmSync workdir<br/>(always, try/finally)"]
+
+    style RETURN_SUCCESS fill:#d4edda,color:#000
+    style RETURN_TRANSIENT fill:#d4edda,color:#000
+    style RETURN_PARTIAL fill:#fff3cd,color:#000
+    style SKIPPED fill:#fff3cd,color:#000
+    style EXHAUSTED fill:#f8d7da,color:#000
+```
+
+---
+
+## 6. Learning loop — skills + repo context
+
+```mermaid
+flowchart TB
+    subgraph ON_START["Once per run (start)"]
+        LOAD["SkillStore.load()<br/>Query pk=REPO#owner/repo<br/>📝 Loaded N skill(s)"]
+        FETCH["RepoContextFetcher.fetch(owner, repo, ref)"]
+        BUNDLED{"in BUNDLED_<br/>REPO_CONTEXTS?"}
+        FETCH --> BUNDLED
+        BUNDLED -- yes --> BUNDLE_RENDER["renderBundled<br/>📘 Loaded repo context<br/>(bundled in adept-triage-agent)"]
+        BUNDLED -- no --> REMOTE["octokit.repos.getContent<br/>.adept-triage/context.md"]
+        REMOTE --> REMOTE_OK{"200?"}
+        REMOTE_OK -- yes --> REMOTE_RENDER["sanitize + cap<br/>📘 Loaded repo context<br/>from owner/repo/...@ref"]
+        REMOTE_OK -- no --> EMPTY["return ''<br/>(debug-log 404)"]
     end
 
-    A1 -->|"analysis + continues conversation<br/>(previous_response_id)"| A2
-    A2 -->|"code context (no LLM)"| A3
-    A3 -->|"investigation + continues conversation<br/>+ skills (investigation framing)"| A4
-    A4 -->|"proposed fix + continues conversation<br/>+ skills (fix_generation framing)"| A5
-    A5 -->|"rejected + feedback + same thread<br/>+ skills (review framing)"| A4
+    LOAD --> PIPELINE["Coordinator + agents<br/>see §1, §3, §4"]
+    BUNDLE_RENDER --> PIPELINE
+    REMOTE_RENDER --> PIPELINE
+    EMPTY --> PIPELINE
+
+    PIPELINE --> ON_SAVE
+
+    subgraph ON_SAVE["After fix attempt (if skillStore + targetRepo)"]
+        BUILD["buildSkill({<br/>  spec: normalizeSpec(...),<br/>  errorPattern: normalizeError(...),<br/>  rootCauseCategory, fix, confidence,<br/>  prUrl, validatedLocally,<br/>  failureModeTrace,<br/>  investigationFindings<br/>})"]
+        SAVE["SkillStore.save(skill)<br/>→ PutCommand"]
+        PRUNE{"partition over<br/>MAX_SKILLS=100?"}
+        SAVE --> PRUNE
+        PRUNE -- yes --> SELECT["selectSkillsToPrune<br/>exclude isSeed ✔<br/>sort oldest-first<br/>delete overflow"]
+        PRUNE -- no --> DONE
+        SELECT --> DONE
+        DONE --> RECORD{"fix succeeded?"}
+        RECORD -- yes --> OUTCOME_OK["recordOutcome(skill.id, true)<br/>+ recordClassificationOutcome(<br/>  skill.id, 'correct')"]
+        RECORD -- no --> OUTCOME_FAIL["recordOutcome(skill.id, false)<br/>→ auto-retire check:<br/>failRate &gt; 0.4 AND failCount &gt;= 3"]
+    end
+
+    OUTCOME_OK --> SUMMARY["logRunSummary()<br/>📊 loaded=N surfaced=M saved=K"]
+    OUTCOME_FAIL --> SUMMARY
 ```
+
+### Seed-skill protection
+
+```mermaid
+flowchart LR
+    SEED["scripts/seed-skill.ts<br/>inserts TriageSkill<br/>with isSeed: true<br/>validatedLocally: true<br/>successCount: 1<br/>classificationOutcome: 'correct'"]
+
+    SEED --> DYNAMO["DynamoDB<br/>triage-skills-v1-live"]
+
+    DYNAMO --> RETRIEVAL["findRelevant<br/>findForClassifier<br/>(scored like any other skill)"]
+    DYNAMO --> PRUNE["selectSkillsToPrune<br/>SKIPS seeds ✔<br/>(cap can never evict)"]
+    DYNAMO --> AUDIT["scripts/audit-skills.ts<br/>SKIPS seeds ✔<br/>(per-skill + dedup checks)"]
+
+    style PRUNE fill:#d4edda,color:#000
+    style AUDIT fill:#d4edda,color:#000
+```
+
+---
+
+## 7. Verdict state machine
+
+```mermaid
+stateDiagram-v2
+    [*] --> processingLogs
+
+    processingLogs --> NO_FAILURE : workflow run succeeded
+    processingLogs --> PENDING : run still in progress
+    processingLogs --> ERROR : unrecoverable / missing inputs
+    processingLogs --> classifying : errorData found
+
+    classifying --> INCONCLUSIVE : confidence < threshold
+    classifying --> PRODUCT_ISSUE : verdict=PRODUCT_ISSUE
+    classifying --> flakyGate : verdict=TEST_ISSUE
+
+    flakyGate --> TEST_ISSUE_SKIPPED : fixCount >= 3 (chronic)<br/>auto_fix_skipped=true
+    flakyGate --> repairing : not chronic
+
+    repairing --> TEST_ISSUE_WITH_FIX : fix generated + (auto-applied OR recommendation only)
+    repairing --> TEST_ISSUE_SKIPPED : blast-radius gate blocked fix
+    repairing --> TEST_ISSUE_NO_FIX : fix-gen failed / verdict override / not test-fixable
+
+    NO_FAILURE --> [*]
+    PENDING --> [*]
+    ERROR --> [*] : core.setFailed
+    INCONCLUSIVE --> [*]
+    PRODUCT_ISSUE --> [*]
+    TEST_ISSUE_WITH_FIX --> [*]
+    TEST_ISSUE_SKIPPED --> [*]
+    TEST_ISSUE_NO_FIX --> [*]
+```
+
+---
+
+## 8. Log-line quick reference
+
+Top-level spans every stage. Useful for `grep` in CI logs.
+
+```mermaid
+sequenceDiagram
+    participant GHA as GitHub Action
+    participant Coord as PipelineCoordinator
+    participant Store as SkillStore
+    participant Fetcher as RepoContextFetcher
+    participant Orch as AgentOrchestrator
+    participant Val as LocalFixValidator
+
+    GHA->>Coord: execute()
+    Coord->>Store: load()
+    Store-->>Coord: skills[]
+    Note over Store: 📝 Loaded N skill(s) from DynamoDB
+    Coord->>Fetcher: fetch(owner, repo, ref)
+    Fetcher-->>Coord: repoContext
+    Note over Fetcher: 📘 Loaded repo context from ...<br/>OR<br/>📘 (bundled in adept-triage-agent)
+
+    Coord->>Coord: classify()
+    Note over Coord: 📝 skill-telemetry role=classifier ids=...
+    Coord->>Coord: detectFlakiness<br/>⚠️ FLAKINESS DETECTED<br/>or ⏭️ Chronic flakiness
+
+    Coord->>Orch: orchestrate() [agentic]
+    Note over Orch: 🤖 Starting agentic repair pipeline<br/>📊 Step 1/2/3/4/5 ...<br/>📝 skill-telemetry role=investigation/fix_generation/review
+    Orch-->>Coord: fix + failureModeTrace
+    Note over Orch: 🤖 Agentic approach: agentic, iterations: N
+
+    Coord->>Val: iterativeFixValidateLoop
+    Note over Val: 🔄 Fix-Validate iteration N/3<br/>🔍 Running baseline check (requires 3 consecutive passes)<br/>✅ Baseline passed OR ❌ Baseline failed on pass N<br/>🧪 Running test locally
+    Val-->>Coord: success + prUrl
+
+    Coord->>Store: save(skill)
+    Note over Store: 📝 Saved validated skill ...<br/>🧹 Pruned N old skill(s)<br/>⚠️ Skill ... retired — X%
+
+    Coord->>Store: logRunSummary()
+    Note over Store: 📊 skill-telemetry-summary loaded=N surfaced=M saved=K
+```
+
+---
+
+**Related**
+
+- [ARCHITECTURE.md](ARCHITECTURE.md) — textual deep-dive.
+- [../USAGE_GUIDE.md](../USAGE_GUIDE.md) — operator cookbook.
+- [../README.md](../README.md) — features + inputs/outputs table.

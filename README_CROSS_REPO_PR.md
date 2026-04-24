@@ -1,12 +1,16 @@
 # Cross-Repository Access in GitHub Actions
 
+> **This doc covers GitHub API access only.** For DynamoDB skill-store access, the agent uses the AWS SDK default credential provider chain — consumer workflows typically set up OIDC via `aws-actions/configure-aws-credentials@v4` with the org-wide `TRIAGE_AGENT_DYNAMO_ACCESS_ROLE_ARN` secret. No GitHub PAT is involved on that path.
+
 ## When You Need a PAT or App Token
 
-The Adept Triage Agent uses three repository contexts:
+The Adept Triage Agent uses three GitHub repository contexts:
 
 - `github.context.repo`: where the triage workflow is running. Workflow runs, job logs, screenshots, and uploaded test artifacts are fetched from here.
 - `REPOSITORY`: the app/source repository used for PR, branch, or commit diff lookup.
 - `AUTO_FIX_TARGET_REPO`: the repository where source files are fetched for repair and where fix branches are created.
+
+A fourth context is read-only: `PRODUCT_REPO` (default `adept-at/learn-webapp`) supplies recent-commit context for classification. A PAT is needed for it only if the product repo is private and not the triage repo.
 
 You only need a Personal Access Token (PAT) or GitHub App token when the action needs GitHub API access outside `github.context.repo`, typically because:
 
