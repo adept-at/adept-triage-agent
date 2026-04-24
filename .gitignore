@@ -56,4 +56,7 @@ test-pr-diff*.js
 test-pr-diff*.sh
 
 # OpenAI payload files (for debugging)
-openai-payload-*.json 
+openai-payload-*.json
+
+# Local build/export artifacts (zip exports from scratch investigations)
+*.zip
