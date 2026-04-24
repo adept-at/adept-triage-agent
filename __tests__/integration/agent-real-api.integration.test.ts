@@ -116,7 +116,6 @@ The element was not found before the timeout.`,
       maxIterations: 2, // Limit iterations to control costs
       minConfidence: 60,
       requireReview: true,
-      fallbackToSingleShot: false,
       totalTimeoutMs: 120000, // 2 minute timeout
     });
   });

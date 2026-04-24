@@ -14,7 +14,7 @@ This document outlines practical approaches to E2E test the triage agent's dispa
 Test workflow fails
   → triage-dispatch fires repository_dispatch (triage-failed-test)
   → triage-failed-tests.yml receives dispatch, calls adept-triage-agent
-  → Agent analyzes failure, generates fix (agentic → single-shot fallback)
+  → Agent analyzes failure, generates an agentic fix (no weaker fallback path)
   → [Primary] Clone repo locally → baseline (3-pass) → apply patch → run VALIDATION_TEST_COMMAND (iterate ≤3) → push + PR only on pass
   → [Legacy] workflow_dispatch → validate-fix.yml → run spec on branch → PR if pass
 ```

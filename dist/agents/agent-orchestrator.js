@@ -49,7 +49,6 @@ exports.DEFAULT_ORCHESTRATOR_CONFIG = {
     totalTimeoutMs: 300000,
     minConfidence: 70,
     requireReview: true,
-    fallbackToSingleShot: true,
 };
 class AgentOrchestrator {
     config;
@@ -92,17 +91,6 @@ class AgentOrchestrator {
                     iterations,
                     approach: 'agentic',
                     lastResponseId: result.lastResponseId,
-                    agentResults,
-                };
-            }
-            if (this.config.fallbackToSingleShot) {
-                core.warning('Agentic approach failed, falling back to single-shot...');
-                return {
-                    success: false,
-                    error: result.error || 'Agentic approach did not produce a valid fix',
-                    totalTimeMs,
-                    iterations,
-                    approach: 'single-shot',
                     agentResults,
                 };
             }

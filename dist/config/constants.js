@@ -36,7 +36,6 @@ exports.AGENT_MODEL = {
     investigation: exports.OPENAI.LEGACY_MODEL,
     fixGeneration: exports.OPENAI.UPGRADED_MODEL,
     review: exports.OPENAI.UPGRADED_MODEL,
-    singleShot: exports.OPENAI.LEGACY_MODEL,
 };
 exports.REASONING_EFFORT = {
     classification: 'none',
@@ -44,7 +43,6 @@ exports.REASONING_EFFORT = {
     investigation: 'none',
     fixGeneration: 'xhigh',
     review: 'xhigh',
-    singleShot: 'none',
 };
 exports.SHORT_SHA_LENGTH = 7;
 exports.ARTIFACTS = {
@@ -80,7 +78,6 @@ exports.AUTO_FIX = {
 exports.DEFAULT_PRODUCT_REPO = 'adept-at/learn-webapp';
 exports.DEFAULT_PRODUCT_URL = 'https://learn.adept.at';
 exports.AGENT_CONFIG = {
-    ENABLE_AGENTIC_REPAIR: process.env.ENABLE_AGENTIC_REPAIR !== 'false',
     MAX_AGENT_ITERATIONS: 3,
     AGENT_TIMEOUT_MS: 300_000,
     REVIEW_REQUIRED_CONFIDENCE: 70,

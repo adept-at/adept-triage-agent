@@ -26,7 +26,6 @@ describe('AgentOrchestrator', () => {
       expect(DEFAULT_ORCHESTRATOR_CONFIG.totalTimeoutMs).toBe(300000);
       expect(DEFAULT_ORCHESTRATOR_CONFIG.minConfidence).toBe(70);
       expect(DEFAULT_ORCHESTRATOR_CONFIG.requireReview).toBe(true);
-      expect(DEFAULT_ORCHESTRATOR_CONFIG.fallbackToSingleShot).toBe(true);
     });
   });
 
@@ -62,15 +61,12 @@ describe('AgentOrchestrator', () => {
   });
 
   describe('orchestrate', () => {
-    it('should handle analysis agent failure with fallback disabled', async () => {
+    it('should handle analysis agent failure as agentic failure', async () => {
       mockOpenAIClient.generateWithCustomPrompt = jest
         .fn()
         .mockRejectedValue(new Error('Analysis failed'));
 
-      // Disable fallback to ensure we get 'failed' approach
-      const orchestrator = createOrchestrator(mockOpenAIClient, {
-        fallbackToSingleShot: false,
-      });
+      const orchestrator = createOrchestrator(mockOpenAIClient);
       const context = createAgentContext({
         errorMessage: 'Test error',
         testFile: 'test.ts',
@@ -81,28 +77,6 @@ describe('AgentOrchestrator', () => {
 
       expect(result.success).toBe(false);
       expect(result.approach).toBe('failed');
-      expect(result.agentResults.analysis?.success).toBe(false);
-    });
-
-    it('should fallback to single-shot when analysis fails and fallback is enabled', async () => {
-      mockOpenAIClient.generateWithCustomPrompt = jest
-        .fn()
-        .mockRejectedValue(new Error('Analysis failed'));
-
-      // Enable fallback (default behavior)
-      const orchestrator = createOrchestrator(mockOpenAIClient, {
-        fallbackToSingleShot: true,
-      });
-      const context = createAgentContext({
-        errorMessage: 'Test error',
-        testFile: 'test.ts',
-        testName: 'test',
-      });
-
-      const result = await orchestrator.orchestrate(context);
-
-      expect(result.success).toBe(false);
-      expect(result.approach).toBe('single-shot');
       expect(result.agentResults.analysis?.success).toBe(false);
     });
 
@@ -610,9 +584,7 @@ describe('AgentOrchestrator', () => {
           }
         });
 
-      const orchestrator = createOrchestrator(mockOpenAIClient, {
-        fallbackToSingleShot: false,
-      });
+      const orchestrator = createOrchestrator(mockOpenAIClient);
       const context = createAgentContext({
         errorMessage: 'Expected to find element: mux-player, but never found it',
         testFile: 'skill.video.speed.ts',

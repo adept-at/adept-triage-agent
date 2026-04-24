@@ -413,7 +413,7 @@ export class PipelineCoordinator {
           // spec can see how the prior successful fix reasoned about the
           // failure (originalState → rootMechanism → newStateAfterFix →
           // whyAssertionPassesNow). Undefined on skills from pre-v1.49.1
-          // or from the single-shot fallback path — both are fine.
+          // or from an older run before trace persistence existed — both are fine.
           failureModeTrace: fixRecommendation!.failureModeTrace,
         });
 

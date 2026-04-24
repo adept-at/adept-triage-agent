@@ -14,7 +14,7 @@
 4. [Pipeline — coordinator + validator](#pipeline--coordinator--validator)
 5. [The five agents](#the-five-agents)
 6. [Prompt composition](#prompt-composition)
-7. [Repair paths — agentic vs single-shot](#repair-paths--agentic-vs-single-shot)
+7. [Repair path — agentic only](#repair-path--agentic-only)
 8. [Learning loop — skill store + repo context + seeds](#learning-loop--skill-store--repo-context--seeds)
 9. [Validation paths — local vs remote](#validation-paths--local-vs-remote)
 10. [Outputs, verdicts, and error contracts](#outputs-verdicts-and-error-contracts)
@@ -31,7 +31,7 @@ The Adept Triage Agent is a Node 24 GitHub Action (`action.yml` → `dist/index.
 ### Key features
 
 - **Classification** — OpenAI-powered verdict (`TEST_ISSUE`, `PRODUCT_ISSUE`, `INCONCLUSIVE`, `PENDING`, `ERROR`, `NO_FAILURE`) with 0–100 confidence.
-- **Multi-agent repair** — five agents (analysis, code-reading, investigation, fix-gen, review) collaborate in an orchestrator with an internal fix/review loop. Falls back to a single-shot repair path if agentic fails.
+- **Multi-agent repair** — five agents (analysis, code-reading, investigation, fix-gen, review) collaborate in an orchestrator with an internal fix/review loop. If agentic repair cannot produce an approved fix, the run fails honestly with no weaker fallback path.
 - **Local-validation loop** — clones the target repo, applies fixes on disk, runs the test command up to 3 iterations, and only pushes a branch + opens a PR after the test passes.
 - **Learning loop** — skills (canonical fix patterns for a spec + error shape) are persisted to DynamoDB, retrieved by relevance, and rendered into agent prompts. Human-curated seed skills bootstrap the store.
 - **Repo conventions** — each consumer repo can commit a `.adept-triage/context.md` describing its selector strategy, wait rules, auth flow, etc. For product repos where tooling files are unwelcome, the context is bundled in the agent itself.
@@ -52,7 +52,7 @@ The Adept Triage Agent is a Node 24 GitHub Action (`action.yml` → `dist/index.
 | v1.50.1 | Multi-pass baseline check (3 consecutive passes). |
 | v1.51.0 | Fix-gen + review upgraded to `gpt-5.4` xhigh reasoning; agent timeout bumped to 300s. |
 | v1.51.1 | Extraction-quality hardening (causal vs background rule, reject URL file-attribution). |
-| **v1.52.0** | **Repo context (bundled + remote)**; **seed skills with `isSeed` pruning protection**; **`normalizeSpec` on write and read** so seeds written with relative paths match runtime absolute paths; **`summarizeSingleShotFindings`** captures investigation context on the single-shot path. |
+| **v1.52.0** | **Repo context (bundled + remote)**; **seed skills with `isSeed` pruning protection**; **`normalizeSpec` on write and read** so seeds written with relative paths match runtime absolute paths. |
 
 ---
 
@@ -117,7 +117,7 @@ One class, five methods worth knowing:
 
 The local-validation loop. Maximum `FIX_VALIDATE_LOOP.MAX_ITERATIONS = 3`. For each iteration:
 
-1. `generateFixRecommendation(...)` — builds a `RepairContext`, spins up `SimplifiedRepairAgent` with `enableAgenticRepair` flag and optional model overrides, calls `repairAgent.generateFixRecommendation(...)`. Returns `{ fix, agentRootCause, agentInvestigationFindings, lastResponseId }` or `null`.
+1. `generateFixRecommendation(...)` — builds a `RepairContext`, spins up `SimplifiedRepairAgent` with model overrides, calls `repairAgent.generateFixRecommendation(...)`. Returns `{ fix, agentRootCause, agentInvestigationFindings, lastResponseId }` or `null`.
 2. If `null` or no `proposedChanges` → break.
 3. **Blast-radius gate** (`requiredConfidence` in `src/pipeline/validator.ts`):
    - `+10` to the required confidence if any changed path touches shared code (`/pageobjects/`, `/helpers/`, `/commands/`, ...).
@@ -305,7 +305,7 @@ Three entry points, different framings to prevent anchoring bias:
 When iteration N of `iterativeFixValidateLoop` runs, `buildPriorAttemptContext(...)` renders iteration N-1's failed fix into the agent's `errorMessage` block:
 
 - The previous fix's diff (file paths, oldCode, newCode).
-- Sanitized validation-run logs (tail, 8000 chars for agentic, 6000 for single-shot).
+- Sanitized validation-run logs (tail, 8000 chars by default).
 - `priorAgentRootCause` + `priorAgentInvestigationFindings` — forces the fresh pipeline to actively diverge rather than re-discover the same theory.
 - `previousFix.reasoning` and `previousFix.failureModeTrace` sub-fields.
 - Explicit instruction to try a *different* approach.
@@ -325,15 +325,20 @@ Defensive sanitizer applied to every model-adjacent string before it lands in a 
 
 ---
 
-## Repair paths — agentic vs single-shot
+## Repair path — agentic only
 
-### Where the split happens
+`SimplifiedRepairAgent.generateFixRecommendation()` now has exactly one repair path: the agentic orchestrator. If the orchestrator cannot produce an approved fix, the method returns `null`; the coordinator reports that no safe fix was generated. There is no weaker fallback repair path.
+
+This is intentional. The removed legacy one-shot path bypassed the investigation agent, review agent, causal-trace enforcement, iterative feedback loop, and the upgraded `gpt-5.4` fix-gen/review model. A weak one-shot fix that happened to pass could be saved as a validated skill and pollute future memory. Failing honestly is safer than creating a low-quality fix.
+
+### Entry point
 
 In `SimplifiedRepairAgent.generateFixRecommendation()` (`src/repair/simplified-repair-agent.ts`):
 
-1. If `enableAgenticRepair === true` **AND** an orchestrator exists (constructed only when `sourceFetchContext` is available) → `tryAgenticRepair()` → `AgentOrchestrator.orchestrate()`.
-2. If agentic returns a fix → return it.
-3. If agentic returns `null` (timeout, no valid fix, pipeline error with `fallbackToSingleShot: true`) → log the fallback and call `singleShotRepair()`.
+1. Require an orchestrator. If source-fetch context is missing and no orchestrator can be constructed, log a warning and return `null`.
+2. Run `tryAgenticRepair()` → `AgentOrchestrator.orchestrate()`.
+3. If agentic returns a fix → return `{ fix, lastResponseId, agentRootCause, agentInvestigationFindings }`.
+4. If agentic returns `null` (timeout, no valid fix, investigation abort, review rejection, max iterations) → log `🤖 Agentic repair did not produce an approved fix; no weaker fallback repair path will run.` and return `null`.
 
 ### Agentic path — `AgentOrchestrator.orchestrate()`
 
@@ -352,15 +357,7 @@ Happy path (`src/agents/agent-orchestrator.ts`):
    - If `requireReview`: run review with the same chain id.
    - Approved + no blocking CRITICALs → return fix with `approach: 'agentic'`.
    - Not approved → build `reviewFeedback` from issues + (if blocking CRITICAL with prior trace) explicit replay of `previousFix.failureModeTrace` → next iteration.
-7. **Max iterations fallback** — if we ran out of iterations but last fix has acceptable confidence AND no blocking quality CRITICALs, return it with a warning ("not review-approved; validation is the final gate"). Otherwise error.
-
-### Single-shot path — `SimplifiedRepairAgent.singleShotRepair()`
-
-Simpler: builds one long prompt (failure context + source + skills + repo context + prior-attempt block if any) and parses the model's response into a `FixRecommendation`. No investigation agent, no iteration.
-
-- Fetches the source file directly (via octokit `getContent`).
-- `inferRootCauseCategoryFromText(...)` — pattern-matching over error + reasoning + `errorType` to produce a whitelisted `rootCauseCategory`.
-- `summarizeSingleShotFindings(recommendation)` — produces a lightweight investigation-findings-equivalent string from the model's `rootCause + reasoning + evidence[]`, so single-shot-saved skills have useful `investigationFindings` instead of empty strings (the gap fixed in v1.52.0).
+7. **Max iterations fallback inside agentic only** — if the review loop ran out of iterations but the last agentic fix has acceptable confidence AND no blocking quality CRITICALs, return it with a warning ("not review-approved; validation is the final gate"). Otherwise error.
 
 ---
 
@@ -386,7 +383,7 @@ Fields (`src/services/skill-store.ts`) and what they mean:
 | `retired` | Auto-set on threshold | Excludes from retrieval. |
 | `classificationOutcome` | `recordClassificationOutcome` | `'correct'` or `'incorrect'`; only `'correct'` written today. |
 | `rootCauseChain` | Callers | Short human chain string. |
-| `investigationFindings` | `summarizeInvestigationForRetry` or `summarizeSingleShotFindings` | Rendered by `formatForInvestigation`. |
+| `investigationFindings` | `summarizeInvestigationForRetry` | Rendered by `formatForInvestigation`. |
 | `repoContext?` | Callers (seeds optional) | Per-skill note; distinct from the global `.adept-triage/context.md`. |
 | `failureModeTrace?` | Fix-gen | The 4-field causal trace (v1.48.1/v1.49.1). |
 | **`isSeed?`** | Seed CLI only | Pruning + audit exemption (v1.52.0). |
@@ -456,8 +453,7 @@ A static map of `<owner>/<repo>` → raw markdown string. Used for repos where a
 
 ### Wiring into agent prompts
 
-- **Agentic path**: coordinator calls `RepoContextFetcher.fetch(...)`, threads `repoContext` through validator → repair-agent → `createAgentContext({ repoContext })`. `BaseAgent.runAgentTask` appends it to every agent's system prompt.
-- **Single-shot path**: `repoContext` is prepended to the user prompt in `buildPrompt(...)` (before the test failure context block). The different location is intentional — single-shot has no system/user role split at the orchestrator level.
+Coordinator calls `RepoContextFetcher.fetch(...)`, threads `repoContext` through validator → repair-agent → `createAgentContext({ repoContext })`, and `BaseAgent.runAgentTask` appends it to every agent's system prompt.
 
 ### Seed skills (v1.52.0)
 
@@ -599,7 +595,7 @@ Every grep-stable log line, what it means, and when to care.
 | `🤖 Starting agentic repair pipeline...` | Agentic path entered. |
 | `📊 Step 1: Running Analysis Agent...` | Orchestrator phase headers. |
 | `🤖 Agentic approach: <approach>, iterations: N, time: Xms` | Agentic success with stats. |
-| `🤖 Agentic approach failed: <reason>` | Fallback to single-shot. |
+| `🤖 Agentic repair did not produce an approved fix; no weaker fallback repair path will run.` | Agentic repair failed honestly; no weaker repair path is attempted. |
 | `🔄 Fix-Validate iteration N/3` | Local validation loop iteration. |
 | `🧪 Running test locally...` | Local validation is running the test command. |
 | `🔍 Running baseline check — does the test pass without any fix? (requires 3 consecutive passes)` | Baseline gate. |
@@ -641,9 +637,7 @@ Every numeric / string default operators might want to know.
 | `AGENT_MODEL.classification` | `LEGACY_MODEL` (the pre-repair `classify()` step) | `src/config/constants.ts` |
 | `AGENT_MODEL.analysis` / `investigation` | `LEGACY_MODEL` | `src/config/constants.ts` |
 | `AGENT_MODEL.fixGeneration` / `review` | `UPGRADED_MODEL` (v1.51.0 upgrade) | `src/config/constants.ts` |
-| `AGENT_MODEL.singleShot` | `LEGACY_MODEL` (single-shot repair fallback) | `src/config/constants.ts` |
 | `REASONING_EFFORT.fixGeneration` / `review` | `xhigh` | `src/config/constants.ts` |
-| `REASONING_EFFORT.singleShot` | `none` | `src/config/constants.ts` |
 | `PRODUCT_REPO` | `adept-at/learn-webapp` | `action.yml` input |
 | `PRODUCT_DIFF_COMMITS` | `5` | `action.yml` input |
 | `TRIAGE_AWS_REGION` | `us-east-1` | `action.yml` input |

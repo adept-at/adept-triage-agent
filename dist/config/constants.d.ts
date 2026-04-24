@@ -33,7 +33,6 @@ export declare const AGENT_MODEL: {
     readonly investigation: "gpt-5.3-codex";
     readonly fixGeneration: "gpt-5.4";
     readonly review: "gpt-5.4";
-    readonly singleShot: "gpt-5.3-codex";
 };
 export declare const REASONING_EFFORT: {
     readonly classification: "none";
@@ -41,7 +40,6 @@ export declare const REASONING_EFFORT: {
     readonly investigation: "none";
     readonly fixGeneration: "xhigh";
     readonly review: "xhigh";
-    readonly singleShot: "none";
 };
 export type ReasoningEffort = 'none' | 'low' | 'medium' | 'high' | 'xhigh';
 export declare const SHORT_SHA_LENGTH = 7;
@@ -80,7 +78,6 @@ export declare const AUTO_FIX: {
 export declare const DEFAULT_PRODUCT_REPO = "adept-at/learn-webapp";
 export declare const DEFAULT_PRODUCT_URL = "https://learn.adept.at";
 export declare const AGENT_CONFIG: {
-    readonly ENABLE_AGENTIC_REPAIR: boolean;
     readonly MAX_AGENT_ITERATIONS: 3;
     readonly AGENT_TIMEOUT_MS: 300000;
     readonly REVIEW_REQUIRED_CONFIDENCE: 70;

@@ -929,8 +929,7 @@ export class SkillStore {
     if (relevant.length === 0) return '';
 
     // v1.49.3 A4: emit telemetry so operators can verify which skill
-    // IDs actually reached the investigation prompt (both agentic and
-    // single-shot paths consume this string — see A2).
+    // IDs actually reached the investigation prompt.
     const rendered = relevant.slice(0, 3);
     logSkillTelemetry('investigation', rendered.map((s) => s.id));
 
@@ -996,7 +995,7 @@ export function buildSkill(params: {
   /**
    * R3: persist the fix-gen agent's causal trace so prior reasoning
    * survives across runs. When the originating fix shipped without one
-   * (legacy / single-shot fallback), leave undefined — the skill is
+   * (legacy fallback), leave undefined — the skill is
    * still useful without it.
    */
   failureModeTrace?: FailureModeTrace;

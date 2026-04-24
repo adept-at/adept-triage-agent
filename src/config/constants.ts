@@ -48,7 +48,7 @@ export const CONFIDENCE = {
 export const OPENAI = {
   /** @deprecated Use LEGACY_MODEL or UPGRADED_MODEL. Kept for backward compat with tests/scripts that reference OPENAI.MODEL. */
   MODEL: 'gpt-5.3-codex',
-  /** Pre-v1.51 model — used by classification, analysis, investigation, single-shot */
+  /** Pre-v1.51 model — used by classification, analysis, and investigation */
   LEGACY_MODEL: 'gpt-5.3-codex',
   /** v1.51+ model — used by fix-generation and review agents */
   UPGRADED_MODEL: 'gpt-5.4',
@@ -72,7 +72,6 @@ export const AGENT_MODEL = {
   investigation: OPENAI.LEGACY_MODEL,
   fixGeneration: OPENAI.UPGRADED_MODEL,
   review: OPENAI.UPGRADED_MODEL,
-  singleShot: OPENAI.LEGACY_MODEL,
 } as const;
 
 /**
@@ -86,7 +85,6 @@ export const REASONING_EFFORT = {
   investigation: 'none',
   fixGeneration: 'xhigh',
   review: 'xhigh',
-  singleShot: 'none',
 } as const;
 
 export type ReasoningEffort = 'none' | 'low' | 'medium' | 'high' | 'xhigh';
@@ -152,16 +150,13 @@ export const DEFAULT_PRODUCT_REPO = 'adept-at/learn-webapp';
 export const DEFAULT_PRODUCT_URL = 'https://learn.adept.at';
 
 export const AGENT_CONFIG = {
-  /** Enable multi-agent repair approach (default: true) */
-  ENABLE_AGENTIC_REPAIR: process.env.ENABLE_AGENTIC_REPAIR !== 'false',
   /** Maximum iterations for the fix generation/review loop */
   MAX_AGENT_ITERATIONS: 3,
   /**
    * Total timeout for the entire agent orchestration. Bumped from
    * 120_000 (2 min) to 300_000 (5 min) in v1.51.0 to accommodate
    * xhigh reasoning-effort latency on fix-gen + review. A 3-iteration
-   * repair at xhigh can reach ~245s; 300s provides margin. See R3 in
-   * docs/gpt-5-4-upgrade-plan.md.
+   * repair at xhigh can reach ~245s; 300s provides margin.
    *
    * This is the value passed as `totalTimeoutMs` into the orchestrator
    * at construction time (simplified-repair-agent.ts), which overrides

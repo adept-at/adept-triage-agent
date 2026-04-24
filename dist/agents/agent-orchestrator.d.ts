@@ -12,7 +12,6 @@ export interface OrchestratorConfig {
     totalTimeoutMs: number;
     minConfidence: number;
     requireReview: boolean;
-    fallbackToSingleShot: boolean;
     modelOverrideFixGen?: string;
     modelOverrideReview?: string;
 }
@@ -23,7 +22,7 @@ export interface OrchestrationResult {
     error?: string;
     totalTimeMs: number;
     iterations: number;
-    approach: 'agentic' | 'single-shot' | 'failed';
+    approach: 'agentic' | 'failed';
     lastResponseId?: string;
     agentResults: {
         analysis?: AgentResult<AnalysisOutput>;

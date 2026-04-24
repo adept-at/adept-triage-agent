@@ -76,8 +76,6 @@ function getInputs(): ActionInputs {
     validationTestCommand:
       core.getInput('VALIDATION_TEST_COMMAND') || undefined,
     npmToken: core.getInput('NPM_TOKEN') || undefined,
-    // Agentic repair input
-    enableAgenticRepair: core.getInput('ENABLE_AGENTIC_REPAIR') === 'true',
     // Product repo diff inputs
     productRepo: core.getInput('PRODUCT_REPO') || DEFAULT_PRODUCT_REPO,
     productDiffCommits: safeParseInt(core.getInput('PRODUCT_DIFF_COMMITS'), 5),

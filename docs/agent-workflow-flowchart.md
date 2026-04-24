@@ -130,9 +130,6 @@ flowchart TB
     MAX_ITER -- yes --> FALLBACK_SHIP["ship lastFix<br/>with warning<br/>(validation = final gate)"]
     MAX_ITER -- no --> FAIL["return error<br/>approach: failed"]
 
-    FAIL --> SINGLE_SHOT
-    SINGLE_SHOT["Fall back to<br/>SimplifiedRepairAgent.singleShotRepair()"]
-    style SINGLE_SHOT fill:#fff3cd,color:#000
     style ABORT_APP fill:#f8d7da,color:#000
     style ABORT_TEST fill:#f8d7da,color:#000
     style SHIP fill:#d4edda,color:#000
@@ -200,7 +197,7 @@ flowchart TB
 flowchart TB
     START["iterativeFixValidateLoop<br/>FIX_VALIDATE_LOOP.MAX_ITERATIONS = 3"]
 
-    START --> GEN["generateFixRecommendation<br/>(agentic → single-shot fallback)"]
+    START --> GEN["generateFixRecommendation<br/>(agentic only)"]
     GEN --> NULL_CHK{"fix == null?"}
     NULL_CHK -- yes --> BREAK_EMPTY["break"]
     NULL_CHK -- no --> CHG_CHK{"proposedChanges<br/>empty?"}

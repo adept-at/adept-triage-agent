@@ -1,10 +1,9 @@
 import { OpenAIClient } from '../openai-client';
-import { RepairContext, ErrorData, FixRecommendation, SourceFetchContext, AIRecommendation } from '../types';
+import { RepairContext, ErrorData, FixRecommendation, SourceFetchContext } from '../types';
 import { OrchestratorConfig } from '../agents';
 import { InvestigationOutput } from '../agents/investigation-agent';
 import { TriageSkill, FlakinessSignal } from '../services/skill-store';
 export interface RepairAgentConfig {
-    enableAgenticRepair?: boolean;
     orchestratorConfig?: Partial<OrchestratorConfig>;
     modelOverrideFixGen?: string;
     modelOverrideReview?: string;
@@ -16,7 +15,6 @@ export interface PriorAttemptContext {
     priorAgentRootCause?: string;
     priorAgentInvestigationFindings?: string;
 }
-export declare function summarizeSingleShotFindings(recommendation: AIRecommendation | null | undefined): string | undefined;
 export declare function summarizeInvestigationForRetry(investigation: InvestigationOutput | undefined): string | undefined;
 export declare function buildPriorAttemptContext(prior: PriorAttemptContext, opts?: {
     logBudget?: number;
@@ -43,13 +41,6 @@ export declare class SimplifiedRepairAgent {
         agentInvestigationFindings?: string;
     } | null>;
     private tryAgenticRepair;
-    private singleShotRepair;
     private extractFilePath;
-    private findEnclosingFunction;
-    private fetchSourceFile;
-    private buildPrompt;
-    private getRecommendationFromAI;
-    private extractChangesFromText;
-    private generateSummary;
 }
 //# sourceMappingURL=simplified-repair-agent.d.ts.map

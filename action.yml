@@ -83,10 +83,6 @@ inputs:
   NPM_TOKEN:
     description: 'Token for npm registry auth (e.g., GitHub Packages read token). Falls back to GITHUB_TOKEN when not set.'
     required: false
-  ENABLE_AGENTIC_REPAIR:
-    description: 'Enable multi-agent repair pipeline for higher quality fixes (uses more API calls but produces better results). Enabled by default; set to false to disable.'
-    required: false
-    default: 'true'
   PRODUCT_REPO:
     description: 'Product repository (owner/repo). All browser-test repos target the same frontend. Used for fetching recent product commits and PR diffs.'
     required: false

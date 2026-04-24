@@ -57,7 +57,7 @@ describe('buildPriorAttemptContext (R4)', () => {
     expect(out).not.toContain('x'.repeat(8001));
   });
 
-  it('respects a custom logBudget option (single-shot path uses 6000)', () => {
+  it('respects a custom logBudget option', () => {
     const longLogs = 'y'.repeat(9000);
     const out = buildPriorAttemptContext(makePrior({ validationLogs: longLogs }), {
       logBudget: 6000,

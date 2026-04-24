@@ -182,7 +182,6 @@ describe('Login Page', () => {
       maxIterations: 3,
       minConfidence: 70,
       requireReview: true,
-      fallbackToSingleShot: false,
       totalTimeoutMs: 30000,
     });
 
@@ -696,7 +695,6 @@ describe('Login Page', () => {
     it('should respect total timeout', async () => {
       const slowOrchestrator = createOrchestrator(mockOpenAIClient, {
         totalTimeoutMs: 100, // Very short timeout
-        fallbackToSingleShot: false,
       });
 
       mockOpenAIClient.generateWithCustomPrompt = jest

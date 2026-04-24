@@ -428,7 +428,7 @@ Anything longer than 6500 chars gets truncated with a `[truncated]` marker. The 
 ### How it's surfaced
 
 - **Log line on successful fetch**: `📘 Loaded repo context from <owner/repo>/.adept-triage/context.md@<ref> (<N> chars)`.
-- **Agent behavior**: prepended to the system prompt of every agent (analysis, investigation, fix-gen, review). Single-shot path prepends to the user prompt instead (different location, same effect).
+- **Agent behavior**: prepended to the system prompt of every agent (analysis, investigation, fix-gen, review). There is no weaker repair fallback path; if the agentic pipeline cannot produce an approved fix, the run reports no safe fix.
 - **Missing file / 404**: silent. The agent behaves as if the file doesn't exist. Opt-in per repo.
 
 ### Bundled alternative (for product repos)

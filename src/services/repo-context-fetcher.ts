@@ -68,7 +68,7 @@ export class RepoContextFetcher {
    * prompt without the consuming agent needing to know the convention.
    *
    * Caching is intentional: every agent in a single run (analysis,
-   * investigation, fix-gen, review, plus single-shot fallback) calls
+   * investigation, fix-gen, review) calls
    * this with the same owner/repo/ref, and we don't want to hit the
    * GitHub API once per agent.
    */

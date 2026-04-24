@@ -70,7 +70,6 @@ export async function generateFixRecommendation(
         branch: inputs.branch || inputs.autoFixBaseBranch || 'main',
       },
       {
-        enableAgenticRepair: inputs.enableAgenticRepair,
         modelOverrideFixGen: inputs.modelOverrideFixGen,
         modelOverrideReview: inputs.modelOverrideReview,
       }
@@ -333,7 +332,7 @@ export async function iterativeFixValidateLoop(
         // last-non-empty accumulator used for the final return + skill
         // save, NOT a per-iteration snapshot. Using them here would
         // attribute iteration N-1's findings to iteration N whenever
-        // iteration N produced no findings (single-shot fallback etc).
+        // iteration N produced no findings (orchestrator error, sparse run, etc.).
         previousAttempt = buildNextPreviousAttempt(
           iteration + 1,
           fixRecommendation,
@@ -447,7 +446,7 @@ export interface FixResultForRetry {
  *   The prior-iteration agent reasoning MUST come from `fixResult`
  *   (the just-completed iteration's output), NOT from any outer-scope
  *   accumulator. If iteration N returned no investigation findings —
- *   e.g. single-shot fallback, sparse agentic run, orchestrator error —
+ *   e.g. sparse agentic run, orchestrator error —
  *   iteration N+1 must see "no prior findings", not iteration N-1's
  *   stale findings presented as if iteration N had concluded them.
  *

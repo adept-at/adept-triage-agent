@@ -130,7 +130,6 @@ export interface ActionInputs {
     validationSpec?: string;
     validationTestCommand?: string;
     npmToken?: string;
-    enableAgenticRepair?: boolean;
     productRepo: string;
     productDiffCommits?: number;
     triageAwsRegion?: string;

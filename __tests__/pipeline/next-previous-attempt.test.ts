@@ -68,7 +68,7 @@ describe('buildNextPreviousAttempt (v1.49.1 staleness-avoidance)', () => {
 
   it('returns priorAgentRootCause=undefined when fixResult omits it', () => {
     // Simulates a run where investigation produced findings but analysis
-    // fell back to single-shot / infrastructure classification with no
+    // failed before producing complete investigation output, e.g.
     // structured root cause. priorAgentRootCause should still be
     // undefined, not pulled from a prior iteration.
     const out = buildNextPreviousAttempt(

@@ -31,8 +31,6 @@ export interface OrchestratorConfig {
   minConfidence: number;
   /** Whether to require review agent approval */
   requireReview: boolean;
-  /** Whether to fall back to single-shot on failure */
-  fallbackToSingleShot: boolean;
   /** Override model for fix-generation agent (rollback lever) */
   modelOverrideFixGen?: string;
   /** Override model for review agent (rollback lever) */
@@ -50,7 +48,6 @@ export const DEFAULT_ORCHESTRATOR_CONFIG: OrchestratorConfig = {
   totalTimeoutMs: 300000,
   minConfidence: 70,
   requireReview: true,
-  fallbackToSingleShot: true,
 };
 
 /**
@@ -68,7 +65,7 @@ export interface OrchestrationResult {
   /** Number of iterations used */
   iterations: number;
   /** Which approach was used */
-  approach: 'agentic' | 'single-shot' | 'failed';
+  approach: 'agentic' | 'failed';
   /** Last OpenAI response ID for conversation chaining across outer iterations */
   lastResponseId?: string;
   /** Detailed results from each agent */
@@ -170,20 +167,6 @@ export class AgentOrchestrator {
           iterations,
           approach: 'agentic',
           lastResponseId: result.lastResponseId,
-          agentResults,
-        };
-      }
-
-      // If agentic approach failed and fallback is enabled
-      if (this.config.fallbackToSingleShot) {
-        core.warning('Agentic approach failed, falling back to single-shot...');
-        // Single-shot fallback would be handled by SimplifiedRepairAgent
-        return {
-          success: false,
-          error: result.error || 'Agentic approach did not produce a valid fix',
-          totalTimeMs,
-          iterations,
-          approach: 'single-shot',
           agentResults,
         };
       }

@@ -107,7 +107,7 @@ export function createMockArtifactFetcher(
 /**
  * Runs the pipeline: processWorkflowLogs -> analyzeFailure -> generateFixRecommendation.
  * Caller must mock openaiClient.analyze (for analyzeFailure) and
- * openaiClient.generateWithCustomPrompt (for SimplifiedRepairAgent single-shot).
+ * openaiClient.generateWithCustomPrompt (for the agentic repair pipeline).
  */
 export async function runPipeline(
   octokit: Octokit,
@@ -126,7 +126,6 @@ export async function runPipeline(
     enableAutoFix: false,
     autoFixBaseBranch: 'main',
     autoFixMinConfidence: 70,
-    enableAgenticRepair: false,
     ...params.inputs,
   };
 
@@ -169,7 +168,7 @@ export async function runPipeline(
         repo: repoDetails.repo,
         branch: inputs.autoFixBaseBranch || 'main',
       },
-      { enableAgenticRepair: inputs.enableAgenticRepair ?? false }
+      {}
     );
     const generated = await repairAgent.generateFixRecommendation(
       repairContext,
