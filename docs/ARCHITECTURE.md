@@ -636,9 +636,14 @@ Every numeric / string default operators might want to know.
 | `MAX_SKILLS` (per repo partition) | `100` | `src/services/skill-store.ts` |
 | Skill auto-retire threshold | `failRate > 0.4` AND `failCount >= 3` | `src/services/skill-store.ts` |
 | `REPO_CONTEXT_MAX_CHARS` | `6500` | `src/services/repo-context-fetcher.ts` |
-| `OPENAI.LEGACY_MODEL` | `gpt-5.3-codex` (analysis, investigation, code-reading) | `src/config/constants.ts` |
-| `OPENAI.UPGRADED_MODEL` | `gpt-5.4` (fix-gen + review) | `src/config/constants.ts` |
+| `OPENAI.LEGACY_MODEL` | `gpt-5.3-codex` | `src/config/constants.ts` |
+| `OPENAI.UPGRADED_MODEL` | `gpt-5.4` | `src/config/constants.ts` |
+| `AGENT_MODEL.classification` | `LEGACY_MODEL` (the pre-repair `classify()` step) | `src/config/constants.ts` |
+| `AGENT_MODEL.analysis` / `investigation` | `LEGACY_MODEL` | `src/config/constants.ts` |
+| `AGENT_MODEL.fixGeneration` / `review` | `UPGRADED_MODEL` (v1.51.0 upgrade) | `src/config/constants.ts` |
+| `AGENT_MODEL.singleShot` | `LEGACY_MODEL` (single-shot repair fallback) | `src/config/constants.ts` |
 | `REASONING_EFFORT.fixGeneration` / `review` | `xhigh` | `src/config/constants.ts` |
+| `REASONING_EFFORT.singleShot` | `none` | `src/config/constants.ts` |
 | `PRODUCT_REPO` | `adept-at/learn-webapp` | `action.yml` input |
 | `PRODUCT_DIFF_COMMITS` | `5` | `action.yml` input |
 | `TRIAGE_AWS_REGION` | `us-east-1` | `action.yml` input |

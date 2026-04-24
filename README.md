@@ -28,7 +28,9 @@ When a test fails in your CI, this action can:
 ## Features
 
 - **Multi-agent repair pipeline** — five specialized agents with an internal fix/review loop. Single-shot fallback when the orchestrator fails or times out.
-- **Models**: `gpt-5.3-codex` for analysis/investigation/code-reading; `gpt-5.4` with `xhigh` reasoning for fix-gen + review (since v1.51.0).
+- **Models** (from `AGENT_MODEL` in `src/config/constants.ts`):
+  - `gpt-5.4` with `xhigh` reasoning — fix-generation agent, review agent (upgraded in v1.51.0 for the reasoning-heavy repair work).
+  - `gpt-5.3-codex` — everything else: top-level `classify()` pre-repair step, analysis agent, investigation agent, code-reading agent, and the single-shot repair fallback path.
 - **Multimodal context** — screenshots, job logs, test-repo PR/commit diffs, and recent commits in the product repo (`adept-at/learn-webapp` by default).
 - **Skill memory** — per-repo DynamoDB partition of canonical fix patterns. Retrieved by spec-match and error-similarity scoring. Auto-retired when success rate falls below 40%.
 - **Seed skills** (v1.52.0) — hand-curated canonical fix exemplars, protected from pruning via `isSeed`. Bootstrap the learning loop before it's seen real failures.
