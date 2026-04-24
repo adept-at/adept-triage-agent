@@ -994,7 +994,10 @@ class BaseAgent {
         }
     }
     async runAgentTask(input, context, previousResponseId) {
-        const systemPrompt = this.getSystemPrompt(context.framework);
+        const baseSystemPrompt = this.getSystemPrompt(context.framework);
+        const systemPrompt = context.repoContext
+            ? `${baseSystemPrompt}\n\n${context.repoContext}`
+            : baseSystemPrompt;
         const userPrompt = this.buildUserPrompt(input, context);
         if (this.config.verbose) {
             core.debug(`[${this.agentName}] System prompt: ${systemPrompt.slice(0, 200)}...`);
@@ -1058,6 +1061,7 @@ function createAgentContext(params) {
         prDiff: params.prDiff,
         productDiff: params.productDiff,
         framework: params.framework,
+        repoContext: params.repoContext,
     };
 }
 //# sourceMappingURL=base-agent.js.map
@@ -4364,6 +4368,7 @@ const github = __importStar(__nccwpck_require__(93228));
 const simplified_analyzer_1 = __nccwpck_require__(20078);
 const log_processor_1 = __nccwpck_require__(65833);
 const skill_store_1 = __nccwpck_require__(60215);
+const repo_context_fetcher_1 = __nccwpck_require__(3844);
 const root_cause_category_1 = __nccwpck_require__(21406);
 const constants_1 = __nccwpck_require__(58361);
 const output_1 = __nccwpck_require__(12639);
@@ -4438,6 +4443,11 @@ class PipelineCoordinator {
                 errorMessage: errorData.message,
             })
             : '';
+        const contextOwner = autoFixTargetRepo?.owner ?? this.repoDetails.owner;
+        const contextRepo = autoFixTargetRepo?.repo ?? this.repoDetails.repo;
+        const contextRef = this.inputs.branch || this.inputs.autoFixBaseBranch || 'main';
+        const repoContextFetcher = new repo_context_fetcher_1.RepoContextFetcher(this.octokit);
+        const repoContext = await repoContextFetcher.fetch(contextOwner, contextRepo, contextRef);
         let fixRecommendation = null;
         let autoFixResult = null;
         let iterations = 0;
@@ -4451,7 +4461,7 @@ class PipelineCoordinator {
             this.inputs.enableLocalValidation &&
             this.inputs.validationTestCommand &&
             autoFixTargetRepo) {
-            const loopResult = await (0, validator_1.iterativeFixValidateLoop)(this.inputs, this.repoDetails, autoFixTargetRepo, errorData, this.openaiClient, this.octokit, skillStore, undefined, investigationContext);
+            const loopResult = await (0, validator_1.iterativeFixValidateLoop)(this.inputs, this.repoDetails, autoFixTargetRepo, errorData, this.openaiClient, this.octokit, skillStore, undefined, investigationContext, repoContext);
             fixRecommendation = loopResult.fixRecommendation;
             autoFixResult = loopResult.autoFixResult;
             iterations = loopResult.iterations;
@@ -4462,7 +4472,7 @@ class PipelineCoordinator {
             autoFixSkippedReason = loopResult.autoFixSkippedReason;
         }
         else {
-            const singleResult = await (0, validator_1.generateFixRecommendation)(this.inputs, this.repoDetails, errorData, this.openaiClient, this.octokit, undefined, undefined, skillStore, investigationContext);
+            const singleResult = await (0, validator_1.generateFixRecommendation)(this.inputs, this.repoDetails, errorData, this.openaiClient, this.octokit, undefined, undefined, skillStore, investigationContext, repoContext);
             fixRecommendation = singleResult?.fix ?? null;
             agentRootCause = singleResult?.agentRootCause;
             agentInvestigationFindings = singleResult?.agentInvestigationFindings;
@@ -4955,7 +4965,7 @@ const fix_applier_1 = __nccwpck_require__(72134);
 const local_fix_validator_1 = __nccwpck_require__(55168);
 const constants_1 = __nccwpck_require__(58361);
 const repo_utils_1 = __nccwpck_require__(74843);
-async function generateFixRecommendation(inputs, repoDetails, errorData, openaiClient, octokit, previousAttempt, previousResponseId, skillStore, priorInvestigationContext) {
+async function generateFixRecommendation(inputs, repoDetails, errorData, openaiClient, octokit, previousAttempt, previousResponseId, skillStore, priorInvestigationContext, repoContext) {
     try {
         const iterLabel = previousAttempt
             ? ` (iteration ${previousAttempt.iteration + 1})`
@@ -4994,7 +5004,7 @@ async function generateFixRecommendation(inputs, repoDetails, errorData, openaiC
                 flakiness: skillStore.detectFlakiness(errorData.fileName || 'unknown'),
             }
             : undefined;
-        const result = await repairAgent.generateFixRecommendation(repairContext, errorData, previousAttempt, previousResponseId, skills, priorInvestigationContext);
+        const result = await repairAgent.generateFixRecommendation(repairContext, errorData, previousAttempt, previousResponseId, skills, priorInvestigationContext, repoContext);
         if (result) {
             core.info(`✅ Fix recommendation generated with ${result.fix.confidence}% confidence`);
         }
@@ -5008,7 +5018,7 @@ async function generateFixRecommendation(inputs, repoDetails, errorData, openaiC
         return null;
     }
 }
-async function iterativeFixValidateLoop(inputs, repoDetails, autoFixTargetRepo, errorData, openaiClient, octokit, skillStore, classificationResponseId, investigationContext) {
+async function iterativeFixValidateLoop(inputs, repoDetails, autoFixTargetRepo, errorData, openaiClient, octokit, skillStore, classificationResponseId, investigationContext, repoContext) {
     const maxIterations = constants_1.FIX_VALIDATE_LOOP.MAX_ITERATIONS;
     let fixRecommendation = null;
     let autoFixResult = null;
@@ -5038,7 +5048,7 @@ async function iterativeFixValidateLoop(inputs, repoDetails, autoFixTargetRepo, 
         for (let iteration = 0; iteration < maxIterations; iteration++) {
             completedIterations = iteration + 1;
             core.info(`\n${'='.repeat(60)}\n🔄 Fix-Validate iteration ${iteration + 1}/${maxIterations}\n${'='.repeat(60)}`);
-            const fixResult = await generateFixRecommendation(inputs, repoDetails, errorData, openaiClient, octokit, previousAttempt, lastResponseId, skillStore, investigationContext);
+            const fixResult = await generateFixRecommendation(inputs, repoDetails, errorData, openaiClient, octokit, previousAttempt, lastResponseId, skillStore, investigationContext, repoContext);
             if (!fixResult) {
                 fixRecommendation = null;
                 core.warning(`Iteration ${iteration + 1}: could not generate fix recommendation`);
@@ -6012,6 +6022,7 @@ var __importStar = (this && this.__importStar) || (function () {
 })();
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.SimplifiedRepairAgent = void 0;
+exports.summarizeSingleShotFindings = summarizeSingleShotFindings;
 exports.summarizeInvestigationForRetry = summarizeInvestigationForRetry;
 exports.buildPriorAttemptContext = buildPriorAttemptContext;
 const core = __importStar(__nccwpck_require__(37484));
@@ -6036,6 +6047,25 @@ const RETRY_CAPS = {
     CODE_BLOCK: 2000,
     PRIOR_INVESTIGATION_CONTEXT: 8000,
 };
+function summarizeSingleShotFindings(recommendation) {
+    if (!recommendation)
+        return undefined;
+    const s = skill_store_1.sanitizeForPrompt;
+    const parts = [];
+    if (recommendation.rootCause) {
+        parts.push(`Root cause: ${s(recommendation.rootCause, RETRY_CAPS.ROOT_CAUSE)}`);
+    }
+    if (recommendation.reasoning) {
+        parts.push(`Reasoning: ${s(recommendation.reasoning, RETRY_CAPS.FIX_REASONING)}`);
+    }
+    if (recommendation.evidence?.length) {
+        const items = recommendation.evidence
+            .slice(0, 3)
+            .map((e) => s(e, RETRY_CAPS.EVIDENCE_ITEM));
+        parts.push(`Evidence: ${items.join('; ')}`);
+    }
+    return parts.length > 0 ? parts.join('\n') : undefined;
+}
 function summarizeInvestigationForRetry(investigation) {
     if (!investigation)
         return undefined;
@@ -6170,26 +6200,26 @@ class SimplifiedRepairAgent {
             });
         }
     }
-    async generateFixRecommendation(repairContext, errorData, previousAttempt, previousResponseId, skills, priorInvestigationContext) {
+    async generateFixRecommendation(repairContext, errorData, previousAttempt, previousResponseId, skills, priorInvestigationContext, repoContext) {
         try {
             core.info('🔧 Generating fix recommendation...');
             if (this.config.enableAgenticRepair && this.orchestrator) {
                 core.info('🤖 Attempting agentic repair...');
-                const agenticResult = await this.tryAgenticRepair(repairContext, errorData, previousAttempt, previousResponseId, skills, priorInvestigationContext);
+                const agenticResult = await this.tryAgenticRepair(repairContext, errorData, previousAttempt, previousResponseId, skills, priorInvestigationContext, repoContext);
                 if (agenticResult) {
                     core.info(`✅ Agentic repair succeeded with ${agenticResult.fix.confidence}% confidence`);
                     return agenticResult;
                 }
                 core.info('🔄 Agentic repair did not produce a fix, falling back to single-shot...');
             }
-            return await this.singleShotRepair(repairContext, errorData, previousAttempt, skills, priorInvestigationContext);
+            return await this.singleShotRepair(repairContext, errorData, previousAttempt, skills, priorInvestigationContext, repoContext);
         }
         catch (error) {
             core.warning(`Failed to generate fix recommendation: ${error}`);
             return null;
         }
     }
-    async tryAgenticRepair(repairContext, errorData, previousAttempt, previousResponseId, skills, priorInvestigationContext) {
+    async tryAgenticRepair(repairContext, errorData, previousAttempt, previousResponseId, skills, priorInvestigationContext, repoContext) {
         if (!this.orchestrator) {
             return null;
         }
@@ -6226,6 +6256,7 @@ class SimplifiedRepairAgent {
                     }
                     : undefined,
                 framework: errorData?.framework,
+                repoContext,
             });
             if (priorInvestigationContext) {
                 agentContext.priorInvestigationContext = priorInvestigationContext;
@@ -6255,7 +6286,7 @@ class SimplifiedRepairAgent {
             return null;
         }
     }
-    async singleShotRepair(repairContext, errorData, previousAttempt, skills, priorInvestigationContext) {
+    async singleShotRepair(repairContext, errorData, previousAttempt, skills, priorInvestigationContext, repoContext) {
         let sourceFileContent = null;
         const cleanFilePath = this.extractFilePath(repairContext.testFile);
         if (this.sourceFetchContext && cleanFilePath) {
@@ -6264,7 +6295,7 @@ class SimplifiedRepairAgent {
                 core.info(`  ✅ Fetched source file: ${cleanFilePath} (${sourceFileContent.length} chars)`);
             }
         }
-        const prompt = this.buildPrompt(repairContext, errorData, sourceFileContent, cleanFilePath, previousAttempt, skills, priorInvestigationContext);
+        const prompt = this.buildPrompt(repairContext, errorData, sourceFileContent, cleanFilePath, previousAttempt, skills, priorInvestigationContext, repoContext);
         if (process.env.DEBUG_FIX_RECOMMENDATION) {
             const promptFile = `fix-prompt-${Date.now()}.md`;
             fs.writeFileSync(promptFile, prompt);
@@ -6337,7 +6368,8 @@ class SimplifiedRepairAgent {
         };
         core.info(`✅ Fix recommendation generated with ${fixRecommendation.confidence}% confidence`);
         const agentRootCause = (0, root_cause_category_1.inferRootCauseCategoryFromText)(`${recommendation.rootCause || ''} ${recommendation.reasoning || ''} ${repairContext.errorMessage || ''}`, repairContext.errorType);
-        return { fix: fixRecommendation, agentRootCause };
+        const agentInvestigationFindings = summarizeSingleShotFindings(recommendation);
+        return { fix: fixRecommendation, agentRootCause, agentInvestigationFindings };
     }
     extractFilePath(rawPath) {
         if (!rawPath)
@@ -6429,8 +6461,12 @@ class SimplifiedRepairAgent {
             return null;
         }
     }
-    buildPrompt(context, errorData, sourceFileContent, cleanFilePath, previousAttempt, skills, priorInvestigationContext) {
-        let contextInfo = `## Test Failure Context
+    buildPrompt(context, errorData, sourceFileContent, cleanFilePath, previousAttempt, skills, priorInvestigationContext, repoContext) {
+        let contextInfo = '';
+        if (repoContext) {
+            contextInfo += `${repoContext}\n\n`;
+        }
+        contextInfo += `## Test Failure Context
 - **Test File:** ${(0, skill_store_1.sanitizeForPrompt)(context.testFile)}
 - **Test Name:** ${(0, skill_store_1.sanitizeForPrompt)(context.testName)}
 - **Error Type:** ${(0, skill_store_1.sanitizeForPrompt)(context.errorType)}
@@ -6770,6 +6806,70 @@ You MUST respond in strict JSON only with this schema:
 }
 exports.SimplifiedRepairAgent = SimplifiedRepairAgent;
 //# sourceMappingURL=simplified-repair-agent.js.map
+
+/***/ }),
+
+/***/ 49768:
+/***/ ((__unused_webpack_module, exports) => {
+
+"use strict";
+
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.BUNDLED_REPO_CONTEXTS = void 0;
+exports.getBundledRepoContext = getBundledRepoContext;
+exports.BUNDLED_REPO_CONTEXTS = {
+    'adept-at/learn-webapp': `## Framework & runtime
+- Cypress **^15.8.2**, suite is \`.js\` (NOT \`.ts\`) — \`cypress/support/commands.js\`, \`cypress/support/e2e.js\`.
+- \`cypress.config.ts\`: \`baseUrl\` \`https://learn.adept.at\`, \`specPattern: 'cypress/e2e/**/*.{js,jsx,ts,tsx}'\`, viewport 1920x1080, \`defaultCommandTimeout\` / \`pageLoadTimeout\` 15s, \`retries.runMode: 1\`, \`userAgent: 'Adept'\`, \`chromeWebSecurity: true\`, \`experimentalModifyObstructiveThirdPartyCode: true\`.
+- Plugins (\`cypress/plugins/index.js\`): \`cypress-fail-fast\`, \`cypress-terminal-report\` (logs to \`cypress/logs/\` on fail), \`@adept-at/gql-test\` \`runEndpoint\` task, \`cy-verify-downloads\`. Chromium args set autoplay + SameSite workarounds.
+- **Where tests run**: \`npm run cy:run:e2e\` uses Electron headless. CI uses Chrome (Sauce via \`cypress.config.sauce.ts\`, or \`cypress-e2e-learn-no-dash\` workflow with \`-c baseUrl=<dispatch URL>\` for preview/PR). When \`baseUrl\` is a preview URL, treat failures as environment-sensitive (Vercel allowlist, preview API drift).
+- App stack: React 18.2.x, MUI ~6.1.x, \`@mux/mux-player-react\` ^3.11.x.
+
+## Test organization
+- Default \`specPattern\`: \`cypress/e2e/**\` — small curated set (~10 specs, mobile + desktop variants). Parallel weights in \`cypress/parallel-weights.json\`.
+- **Out of default specPattern**: \`cypress/ag-grid/\` (own \`run_ag_grid_tests.sh\`), \`cypress/dev/\`, \`cypress/refactor/\`, \`cypress/samples/\`. Always confirm WHICH workflow ran the failing spec — \`cypress/e2e/<spec>\` vs ag-grid is a different surface.
+- \`e2e.js\` imports cypress-fail-fast, cypress-axe, drag-drop, terminal-report; filters known \`uncaught:exception\` noise (LaunchDarkly, ResizeObserver loop).
+
+## Selectors
+- Prefer \`data-testid\` (modals, storyboard, buttons), \`aria-label\` (nav, org switcher, "Give feedback"), role-based (\`[role="tab"]\`, menus) when stable.
+- Legacy class prefixes still appear: \`[class^="public-DraftStyleDefault"]\`, \`[class^="WideSidebar"]\`, \`.MuiCircularProgress-indeterminate\` for "loading done".
+- **MUI / Emotion**: NEVER hardcode autogenerated Emotion class suffix hashes — prefer \`data-testid\` / ARIA.
+- **Video (Mux)**: treat \`div[id^="component-"]\` Lexical wrappers as the stable handle; \`mux-player\` mounts UNDER the wrapper after scroll. Do not use a global \`cy.get('mux-player')\` as the readiness check for the Nth video.
+- **Custom scroll**: \`scrollIntoScrollContainer\` (in \`commands.js\`) — skill page main scroll is an INNER overflow container, not the window. \`scrollIntoView\` alone is insufficient (Cypress #29921 referenced in code).
+
+## Waits / timing
+- Allowed: \`cy.wait('@alias')\` for intercepted routes; \`cy.waitUntil\` (cypress-wait-until) with \`timeout\` / \`timeoutMsg\` / \`interval\`; \`.should('not.exist')\` on spinners / snackbars; small-interval polling pattern in \`verifyVideoProgress\`.
+- GQL conventions: \`interceptGQL\` / \`interceptGQLQuery\` set \`req.alias\` from \`operationName\` or string match on \`query\`. Login uses \`**/web/loginWithEmail\` and \`**/web/token\` aliases.
+- **Reality check**: \`commands.js\` contains many fixed \`cy.wait(1000-3000)\` delays (storyboard, Beamer, dragColumn) — a real flake source. Treat new failures near those paths as candidates for replacing fixed waits with \`waitUntil\` / \`@alias\`.
+- Retries default to \`runMode: 1\`; specs can override (some opt to \`retries: 0\` to surface real flakes).
+- Global \`uncaught:exception\` filters in \`e2e.js\` swallow LaunchDarkly errors, \`ResizeObserver loop\`, and some network noise — DON'T blame app code when logs only show those.
+
+## Auth & test setup
+- \`cy.login(route, user, pass?)\`: sets cookie \`adept_testing_flag=1\`, intercepts \`**/web/token\` and \`**/web/loginWithEmail\`, visits \`/login\`, fills \`#email\` / \`#password\`, clicks \`#login-button\`, asserts no error snackbar, waits for token (stores \`Cypress.env('actualToken', ...)\`), waits out \`.MuiCircularProgress-indeterminate\`, then \`dismissBeamerIfExists()\`.
+- Server-side GQL via \`cy.runEndpoint\` (Node task \`runEndpoint\`).
+- Preview runs depend on Vercel allowlist + \`VERCEL_WHITELIST_TTL_MS\`. Sign-up spec intercepts \`aliasCheck\` against \`accounts.api.adept.at\`.
+
+## Custom commands (high level)
+- A11y: \`checkA11yViolations\` (cypress-axe wrapper, can write \`cypress/logs/a11y_violations_*.json\` and fail).
+- GQL / network: \`getGQLBody\`, \`interceptGQL*\`, \`setNetworkThrottling\` (Chromium CDP only).
+- Product flows: \`verifyMyStats*\`, \`startVideo\` / \`startVideoMobile\` (legacy Video.js), **\`startVideoNewPlayer*\`**, \`pauseVideoNewPlayer\`, **\`verifyVideoProgress\`** (wrapper-scoped mux + polling), \`checkLinks\`, \`storyboard\` / \`skipStoryboard\`, \`openAddComponent\`, \`deleteSKill*\`.
+- AG Grid (when those specs run): \`testAgGridResizeStability\`, \`dragColumn\`, \`getHeaderColIds\`, localStorage keys \`adept_grid_state_*\`.
+
+## Product-test colocation
+- This repo is BOTH the React app and the Cypress suite. A red E2E can be (1) a test bug, (2) a data/env issue (preview not allowed, test user state, Vercel TTL), or (3) a real product regression in \`src/\`.
+- The triage agent should NOT assume the fix file is only under \`cypress/\`. Check the recent PR scope and whether the failure reproduces on production \`baseUrl\` vs preview before locking in a "test-only" fix.
+
+## Common pitfalls
+- **Lazy / viewport-mounted video**: not all \`mux-player\` nodes exist. Scroll the correct \`div[id^="component-"]\` into the inner scroll container (use \`scrollIntoScrollContainer\`), then assert wrapper-scoped mux. Recurring git-fix theme.
+- **A11y + MUI Tooltip**: when running a second axe pass with the Outline drawer open, MUI Tooltip Fade can cause false \`color-contrast\` hits. Wait for \`.MuiTooltip-tooltip\` \`opacity: '1'\` and exclude \`.MuiTooltip-popper\` on the follow-up scan.
+- **Brittle visibility on Mux**: \`verifyVideoProgress\` was deliberately changed to AVOID \`be.visible\` on \`mux-player\` — prefer existence + \`currentTime\` advancement inside the wrapper.
+- After login, assert \`cy.get('#notistack-snackbar').should('not.exist')\` to clear the post-login toast that can intercept clicks.
+`,
+};
+function getBundledRepoContext(owner, repo) {
+    return exports.BUNDLED_REPO_CONTEXTS[`${owner}/${repo}`.toLowerCase()];
+}
+//# sourceMappingURL=bundled-repo-contexts.js.map
 
 /***/ }),
 
@@ -7636,6 +7736,132 @@ function buildStructuredSummary(err) {
 
 /***/ }),
 
+/***/ 3844:
+/***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
+
+"use strict";
+
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.RepoContextFetcher = exports.REPO_CONTEXT_MAX_CHARS = exports.REPO_CONTEXT_PATH = void 0;
+const core = __importStar(__nccwpck_require__(37484));
+const skill_store_1 = __nccwpck_require__(60215);
+const bundled_repo_contexts_1 = __nccwpck_require__(49768);
+exports.REPO_CONTEXT_PATH = '.adept-triage/context.md';
+exports.REPO_CONTEXT_MAX_CHARS = 6500;
+class RepoContextFetcher {
+    cache = new Map();
+    octokit;
+    constructor(octokit) {
+        this.octokit = octokit;
+    }
+    async fetch(owner, repo, ref = 'main') {
+        const key = `${owner}/${repo}@${ref}`;
+        const cached = this.cache.get(key);
+        if (cached !== undefined)
+            return cached;
+        const bundled = (0, bundled_repo_contexts_1.getBundledRepoContext)(owner, repo);
+        if (bundled !== undefined) {
+            const rendered = this.renderBundled(bundled, owner, repo);
+            this.cache.set(key, rendered);
+            return rendered;
+        }
+        const rendered = await this.fetchAndRender(owner, repo, ref);
+        this.cache.set(key, rendered);
+        return rendered;
+    }
+    renderBundled(body, owner, repo) {
+        const trimmed = body.trim();
+        if (!trimmed)
+            return '';
+        const safe = (0, skill_store_1.sanitizeForPrompt)(trimmed, exports.REPO_CONTEXT_MAX_CHARS);
+        core.info(`📘 Loaded repo context for ${owner}/${repo} (bundled in adept-triage-agent, ${safe.length} chars)`);
+        return [
+            '## Repository Conventions',
+            '',
+            `Source: bundled in adept-triage-agent for ${owner}/${repo}.`,
+            'These conventions describe how this repository writes and structures tests.',
+            'Treat them as authoritative for repo style; defer to current evidence on the specific failure.',
+            '',
+            safe,
+            '',
+        ].join('\n');
+    }
+    async fetchAndRender(owner, repo, ref) {
+        try {
+            const response = await this.octokit.repos.getContent({
+                owner,
+                repo,
+                path: exports.REPO_CONTEXT_PATH,
+                ref,
+            });
+            if (Array.isArray(response.data) || response.data.type !== 'file') {
+                return '';
+            }
+            const raw = Buffer.from(response.data.content, 'base64').toString('utf-8').trim();
+            if (!raw)
+                return '';
+            const safe = (0, skill_store_1.sanitizeForPrompt)(raw, exports.REPO_CONTEXT_MAX_CHARS);
+            core.info(`📘 Loaded repo context from ${owner}/${repo}/${exports.REPO_CONTEXT_PATH}@${ref} (${safe.length} chars)`);
+            return [
+                '## Repository Conventions',
+                '',
+                `Source: \`${exports.REPO_CONTEXT_PATH}\` in ${owner}/${repo}@${ref}.`,
+                'These conventions describe how this repository writes and structures tests.',
+                'Treat them as authoritative for repo style; defer to current evidence on the specific failure.',
+                '',
+                safe,
+                '',
+            ].join('\n');
+        }
+        catch (err) {
+            const status = err?.status;
+            if (status === 404) {
+                core.debug(`No repo context at ${owner}/${repo}/${exports.REPO_CONTEXT_PATH}@${ref} — proceeding without it.`);
+                return '';
+            }
+            core.debug(`Failed to fetch repo context from ${owner}/${repo}/${exports.REPO_CONTEXT_PATH}@${ref}: ${err}`);
+            return '';
+        }
+    }
+}
+exports.RepoContextFetcher = RepoContextFetcher;
+//# sourceMappingURL=repo-context-fetcher.js.map
+
+/***/ }),
+
 /***/ 60215:
 /***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
 
@@ -7680,6 +7906,7 @@ exports.sanitizeForPrompt = sanitizeForPrompt;
 exports.normalizeFramework = normalizeFramework;
 exports.buildSkill = buildSkill;
 exports.describeFixPattern = describeFixPattern;
+exports.normalizeSpec = normalizeSpec;
 exports.normalizeError = normalizeError;
 exports.formatSkillsForPrompt = formatSkillsForPrompt;
 const core = __importStar(__nccwpck_require__(37484));
@@ -7775,10 +8002,8 @@ function selectSkillsToPrune(skills, keepSkillId) {
     if (skills.length <= exports.MAX_SKILLS)
         return [];
     const overflowCount = skills.length - exports.MAX_SKILLS;
-    return [...skills]
-        .filter((skill) => skill.id !== keepSkillId)
-        .sort(compareOldestFirst)
-        .slice(0, overflowCount);
+    const eligible = [...skills].filter((skill) => skill.id !== keepSkillId && !skill.isSeed);
+    return eligible.sort(compareOldestFirst).slice(0, overflowCount);
 }
 class SkillStore {
     skills = [];
@@ -7978,9 +8203,10 @@ class SkillStore {
         const frameworkSkills = this.skills.filter((s) => (s.framework === normalized || s.framework === 'unknown') && !s.retired);
         if (frameworkSkills.length === 0)
             return [];
+        const querySpec = normalizeSpec(opts.spec);
         const scored = frameworkSkills.map((skill) => {
             let score = 0;
-            if (opts.spec && skill.spec === opts.spec)
+            if (querySpec && normalizeSpec(skill.spec) === querySpec)
                 score += 10;
             if (opts.errorMessage) {
                 score += errorSimilarity(skill.errorPattern, normalizeError(opts.errorMessage)) * 5;
@@ -8010,9 +8236,10 @@ class SkillStore {
             return [];
         const now = Date.now();
         const SEVEN_DAYS = 7 * 86_400_000;
+        const querySpec = normalizeSpec(opts.spec);
         const scored = candidates.map((skill) => {
             let score = 0;
-            if (opts.spec && skill.spec === opts.spec)
+            if (querySpec && normalizeSpec(skill.spec) === querySpec)
                 score += 15;
             if (opts.errorMessage) {
                 score +=
@@ -8038,7 +8265,8 @@ class SkillStore {
     }
     detectFlakiness(spec) {
         const now = Date.now();
-        const specSkills = this.skills.filter((s) => s.spec === spec);
+        const querySpec = normalizeSpec(spec);
+        const specSkills = this.skills.filter((s) => normalizeSpec(s.spec) === querySpec);
         const inShortWindow = specSkills.filter((s) => now - parseSkillTimestamp(s.createdAt) < FLAKY_THRESHOLDS.SHORT_WINDOW_DAYS * 86_400_000);
         const inLongWindow = specSkills.filter((s) => now - parseSkillTimestamp(s.createdAt) < FLAKY_THRESHOLDS.LONG_WINDOW_DAYS * 86_400_000);
         if (inShortWindow.length > FLAKY_THRESHOLDS.SHORT_WINDOW_MAX) {
@@ -8065,7 +8293,8 @@ class SkillStore {
         };
     }
     countForSpec(spec) {
-        return this.skills.filter((s) => s.spec === spec && !s.retired).length;
+        const querySpec = normalizeSpec(spec);
+        return this.skills.filter((s) => normalizeSpec(s.spec) === querySpec && !s.retired).length;
     }
     getUsageStats() {
         return {
@@ -8150,7 +8379,7 @@ function buildSkill(params) {
         id: crypto.randomUUID(),
         createdAt: new Date().toISOString(),
         repo: params.repo,
-        spec: params.spec,
+        spec: normalizeSpec(params.spec),
         testName: params.testName,
         framework: normalizeFramework(params.framework),
         errorPattern: normalizeError(params.errorMessage),
@@ -8179,6 +8408,19 @@ function describeFixPattern(changes) {
         return `${prefix}${c.justification || `Modified ${c.file}`}`;
     })
         .join('; ');
+}
+function normalizeSpec(raw) {
+    if (!raw)
+        return raw ?? '';
+    const linuxMatch = raw.match(/^\/home\/runner\/work\/[^/]+\/[^/]+\/(.+)$/);
+    if (linuxMatch)
+        return linuxMatch[1];
+    const winMatch = raw.match(/^[A-Za-z]:[\\/]a[\\/][^\\/]+[\\/][^\\/]+[\\/](.+)$/);
+    if (winMatch)
+        return winMatch[1].replace(/\\/g, '/');
+    if (raw.startsWith('./'))
+        return raw.slice(2);
+    return raw;
 }
 function normalizeError(msg) {
     return msg

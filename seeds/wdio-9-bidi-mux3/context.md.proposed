@@ -1,0 +1,38 @@
+## Framework & runtime
+- WebdriverIO **9.26.x**, Mocha (bdd), TS via `test/tsconfig.json`. BiDi: `webSocketUrl: true`, ChromeDriver download skipped.
+- Product: **learn-webapp**. `baseUrl` defaults to `https://learn.adept.at` (override via `BASE_URL` env or Sauce `--baseUrl=...`).
+- Local: Chrome, `waitforTimeout` 10s, Mocha timeout 600000. Sauce: `maxInstances: 5`, Win11, Chrome/Firefox/Edge `latest`.
+
+## Page objects
+- `test/pageobjects/`: `page.ts` (base), `login.page.ts`, `adept.video.player.ts` (canonical video/mux abstraction — use its APIs, never reimplement mux indexing).
+- Skill chrome: `test/specs/skills/pages/skill.page.ts` (e.g. `closeComments`).
+- Video flow APIs all route through `scrollToVideo` + `_activeWrapperId`: `startVideoIndexAndMonitorEvents`, `pauseVideo`, `startVideoWithTranscripts`, `startVideoWithTranscriptsMobile`.
+
+## Selectors
+- **Stable**: video wrappers `div[id^="component-"]` are always in the DOM.
+- **Lazy / unstable**: `mux-player` instances mount/unmount via IntersectionObserver — never use global `mux-player` count as a readiness signal.
+- Transcripts: tab `[role="tab"][aria-label^="Video transcript"]` (production says "transcripts" plural, dev says "transcript" — always anchor with `aria-label^=`); entries `[role="button"][aria-label^="Jump to timestamp"]`.
+- Skill chrome: prefer `data-testid` (e.g. `skill-length-and-creation-date`); sidebar close `[aria-label="Close sidebar"]`.
+- Mux shadow UI: `clickElementInMuxPlayer` with selectors like `media-play-button`, `media-settings-menu-button`, `media-transcript-button`, `#adept-theatre`.
+- **Anti-patterns**: treating the first visible `mux-player` as the Nth video; exact-match on transcript aria-label; brittle absolute XPaths.
+
+## Waits / timing
+- Allowed: `browser.waitUntil` with `timeoutMsg` and `interval`; `waitForExist` / `waitForDisplayed` / `waitForClickable` on concrete elements; intentional `browser.pause` only for documented Edge BiDi or login spacing.
+- **Banned**: `$('mux-player').waitForExist({ timeout: 120000 })` after login on multi-video skills — wait for component wrappers and let `scrollToVideo` mount the player on demand.
+- Skill ready signal: `browser.waitUntil(() => $$('div[id^="component-"]').length > 0, { timeout: 120000, interval: 1000, timeoutMsg: 'No video component wrappers found' })`.
+- Edge: expect an extra `browser.pause(1500)` after resolving the mux host; do not strip without repro on Sauce Edge BiDi.
+
+## Auth & test setup
+- `LoginPage.login` sets `adept_testing_flag=1` (`setIgnoreCaptchaCookie`) before navigating; verifies via `getIgnoreCaptchaCookie`. BiDi cookie failures fall back to `document.cookie` — keep the fallback.
+- After login on skill URLs: best-effort close the comments sidebar via `SkillPage.closeComments` — when `[aria-label="Close sidebar"]` is clickable it can otherwise cover the player.
+- Use `BiDiHelper.waitForNavigationComplete()` after `browser.url(...)` for new BiDi-aware navigation.
+
+## Mux / video lifecycle (the distinctive concern)
+- learn-webapp keeps only ~2–3 `mux-player` nodes mounted at a time; scrolling triggers IntersectionObserver to mount/unmount.
+- `scrollToVideo(index)` is the canonical way to make the Nth video active: scrolls the corresponding `#component-…` wrapper into view, sets `_activeWrapperId`, then resolves mux via `getElementById(wrapperId).querySelector('mux-player')` rather than `document.querySelector('mux-player')`.
+- Tests targeting high-index videos (e.g. the 4th) must use `scrollToVideo(3)` semantics — never assume 4 mux nodes coexist.
+- Playback assertions go through `startVideoIndexAndMonitorEvents`, which enforces `maxBufferingOccurrences` / `maxEventOccurrences`. Don't bypass.
+
+## Common pitfalls
+- Transcript timeouts often trace back to a broken **setup** wait (mux globally instead of component wrappers), not the transcript poll itself.
+- Don't introduce blanket `browser.pause` to "fix" flake — replace with `waitUntil` + `timeoutMsg`.

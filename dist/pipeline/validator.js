@@ -47,7 +47,7 @@ const fix_applier_1 = require("../repair/fix-applier");
 const local_fix_validator_1 = require("../services/local-fix-validator");
 const constants_1 = require("../config/constants");
 const repo_utils_1 = require("../utils/repo-utils");
-async function generateFixRecommendation(inputs, repoDetails, errorData, openaiClient, octokit, previousAttempt, previousResponseId, skillStore, priorInvestigationContext) {
+async function generateFixRecommendation(inputs, repoDetails, errorData, openaiClient, octokit, previousAttempt, previousResponseId, skillStore, priorInvestigationContext, repoContext) {
     try {
         const iterLabel = previousAttempt
             ? ` (iteration ${previousAttempt.iteration + 1})`
@@ -86,7 +86,7 @@ async function generateFixRecommendation(inputs, repoDetails, errorData, openaiC
                 flakiness: skillStore.detectFlakiness(errorData.fileName || 'unknown'),
             }
             : undefined;
-        const result = await repairAgent.generateFixRecommendation(repairContext, errorData, previousAttempt, previousResponseId, skills, priorInvestigationContext);
+        const result = await repairAgent.generateFixRecommendation(repairContext, errorData, previousAttempt, previousResponseId, skills, priorInvestigationContext, repoContext);
         if (result) {
             core.info(`✅ Fix recommendation generated with ${result.fix.confidence}% confidence`);
         }
@@ -100,7 +100,7 @@ async function generateFixRecommendation(inputs, repoDetails, errorData, openaiC
         return null;
     }
 }
-async function iterativeFixValidateLoop(inputs, repoDetails, autoFixTargetRepo, errorData, openaiClient, octokit, skillStore, classificationResponseId, investigationContext) {
+async function iterativeFixValidateLoop(inputs, repoDetails, autoFixTargetRepo, errorData, openaiClient, octokit, skillStore, classificationResponseId, investigationContext, repoContext) {
     const maxIterations = constants_1.FIX_VALIDATE_LOOP.MAX_ITERATIONS;
     let fixRecommendation = null;
     let autoFixResult = null;
@@ -130,7 +130,7 @@ async function iterativeFixValidateLoop(inputs, repoDetails, autoFixTargetRepo, 
         for (let iteration = 0; iteration < maxIterations; iteration++) {
             completedIterations = iteration + 1;
             core.info(`\n${'='.repeat(60)}\n🔄 Fix-Validate iteration ${iteration + 1}/${maxIterations}\n${'='.repeat(60)}`);
-            const fixResult = await generateFixRecommendation(inputs, repoDetails, errorData, openaiClient, octokit, previousAttempt, lastResponseId, skillStore, investigationContext);
+            const fixResult = await generateFixRecommendation(inputs, repoDetails, errorData, openaiClient, octokit, previousAttempt, lastResponseId, skillStore, investigationContext, repoContext);
             if (!fixResult) {
                 fixRecommendation = null;
                 core.warning(`Iteration ${iteration + 1}: could not generate fix recommendation`);

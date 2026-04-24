@@ -1,0 +1,17 @@
+{
+  "repo": "adept-at/lib-cypress-canary",
+  "spec": "cypress/skillbuilder-all/lexical.preview.url.sca.js",
+  "testName": "SCA can create a lexical skill with multiple components",
+  "framework": "cypress",
+  "errorPattern": "Timed out retrying: cy.get(mux-player): Expected to find element: mux-player, but never found it.",
+  "rootCauseCategory": "ELEMENT_VISIBILITY",
+  "fix": {
+    "file": "cypress/skillbuilder-all/lexical.preview.url.sca.js",
+    "changeType": "WAIT_ADDITION",
+    "summary": "learn-webapp lazy-mounts mux-player via IntersectionObserver. Scroll the wrapping div[id^=\"component-\"] into view (or use cy.startVideoNewPlayer) before asserting on mux-player.",
+    "pattern": "Before cy.get('mux-player'), call cy.get('div[id^=\"component-\"]').first().scrollIntoView() so IntersectionObserver mounts the player; or use the existing cy.startVideoNewPlayer() / lexicalHelpers wrapper which already scrolls the component container before mux-player checks."
+  },
+  "confidence": 90,
+  "investigationFindings": "cypress/support/commands.js startVideoNewPlayer scrolls div[id^=\"component-\"] before any mux-player interaction. Recurring failure mode: assertions run while video is below the fold, so the custom element is never inserted. Fix lineage referenced in repo history (e.g. 2286264 \"scroll video container into view before asserting mux-player\" and the lexical-preview backport).",
+  "rootCauseChain": "ELEMENT_VISIBILITY -> mux-player lazy-mounts on intersection -> off-screen at assert time -> element absent"
+}

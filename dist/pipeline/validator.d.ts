@@ -16,7 +16,7 @@ export declare function generateFixRecommendation(inputs: ActionInputs, repoDeta
     validationLogs: string;
     priorAgentRootCause?: string;
     priorAgentInvestigationFindings?: string;
-}, previousResponseId?: string, skillStore?: SkillStore, priorInvestigationContext?: string): Promise<{
+}, previousResponseId?: string, skillStore?: SkillStore, priorInvestigationContext?: string, repoContext?: string): Promise<{
     fix: FixRecommendation;
     lastResponseId?: string;
     agentRootCause?: string;
@@ -33,7 +33,7 @@ export declare function iterativeFixValidateLoop(inputs: ActionInputs, repoDetai
     testName?: string;
     fileName?: string;
     framework?: string;
-}, openaiClient: OpenAIClient, octokit: Octokit, skillStore?: SkillStore, classificationResponseId?: string, investigationContext?: string): Promise<{
+}, openaiClient: OpenAIClient, octokit: Octokit, skillStore?: SkillStore, classificationResponseId?: string, investigationContext?: string, repoContext?: string): Promise<{
     fixRecommendation: FixRecommendation | null;
     autoFixResult: ApplyResult | null;
     iterations: number;

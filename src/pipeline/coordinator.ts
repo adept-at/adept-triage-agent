@@ -8,6 +8,7 @@ import { ApplyResult } from '../repair/fix-applier';
 import { analyzeFailure } from '../simplified-analyzer';
 import { processWorkflowLogs } from '../services/log-processor';
 import { SkillStore, buildSkill, describeFixPattern } from '../services/skill-store';
+import { RepoContextFetcher } from '../services/repo-context-fetcher';
 import { inferRootCauseCategoryFromText } from '../repair/root-cause-category';
 import { CHRONIC_FLAKINESS_THRESHOLD } from '../config/constants';
 import {
@@ -184,6 +185,21 @@ export class PipelineCoordinator {
         })
       : '';
 
+    // Fetch the optional `.adept-triage/context.md` once per run, from
+    // the repo whose tests we're fixing. Falls back to the test-source
+    // repo when no autoFixTargetRepo is configured. Empty string for
+    // 404 / missing file — the common case until repos opt in.
+    const contextOwner = autoFixTargetRepo?.owner ?? this.repoDetails.owner;
+    const contextRepo = autoFixTargetRepo?.repo ?? this.repoDetails.repo;
+    const contextRef =
+      this.inputs.branch || this.inputs.autoFixBaseBranch || 'main';
+    const repoContextFetcher = new RepoContextFetcher(this.octokit);
+    const repoContext = await repoContextFetcher.fetch(
+      contextOwner,
+      contextRepo,
+      contextRef
+    );
+
     let fixRecommendation: FixRecommendation | null = null;
     let autoFixResult: ApplyResult | null = null;
     let iterations = 0;
@@ -213,7 +229,8 @@ export class PipelineCoordinator {
         this.octokit,
         skillStore,
         undefined,
-        investigationContext
+        investigationContext,
+        repoContext
       );
       fixRecommendation = loopResult.fixRecommendation;
       autoFixResult = loopResult.autoFixResult;
@@ -233,7 +250,8 @@ export class PipelineCoordinator {
         undefined,
         undefined,
         skillStore,
-        investigationContext
+        investigationContext,
+        repoContext
       );
       fixRecommendation = singleResult?.fix ?? null;
       agentRootCause = singleResult?.agentRootCause;

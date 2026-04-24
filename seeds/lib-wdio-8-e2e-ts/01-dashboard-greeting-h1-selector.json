@@ -1,0 +1,17 @@
+{
+  "repo": "adept-at/lib-wdio-8-e2e-ts",
+  "spec": "test/specs/dashboard/dash.greeting.canary.spec.ts",
+  "testName": "should display the user greeting on the dashboard",
+  "framework": "webdriverio",
+  "errorPattern": "Dashboard greeting text was not displayed within 10 seconds",
+  "rootCauseCategory": "SELECTOR_MISMATCH",
+  "fix": {
+    "file": "test/specs/dashboard/dash.greeting.canary.spec.ts",
+    "changeType": "SELECTOR_UPDATE",
+    "summary": "Dashboard greeting renders as h1 (with comma + name + '!'), not header h2. Use a partial text match on h1 and a regex that allows the full string.",
+    "pattern": "Replace $('header h2') with $('h1*=Good'); use waitForDisplayed({ timeout: 15000, timeoutMsg: 'Dashboard greeting text was not displayed within 15 seconds' }). Update the assertion regex from /Good\\s+(morning|afternoon|evening)/i to /Good\\s+(morning|afternoon|evening),\\s*.+!/i."
+  },
+  "confidence": 90,
+  "investigationFindings": "Triage PR #278 / commit 6ca5b6e: failure was the greeting element not found in time; learn-webapp now renders the greeting in an h1 with comma + name + exclamation. Old `header h2` selector simply doesn't exist anymore.",
+  "rootCauseChain": "SELECTOR_MISMATCH -> stale `header h2` assumption -> waitForDisplayed timeout"
+}

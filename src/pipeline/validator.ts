@@ -28,7 +28,15 @@ export async function generateFixRecommendation(
   },
   previousResponseId?: string,
   skillStore?: SkillStore,
-  priorInvestigationContext?: string
+  priorInvestigationContext?: string,
+  /**
+   * Pre-rendered repo conventions block from `.adept-triage/context.md`
+   * in the consumer repo (fetched once per run by the coordinator).
+   * Threaded through to every agent's system prompt so analysis,
+   * investigation, fix-gen, and review share the same baseline view
+   * of the repo. Empty for repos that haven't opted in.
+   */
+  repoContext?: string
 ): Promise<{ fix: FixRecommendation; lastResponseId?: string; agentRootCause?: string; agentInvestigationFindings?: string } | null> {
   try {
     const iterLabel = previousAttempt
@@ -84,7 +92,8 @@ export async function generateFixRecommendation(
       previousAttempt,
       previousResponseId,
       skills,
-      priorInvestigationContext
+      priorInvestigationContext,
+      repoContext
     );
 
     if (result) {
@@ -116,7 +125,9 @@ export async function iterativeFixValidateLoop(
   octokit: Octokit,
   skillStore?: SkillStore,
   classificationResponseId?: string,
-  investigationContext?: string
+  investigationContext?: string,
+  /** See `generateFixRecommendation.repoContext` */
+  repoContext?: string
 ): Promise<{
   fixRecommendation: FixRecommendation | null;
   autoFixResult: ApplyResult | null;
@@ -188,7 +199,8 @@ export async function iterativeFixValidateLoop(
         previousAttempt,
         lastResponseId,
         skillStore,
-        investigationContext
+        investigationContext,
+        repoContext
       );
 
       if (!fixResult) {

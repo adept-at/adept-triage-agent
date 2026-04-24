@@ -75,6 +75,25 @@ export interface TriageSkill {
    * doesn't have one to persist either.
    */
   failureModeTrace?: FailureModeTrace;
+
+  /**
+   * Curated seed skill — inserted manually (via `scripts/seed-skill.ts`)
+   * to bootstrap the learning loop with hand-picked canonical fix
+   * exemplars per repo. Seed skills:
+   *   - Are excluded from `selectSkillsToPrune`, so the 100-skill
+   *     retention cap can never evict them. This is critical because
+   *     a seed represents human-curated knowledge that the agent can't
+   *     re-derive on its own — losing it to a flood of noisy
+   *     auto-saved skills would silently degrade the prompt context.
+   *   - Are NOT excluded from any other skill-store mechanism: they
+   *     score, retire, and surface through `findRelevant` /
+   *     `findForClassifier` exactly like any other skill. The flag
+   *     only affects pruning.
+   *   - Should still be retired (not deleted) when their pattern
+   *     stops working — operators can reset them via the seed-skill
+   *     CLI rather than letting them rot in the prompt.
+   */
+  isSeed?: boolean;
 }
 
 export interface FlakinessSignal {
@@ -280,12 +299,18 @@ function selectSkillsToPrune(
   skills: TriageSkill[],
   keepSkillId?: string
 ): TriageSkill[] {
+  // Pruning math considers ALL skills (including seeds) when deciding
+  // whether we're over cap, so the cap remains a true upper bound on
+  // partition size. But only NON-seed skills are eligible to be pruned.
+  // Without this gate, a flood of auto-saved skills could push the
+  // partition over MAX_SKILLS and silently evict human-curated seeds —
+  // the prompt context would degrade with no signal to operators.
   if (skills.length <= MAX_SKILLS) return [];
   const overflowCount = skills.length - MAX_SKILLS;
-  return [...skills]
-    .filter((skill) => skill.id !== keepSkillId)
-    .sort(compareOldestFirst)
-    .slice(0, overflowCount);
+  const eligible = [...skills].filter(
+    (skill) => skill.id !== keepSkillId && !skill.isSeed
+  );
+  return eligible.sort(compareOldestFirst).slice(0, overflowCount);
 }
 
 /**
@@ -618,9 +643,16 @@ export class SkillStore {
     );
     if (frameworkSkills.length === 0) return [];
 
+    // Normalize BOTH sides at read time so this works for legacy
+    // skills (saved before buildSkill normalized at write time, e.g.
+    // absolute runner paths) and for callers who pass an absolute
+    // path in opts.spec (the common case when errorData.fileName
+    // is sourced from CI log parsing).
+    const querySpec = normalizeSpec(opts.spec);
+
     const scored = frameworkSkills.map((skill) => {
       let score = 0;
-      if (opts.spec && skill.spec === opts.spec) score += 10;
+      if (querySpec && normalizeSpec(skill.spec) === querySpec) score += 10;
       if (opts.errorMessage) {
         score += errorSimilarity(skill.errorPattern, normalizeError(opts.errorMessage)) * 5;
       }
@@ -661,9 +693,15 @@ export class SkillStore {
     const now = Date.now();
     const SEVEN_DAYS = 7 * 86_400_000;
 
+    // Mirror findRelevant's read-time spec normalization so the
+    // classifier sees the same skill coverage as investigation on
+    // mixed-path data (legacy absolute-path skills + new relative-path
+    // seeds and skills).
+    const querySpec = normalizeSpec(opts.spec);
+
     const scored = candidates.map((skill) => {
       let score = 0;
-      if (opts.spec && skill.spec === opts.spec) score += 15;
+      if (querySpec && normalizeSpec(skill.spec) === querySpec) score += 15;
       if (opts.errorMessage) {
         score +=
           errorSimilarity(skill.errorPattern, normalizeError(opts.errorMessage)) * 5;
@@ -704,7 +742,15 @@ export class SkillStore {
    */
   detectFlakiness(spec: string): FlakinessSignal {
     const now = Date.now();
-    const specSkills = this.skills.filter((s) => s.spec === spec);
+    // Normalize on both sides so absolute-path queries (from CI
+    // log-parsed errorData.fileName) match relative-path skills,
+    // and vice versa. Without this the flakiness gate silently
+    // undercounts on any run where the path format differs from
+    // how the skill was stored.
+    const querySpec = normalizeSpec(spec);
+    const specSkills = this.skills.filter(
+      (s) => normalizeSpec(s.spec) === querySpec
+    );
 
     const inShortWindow = specSkills.filter(
       (s) => now - parseSkillTimestamp(s.createdAt) < FLAKY_THRESHOLDS.SHORT_WINDOW_DAYS * 86_400_000
@@ -749,7 +795,10 @@ export class SkillStore {
    * "how much have we seen this spec" heuristic.
    */
   countForSpec(spec: string): number {
-    return this.skills.filter((s) => s.spec === spec && !s.retired).length;
+    const querySpec = normalizeSpec(spec);
+    return this.skills.filter(
+      (s) => normalizeSpec(s.spec) === querySpec && !s.retired
+    ).length;
   }
 
   /**
@@ -956,7 +1005,11 @@ export function buildSkill(params: {
     id: crypto.randomUUID(),
     createdAt: new Date().toISOString(),
     repo: params.repo,
-    spec: params.spec,
+    // Normalize at write time so durable data stays canonical
+    // (repo-relative). Pre-normalization skills in the store may
+    // still have absolute runner paths — the read-side normalization
+    // in findRelevant / findForClassifier handles that legacy case.
+    spec: normalizeSpec(params.spec),
     testName: params.testName,
     framework: normalizeFramework(params.framework),
     errorPattern: normalizeError(params.errorMessage),
@@ -999,6 +1052,43 @@ export function describeFixPattern(changes: Array<{
       return `${prefix}${c.justification || `Modified ${c.file}`}`;
     })
     .join('; ');
+}
+
+/**
+ * Normalize a spec path to a stable, repo-relative canonical form.
+ *
+ * Motivation: `errorData.fileName` from CI log parsing is often an
+ * absolute runner path like
+ *   `/home/runner/work/<repo>/<repo>/test/specs/foo.ts`
+ * while seeds (and anything a human would write) use the repo-relative
+ * form `test/specs/foo.ts`. Since `findRelevant` / `findForClassifier`
+ * score spec matches with strict `===`, a raw-absolute vs relative
+ * mismatch silently kills retrieval.
+ *
+ * Runner path strips handled:
+ *   - GitHub Actions: `/home/runner/work/<name>/<name>/<rel>`
+ *   - GitHub Actions (Windows): `D:\a\<name>\<name>\<rel>`
+ *   - Local `./` and leading `/` when no runner prefix present
+ *
+ * Idempotent — already-relative inputs pass through unchanged.
+ * Empty / undefined inputs return the input unchanged so callers can
+ * use this unconditionally without defensive guards.
+ */
+export function normalizeSpec(raw?: string): string {
+  if (!raw) return raw ?? '';
+
+  // GitHub Actions Linux runner: /home/runner/work/<name>/<name>/<rel>
+  const linuxMatch = raw.match(/^\/home\/runner\/work\/[^/]+\/[^/]+\/(.+)$/);
+  if (linuxMatch) return linuxMatch[1];
+
+  // GitHub Actions Windows runner: D:\a\<name>\<name>\<rel> (or forward-slash variant)
+  const winMatch = raw.match(/^[A-Za-z]:[\\/]a[\\/][^\\/]+[\\/][^\\/]+[\\/](.+)$/);
+  if (winMatch) return winMatch[1].replace(/\\/g, '/');
+
+  // Bare leading `./`
+  if (raw.startsWith('./')) return raw.slice(2);
+
+  return raw;
 }
 
 /**

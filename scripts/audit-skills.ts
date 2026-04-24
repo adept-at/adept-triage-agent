@@ -3,7 +3,9 @@
  *
  * Usage:
  *   npx tsx scripts/audit-skills.ts
- *   npx tsx scripts/audit-skills.ts --delete-flagged  (removes flagged skills)
+ *   npx tsx scripts/audit-skills.ts --delete-flagged         (removes severity=DELETE skills)
+ *   npx tsx scripts/audit-skills.ts --retire-flagged         (sets retired=true on WARN skills)
+ *   npx tsx scripts/audit-skills.ts --clear-noisy-incorrect  (resets classification=incorrect → unknown)
  *
  * Checks each skill for:
  *   - Empty or generic fix summaries
@@ -17,12 +19,19 @@
  */
 
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
-import { DynamoDBDocumentClient, ScanCommand, DeleteCommand } from '@aws-sdk/lib-dynamodb';
+import {
+  DynamoDBDocumentClient,
+  ScanCommand,
+  DeleteCommand,
+  UpdateCommand,
+} from '@aws-sdk/lib-dynamodb';
 import { MAX_SKILLS } from '../src/services/skill-store.js';
 
 const TABLE = process.env.TRIAGE_DYNAMO_TABLE || 'triage-skills-v1-live';
 const REGION = process.env.AWS_REGION || 'us-east-1';
 const DELETE_FLAGGED = process.argv.includes('--delete-flagged');
+const RETIRE_FLAGGED = process.argv.includes('--retire-flagged');
+const CLEAR_NOISY_INCORRECT = process.argv.includes('--clear-noisy-incorrect');
 
 interface Skill {
   pk: string;
@@ -45,6 +54,7 @@ interface Skill {
   createdAt: string;
   lastUsedAt: string;
   retired: boolean;
+  isSeed?: boolean;
 }
 
 interface AuditFlag {
@@ -53,6 +63,13 @@ interface AuditFlag {
   spec: string;
   severity: 'DELETE' | 'WARN' | 'INFO';
   reason: string;
+  /**
+   * Action the maintenance flags can take. `retire` sets retired=true
+   * (skill stays for flakiness history but stops being surfaced).
+   * `clearIncorrect` resets classificationOutcome to 'unknown' — used
+   * for skills tagged 'incorrect' by the pre-v1.50.1 noisy writer.
+   */
+  action?: 'retire' | 'clearIncorrect';
 }
 
 async function main() {
@@ -68,12 +85,20 @@ async function main() {
   for (const s of skills) {
     const specName = s.spec?.split('/').pop() || 'unknown';
 
+    // Seeds are curated, validated-on-insert artifacts. They legitimately
+    // start with no runtime track record, may have generic-feeling fix
+    // summaries, and should never be retired/cleared/deleted by audit
+    // automation. Skip the per-skill checks for them; they still count
+    // toward the partition total but don't trip individual flags.
+    if (s.isSeed) continue;
+
     // 1. Failed trajectory that should be retired
     if (!s.validatedLocally && !s.retired) {
       flags.push({
         skillId: s.id, repo: s.repo, spec: specName,
         severity: 'WARN',
         reason: `Failed trajectory (validatedLocally=false) not retired. successCount=${s.successCount}, failCount=${s.failCount}`,
+        action: 'retire',
       });
     }
 
@@ -87,11 +112,21 @@ async function main() {
     }
 
     // 3. Classification marked incorrect
+    //
+    // Note: the v1.38.0 writer flipped the most-recent-skill-on-spec to
+    // 'incorrect' any time a later autofix failed on that spec, even when
+    // the prior skill was a completely valid pattern. That writer was
+    // removed in v1.50.0 (deferred pending the multi-pass baseline work
+    // that landed in v1.50.1). Skills created before v1.50.1 with
+    // classification=incorrect may be false positives; use
+    // --clear-noisy-incorrect to reset them to 'unknown' rather than
+    // retiring a potentially-valid skill.
     if (s.classificationOutcome === 'incorrect') {
       flags.push({
         skillId: s.id, repo: s.repo, spec: specName,
         severity: 'WARN',
-        reason: 'Classification was marked incorrect — this skill may be teaching the wrong pattern',
+        reason: 'Classification was marked incorrect (may be noisy pre-v1.50.1 signal — consider --clear-noisy-incorrect)',
+        action: 'clearIncorrect',
       });
     }
 
@@ -135,22 +170,48 @@ async function main() {
     }
   }
 
-  // 8. Duplicate skills — same spec + similar error pattern
-  const specGroups = new Map<string, Skill[]>();
+  // 8. Duplicate skills — same spec + same testName, only counting
+  //    active (non-retired) skills. Different tests within one spec are
+  //    NOT duplicates; retired skills don't surface so they don't need
+  //    deduping. Grouping by spec + testName catches the real case:
+  //    multiple back-to-back runs against the same test that each saved
+  //    a near-identical skill.
+  //
+  //    Seeds are also excluded: a seed set can intentionally encode
+  //    multiple canonical failure modes for the same spec+test (e.g.
+  //    a Lexical spec that can fail as a selector, as a timing, and as
+  //    a network-race issue — three seeds with the same testName, not
+  //    duplicates). The per-skill `isSeed continue` above covers the
+  //    other checks; this block needs its own guard because it runs
+  //    over groupings, not per-skill.
+  const testGroups = new Map<string, Skill[]>();
   for (const s of skills) {
-    const key = `${s.repo}::${s.spec}`;
-    const group = specGroups.get(key) || [];
+    if (s.retired || s.isSeed) continue;
+    const key = `${s.repo}::${s.spec}::${s.testName || ''}`;
+    const group = testGroups.get(key) || [];
     group.push(s);
-    specGroups.set(key, group);
+    testGroups.set(key, group);
   }
-  for (const [key, group] of specGroups) {
-    if (group.length > 2) {
-      const specName = key.split('::').pop()?.split('/').pop() || 'unknown';
-      flags.push({
-        skillId: group[0].id, repo: group[0].repo, spec: specName,
-        severity: 'WARN',
-        reason: `${group.length} skills for same spec — may have duplicates. Keep the validated ones, remove failed trajectories.`,
+  for (const [key, group] of testGroups) {
+    if (group.length > 1) {
+      const specName = key.split('::')[1]?.split('/').pop() || 'unknown';
+      // Keep the most recently used (or most recently created) skill;
+      // flag every OLDER one for retirement. `--retire-flagged` will
+      // pick these up via `action: 'retire'`.
+      const sorted = [...group].sort((a, b) => {
+        const ta = Date.parse(a.lastUsedAt || a.createdAt) || 0;
+        const tb = Date.parse(b.lastUsedAt || b.createdAt) || 0;
+        return tb - ta;
       });
+      const [keep, ...older] = sorted;
+      for (const dup of older) {
+        flags.push({
+          skillId: dup.id, repo: dup.repo, spec: specName,
+          severity: 'WARN',
+          reason: `Duplicate of newer skill ${keep.id.slice(0, 8)} (same spec+test) — retire this older one.`,
+          action: 'retire',
+        });
+      }
     }
   }
 
@@ -234,6 +295,51 @@ async function main() {
       }
     }
     console.log('Done.\n');
+  }
+
+  if (RETIRE_FLAGGED) {
+    // Dedupe by skill ID — a single skill can trip multiple retire flags
+    // (e.g. failed trajectory + duplicate spec) and we only need one
+    // retire write per skill.
+    const retireIds = new Set(
+      flags.filter(f => f.action === 'retire').map(f => f.skillId)
+    );
+    if (retireIds.size > 0) {
+      console.log(`🪦 Retiring ${retireIds.size} skill(s)...`);
+      for (const id of retireIds) {
+        const skill = skills.find(s => s.id === id);
+        if (!skill) continue;
+        await client.send(new UpdateCommand({
+          TableName: TABLE,
+          Key: { pk: skill.pk, sk: skill.sk },
+          UpdateExpression: 'SET retired = :r',
+          ExpressionAttributeValues: { ':r': true },
+        }));
+        console.log(`   Retired: ${id.slice(0, 8)} [${skill.spec?.split('/').pop()}]`);
+      }
+      console.log('Done.\n');
+    }
+  }
+
+  if (CLEAR_NOISY_INCORRECT) {
+    const clearIds = new Set(
+      flags.filter(f => f.action === 'clearIncorrect').map(f => f.skillId)
+    );
+    if (clearIds.size > 0) {
+      console.log(`🧽 Clearing noisy classificationOutcome on ${clearIds.size} skill(s)...`);
+      for (const id of clearIds) {
+        const skill = skills.find(s => s.id === id);
+        if (!skill) continue;
+        await client.send(new UpdateCommand({
+          TableName: TABLE,
+          Key: { pk: skill.pk, sk: skill.sk },
+          UpdateExpression: 'SET classificationOutcome = :co',
+          ExpressionAttributeValues: { ':co': 'unknown' },
+        }));
+        console.log(`   Reset: ${id.slice(0, 8)} [${skill.spec?.split('/').pop()}]`);
+      }
+      console.log('Done.\n');
+    }
   }
 }
 

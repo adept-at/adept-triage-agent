@@ -85,6 +85,45 @@ export interface PriorAttemptContext {
  *   uses 8000; single-shot path uses 6000.
  */
 /**
+ * Build a lightweight investigation-findings-equivalent string from a
+ * single-shot repair recommendation. The agentic path has a dedicated
+ * Investigation Agent whose structured output flows through
+ * `summarizeInvestigationForRetry`; the single-shot path has no such
+ * agent, but the fix-gen model IS asked for `rootCause`, `reasoning`,
+ * and `evidence` — which together are a reasonable proxy for "why is
+ * this test failing." Persisting this into `skill.investigationFindings`
+ * closes the gap where every single-shot-saved skill previously had
+ * empty findings, starving downstream investigation prompts on repeat
+ * failures of the same spec.
+ *
+ * Returns `undefined` when the recommendation has nothing meaningful
+ * to summarize, matching the shape of `summarizeInvestigationForRetry`
+ * so both paths plug into the same coordinator code.
+ */
+export function summarizeSingleShotFindings(
+  recommendation: AIRecommendation | null | undefined
+): string | undefined {
+  if (!recommendation) return undefined;
+  const s = sanitizeForPrompt;
+  const parts: string[] = [];
+
+  if (recommendation.rootCause) {
+    parts.push(`Root cause: ${s(recommendation.rootCause, RETRY_CAPS.ROOT_CAUSE)}`);
+  }
+  if (recommendation.reasoning) {
+    parts.push(`Reasoning: ${s(recommendation.reasoning, RETRY_CAPS.FIX_REASONING)}`);
+  }
+  if (recommendation.evidence?.length) {
+    const items = recommendation.evidence
+      .slice(0, 3)
+      .map((e) => s(e, RETRY_CAPS.EVIDENCE_ITEM));
+    parts.push(`Evidence: ${items.join('; ')}`);
+  }
+
+  return parts.length > 0 ? parts.join('\n') : undefined;
+}
+
+/**
  * Collapse an `InvestigationOutput` into the structured-but-flat string
  * that `buildPriorAttemptContext` renders into the next iteration's
  * context under "Investigation findings:". The goal is to preserve as
@@ -380,7 +419,15 @@ export class SimplifiedRepairAgent {
     },
     previousResponseId?: string,
     skills?: { relevant: TriageSkill[]; flakiness?: FlakinessSignal },
-    priorInvestigationContext?: string
+    priorInvestigationContext?: string,
+    /**
+     * Pre-rendered repo conventions block (from `.adept-triage/context.md`)
+     * that the coordinator fetched once for this run. Threaded through to
+     * agent system prompts (agentic path) and the single-shot prompt so
+     * both paths see the same baseline repo knowledge. Empty string for
+     * repos that haven't opted in.
+     */
+    repoContext?: string
   ): Promise<{ fix: FixRecommendation; lastResponseId?: string; agentRootCause?: string; agentInvestigationFindings?: string } | null> {
     try {
       core.info('🔧 Generating fix recommendation...');
@@ -394,7 +441,8 @@ export class SimplifiedRepairAgent {
           previousAttempt,
           previousResponseId,
           skills,
-          priorInvestigationContext
+          priorInvestigationContext,
+          repoContext
         );
 
         if (agenticResult) {
@@ -419,7 +467,8 @@ export class SimplifiedRepairAgent {
         errorData,
         previousAttempt,
         skills,
-        priorInvestigationContext
+        priorInvestigationContext,
+        repoContext
       );
     } catch (error) {
       core.warning(`Failed to generate fix recommendation: ${error}`);
@@ -454,7 +503,8 @@ export class SimplifiedRepairAgent {
     },
     previousResponseId?: string,
     skills?: { relevant: TriageSkill[]; flakiness?: FlakinessSignal },
-    priorInvestigationContext?: string
+    priorInvestigationContext?: string,
+    repoContext?: string
   ): Promise<{ fix: FixRecommendation; lastResponseId?: string; agentRootCause?: string; agentInvestigationFindings?: string } | null> {
     if (!this.orchestrator) {
       return null;
@@ -495,6 +545,7 @@ export class SimplifiedRepairAgent {
             }
           : undefined,
         framework: errorData?.framework,
+        repoContext,
       });
 
       if (priorInvestigationContext) {
@@ -566,8 +617,9 @@ export class SimplifiedRepairAgent {
       priorAgentInvestigationFindings?: string;
     },
     skills?: { relevant: TriageSkill[]; flakiness?: FlakinessSignal },
-    priorInvestigationContext?: string
-  ): Promise<{ fix: FixRecommendation; agentRootCause?: string } | null> {
+    priorInvestigationContext?: string,
+    repoContext?: string
+  ): Promise<{ fix: FixRecommendation; agentRootCause?: string; agentInvestigationFindings?: string } | null> {
     // Try to fetch the actual source file content
     let sourceFileContent: string | null = null;
     const cleanFilePath = this.extractFilePath(repairContext.testFile);
@@ -589,7 +641,8 @@ export class SimplifiedRepairAgent {
       cleanFilePath,
       previousAttempt,
       skills,
-      priorInvestigationContext
+      priorInvestigationContext,
+      repoContext
     );
 
     // Save prompt for debugging (optional)
@@ -705,7 +758,8 @@ export class SimplifiedRepairAgent {
       `${recommendation.rootCause || ''} ${recommendation.reasoning || ''} ${repairContext.errorMessage || ''}`,
       repairContext.errorType
     );
-    return { fix: fixRecommendation, agentRootCause };
+    const agentInvestigationFindings = summarizeSingleShotFindings(recommendation);
+    return { fix: fixRecommendation, agentRootCause, agentInvestigationFindings };
   }
 
   /**
@@ -877,9 +931,18 @@ export class SimplifiedRepairAgent {
       priorAgentInvestigationFindings?: string;
     },
     skills?: { relevant: TriageSkill[]; flakiness?: FlakinessSignal },
-    priorInvestigationContext?: string
+    priorInvestigationContext?: string,
+    repoContext?: string
   ): string {
-    let contextInfo = `## Test Failure Context
+    let contextInfo = '';
+    // Repo conventions go FIRST so the model frames everything else
+    // (failure context, source, diffs, prior reasoning) through the
+    // lens of "this is how this repo writes tests." Empty string for
+    // repos that haven't opted in — collapses to a no-op.
+    if (repoContext) {
+      contextInfo += `${repoContext}\n\n`;
+    }
+    contextInfo += `## Test Failure Context
 - **Test File:** ${sanitizeForPrompt(context.testFile)}
 - **Test Name:** ${sanitizeForPrompt(context.testName)}
 - **Error Type:** ${sanitizeForPrompt(context.errorType)}

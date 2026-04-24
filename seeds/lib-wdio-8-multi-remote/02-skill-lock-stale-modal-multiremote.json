@@ -1,0 +1,17 @@
+{
+  "repo": "adept-at/lib-wdio-8-multi-remote",
+  "spec": "test/specs/skills/multi.skill.lock.editor.ts",
+  "testName": "Log in and open skill, grab lock, and edit skill on browser 1 with user 1",
+  "framework": "webdriverio",
+  "errorPattern": "stale element reference: Can't call click on element with selector \"[data-testid=\"Take skill lock\"]\"",
+  "rootCauseCategory": "TIMING_ISSUE",
+  "fix": {
+    "file": "test/specs/skills/multi.skill.lock.editor.ts",
+    "changeType": "OTHER",
+    "summary": "After clicking Toggle edit mode, detect the steal-lock modal via execute(), then click 'Take skill lock' with document.querySelector + execute (not stored element refs). Sidebar refactor causes React re-renders that invalidate WebDriver element IDs.",
+    "pattern": "In getLock(): await mBrowser.pause(3000); const hasModal = await mBrowser.execute(() => !!document.querySelector('[data-testid=\"Take skill lock\"]')); if (hasModal) { await mBrowser.execute(() => document.querySelector('[data-testid=\"Take skill lock\"]')?.click()); } Optionally assert via Sauce GQL helper (stealSkillLock). Aligns with git fix 9660335."
+  },
+  "confidence": 90,
+  "investigationFindings": "Git history (commit 9660335 area) explicitly fixes skill-lock flakiness by replacing element-reference clicks with browser.execute after a sidebar refactor. Multi-remote stresses timing (both sessions race), making the stale-element window wider than single-browser tests.",
+  "rootCauseChain": "TIMING_ISSUE -> React re-render (sidebar refactor) -> stored element reference goes stale -> click on lock modal fails"
+}

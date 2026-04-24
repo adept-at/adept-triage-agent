@@ -1,0 +1,17 @@
+{
+  "repo": "adept-at/wdio-9-bidi-mux3",
+  "spec": "test/specs/skills/skill.video.loads.pause.resume.ts",
+  "testName": "should open shared skill via skill link and redirect through login page",
+  "framework": "webdriverio",
+  "errorPattern": "element (\"mux-player\") still not existing after 120000ms",
+  "rootCauseCategory": "TIMING_ISSUE",
+  "fix": {
+    "file": "test/specs/skills/skill.video.loads.pause.resume.ts",
+    "changeType": "WAIT_ADDITION",
+    "summary": "After login, do not wait for a global mux-player. Wait for Lexical video wrappers (div[id^=\"component-\"]) to appear, then let VideoPlayer.scrollToVideo handle IntersectionObserver-based mux mount.",
+    "pattern": "Replace post-login $('mux-player').waitForExist({ timeout: 120000 }) with browser.waitUntil(async () => (await $$('div[id^=\"component-\"]')).length > 0, { timeout: 120000, interval: 1000, timeoutMsg: 'No video component wrappers found on skill page' }). Rely on test/pageobjects/adept.video.player.ts scrollToVideo for lazy mount of the targeted video."
+  },
+  "confidence": 90,
+  "investigationFindings": "Git commit b65cff9 documents CI failures of mux-player not existing after 120s on this spec. Root cause: learn-webapp keeps only ~2-3 mux-player nodes in the DOM at any time; off-screen videos have no mux node until their wrapper is scrolled into view. Wrappers div[id^=\"component-\"] are persistent and the correct readiness signal.",
+  "rootCauseChain": "TIMING_ISSUE -> Lazy mux mount -> global mux wait never satisfied -> 120s timeout"
+}

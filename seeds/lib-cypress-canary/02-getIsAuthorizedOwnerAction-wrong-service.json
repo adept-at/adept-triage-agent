@@ -1,0 +1,17 @@
+{
+  "repo": "adept-at/lib-cypress-canary",
+  "spec": "cypress/skillbuilder-all/lexical.preview.url.sca.js",
+  "testName": "SCA can create a lexical skill with multiple components",
+  "framework": "cypress",
+  "errorPattern": "Timed out retrying: cy.wait(@getIsAuthorizedOwnerAction) - No request ever occurred.",
+  "rootCauseCategory": "NETWORK_ISSUE",
+  "fix": {
+    "file": "cypress/skillbuilder-all/lexical.preview.url.sca.js",
+    "changeType": "LOGIC_CHANGE",
+    "summary": "getIsAuthorizedOwnerAction lives on the accounts GraphQL service, not content. Register the intercept on the correct service so the alias actually fires.",
+    "pattern": "In beforeEach, add cy.interceptGQLQuery('getIsAuthorizedOwnerAction', 'accounts') alongside the other ops. For lists of ops, branch on op === 'getIsAuthorizedOwnerAction' to use 'accounts'; everything else stays on 'content' (mirrors the forEach pattern already in commands.js / supporting specs)."
+  },
+  "confidence": 92,
+  "investigationFindings": "Spec comments explicitly call out: 'Setup all GraphQL intercepts - FIXED: Added missing getIsAuthorizedOwnerAction'. interceptGQLQuery in cypress/support/commands.js routes POSTs based on the second arg (content | accounts | reports). When this op is registered against content the intercept never matches the accounts endpoint, so no @alias ever exists for cy.wait to resolve.",
+  "rootCauseChain": "NETWORK_ISSUE -> wait on @getIsAuthorizedOwnerAction -> intercept registered on wrong service -> alias never fires -> timeout"
+}

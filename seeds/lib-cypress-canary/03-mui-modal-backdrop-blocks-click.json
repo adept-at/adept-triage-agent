@@ -1,0 +1,17 @@
+{
+  "repo": "adept-at/lib-cypress-canary",
+  "spec": "cypress/lexical-preview/lexical.snapshots.preview.sca.js",
+  "testName": "SCA can create skill with text/attachment, snapshot, add image, and restore to verify revert",
+  "framework": "cypress",
+  "errorPattern": "CypressError: cy.click() failed because the center of this element is being covered by another element: <div class=\"MuiModal-backdrop ...\"></div>",
+  "rootCauseCategory": "ELEMENT_VISIBILITY",
+  "fix": {
+    "file": "cypress/lexical-preview/lexical.snapshots.preview.sca.js",
+    "changeType": "WAIT_ADDITION",
+    "summary": "MUI Modal backdrop is still in the DOM when the next click runs. Wait for the visible backdrop to disappear, then target the visible Snapshots control specifically and assert the modal opened.",
+    "pattern": "Before the click: cy.get('.MuiModal-backdrop:visible', { timeout: 10000 }).should('not.exist'). For Snapshots: cy.get('button[aria-label=\"Snapshots\"]', { timeout: 20000 }).filter(':visible').first().scrollIntoView().should('not.be.disabled').click({ force: true }). Then assert: cy.get('[data-testid=\"modal-title\"]').should('contain', 'Snapshots'). Same approach is encoded in openSnapshotsModal in cypress/skillbuilder-all/lexical.snapshots.preview.sca.js."
+  },
+  "confidence": 88,
+  "investigationFindings": "There are two responsive Snapshots controls (desktop + mobile) so unfiltered selectors hit duplicates. Backdrop visibility is the dominant cover-related click failure in MUI modals across this suite. lexicalHelpers.switchMode embeds the same backdrop-aware flow.",
+  "rootCauseChain": "ELEMENT_VISIBILITY -> MUI modal backdrop still rendered -> click on adjacent control hits covered element -> Cypress fails the click"
+}

@@ -1,0 +1,47 @@
+## Framework & runtime
+- **WebdriverIO 8.46.x** — actually WDIO 8 (not 9 in disguise). `@wdio/cli`, `@wdio/local-runner`, `@wdio/mocha-framework` all pinned together.
+- Mocha (`bdd`), `runner: 'local'`. Sauce via `@wdio/sauce-service` when `-t sauce`.
+- Product: **Adept Learn** — primary URLs `https://learn.adept.at` (and `https://learn.phil.adept.at` for dev-org flows). `baseUrl` set by bare URL in argv or `-u` / `--wdioBaseUrl`.
+- `waitforTimeout: 15000`; long Mocha timeout. Failure hooks in `wdio.conf.ts` use **`browser1`** for screenshots/URL — failures originating on `browser2` will not have their session captured.
+- Intercept service is commented out in `wdio.conf.ts`: XHR-intercept patterns are NOT wired here, do not assume they work.
+
+## Multi-remote model
+- `capabilities` is a single object with two top-level keys: **`browser1`** and **`browser2`** (Chrome each). See `multiChromeLocalCaps.ts` (local) and `multiChromeSauceCaps.ts` (Sauce).
+- **Convention**: `browser1` = privileged actor (org admin, super-admin, first editor); `browser2` = second user (invite recipient, Mailosaur reader, second editor). Framework does not enforce roles.
+- **There is no `switchWindow` between browsers**. Every navigation and `$` query must use the explicit handle. Helpers accept `mBrowser` / `multiBrowser: WebdriverIO.Browser` arguments — pass them through, don't reach for global `$` / `browser.url` for session-specific work.
+- **Sauce idle-prevention pattern**: long `waitUntil` on one browser embeds a cheap command on the OTHER browser inside the loop (e.g. `await browser1.getUrl()` while `browser2` polls Mailosaur), so the inactive session does not idle-timeout.
+- After dual login, `browser1.pause` + `browser2.pause` lets both sessions settle before org navigation.
+- **When to use which handle**: Invite / People / admin UI → `browser1`. Email fetch, signup-from-link, learner dashboard, course page → `browser2`. Skill lock → both editors authenticated separately on `browser1` and `browser2`, alternating on the same skill URL.
+
+## Page objects
+- Located in `test/pageobjects/`: base `page.ts`, `multi.login.page.ts`, `multi.invite.form.page.ts` (large — handles org/invite/signup/cancel flows).
+- Multi-remote shape: shared classes export singletons; methods take `mBrowser` / `multiBrowser` for all session-specific I/O. `Page.open(path, mBrowser)` delegates `url` to that handle, never to global `browser`.
+- Caveat: `multi.login.page.ts` getters (e.g. `inputUsername`) use the global `$` — the SUPPORTED path is calling `login(..., mBrowser)`, which uses `mBrowser.$`. Don't assume getters are multiremote-safe.
+
+## Selectors
+- Prefer `data-testid` (`invite-button`, `Take skill lock`), `aria-label`, stable `href` fragments (`[href*="/learners"]`), form `name` / `placeholder` where stable.
+- XPath used for visible text (`//*[text()="PEOPLE"]`, `//*[text()="Next"]`) — brittle to copy changes but common.
+- MUI: `[class^="MuiSkeleton"]`, `[class^="MuiAlert"]`, `.MuiBackdrop-root`, `[role="dialog"]`.
+- **Anti-patterns / repo-specific workarounds**:
+  - **Never** build CSS selectors for ag-Grid rows by raw email — emails contain `+` which breaks CSS. Use `document.querySelectorAll('[role="row"]')` + text match, then read `row-id`, then look for the kebab across pinned/body containers sharing that row-id (see `cancelPendingInvite`).
+  - For Lexical: `.ContentEditable__root` + `browser.keys` after JS focus.
+  - Hidden MUI switch inputs: `waitForClickable` may fail — click via `browser.execute` by `aria-label`.
+- Placeholder drift between flows: `Enter Username or e-mail` vs `Enter username or email` — verify env/UI version.
+
+## Waits / timing
+- Conditional waits via `waitUntil`: URL (`/dashboard`), preview text containing a random token, auto-save (Toggle edit mode disabled cleared), Mailosaur message arrival.
+- Skeletons: `[class^="MuiSkeleton"]` `waitForExist({ reverse: true })` after org navigation.
+- Multi-remote: prefer the explicit cross-browser "ping" inside long `waitUntil` (see `## Multi-remote model`).
+- After GraphQL-heavy actions, Sauce specs drain logs (`SauceAPI.sniffNetworkLog`, `filterSauceGQLRoute`, `sauceGqlHelper`) before asserting (`reserveSeats`, `stealSkillLock`).
+
+## Auth & test setup
+- Per-browser login: `LoginPage.openLoginPageLearn(mBrowser)` or `openLoginPagePhilDev(mBrowser)`, then `setIgnoreCaptchaCookie(mBrowser)` (`adept_testing_flag`), then `login(email, password, stats, mBrowser)`.
+- Accounts: realistic `phil+...` style addresses, org `AI-TEST-ORG`. Env overrides: `ORG`, `ORG_ID`, `SA`, `PWORD`, `TEST_COURSE_ID`, `TEST_COURSE_SLUG` for phil license tests; `run-setup-phil-content.sh` referenced when content missing.
+- Mailosaur: `test/helpers/multi.mailosaur.ts` — `deleteAllMessages(SERVER_ID, browser1)` (API side effect; browser arg mostly logging); `waitForMessageCriteria` + `getEmailByID(..., browser2)`.
+- Isolation: randomized invite emails (`phil+l-<random>@adept.at`); cleanup hooks delete mailbox; some flows use Axios helper to reverse access codes in `after`.
+
+## Common pitfalls
+- **Wrong browser context**: using global `$` / `browser.url` for a step that belongs to `browser2` — symptom is "element not found" while the OTHER window is on the correct page.
+- **Sauce idle timeout**: one session idle while the other runs a long loop — always ping the other session inside long `waitUntil`.
+- **Stale elements after React rerender** (esp. skill lock modal): use `browser.execute` to click `[data-testid="Take skill lock"]` instead of holding element references; dismiss `.MuiBackdrop-root` via JS when Lexical edit is blocked.
+- **Failure capture asymmetry**: `afterTest` only screenshots `browser1` — if a failure is on `browser2`, you may be debugging blind.

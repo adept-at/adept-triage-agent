@@ -1,0 +1,17 @@
+{
+  "repo": "adept-at/wdio-9-bidi-mux3",
+  "spec": "test/specs/skills/mobile.skill.video.transcripts.ts",
+  "testName": "should play video with transcripts on mobile",
+  "framework": "webdriverio",
+  "errorPattern": "Transcript entries did not appear after 30s",
+  "rootCauseCategory": "TIMING_ISSUE",
+  "fix": {
+    "file": "test/specs/skills/mobile.skill.video.transcripts.ts",
+    "changeType": "WAIT_ADDITION",
+    "summary": "Before opening the transcript UI, wait for video component wrappers in the DOM (not mux globally) so startVideoWithTranscriptsMobile runs after the page has persistent video wrappers and can drive the repo's scroll/menu path to the mounted player. Wrapper presence is the readiness signal for the helper path, not a substitute for mux-mounted assertions.",
+    "pattern": "In the login/open-skill it block, replace pause + skill-length-only readiness with browser.waitUntil(async () => (await $$('div[id^=\"component-\"]')).length > 0, { timeout: 120000, interval: 1000, timeoutMsg: 'No video component wrappers found on skill page' }). Keep VideoPlayer.startVideoWithTranscriptsMobile for settings-menu -> media-transcript-button -> entry wait."
+  },
+  "confidence": 88,
+  "investigationFindings": "Commit b65cff9 explicitly lists mobile.skill.video.transcripts.ts transcript-entries-not-appearing-after-30s alongside the skill.video.loads.pause.resume mux timeout; both fixed by wrapper-level readiness waits. startVideoWithTranscriptsMobile already polls entries with the matching timeoutMsg.",
+  "rootCauseChain": "TIMING_ISSUE -> Skill page not mux-ready when transcript path runs -> transcript UI never populates -> entry waitUntil times out"
+}

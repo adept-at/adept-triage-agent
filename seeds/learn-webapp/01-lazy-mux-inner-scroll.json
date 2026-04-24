@@ -1,0 +1,17 @@
+{
+  "repo": "adept-at/learn-webapp",
+  "spec": "cypress/e2e/adept.catalog.skill.load.js",
+  "testName": "Load dashboard, navigate to skill, play video",
+  "framework": "cypress",
+  "errorPattern": "Timed out retrying: Expected to find element: `mux-player`, but never found it",
+  "rootCauseCategory": "TIMING_ISSUE",
+  "fix": {
+    "file": "cypress/e2e/adept.catalog.skill.load.js",
+    "changeType": "WAIT_ADDITION",
+    "summary": "Target the skill video by its Lexical component wrapper and use scrollIntoScrollContainer (the skill page scroll is an inner overflow, not the window). Then assert wrapper-scoped mux and use the wrapperAlias-aware video commands. Don't rely on a global mux-player or window scrollIntoView.",
+    "pattern": "cy.get('div[id^=\"component-\"]').filter((_, el) => Boolean(el.querySelector('[aria-hidden=\"true\"], mux-player'))).first().as('videoWrapper'); cy.get('@videoWrapper').scrollIntoScrollContainer().find('mux-player', { timeout: 30000 }).should('exist'); cy.startVideoNewPlayer({ wrapperAlias: 'videoWrapper', startFromBeginning: true }); cy.verifyVideoProgress(2, { wrapperAlias: 'videoWrapper' });"
+  },
+  "confidence": 90,
+  "investigationFindings": "Recurring fix theme in git history (commits 9c003cb12, 90f2f863f, 1a1506a8e): wrapper-scoped mux selection + scroll-into-scroll-container after lazy-mount. scrollIntoScrollContainer was added specifically because skill content scrolls inside an overflow container, not the window (Cypress #29921 referenced in code).",
+  "rootCauseChain": "TIMING_ISSUE -> mux-player not mounted off-screen + non-window scroll -> global wait never sees element -> 30s timeout"
+}

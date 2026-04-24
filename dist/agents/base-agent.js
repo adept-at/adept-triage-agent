@@ -101,7 +101,10 @@ class BaseAgent {
         }
     }
     async runAgentTask(input, context, previousResponseId) {
-        const systemPrompt = this.getSystemPrompt(context.framework);
+        const baseSystemPrompt = this.getSystemPrompt(context.framework);
+        const systemPrompt = context.repoContext
+            ? `${baseSystemPrompt}\n\n${context.repoContext}`
+            : baseSystemPrompt;
         const userPrompt = this.buildUserPrompt(input, context);
         if (this.config.verbose) {
             core.debug(`[${this.agentName}] System prompt: ${systemPrompt.slice(0, 200)}...`);
@@ -165,6 +168,7 @@ function createAgentContext(params) {
         prDiff: params.prDiff,
         productDiff: params.productDiff,
         framework: params.framework,
+        repoContext: params.repoContext,
     };
 }
 //# sourceMappingURL=base-agent.js.map

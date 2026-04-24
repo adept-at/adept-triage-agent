@@ -1,0 +1,17 @@
+{
+  "repo": "adept-at/learn-webapp",
+  "spec": "cypress/e2e/adept.catalog.skill.load.js",
+  "testName": "Load dashboard, navigate to skill, play video",
+  "framework": "cypress",
+  "errorPattern": "expected mux-player to be visible",
+  "rootCauseCategory": "ELEMENT_VISIBILITY",
+  "fix": {
+    "file": "cypress/support/commands.js",
+    "changeType": "ASSERTION_UPDATE",
+    "summary": "Don't assert .should('be.visible') on a mux-player web component (shadow DOM + lazy mount makes Cypress visibility checks unreliable). Use wrapper-scoped existence + currentTime polling, matching the existing verifyVideoProgress contract.",
+    "pattern": "Inside verifyVideoProgress: resolveVideoWrapperOrLegacyIndex(options).find('mux-player', { timeout: 30000 }).should('exist'). Then poll currentTime via cy.then(...) with cy.wait(interval, { log: false }) until delta >= expectedSeconds. Pass wrapperAlias or videoIndex from the spec; never rely on a global mux-player or be.visible."
+  },
+  "confidence": 88,
+  "investigationFindings": "Commit 660e00dcd removed unreliable .should('be.visible') from verifyVideoProgress. 4e9b9ed48 / 9da90a6be stabilized catalog skill load by switching to wrapper-scoped mux + scroll fixes.",
+  "rootCauseChain": "ELEMENT_VISIBILITY -> visibility check on shadow-DOM custom element + lazy mount -> false negative -> assertion fails on otherwise-playing video"
+}

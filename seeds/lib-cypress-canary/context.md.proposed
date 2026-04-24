@@ -1,0 +1,46 @@
+## Framework & runtime
+- Cypress **^15.8.1**, JS specs (`.js`) with `/// <reference types="cypress" />` where typed.
+- Product: **learn-webapp** (`baseUrl` `https://learn.adept.at`). Triage `product-repo` is `adept-at/learn-webapp`.
+- Run grids: GitHub Actions + **Sauce** (`@adept-at/sauce-cypress-reporter`, `us-west-1`, Chrome). Optional `cypress-parallel` scripts for local-style parallel runs.
+- Two configs / two `specPattern`s: `cypress.skillbuilder.saucelabs.ts` → `cypress/skillbuilder-all/**`; `lexical.skillbuilder-vercel.sauce.config.ts` → `cypress/lexical-preview/**`.
+- E2E configs use **`testIsolation: true`**; `defaultCommandTimeout`/`pageLoadTimeout` 15000ms; viewport 1920x1080; `userAgent: 'Adept'`; **`retries.runMode: 0`** — flakes are NOT hidden by Cypress retries.
+- Env detection: `commands.js` derives `ENV` from `baseUrl` and maps API hosts (`api.phil.adept.at` … `api.adept.at`) and login subdomains.
+
+## Test organization
+- Primary CI specs: `cypress/skillbuilder-all/` and `cypress/lexical-preview/`. Legacy/scratch: `cypress/refactor/`, `cypress/skillbuilder-temp/`, `cypress/test-triage-fail/` (not the default Sauce `specPattern`).
+- Support: `cypress/support/e2e.js` (imports `./commands`, `cypress-fail-fast`, `cypress-axe`, `cypress-terminal-report`, optional `CYPRESS_THROTTLE`); `cypress/support/commands.js` (env, login, GQL helpers, lexical, video); `cypress/support/lexicalHelpers.js` (Lexical-specific intercepts and helpers).
+- Plugins: `cypress/plugins/index.js` registers tasks (`runEndpoint`, `getLoginToken` from `@adept-at/gql-test`, axe, OpenAI image tasks).
+
+## Selectors
+- Prefer `data-testid` (e.g. `auto-save-indicator`, `add-component-button`, `modal-title`, `editButtons-save`) and `aria-label` (e.g. `aria-label="Snapshots"`, `aria-label="preview - edit toggle switch"`); known forms use `id` (`#email`, `#password`, `#login-button`).
+- MUI: Autocomplete via `label:contains("Owner")` + `[role="combobox"]` + listbox/option; backdrops: wait for `.MuiModal-backdrop:visible` to NOT exist before clicking adjacent toggles; for duplicate responsive controls, **filter `:visible`** and use `.first()`.
+- Video: `mux-player` with shadow-piercing `shadow().find('media-theme').shadow()...`; legacy `vjs-*` only in older specs.
+- Anti-patterns: brittle class substrings; `cy.get('mux-player')` without scrolling its container into view first.
+
+## Waits / timing
+- Network over sleeps. Use **`cy.interceptGQLQuery(opName, service)`** (services: `'content' | 'accounts' | 'reports'`) — alias is set to the GraphQL `operationName`. Then `cy.wait('@OpName', { timeout: ... })` and `getGQLResponseBody` (10s default).
+- Critical: **`getIsAuthorizedOwnerAction` lives on the `accounts` service**, not `content`. Routing it to `content` means the alias never fires.
+- `cypress-wait-until` is acceptable for video time / progress polling. Fixed `cy.wait(ms)` is treated as a maintenance smell — replace with intercepts or polling where possible.
+- `cypress-fail-fast` (`FAIL_FAST_ENABLED`) aborts the run on first failure in some skillbuilder workflows.
+- Banned: blanket `cy.on('uncaught:exception', () => false)` — only swallow known third-party noise (Beamer, etc.) with a comment, never silence app errors.
+
+## Auth & test setup
+- `cy.login(route, user, pass)` (`commands.js`): intercepts the accounts web token (`@token`), sets `adept_testing_flag` cookie, types `#email`/`#password` (with enabled checks for reCAPTCHA delay), clicks `#login-button`, waits `@token`, then asserts MUI progress is gone.
+- Roles: SCA + catalog-specific users (e.g. `phil+sca-…@adept.at`); pools for PHIL/ICC test users via custom commands.
+- `beforeEach` typically: register all GQL intercepts for the flow + `cy.on('uncaught:exception', ...)` for documented noise + `cy.login(...)`.
+- `TEST_PARENT_COURSE` env controls the default parent course for `lexStartSkill`.
+
+## Custom commands (high level)
+- Env / API: `getEnvironmentFromBaseUrl`, `interceptGQLQuery` / `interceptGQLQueryName`, `getGQLResponseBody`, `setAdeptTestingFlag`, `runEndpoint`.
+- Auth: `login`, `logout`, `getRandomTestUser*`.
+- App: `verifyMyStats`, `deleteSKill*`, `deleteAllSkillsFromMyCreations`.
+- Media: `startVideo*`, `verifyVideoProgress`, **`startVideoNewPlayer`** (scrolls `div[id^="component-"]` then waits on `mux-player`), `pauseVideo*`, `startVideoMobile`.
+- Lexical: `lexStartSkill`, `lexOpenAddComponent`, **`safeTypeInEditor`** (`.ContentEditable__root` last, focus, type), `lexGoToBottom`.
+
+## Common pitfalls
+- **`getIsAuthorizedOwnerAction` on the wrong service** is the #1 alias-never-fires cause — always register it on `accounts`.
+- Mux player not yet mounted: scroll the **`div[id^="component-"]`** container into view first (or use `cy.startVideoNewPlayer()`); `IntersectionObserver` is what mounts the player.
+- MUI modal backdrops: wait `.MuiModal-backdrop:visible` → `not.exist` before clicking adjacent controls.
+- Duplicate responsive controls (e.g. two `[aria-label="Snapshots"]` for desktop+mobile): filter `:visible`, use `.first()`.
+- Sauce + Vercel: 403/navigation may be environmental (rate limits, IP allowlist), not test/product bugs — investigation should consider environment before assuming a regression.
+- `test-command` in workflows uses the `{spec}` placeholder; fixes must keep paths compatible with both the dispatched command and the right `-C` config file.

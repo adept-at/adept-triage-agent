@@ -1,0 +1,17 @@
+{
+  "repo": "adept-at/lib-wdio-8-e2e-ts",
+  "spec": "test/specs/skills/lms.video.plays.e2e.ts",
+  "testName": "should login with valid credentials to LMS, and load a skill, play, pause, and resume the first video",
+  "framework": "webdriverio",
+  "errorPattern": "element (\"mux-player\") still not clickable after 10000ms",
+  "rootCauseCategory": "ELEMENT_VISIBILITY",
+  "fix": {
+    "file": "test/specs/skills/lms.video.plays.e2e.ts",
+    "changeType": "WAIT_ADDITION",
+    "summary": "Multiple sidebar close buttons can render in the SCORM-nested learn view. Close every visible matching control, wait until none are displayed, then trigger playback via document.querySelector + JS click instead of WebDriver click on the custom element.",
+    "pattern": "Replace single combined $() close with: const closeBtns = await $$('[aria-label=\"Close content sidebar\"], [aria-label=\"Close sidebar\"]'); for (const btn of closeBtns) { if (await btn.isDisplayed()) { await btn.waitForClickable({ timeout: 10000 }); await btn.click(); } } Then: await browser.waitUntil(async () => !(await $$('[aria-label=\"Close content sidebar\"], [aria-label=\"Close sidebar\"]')).some(async b => await b.isDisplayed()), { timeout: 10000, timeoutMsg: 'Sidebar still visible' }). Replace mux-player waitForClickable + element click with: await browser.execute(() => document.querySelector('mux-player')?.click()). For SCORM iframe contexts, extend mux-player waitForExist timeout to 60000."
+  },
+  "confidence": 90,
+  "investigationFindings": "Triage PR #281 / commit 0e2078a: failure surfaced as clickability timeout; root cause is sidebar/chrome covering the player in SCORM-nested learn view. The SCORM-iframe context makes mux mount slower, so a 60s waitForExist is appropriate here even though most flows run with the 15s default.",
+  "rootCauseChain": "ELEMENT_VISIBILITY -> sidebar overlay covers mux-player -> WebDriver click intercepted -> 10s timeout"
+}

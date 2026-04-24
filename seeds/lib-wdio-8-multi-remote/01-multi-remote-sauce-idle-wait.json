@@ -1,0 +1,17 @@
+{
+  "repo": "adept-at/lib-wdio-8-multi-remote",
+  "spec": "test/specs/orginvites/multi.invite.phil.license.signup.ts",
+  "testName": "Invite email arrives in Mailosaur",
+  "framework": "webdriverio",
+  "errorPattern": "Did not receive invitation email for phil+l-.*@adept.at after 2 minutes",
+  "rootCauseCategory": "TIMING_ISSUE",
+  "fix": {
+    "file": "test/specs/orginvites/multi.invite.phil.license.signup.ts",
+    "changeType": "WAIT_ADDITION",
+    "summary": "While browser2 polls Mailosaur in waitUntil, periodically issue a no-op command on browser1 (e.g. getUrl) so the admin session stays active on Sauce and does not idle-timeout during the long email wait.",
+    "pattern": "Inside browser2.waitUntil({ ... }), keep `await browser1.getUrl()` (or another cheap command) in the loop alongside multiMailosaur.waitForMessageCriteria / getEmailByID — mirrors the 'keep browser1 alive on Sauce' pattern in invite.org.learner.dev.ts."
+  },
+  "confidence": 90,
+  "investigationFindings": "Repo convention: long waits on browser2 embed browser1.getUrl() to keep Sauce from dropping the inactive multiremote session. Removing that ping reproduces a 2-minute Mailosaur timeout even when email is delivered promptly.",
+  "rootCauseChain": "TIMING_ISSUE -> Sauce multiremote idle -> browser1 session lost -> browser2 waitUntil never resolves"
+}

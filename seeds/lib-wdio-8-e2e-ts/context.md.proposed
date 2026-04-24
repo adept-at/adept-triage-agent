@@ -1,0 +1,40 @@
+## Framework & runtime
+- Despite the legacy repo name, this is **WebdriverIO 9** (`@wdio/*` ^9.0.0) with **BiDi** by default. README and `wdio.conf.ts` confirm v9.
+- **Mocha** (`bdd`); TS via `autoCompileOpts` + `ts-node` (`transpileOnly: true`, `project: ./tsconfig.json`).
+- Runner: `local`. Sauce: `@wdio/sauce-service`, `region: 'us'`, credentials via `SAUCE_USERNAME` / `SAUCE_ACCESS_KEY`.
+- Capabilities are commander-driven from CLI (`-t local|sauce`, `-spec`, `-b`, `-u`, `--negativeTest`, `--blockPartyCookies`, `--noBidi`). `--noBidi` flips local Chrome to `wdio:enforceWebDriverClassic: true` — used for cross-origin iframe flows.
+- **Product surface is broad**: learn-webapp, plus SCORM Cloud / LMS, billing/payment, dashboard, paid enrollments, labs, access codes, reports, link crawler. Not a pure learn-webapp suite.
+- `baseUrl` is set by `-u` / `--wdioBaseUrl` or by passing a bare `http(s)://...` on the CLI; no single hardcoded default in config.
+- Timeouts: `waitforTimeout: 15000`; Mocha timeout 600000; `bail: 1`. `afterTest` saves screenshots and `lastUrl` on failure.
+
+## Page objects
+- Shared in `test/pageobjects/`: `page.ts` (base — `open`, `robustClick`, `beForceClick` with stale retries, `setIgnoreCaptchaCookie`, `dismissTour`, `dismissBeamerNotifications`, BiDi network helpers), `login.page.ts`, `adept.video.player.ts` (Mux: index-based via `waitForMuxPlayerIndex`, `clickMuxPlayerButton`, `startVideoIndexAndMonitorEvents`), payment pages under `pageobjects/payment/`.
+- Feature-local POs under `test/specs/<area>/pages/` (e.g. `dashboard/pages/dash.page.ts`, `paid-enrollments/pages/*.ts`, `skills/pages/skill.page.ts`).
+- Pattern: extend `Page`, import `config` / `credentials` from `wdio.conf`, use `browser.url`, `LoginPage` exported as a singleton.
+
+## Selectors
+- Prefer `aria-label` (nav + actions like "Launch Virtual Lab"), `href` for stable routes (`/enrollments`), `data-testid` where present.
+- Mux: prefer `adept.video.player.ts` APIs; shadow controls via `clickMuxPlayerButton(videoIndex, selector)` (e.g. `media-play-button`) — avoid passing element refs into `browser.execute` under BiDi.
+- Anti-patterns: brittle XPaths in older skill POs; `header h2` for dashboard greeting (now `h1`); compound selectors like `$('[aria-label="A"], [aria-label="B"]')` returning unexpected single elements when both labels can co-exist — use `$$` + loop.
+
+## Waits / timing
+- Allowed: `browser.waitUntil` with `timeoutMsg` + `interval`; `waitForExist` / `waitForDisplayed` / `waitForClickable`; intentional `browser.pause` only in login spacing, Beamer dismiss, SCORM steps, or Mux flows where documented.
+- BiDi network: use `networkHelper.startMonitoring` → `waitForRoute` / `filterByRoute`. Always guard with `networkHelper.isBidiEnabled(browser)` because `--noBidi` and Safari classic disable capture (no-op semantics in `networkUtils`).
+- Banned: assuming an exact count of close-sidebar controls (`toBeElementsArrayOfSize`); `waitForClickable` on `mux-player` while a sidebar overlay is still in the DOM — close all visible sidebars and wait until none displayed first.
+- `--negativeTest` / `NEGTEST` flips expected UI in some specs (labs); never "fix" toward the wrong branch — check the flag.
+
+## Auth & test setup
+- `LoginPage.login`: `setIgnoreCaptchaCookie` (`adept_testing_flag=1`), verify via `getIgnoreCaptchaCookie`, staged `browser.pause` between email/password steps, `dismissBeamerNotifications` after login.
+- Variants: `loginDroid`, org/access-code flows (`loginFromAcodeVerifyOrgCode`, etc.), `openLoginPageLearn` builds `/login` from `BASE_URL`.
+- Dashboard specs typically `dismissBeamerNotifications` before any clicks Beamer can block.
+
+## Multi-suite / SCORM-LMS (repo-distinctive)
+- `lms.video.plays.e2e.ts`: SCORM Cloud signup → multi-window → nested iframes (`scormdriver_content`, `#contentRelay`) → deep-linked skill → `mux-player` in embedded learn context. Failures may be infra (signup wait room) — spec already logs URL/title/source on timeout.
+- `labs.3rd.party.warning.e2e.ts`: BiDi route checks + `NEGTEST`-dependent assertions on a MUI alert vs "Launch Virtual Lab" CTA (Safari/Edge caveats in spec comments).
+- Suite breadth means **not every failure is "Mux on learn skill page"** — investigate the actual surface (paid enrollments, payments, access codes, crawler) before assuming it's a video-page issue.
+
+## Common pitfalls
+- This repo's Mux pattern is **index-based** (`waitForMuxPlayerIndex`, `$$('mux-player')[i]`) — the `wdio-9-bidi-mux3` "wrapper-first + scrollToVideo" recipe is **NOT** the standard here, do not blindly port it.
+- `--noBidi` / classic sessions: BiDi network monitoring becomes a no-op — don't hard-fail on empty `waitForRoute` results.
+- Sidebar close labels differ between contexts (`Close content sidebar` vs `Close sidebar`) — close all visible matches, assert none displayed, then interact with Mux.
+- Stale clicks on freshly-rendered nav links: use `Page.beForceClick('[href="…"]', 'description')` after `scrollIntoView` (see `dash.enrollments.spec.ts`).

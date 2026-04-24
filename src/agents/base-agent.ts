@@ -102,6 +102,14 @@ export interface AgentContext {
   investigationSummary?: string;
   /** Prior investigation findings from skill store, for the investigation agent */
   priorInvestigationContext?: string;
+  /**
+   * Repo-level conventions block fetched from `.adept-triage/context.md`
+   * in the consumer repo. Pre-formatted with a markdown header and
+   * sanitized; safe to prepend verbatim to any agent's system prompt.
+   * Empty when the repo hasn't opted in (the common case today). See
+   * `RepoContextFetcher` for fetch/cache/escape semantics.
+   */
+  repoContext?: string;
 }
 
 /**
@@ -243,7 +251,19 @@ export abstract class BaseAgent<TInput, TOutput> {
     context: AgentContext,
     previousResponseId?: string
   ): Promise<{ data: TOutput; responseId: string }> {
-    const systemPrompt = this.getSystemPrompt(context.framework);
+    // Compose the system prompt: agent-specific instructions first,
+    // then repo conventions appended below. Order matters — the
+    // agent's role/contract should set the frame, repo conventions
+    // refine "how this repo does things." Putting repo first would
+    // risk the model treating conventions as the primary task.
+    //
+    // Empty `repoContext` (the common case until repos opt in)
+    // collapses to a no-op concatenation so prompt size for
+    // non-onboarded repos is unchanged.
+    const baseSystemPrompt = this.getSystemPrompt(context.framework);
+    const systemPrompt = context.repoContext
+      ? `${baseSystemPrompt}\n\n${context.repoContext}`
+      : baseSystemPrompt;
     const userPrompt = this.buildUserPrompt(input, context);
 
     if (this.config.verbose) {
@@ -332,6 +352,8 @@ export function createAgentContext(params: {
   };
   /** Test framework: 'cypress' or 'webdriverio' */
   framework?: string;
+  /** Repo-level conventions (pre-rendered) — see AgentContext.repoContext */
+  repoContext?: string;
 }): AgentContext {
   return {
     errorMessage: params.errorMessage,
@@ -345,5 +367,6 @@ export function createAgentContext(params: {
     prDiff: params.prDiff,
     productDiff: params.productDiff,
     framework: params.framework,
+    repoContext: params.repoContext,
   };
 }

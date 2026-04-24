@@ -28,6 +28,7 @@ export interface TriageSkill {
     rootCauseChain?: string;
     repoContext?: string;
     failureModeTrace?: FailureModeTrace;
+    isSeed?: boolean;
 }
 export interface FlakinessSignal {
     isFlaky: boolean;
@@ -116,6 +117,7 @@ export declare function describeFixPattern(changes: Array<{
     justification?: string;
     changeType?: string;
 }>): string;
+export declare function normalizeSpec(raw?: string): string;
 export declare function normalizeError(msg: string): string;
 export declare function formatSkillsForPrompt(skills: TriageSkill[], role: 'investigation' | 'fix_generation' | 'review', flakiness?: FlakinessSignal): string;
 //# sourceMappingURL=skill-store.d.ts.map

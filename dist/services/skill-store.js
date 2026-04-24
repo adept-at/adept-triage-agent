@@ -38,6 +38,7 @@ exports.sanitizeForPrompt = sanitizeForPrompt;
 exports.normalizeFramework = normalizeFramework;
 exports.buildSkill = buildSkill;
 exports.describeFixPattern = describeFixPattern;
+exports.normalizeSpec = normalizeSpec;
 exports.normalizeError = normalizeError;
 exports.formatSkillsForPrompt = formatSkillsForPrompt;
 const core = __importStar(require("@actions/core"));
@@ -133,10 +134,8 @@ function selectSkillsToPrune(skills, keepSkillId) {
     if (skills.length <= exports.MAX_SKILLS)
         return [];
     const overflowCount = skills.length - exports.MAX_SKILLS;
-    return [...skills]
-        .filter((skill) => skill.id !== keepSkillId)
-        .sort(compareOldestFirst)
-        .slice(0, overflowCount);
+    const eligible = [...skills].filter((skill) => skill.id !== keepSkillId && !skill.isSeed);
+    return eligible.sort(compareOldestFirst).slice(0, overflowCount);
 }
 class SkillStore {
     skills = [];
@@ -336,9 +335,10 @@ class SkillStore {
         const frameworkSkills = this.skills.filter((s) => (s.framework === normalized || s.framework === 'unknown') && !s.retired);
         if (frameworkSkills.length === 0)
             return [];
+        const querySpec = normalizeSpec(opts.spec);
         const scored = frameworkSkills.map((skill) => {
             let score = 0;
-            if (opts.spec && skill.spec === opts.spec)
+            if (querySpec && normalizeSpec(skill.spec) === querySpec)
                 score += 10;
             if (opts.errorMessage) {
                 score += errorSimilarity(skill.errorPattern, normalizeError(opts.errorMessage)) * 5;
@@ -368,9 +368,10 @@ class SkillStore {
             return [];
         const now = Date.now();
         const SEVEN_DAYS = 7 * 86_400_000;
+        const querySpec = normalizeSpec(opts.spec);
         const scored = candidates.map((skill) => {
             let score = 0;
-            if (opts.spec && skill.spec === opts.spec)
+            if (querySpec && normalizeSpec(skill.spec) === querySpec)
                 score += 15;
             if (opts.errorMessage) {
                 score +=
@@ -396,7 +397,8 @@ class SkillStore {
     }
     detectFlakiness(spec) {
         const now = Date.now();
-        const specSkills = this.skills.filter((s) => s.spec === spec);
+        const querySpec = normalizeSpec(spec);
+        const specSkills = this.skills.filter((s) => normalizeSpec(s.spec) === querySpec);
         const inShortWindow = specSkills.filter((s) => now - parseSkillTimestamp(s.createdAt) < FLAKY_THRESHOLDS.SHORT_WINDOW_DAYS * 86_400_000);
         const inLongWindow = specSkills.filter((s) => now - parseSkillTimestamp(s.createdAt) < FLAKY_THRESHOLDS.LONG_WINDOW_DAYS * 86_400_000);
         if (inShortWindow.length > FLAKY_THRESHOLDS.SHORT_WINDOW_MAX) {
@@ -423,7 +425,8 @@ class SkillStore {
         };
     }
     countForSpec(spec) {
-        return this.skills.filter((s) => s.spec === spec && !s.retired).length;
+        const querySpec = normalizeSpec(spec);
+        return this.skills.filter((s) => normalizeSpec(s.spec) === querySpec && !s.retired).length;
     }
     getUsageStats() {
         return {
@@ -508,7 +511,7 @@ function buildSkill(params) {
         id: crypto.randomUUID(),
         createdAt: new Date().toISOString(),
         repo: params.repo,
-        spec: params.spec,
+        spec: normalizeSpec(params.spec),
         testName: params.testName,
         framework: normalizeFramework(params.framework),
         errorPattern: normalizeError(params.errorMessage),
@@ -537,6 +540,19 @@ function describeFixPattern(changes) {
         return `${prefix}${c.justification || `Modified ${c.file}`}`;
     })
         .join('; ');
+}
+function normalizeSpec(raw) {
+    if (!raw)
+        return raw ?? '';
+    const linuxMatch = raw.match(/^\/home\/runner\/work\/[^/]+\/[^/]+\/(.+)$/);
+    if (linuxMatch)
+        return linuxMatch[1];
+    const winMatch = raw.match(/^[A-Za-z]:[\\/]a[\\/][^\\/]+[\\/][^\\/]+[\\/](.+)$/);
+    if (winMatch)
+        return winMatch[1].replace(/\\/g, '/');
+    if (raw.startsWith('./'))
+        return raw.slice(2);
+    return raw;
 }
 function normalizeError(msg) {
     return msg

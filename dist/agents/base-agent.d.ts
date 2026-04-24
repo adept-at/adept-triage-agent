@@ -44,6 +44,7 @@ export interface AgentContext {
     includeScreenshots?: boolean;
     investigationSummary?: string;
     priorInvestigationContext?: string;
+    repoContext?: string;
 }
 export interface AgentConfig {
     timeoutMs: number;
@@ -94,5 +95,6 @@ export declare function createAgentContext(params: {
         }>;
     };
     framework?: string;
+    repoContext?: string;
 }): AgentContext;
 //# sourceMappingURL=base-agent.d.ts.map

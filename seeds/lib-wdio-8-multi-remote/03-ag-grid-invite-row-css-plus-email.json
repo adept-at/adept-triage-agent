@@ -1,0 +1,17 @@
+{
+  "repo": "adept-at/lib-wdio-8-multi-remote",
+  "spec": "test/specs/orginvites/multi.invite.phil.license.cancel.ts",
+  "testName": "Cancel pending invite restores license seat",
+  "framework": "webdriverio",
+  "errorPattern": "Invite row for phil+.*@adept.at not found in ag-Grid after 15s",
+  "rootCauseCategory": "SELECTOR_MISMATCH",
+  "fix": {
+    "file": "test/pageobjects/multi.invite.form.page.ts",
+    "changeType": "SELECTOR_UPDATE",
+    "summary": "ag-Grid rows can't be CSS-selected by raw email — '+' breaks the selector. Use execute() to scan [role=\"row\"] text for the email, read row-id, then find the kebab menu across pinned and body containers sharing that row-id.",
+    "pattern": "Follow cancelPendingInvite(): await mBrowser.waitUntil(async () => mBrowser.execute((email) => Array.from(document.querySelectorAll('[role=\"row\"]')).find(r => r.textContent?.toLowerCase().includes(email))?.getAttribute('row-id'), emailLower), { ... }). Then find kebab via document.querySelectorAll(`[row-id=\"${rid}\"]`) and inside each container `[aria-label=\"More actions for user\"]`."
+  },
+  "confidence": 88,
+  "investigationFindings": "multi.invite.form.page.cancelPendingInvite explicitly documents that row-id is a UUID and emails contain '+'. The JS row walk is the stable pattern already used for cancel flows; copying it for new invite-grid actions avoids the same trap.",
+  "rootCauseChain": "SELECTOR_MISMATCH -> CSS selector with '+' in email is invalid -> row not found -> 15s timeout"
+}

@@ -1,0 +1,17 @@
+{
+  "repo": "adept-at/lib-wdio-8-e2e-ts",
+  "spec": "test/specs/skills/lms.video.plays.e2e.ts",
+  "testName": "should login with valid credentials to LMS, and load a skill, play, pause, and resume the first video",
+  "framework": "webdriverio",
+  "errorPattern": "expect(received).toBeElementsArrayOfSize(expected)",
+  "rootCauseCategory": "ASSERTION_MISMATCH",
+  "fix": {
+    "file": "test/specs/skills/lms.video.plays.e2e.ts",
+    "changeType": "ASSERTION_UPDATE",
+    "summary": "Don't assert exactly one Close-content-sidebar element or `not.toBeExisting` on a single Close-sidebar label. Use one compound selector and close only when present.",
+    "pattern": "Remove `expect(closeSidebarButtons).toBeElementsArrayOfSize({ eq: 1 })` and `expect($('[aria-label=\"Close sidebar\"]')).not.toBeExisting()`. Replace with: const closeSidebarButton = await $('[aria-label=\"Close content sidebar\"], [aria-label=\"Close sidebar\"]'); if (await closeSidebarButton.isExisting()) { await closeSidebarButton.waitForClickable({ timeout: 10000 }); await closeSidebarButton.click(); }"
+  },
+  "confidence": 90,
+  "investigationFindings": "Triage PR #280 / commit 54e72a3: brittle exact-array-size on $$ close buttons. LMS/learn chrome renders 0, 1, or multiple matching nodes depending on viewport, sidebar state, and which inner iframe is active.",
+  "rootCauseChain": "ASSERTION_MISMATCH -> assumed DOM cardinality -> array-size assertion fails on legitimate variation"
+}

@@ -39,6 +39,7 @@ const github = __importStar(require("@actions/github"));
 const simplified_analyzer_1 = require("../simplified-analyzer");
 const log_processor_1 = require("../services/log-processor");
 const skill_store_1 = require("../services/skill-store");
+const repo_context_fetcher_1 = require("../services/repo-context-fetcher");
 const root_cause_category_1 = require("../repair/root-cause-category");
 const constants_1 = require("../config/constants");
 const output_1 = require("./output");
@@ -113,6 +114,11 @@ class PipelineCoordinator {
                 errorMessage: errorData.message,
             })
             : '';
+        const contextOwner = autoFixTargetRepo?.owner ?? this.repoDetails.owner;
+        const contextRepo = autoFixTargetRepo?.repo ?? this.repoDetails.repo;
+        const contextRef = this.inputs.branch || this.inputs.autoFixBaseBranch || 'main';
+        const repoContextFetcher = new repo_context_fetcher_1.RepoContextFetcher(this.octokit);
+        const repoContext = await repoContextFetcher.fetch(contextOwner, contextRepo, contextRef);
         let fixRecommendation = null;
         let autoFixResult = null;
         let iterations = 0;
@@ -126,7 +132,7 @@ class PipelineCoordinator {
             this.inputs.enableLocalValidation &&
             this.inputs.validationTestCommand &&
             autoFixTargetRepo) {
-            const loopResult = await (0, validator_1.iterativeFixValidateLoop)(this.inputs, this.repoDetails, autoFixTargetRepo, errorData, this.openaiClient, this.octokit, skillStore, undefined, investigationContext);
+            const loopResult = await (0, validator_1.iterativeFixValidateLoop)(this.inputs, this.repoDetails, autoFixTargetRepo, errorData, this.openaiClient, this.octokit, skillStore, undefined, investigationContext, repoContext);
             fixRecommendation = loopResult.fixRecommendation;
             autoFixResult = loopResult.autoFixResult;
             iterations = loopResult.iterations;
@@ -137,7 +143,7 @@ class PipelineCoordinator {
             autoFixSkippedReason = loopResult.autoFixSkippedReason;
         }
         else {
-            const singleResult = await (0, validator_1.generateFixRecommendation)(this.inputs, this.repoDetails, errorData, this.openaiClient, this.octokit, undefined, undefined, skillStore, investigationContext);
+            const singleResult = await (0, validator_1.generateFixRecommendation)(this.inputs, this.repoDetails, errorData, this.openaiClient, this.octokit, undefined, undefined, skillStore, investigationContext, repoContext);
             fixRecommendation = singleResult?.fix ?? null;
             agentRootCause = singleResult?.agentRootCause;
             agentInvestigationFindings = singleResult?.agentInvestigationFindings;

@@ -34,6 +34,7 @@ var __importStar = (this && this.__importStar) || (function () {
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.SimplifiedRepairAgent = void 0;
+exports.summarizeSingleShotFindings = summarizeSingleShotFindings;
 exports.summarizeInvestigationForRetry = summarizeInvestigationForRetry;
 exports.buildPriorAttemptContext = buildPriorAttemptContext;
 const core = __importStar(require("@actions/core"));
@@ -58,6 +59,25 @@ const RETRY_CAPS = {
     CODE_BLOCK: 2000,
     PRIOR_INVESTIGATION_CONTEXT: 8000,
 };
+function summarizeSingleShotFindings(recommendation) {
+    if (!recommendation)
+        return undefined;
+    const s = skill_store_1.sanitizeForPrompt;
+    const parts = [];
+    if (recommendation.rootCause) {
+        parts.push(`Root cause: ${s(recommendation.rootCause, RETRY_CAPS.ROOT_CAUSE)}`);
+    }
+    if (recommendation.reasoning) {
+        parts.push(`Reasoning: ${s(recommendation.reasoning, RETRY_CAPS.FIX_REASONING)}`);
+    }
+    if (recommendation.evidence?.length) {
+        const items = recommendation.evidence
+            .slice(0, 3)
+            .map((e) => s(e, RETRY_CAPS.EVIDENCE_ITEM));
+        parts.push(`Evidence: ${items.join('; ')}`);
+    }
+    return parts.length > 0 ? parts.join('\n') : undefined;
+}
 function summarizeInvestigationForRetry(investigation) {
     if (!investigation)
         return undefined;
@@ -192,26 +212,26 @@ class SimplifiedRepairAgent {
             });
         }
     }
-    async generateFixRecommendation(repairContext, errorData, previousAttempt, previousResponseId, skills, priorInvestigationContext) {
+    async generateFixRecommendation(repairContext, errorData, previousAttempt, previousResponseId, skills, priorInvestigationContext, repoContext) {
         try {
             core.info('🔧 Generating fix recommendation...');
             if (this.config.enableAgenticRepair && this.orchestrator) {
                 core.info('🤖 Attempting agentic repair...');
-                const agenticResult = await this.tryAgenticRepair(repairContext, errorData, previousAttempt, previousResponseId, skills, priorInvestigationContext);
+                const agenticResult = await this.tryAgenticRepair(repairContext, errorData, previousAttempt, previousResponseId, skills, priorInvestigationContext, repoContext);
                 if (agenticResult) {
                     core.info(`✅ Agentic repair succeeded with ${agenticResult.fix.confidence}% confidence`);
                     return agenticResult;
                 }
                 core.info('🔄 Agentic repair did not produce a fix, falling back to single-shot...');
             }
-            return await this.singleShotRepair(repairContext, errorData, previousAttempt, skills, priorInvestigationContext);
+            return await this.singleShotRepair(repairContext, errorData, previousAttempt, skills, priorInvestigationContext, repoContext);
         }
         catch (error) {
             core.warning(`Failed to generate fix recommendation: ${error}`);
             return null;
         }
     }
-    async tryAgenticRepair(repairContext, errorData, previousAttempt, previousResponseId, skills, priorInvestigationContext) {
+    async tryAgenticRepair(repairContext, errorData, previousAttempt, previousResponseId, skills, priorInvestigationContext, repoContext) {
         if (!this.orchestrator) {
             return null;
         }
@@ -248,6 +268,7 @@ class SimplifiedRepairAgent {
                     }
                     : undefined,
                 framework: errorData?.framework,
+                repoContext,
             });
             if (priorInvestigationContext) {
                 agentContext.priorInvestigationContext = priorInvestigationContext;
@@ -277,7 +298,7 @@ class SimplifiedRepairAgent {
             return null;
         }
     }
-    async singleShotRepair(repairContext, errorData, previousAttempt, skills, priorInvestigationContext) {
+    async singleShotRepair(repairContext, errorData, previousAttempt, skills, priorInvestigationContext, repoContext) {
         let sourceFileContent = null;
         const cleanFilePath = this.extractFilePath(repairContext.testFile);
         if (this.sourceFetchContext && cleanFilePath) {
@@ -286,7 +307,7 @@ class SimplifiedRepairAgent {
                 core.info(`  ✅ Fetched source file: ${cleanFilePath} (${sourceFileContent.length} chars)`);
             }
         }
-        const prompt = this.buildPrompt(repairContext, errorData, sourceFileContent, cleanFilePath, previousAttempt, skills, priorInvestigationContext);
+        const prompt = this.buildPrompt(repairContext, errorData, sourceFileContent, cleanFilePath, previousAttempt, skills, priorInvestigationContext, repoContext);
         if (process.env.DEBUG_FIX_RECOMMENDATION) {
             const promptFile = `fix-prompt-${Date.now()}.md`;
             fs.writeFileSync(promptFile, prompt);
@@ -359,7 +380,8 @@ class SimplifiedRepairAgent {
         };
         core.info(`✅ Fix recommendation generated with ${fixRecommendation.confidence}% confidence`);
         const agentRootCause = (0, root_cause_category_1.inferRootCauseCategoryFromText)(`${recommendation.rootCause || ''} ${recommendation.reasoning || ''} ${repairContext.errorMessage || ''}`, repairContext.errorType);
-        return { fix: fixRecommendation, agentRootCause };
+        const agentInvestigationFindings = summarizeSingleShotFindings(recommendation);
+        return { fix: fixRecommendation, agentRootCause, agentInvestigationFindings };
     }
     extractFilePath(rawPath) {
         if (!rawPath)
@@ -451,8 +473,12 @@ class SimplifiedRepairAgent {
             return null;
         }
     }
-    buildPrompt(context, errorData, sourceFileContent, cleanFilePath, previousAttempt, skills, priorInvestigationContext) {
-        let contextInfo = `## Test Failure Context
+    buildPrompt(context, errorData, sourceFileContent, cleanFilePath, previousAttempt, skills, priorInvestigationContext, repoContext) {
+        let contextInfo = '';
+        if (repoContext) {
+            contextInfo += `${repoContext}\n\n`;
+        }
+        contextInfo += `## Test Failure Context
 - **Test File:** ${(0, skill_store_1.sanitizeForPrompt)(context.testFile)}
 - **Test Name:** ${(0, skill_store_1.sanitizeForPrompt)(context.testName)}
 - **Error Type:** ${(0, skill_store_1.sanitizeForPrompt)(context.errorType)}

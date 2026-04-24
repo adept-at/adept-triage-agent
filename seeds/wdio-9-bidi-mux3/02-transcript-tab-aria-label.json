@@ -1,0 +1,17 @@
+{
+  "repo": "adept-at/wdio-9-bidi-mux3",
+  "spec": "test/specs/skills/skill.video.transcripts.ts",
+  "testName": "should play video with transcripts",
+  "framework": "webdriverio",
+  "errorPattern": "Can't call $ on element with selector \"[role=\"tab\"][aria-label=\"Video transcript\"]\" because element wasn't found",
+  "rootCauseCategory": "SELECTOR_MISMATCH",
+  "fix": {
+    "file": "test/pageobjects/adept.video.player.ts",
+    "changeType": "SELECTOR_UPDATE",
+    "summary": "Production renders the transcript tab aria-label as \"Video transcripts\" (plural); some builds use the singular form. Use a starts-with match so both work.",
+    "pattern": "Change the transcript tab selector from [role=\"tab\"][aria-label=\"Video transcript\"] to [role=\"tab\"][aria-label^=\"Video transcript\"]. Same pattern is already centralized as transcriptSelectors.tab in AdeptVideoPlayerPage."
+  },
+  "confidence": 92,
+  "investigationFindings": "Git commit 01e086f (PR #60) confirms production DOM uses the plural label; verified via live inspection. The page object now centralizes the selector with [aria-label^=\"Video transcript\"] for both desktop and mobile transcript flows.",
+  "rootCauseChain": "SELECTOR_MISMATCH -> Environment-specific aria-label -> exact match fails -> waitForExist/click fails"
+}
