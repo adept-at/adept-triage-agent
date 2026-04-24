@@ -272,15 +272,16 @@ export class LocalFixValidator {
     changes: Array<{ file: string; oldCode: string; newCode: string }>
   ): Promise<{ valid: boolean; reason?: string }> {
     for (const change of changes) {
-      const cleanPath = change.file
-        .replace(/^\.\//, '')
-        .replace(/^\/home\/runner\/work\/[^/]+\/[^/]+\//, '');
-
-      const filePath = path.join(this._workDir, cleanPath);
-
-      if (!filePath.startsWith(this._workDir)) {
-        return { valid: false, reason: `Path traversal rejected: ${cleanPath}` };
+      let resolved: { cleanPath: string; filePath: string };
+      try {
+        resolved = this.resolveChangePath(change.file);
+      } catch (error) {
+        return {
+          valid: false,
+          reason: error instanceof Error ? error.message : String(error),
+        };
       }
+      const { cleanPath, filePath } = resolved;
 
       if (!fs.existsSync(filePath)) {
         return { valid: false, reason: `File not found: ${cleanPath}` };
@@ -304,6 +305,20 @@ export class LocalFixValidator {
     }
 
     return { valid: true };
+  }
+
+  private resolveChangePath(rawPath: string): { cleanPath: string; filePath: string } {
+    const cleanPath = rawPath
+      .replace(/^\.\//, '')
+      .replace(/^\/home\/runner\/work\/[^/]+\/[^/]+\//, '');
+    const workDirRoot = path.resolve(this._workDir);
+    const filePath = path.resolve(workDirRoot, cleanPath);
+
+    if (!filePath.startsWith(`${workDirRoot}${path.sep}`)) {
+      throw new Error(`Path traversal rejected: ${cleanPath}`);
+    }
+
+    return { cleanPath, filePath };
   }
 
   private quickTypeCheck(filePath: string): {
@@ -349,14 +364,7 @@ export class LocalFixValidator {
     }
 
     for (const change of changes) {
-      const cleanPath = change.file
-        .replace(/^\.\//, '')
-        .replace(/^\/home\/runner\/work\/[^/]+\/[^/]+\//, '');
-
-      const filePath = path.join(this._workDir, cleanPath);
-      if (!filePath.startsWith(this._workDir)) {
-        throw new Error(`Path traversal rejected: ${cleanPath}`);
-      }
+      const { cleanPath, filePath } = this.resolveChangePath(change.file);
 
       const content = fs.readFileSync(filePath, 'utf-8');
       const idx = content.indexOf(change.oldCode);

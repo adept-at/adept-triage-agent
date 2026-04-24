@@ -3,6 +3,22 @@ import * as core from '@actions/core';
 import { OpenAIResponse, FewShotExample, ErrorData, PRDiff } from './types';
 import { LOG_LIMITS, OPENAI, ARTIFACTS, DEFAULT_PRODUCT_REPO, type ReasoningEffort } from './config/constants';
 
+type ResponseUsageLike = {
+  input_tokens?: number;
+  output_tokens?: number;
+  total_tokens?: number;
+};
+
+function getTokenUsage(response: unknown): number | undefined {
+  const usage = (response as { usage?: ResponseUsageLike }).usage;
+  if (!usage) return undefined;
+  if (typeof usage.total_tokens === 'number') return usage.total_tokens;
+  const input = typeof usage.input_tokens === 'number' ? usage.input_tokens : 0;
+  const output = typeof usage.output_tokens === 'number' ? usage.output_tokens : 0;
+  const total = input + output;
+  return total > 0 ? total : undefined;
+}
+
 export class OpenAIClient {
   private openai: OpenAI;
   private maxRetries: number = OPENAI.MAX_RETRIES;
@@ -55,6 +71,11 @@ export class OpenAIClient {
             : {}),
         });
 
+        const tokensUsed = getTokenUsage(response);
+        if (tokensUsed !== undefined) {
+          core.info(`🧮 ${model} analysis token usage: ${tokensUsed}`);
+        }
+
         const content = response.output_text;
         if (!content) {
           throw new Error('Empty response from OpenAI');
@@ -63,7 +84,9 @@ export class OpenAIClient {
         // Parse response - handle both JSON and text responses
         const result = this.parseResponse(content);
         this.validateResponse(result);
-        return { ...result, responseId: response.id };
+        return tokensUsed === undefined
+          ? { ...result, responseId: response.id }
+          : { ...result, responseId: response.id, tokensUsed };
 
       } catch (error) {
         core.warning(`OpenAI API attempt ${attempt} failed: ${error}`);
@@ -683,7 +706,8 @@ Changed Product Files:
     previousResponseId?: string;
     model?: string;
     reasoningEffort?: ReasoningEffort;
-  }): Promise<{ text: string; responseId: string }> {
+    maxTokens?: number;
+  }): Promise<{ text: string; responseId: string; tokensUsed?: number }> {
     const model = params.model ?? OPENAI.LEGACY_MODEL;
     const reasoningEffort = params.reasoningEffort ?? 'none';
     const userContent = params.responseAsJson
@@ -691,27 +715,44 @@ Changed Product Files:
       : params.userContent;
     const input = this.convertToResponsesInput(userContent);
 
-    const response = await this.openai.responses.create({
-      model,
-      instructions: params.systemPrompt,
-      input,
-      max_output_tokens: OPENAI.MAX_COMPLETION_TOKENS,
-      text: params.responseAsJson ? { format: { type: 'json_object' as const } } : undefined,
-      ...(params.previousResponseId ? { previous_response_id: params.previousResponseId } : {}),
-      ...(reasoningEffort !== 'none'
-        ? {
-            // Cast rationale: see parallel comment in analyze(). SDK's
-            // ReasoningEffort type does not include 'xhigh' yet; the API
-            // accepts it. DO NOT narrow input type to remove this cast.
-            reasoning: { effort: reasoningEffort as 'low' | 'medium' | 'high' },
-          }
-        : {}),
-    });
+    for (let attempt = 1; attempt <= this.maxRetries; attempt++) {
+      try {
+        const response = await this.openai.responses.create({
+          model,
+          instructions: params.systemPrompt,
+          input,
+          max_output_tokens: params.maxTokens ?? OPENAI.MAX_COMPLETION_TOKENS,
+          text: params.responseAsJson ? { format: { type: 'json_object' as const } } : undefined,
+          ...(params.previousResponseId ? { previous_response_id: params.previousResponseId } : {}),
+          ...(reasoningEffort !== 'none'
+            ? {
+                // Cast rationale: see parallel comment in analyze(). SDK's
+                // ReasoningEffort type does not include 'xhigh' yet; the API
+                // accepts it. DO NOT narrow input type to remove this cast.
+                reasoning: { effort: reasoningEffort as 'low' | 'medium' | 'high' },
+              }
+            : {}),
+        });
 
-    const content = response.output_text;
-    if (!content) {
-      throw new Error('Empty response from OpenAI');
+        const content = response.output_text;
+        if (!content) {
+          throw new Error('Empty response from OpenAI');
+        }
+        const tokensUsed = getTokenUsage(response);
+        return tokensUsed === undefined
+          ? { text: content, responseId: response.id }
+          : { text: content, responseId: response.id, tokensUsed };
+      } catch (error) {
+        core.warning(`OpenAI custom prompt attempt ${attempt} failed: ${error}`);
+
+        if (attempt === this.maxRetries) {
+          throw new Error(`Failed to get custom prompt response from OpenAI after ${this.maxRetries} attempts: ${error}`);
+        }
+
+        await this.delay(this.retryDelay * attempt);
+      }
     }
-    return { text: content, responseId: response.id };
+
+    throw new Error('Failed to get custom prompt response from OpenAI after all retries');
   }
 } 

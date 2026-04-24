@@ -5,6 +5,7 @@ const base_agent_1 = require("./base-agent");
 const constants_1 = require("../config/constants");
 const skill_store_1 = require("../services/skill-store");
 const text_utils_1 = require("../utils/text-utils");
+const number_utils_1 = require("../utils/number-utils");
 const REVIEW_SEVERITIES = ['CRITICAL', 'WARNING', 'SUGGESTION'];
 const TRACE_FIELD_MAX_CHARS = 1000;
 function formatTraceField(value) {
@@ -221,7 +222,7 @@ You MUST respond with a JSON object matching this schema:
                 approved,
                 issues,
                 assessment: parsed.assessment || '',
-                fixConfidence: typeof parsed.fixConfidence === 'number' ? parsed.fixConfidence : 50,
+                fixConfidence: (0, number_utils_1.clampConfidence)(parsed.fixConfidence),
                 improvements: Array.isArray(parsed.improvements)
                     ? parsed.improvements
                     : undefined,

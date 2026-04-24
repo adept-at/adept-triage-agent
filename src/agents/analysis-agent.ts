@@ -13,6 +13,7 @@ import {
 import { OpenAIClient } from '../openai-client';
 import { DEFAULT_PRODUCT_REPO } from '../config/constants';
 import { coerceEnum } from '../utils/text-utils';
+import { clampConfidence } from '../utils/number-utils';
 
 /**
  * Whitelisted runtime values matching the RootCauseCategory type union.
@@ -308,7 +309,7 @@ You MUST respond with a JSON object matching this schema:
         contributingFactors: contributingFactors.map((c: unknown) =>
           coerceEnum(c, ROOT_CAUSE_CATEGORIES, 'UNKNOWN')
         ),
-        confidence: parsed.confidence,
+        confidence: clampConfidence(parsed.confidence),
         explanation: parsed.explanation || '',
         selectors,
         elements,

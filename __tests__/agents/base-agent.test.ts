@@ -5,13 +5,14 @@ import {
   DEFAULT_AGENT_CONFIG,
   createAgentContext,
 } from '../../src/agents/base-agent';
+import { AGENT_CONFIG, OPENAI } from '../../src/config/constants';
 
 describe('base-agent', () => {
   describe('DEFAULT_AGENT_CONFIG', () => {
     it('should have sensible default values', () => {
-      expect(DEFAULT_AGENT_CONFIG.timeoutMs).toBe(60000);
+      expect(DEFAULT_AGENT_CONFIG.timeoutMs).toBe(AGENT_CONFIG.AGENT_TIMEOUT_MS);
       expect(DEFAULT_AGENT_CONFIG.temperature).toBe(0.3);
-      expect(DEFAULT_AGENT_CONFIG.maxTokens).toBe(4000);
+      expect(DEFAULT_AGENT_CONFIG.maxTokens).toBe(OPENAI.MAX_COMPLETION_TOKENS);
       expect(DEFAULT_AGENT_CONFIG.verbose).toBe(false);
     });
   });

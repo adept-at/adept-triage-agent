@@ -138,6 +138,36 @@ describe('AnalysisAgent', () => {
       expect(result.success).toBe(false);
     });
 
+    it('should clamp out-of-range confidence values from the model', async () => {
+      mockOpenAIClient.generateWithCustomPrompt = jest
+        .fn()
+        .mockResolvedValue({
+          text: JSON.stringify({
+            rootCauseCategory: 'TIMING_ISSUE',
+            contributingFactors: [],
+            confidence: 1000,
+            explanation: 'Model overreported confidence',
+            selectors: [],
+            elements: [],
+            issueLocation: 'TEST_CODE',
+            patterns: {},
+            suggestedApproach: 'Wait for the element',
+          }),
+          responseId: 'mock-resp-id',
+        });
+
+      const context = createAgentContext({
+        errorMessage: 'Error',
+        testFile: 'test.ts',
+        testName: 'test',
+      });
+
+      const result = await agent.execute({}, context);
+
+      expect(result.success).toBe(true);
+      expect(result.data?.confidence).toBe(100);
+    });
+
     it('should handle response with missing required fields', async () => {
       mockOpenAIClient.generateWithCustomPrompt = jest
         .fn()

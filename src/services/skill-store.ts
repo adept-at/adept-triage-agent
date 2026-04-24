@@ -887,6 +887,9 @@ export class SkillStore {
           `   fix: ${sanitizeForPrompt(s.fix.summary)}`,
           `   confidence: ${s.confidence}%`,
         ];
+        if (s.isSeed) {
+          lines.push('   source: curated seed skill (operator-provided guidance, not runtime outcome evidence)');
+        }
         // v1.49.3 A1: surface the prior classification outcome so the
         // classifier can actually learn from "was my last verdict
         // correct." Pre-v1.49.3 this field was written to skills but
@@ -899,8 +902,9 @@ export class SkillStore {
         // would render verbatim and confuse the classifier. Matches
         // the type contract `'correct' | 'incorrect' | 'unknown'`.
         if (
-          s.classificationOutcome === 'correct' ||
-          s.classificationOutcome === 'incorrect'
+          !s.isSeed &&
+          (s.classificationOutcome === 'correct' ||
+            s.classificationOutcome === 'incorrect')
         ) {
           lines.push(
             `   classificationOutcome: ${s.classificationOutcome}`
@@ -938,11 +942,16 @@ export class SkillStore {
         const date = s.createdAt.split('T')[0];
         const outcome = s.classificationOutcome ?? 'unknown';
         let entry = `${i + 1}. Prior investigation for ${sanitizeForPrompt(s.spec)} (${date}):`;
+        if (s.isSeed) {
+          entry += '\n   Source: curated seed skill (operator-provided guidance, not runtime outcome evidence)';
+        }
         entry += `\n   Finding: ${sanitizeForPrompt(s.investigationFindings!)}`;
         if (s.rootCauseChain) {
           entry += `\n   Root cause: ${sanitizeForPrompt(s.rootCauseChain)}`;
         }
-        entry += `\n   Outcome: ${outcome}`;
+        entry += s.isSeed
+          ? '\n   Outcome: curated seed'
+          : `\n   Outcome: ${outcome}`;
         if (s.repoContext) {
           entry += `\n   Repo note: ${sanitizeForPrompt(s.repoContext)}`;
         }
@@ -1204,14 +1213,16 @@ export function formatSkillsForPrompt(
     // `untested` — an internal inconsistency flagged in the v1.49.2
     // review.
     let trackRecord: string;
-    if (total > 0) {
+    if (s.isSeed) {
+      trackRecord = 'curated seed, not runtime outcome evidence';
+    } else if (total > 0) {
       trackRecord = `${successes}/${total} successful`;
     } else if (s.validatedLocally === true) {
       trackRecord = 'validated on save, no runtime track record yet';
     } else {
       trackRecord = 'untested';
     }
-    const outcome = s.classificationOutcome && s.classificationOutcome !== 'unknown'
+    const outcome = !s.isSeed && s.classificationOutcome && s.classificationOutcome !== 'unknown'
       ? `, classification: ${s.classificationOutcome}`
       : '';
 
@@ -1219,6 +1230,9 @@ export function formatSkillsForPrompt(
       `**Fix ${i + 1}** (${s.createdAt.split('T')[0]}, ${s.confidence}% confidence, ${s.iterations} iteration${s.iterations !== 1 ? 's' : ''})`,
       `- Spec: ${sanitizeForPrompt(s.spec)}`,
     ];
+    if (s.isSeed) {
+      lines.push('- Source: curated seed skill (operator-provided guidance, not runtime validation)');
+    }
 
     // v1.50.0 B1: surface testName for all three roles. Anchors the
     // skill to a specific test case within the spec, not just the

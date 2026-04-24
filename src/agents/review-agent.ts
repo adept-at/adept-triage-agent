@@ -17,6 +17,7 @@ import { FixGenerationOutput } from './fix-generation-agent';
 import { InvestigationOutput } from './investigation-agent';
 import { sanitizeForPrompt } from '../services/skill-store';
 import { coerceEnum } from '../utils/text-utils';
+import { clampConfidence } from '../utils/number-utils';
 
 /**
  * Whitelisted runtime values for ReviewIssue.severity. Enforced at
@@ -485,8 +486,7 @@ You MUST respond with a JSON object matching this schema:
         approved,
         issues,
         assessment: parsed.assessment || '',
-        fixConfidence:
-          typeof parsed.fixConfidence === 'number' ? parsed.fixConfidence : 50,
+        fixConfidence: clampConfidence(parsed.fixConfidence),
         improvements: Array.isArray(parsed.improvements)
           ? parsed.improvements
           : undefined,

@@ -4,6 +4,7 @@ exports.FixGenerationAgent = exports.WDIO_PATTERNS = exports.CYPRESS_PATTERNS = 
 const base_agent_1 = require("./base-agent");
 const constants_1 = require("../config/constants");
 const text_utils_1 = require("../utils/text-utils");
+const number_utils_1 = require("../utils/number-utils");
 const CHANGE_TYPES = [
     'SELECTOR_UPDATE',
     'WAIT_ADDITION',
@@ -345,7 +346,6 @@ class FixGenerationAgent extends base_agent_1.BaseAgent {
             ...config,
             model: resolvedModel,
             reasoningEffort: resolvedEffort,
-            maxTokens: 6000,
         });
     }
     async execute(input, context, previousResponseId) {
@@ -525,7 +525,7 @@ class FixGenerationAgent extends base_agent_1.BaseAgent {
             }
             return {
                 changes,
-                confidence: typeof parsed.confidence === 'number' ? parsed.confidence : 50,
+                confidence: (0, number_utils_1.clampConfidence)(parsed.confidence),
                 summary: parsed.summary || '',
                 reasoning: parsed.reasoning || '',
                 evidence: Array.isArray(parsed.evidence) ? parsed.evidence : [],

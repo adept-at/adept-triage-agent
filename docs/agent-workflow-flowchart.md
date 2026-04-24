@@ -2,7 +2,7 @@
 
 > Visual reference for how a triage run flows end-to-end.
 > For textual deep-dive, see [ARCHITECTURE.md](ARCHITECTURE.md).
-> **Current version:** v1.52.0
+> **Current version:** v1.52.2
 
 ---
 
@@ -84,7 +84,7 @@ Happy path inside `AgentOrchestrator.orchestrate()` (`src/agents/agent-orchestra
 
 ```mermaid
 flowchart TB
-    START["orchestrate(context, errorData,<br/>previousResponseId, skills)"]
+    START["orchestrate(context, errorData,<br/>previousResponseId usually unset,<br/>skills)"]
     START --> SKILL_PROMPT_A["context.skillsPrompt<br/>= formatSkillsForPrompt(skills, 'investigation', flakiness)"]
     SKILL_PROMPT_A --> ANALYSIS["<b>Analysis Agent</b><br/>gpt-5.3-codex<br/>→ rootCauseCategory, issueLocation,<br/>selectors, confidence"]
 
@@ -169,7 +169,7 @@ flowchart LR
         PRIOR --> ROLE_INSTR
     end
 
-    SYS --> OPENAI["generateWithCustomPrompt<br/>+ screenshots (if includeScreenshots)<br/>+ responseId (for chaining)"]
+    SYS --> OPENAI["generateWithCustomPrompt<br/>+ screenshots (if includeScreenshots)<br/>+ responseId (intra-run chaining only)"]
     USER --> OPENAI
 ```
 
@@ -197,7 +197,7 @@ flowchart TB
 flowchart TB
     START["iterativeFixValidateLoop<br/>FIX_VALIDATE_LOOP.MAX_ITERATIONS = 3"]
 
-    START --> GEN["generateFixRecommendation<br/>(agentic only)"]
+    START --> GEN["generateFixRecommendation<br/>(agentic only;<br/>previousResponseId undefined<br/>across local retries)"]
     GEN --> NULL_CHK{"fix == null?"}
     NULL_CHK -- yes --> BREAK_EMPTY["break"]
     NULL_CHK -- no --> CHG_CHK{"proposedChanges<br/>empty?"}
@@ -297,7 +297,7 @@ flowchart TB
 
 ```mermaid
 flowchart LR
-    SEED["scripts/seed-skill.ts<br/>inserts TriageSkill<br/>with isSeed: true<br/>validatedLocally: true<br/>successCount: 1<br/>classificationOutcome: 'correct'"]
+    SEED["scripts/seed-skill.ts<br/>inserts TriageSkill<br/>with isSeed: true<br/>validatedLocally: true<br/>successCount: 0<br/>classificationOutcome: 'unknown'<br/>prompt label: curated guidance"]
 
     SEED --> DYNAMO["DynamoDB<br/>triage-skills-v1-live"]
 

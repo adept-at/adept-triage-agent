@@ -31,9 +31,11 @@ export declare class OpenAIClient {
         previousResponseId?: string;
         model?: string;
         reasoningEffort?: ReasoningEffort;
+        maxTokens?: number;
     }): Promise<{
         text: string;
         responseId: string;
+        tokensUsed?: number;
     }>;
 }
 //# sourceMappingURL=openai-client.d.ts.map

@@ -37,6 +37,7 @@ exports.BaseAgent = exports.DEFAULT_AGENT_CONFIG = void 0;
 exports.getFrameworkLabel = getFrameworkLabel;
 exports.createAgentContext = createAgentContext;
 const core = __importStar(require("@actions/core"));
+const constants_1 = require("../config/constants");
 function getFrameworkLabel(framework) {
     switch (framework) {
         case 'webdriverio':
@@ -48,9 +49,9 @@ function getFrameworkLabel(framework) {
     }
 }
 exports.DEFAULT_AGENT_CONFIG = {
-    timeoutMs: 60000,
+    timeoutMs: constants_1.AGENT_CONFIG.AGENT_TIMEOUT_MS,
     temperature: 0.3,
-    maxTokens: 4000,
+    maxTokens: constants_1.OPENAI.MAX_COMPLETION_TOKENS,
     verbose: false,
 };
 class BaseAgent {
@@ -75,16 +76,20 @@ class BaseAgent {
             });
             const taskPromise = this.runAgentTask(input, context, previousResponseId);
             apiCalls++;
-            const { data: result, responseId } = await Promise.race([taskPromise, timeoutPromise]);
+            const { data: result, responseId, tokensUsed } = await Promise.race([taskPromise, timeoutPromise]);
             clearTimeout(timeoutId);
             const executionTimeMs = Date.now() - startTime;
             core.info(`[${this.agentName}] Completed in ${executionTimeMs}ms`);
+            if (tokensUsed !== undefined) {
+                core.info(`[${this.agentName}] Token usage: ${tokensUsed}`);
+            }
             return {
                 success: true,
                 data: result,
                 executionTimeMs,
                 apiCalls,
                 responseId,
+                tokensUsed,
             };
         }
         catch (error) {
@@ -123,7 +128,7 @@ class BaseAgent {
                 }
             }
         }
-        const { text, responseId } = await this.openaiClient.generateWithCustomPrompt({
+        const { text, responseId, tokensUsed } = await this.openaiClient.generateWithCustomPrompt({
             systemPrompt,
             userContent: content,
             temperature: this.config.temperature,
@@ -131,12 +136,13 @@ class BaseAgent {
             previousResponseId,
             model: this.config.model,
             reasoningEffort: this.config.reasoningEffort,
+            maxTokens: this.config.maxTokens,
         });
         const parsed = this.parseResponse(text);
         if (!parsed) {
             throw new Error('Failed to parse agent response');
         }
-        return { data: parsed, responseId };
+        return { data: parsed, responseId, tokensUsed };
     }
     log(message, level = 'info') {
         const formattedMessage = `[${this.agentName}] ${message}`;

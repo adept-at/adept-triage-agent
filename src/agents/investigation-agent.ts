@@ -15,6 +15,7 @@ import { DEFAULT_PRODUCT_REPO } from '../config/constants';
 import { AnalysisOutput } from './analysis-agent';
 import { CodeReadingOutput } from './code-reading-agent';
 import { coerceEnum, coerceEnumOrNull } from '../utils/text-utils';
+import { clampConfidence } from '../utils/number-utils';
 
 /**
  * Whitelisted runtime values for InvestigationFinding's enum-like fields.
@@ -389,10 +390,7 @@ You MUST respond with a JSON object matching this schema:
       const verdictOverride = suggestedLocation
         ? {
             suggestedLocation,
-            confidence:
-              typeof parsed.verdictOverride.confidence === 'number'
-                ? parsed.verdictOverride.confidence
-                : 50,
+            confidence: clampConfidence(parsed.verdictOverride.confidence),
             evidence: Array.isArray(parsed.verdictOverride.evidence)
               ? parsed.verdictOverride.evidence
               : [],
@@ -412,8 +410,7 @@ You MUST respond with a JSON object matching this schema:
         isTestCodeFixable: parsed.isTestCodeFixable !== false,
         recommendedApproach: parsed.recommendedApproach || '',
         selectorsToUpdate,
-        confidence:
-          typeof parsed.confidence === 'number' ? parsed.confidence : 50,
+        confidence: clampConfidence(parsed.confidence),
         verdictOverride,
       };
     } catch (error) {

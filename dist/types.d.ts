@@ -101,6 +101,7 @@ export interface OpenAIResponse {
     reasoning: string;
     indicators: string[];
     suggestedSourceLocations?: SourceLocation[];
+    tokensUsed?: number;
 }
 export interface FewShotExample {
     error: string;

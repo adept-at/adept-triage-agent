@@ -1,4 +1,7 @@
 import { LocalFixValidator, TestRunResult } from '../../src/services/local-fix-validator';
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
 
 // -----------------------------------------------------------------------------
 // Multi-pass baselineCheck (v1.50.1 CP1)
@@ -130,5 +133,63 @@ describe('LocalFixValidator.baselineCheck — multi-pass semantics (v1.50.1 CP1)
 
     expect(result.passed).toBe(false);
     expect(result.exitCode).toBe(137);
+  });
+});
+
+describe('LocalFixValidator.applyFix path safety', () => {
+  let tmpRoot: string;
+
+  beforeEach(() => {
+    tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'triage-validator-test-'));
+  });
+
+  afterEach(() => {
+    fs.rmSync(tmpRoot, { recursive: true, force: true });
+  });
+
+  function makeValidatorAt(workDir: string): LocalFixValidator {
+    const validator = makeValidator();
+    (validator as unknown as { _workDir: string })._workDir = workDir;
+    return validator;
+  }
+
+  it('rejects sibling-prefix traversal paths outside the workdir', async () => {
+    const workDir = path.join(tmpRoot, 'triage-fix-123');
+    const sibling = path.join(tmpRoot, 'triage-fix-123-evil');
+    fs.mkdirSync(workDir);
+    fs.mkdirSync(sibling);
+    fs.writeFileSync(path.join(sibling, 'target.txt'), 'old', 'utf-8');
+
+    const validator = makeValidatorAt(workDir);
+
+    await expect(
+      validator.applyFix([
+        {
+          file: '../triage-fix-123-evil/target.txt',
+          oldCode: 'old',
+          newCode: 'new',
+        },
+      ])
+    ).rejects.toThrow('Path traversal rejected');
+
+    expect(fs.readFileSync(path.join(sibling, 'target.txt'), 'utf-8')).toBe('old');
+  });
+
+  it('still applies fixes inside the workdir', async () => {
+    const workDir = path.join(tmpRoot, 'triage-fix-123');
+    fs.mkdirSync(path.join(workDir, 'src'), { recursive: true });
+    const target = path.join(workDir, 'src', 'target.txt');
+    fs.writeFileSync(target, 'before old after', 'utf-8');
+
+    const validator = makeValidatorAt(workDir);
+    await validator.applyFix([
+      {
+        file: './src/target.txt',
+        oldCode: 'old',
+        newCode: 'new',
+      },
+    ]);
+
+    expect(fs.readFileSync(target, 'utf-8')).toBe('before new after');
   });
 });

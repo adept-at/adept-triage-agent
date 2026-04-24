@@ -685,6 +685,7 @@ exports.AnalysisAgent = void 0;
 const base_agent_1 = __nccwpck_require__(46575);
 const constants_1 = __nccwpck_require__(58361);
 const text_utils_1 = __nccwpck_require__(11744);
+const number_utils_1 = __nccwpck_require__(25026);
 const ROOT_CAUSE_CATEGORIES = [
     'SELECTOR_MISMATCH',
     'TIMING_ISSUE',
@@ -848,7 +849,7 @@ You MUST respond with a JSON object matching this schema:
             return {
                 rootCauseCategory: (0, text_utils_1.coerceEnum)(parsed.rootCauseCategory, ROOT_CAUSE_CATEGORIES, 'UNKNOWN'),
                 contributingFactors: contributingFactors.map((c) => (0, text_utils_1.coerceEnum)(c, ROOT_CAUSE_CATEGORIES, 'UNKNOWN')),
-                confidence: parsed.confidence,
+                confidence: (0, number_utils_1.clampConfidence)(parsed.confidence),
                 explanation: parsed.explanation || '',
                 selectors,
                 elements,
@@ -918,6 +919,7 @@ exports.BaseAgent = exports.DEFAULT_AGENT_CONFIG = void 0;
 exports.getFrameworkLabel = getFrameworkLabel;
 exports.createAgentContext = createAgentContext;
 const core = __importStar(__nccwpck_require__(37484));
+const constants_1 = __nccwpck_require__(58361);
 function getFrameworkLabel(framework) {
     switch (framework) {
         case 'webdriverio':
@@ -929,9 +931,9 @@ function getFrameworkLabel(framework) {
     }
 }
 exports.DEFAULT_AGENT_CONFIG = {
-    timeoutMs: 60000,
+    timeoutMs: constants_1.AGENT_CONFIG.AGENT_TIMEOUT_MS,
     temperature: 0.3,
-    maxTokens: 4000,
+    maxTokens: constants_1.OPENAI.MAX_COMPLETION_TOKENS,
     verbose: false,
 };
 class BaseAgent {
@@ -956,16 +958,20 @@ class BaseAgent {
             });
             const taskPromise = this.runAgentTask(input, context, previousResponseId);
             apiCalls++;
-            const { data: result, responseId } = await Promise.race([taskPromise, timeoutPromise]);
+            const { data: result, responseId, tokensUsed } = await Promise.race([taskPromise, timeoutPromise]);
             clearTimeout(timeoutId);
             const executionTimeMs = Date.now() - startTime;
             core.info(`[${this.agentName}] Completed in ${executionTimeMs}ms`);
+            if (tokensUsed !== undefined) {
+                core.info(`[${this.agentName}] Token usage: ${tokensUsed}`);
+            }
             return {
                 success: true,
                 data: result,
                 executionTimeMs,
                 apiCalls,
                 responseId,
+                tokensUsed,
             };
         }
         catch (error) {
@@ -1004,7 +1010,7 @@ class BaseAgent {
                 }
             }
         }
-        const { text, responseId } = await this.openaiClient.generateWithCustomPrompt({
+        const { text, responseId, tokensUsed } = await this.openaiClient.generateWithCustomPrompt({
             systemPrompt,
             userContent: content,
             temperature: this.config.temperature,
@@ -1012,12 +1018,13 @@ class BaseAgent {
             previousResponseId,
             model: this.config.model,
             reasoningEffort: this.config.reasoningEffort,
+            maxTokens: this.config.maxTokens,
         });
         const parsed = this.parseResponse(text);
         if (!parsed) {
             throw new Error('Failed to parse agent response');
         }
-        return { data: parsed, responseId };
+        return { data: parsed, responseId, tokensUsed };
     }
     log(message, level = 'info') {
         const formattedMessage = `[${this.agentName}] ${message}`;
@@ -1544,6 +1551,7 @@ exports.FixGenerationAgent = exports.WDIO_PATTERNS = exports.CYPRESS_PATTERNS = 
 const base_agent_1 = __nccwpck_require__(46575);
 const constants_1 = __nccwpck_require__(58361);
 const text_utils_1 = __nccwpck_require__(11744);
+const number_utils_1 = __nccwpck_require__(25026);
 const CHANGE_TYPES = [
     'SELECTOR_UPDATE',
     'WAIT_ADDITION',
@@ -1885,7 +1893,6 @@ class FixGenerationAgent extends base_agent_1.BaseAgent {
             ...config,
             model: resolvedModel,
             reasoningEffort: resolvedEffort,
-            maxTokens: 6000,
         });
     }
     async execute(input, context, previousResponseId) {
@@ -2065,7 +2072,7 @@ class FixGenerationAgent extends base_agent_1.BaseAgent {
             }
             return {
                 changes,
-                confidence: typeof parsed.confidence === 'number' ? parsed.confidence : 50,
+                confidence: (0, number_utils_1.clampConfidence)(parsed.confidence),
                 summary: parsed.summary || '',
                 reasoning: parsed.reasoning || '',
                 evidence: Array.isArray(parsed.evidence) ? parsed.evidence : [],
@@ -2133,6 +2140,7 @@ exports.InvestigationAgent = void 0;
 const base_agent_1 = __nccwpck_require__(46575);
 const constants_1 = __nccwpck_require__(58361);
 const text_utils_1 = __nccwpck_require__(11744);
+const number_utils_1 = __nccwpck_require__(25026);
 const FINDING_TYPES = [
     'SELECTOR_CHANGE',
     'MISSING_ELEMENT',
@@ -2290,9 +2298,7 @@ You MUST respond with a JSON object matching this schema:
             const verdictOverride = suggestedLocation
                 ? {
                     suggestedLocation,
-                    confidence: typeof parsed.verdictOverride.confidence === 'number'
-                        ? parsed.verdictOverride.confidence
-                        : 50,
+                    confidence: (0, number_utils_1.clampConfidence)(parsed.verdictOverride.confidence),
                     evidence: Array.isArray(parsed.verdictOverride.evidence)
                         ? parsed.verdictOverride.evidence
                         : [],
@@ -2307,7 +2313,7 @@ You MUST respond with a JSON object matching this schema:
                 isTestCodeFixable: parsed.isTestCodeFixable !== false,
                 recommendedApproach: parsed.recommendedApproach || '',
                 selectorsToUpdate,
-                confidence: typeof parsed.confidence === 'number' ? parsed.confidence : 50,
+                confidence: (0, number_utils_1.clampConfidence)(parsed.confidence),
                 verdictOverride,
             };
         }
@@ -2333,6 +2339,7 @@ const base_agent_1 = __nccwpck_require__(46575);
 const constants_1 = __nccwpck_require__(58361);
 const skill_store_1 = __nccwpck_require__(60215);
 const text_utils_1 = __nccwpck_require__(11744);
+const number_utils_1 = __nccwpck_require__(25026);
 const REVIEW_SEVERITIES = ['CRITICAL', 'WARNING', 'SUGGESTION'];
 const TRACE_FIELD_MAX_CHARS = 1000;
 function formatTraceField(value) {
@@ -2549,7 +2556,7 @@ You MUST respond with a JSON object matching this schema:
                 approved,
                 issues,
                 assessment: parsed.assessment || '',
-                fixConfidence: typeof parsed.fixConfidence === 'number' ? parsed.fixConfidence : 50,
+                fixConfidence: (0, number_utils_1.clampConfidence)(parsed.fixConfidence),
                 improvements: Array.isArray(parsed.improvements)
                     ? parsed.improvements
                     : undefined,
@@ -3745,6 +3752,17 @@ exports.OpenAIClient = void 0;
 const openai_1 = __importDefault(__nccwpck_require__(12583));
 const core = __importStar(__nccwpck_require__(37484));
 const constants_1 = __nccwpck_require__(58361);
+function getTokenUsage(response) {
+    const usage = response.usage;
+    if (!usage)
+        return undefined;
+    if (typeof usage.total_tokens === 'number')
+        return usage.total_tokens;
+    const input = typeof usage.input_tokens === 'number' ? usage.input_tokens : 0;
+    const output = typeof usage.output_tokens === 'number' ? usage.output_tokens : 0;
+    const total = input + output;
+    return total > 0 ? total : undefined;
+}
 class OpenAIClient {
     openai;
     maxRetries = constants_1.OPENAI.MAX_RETRIES;
@@ -3782,13 +3800,19 @@ class OpenAIClient {
                         }
                         : {}),
                 });
+                const tokensUsed = getTokenUsage(response);
+                if (tokensUsed !== undefined) {
+                    core.info(`🧮 ${model} analysis token usage: ${tokensUsed}`);
+                }
                 const content = response.output_text;
                 if (!content) {
                     throw new Error('Empty response from OpenAI');
                 }
                 const result = this.parseResponse(content);
                 this.validateResponse(result);
-                return { ...result, responseId: response.id };
+                return tokensUsed === undefined
+                    ? { ...result, responseId: response.id }
+                    : { ...result, responseId: response.id, tokensUsed };
             }
             catch (error) {
                 core.warning(`OpenAI API attempt ${attempt} failed: ${error}`);
@@ -4282,24 +4306,39 @@ Changed Product Files:
             ? this.ensureJsonMention(params.userContent)
             : params.userContent;
         const input = this.convertToResponsesInput(userContent);
-        const response = await this.openai.responses.create({
-            model,
-            instructions: params.systemPrompt,
-            input,
-            max_output_tokens: constants_1.OPENAI.MAX_COMPLETION_TOKENS,
-            text: params.responseAsJson ? { format: { type: 'json_object' } } : undefined,
-            ...(params.previousResponseId ? { previous_response_id: params.previousResponseId } : {}),
-            ...(reasoningEffort !== 'none'
-                ? {
-                    reasoning: { effort: reasoningEffort },
+        for (let attempt = 1; attempt <= this.maxRetries; attempt++) {
+            try {
+                const response = await this.openai.responses.create({
+                    model,
+                    instructions: params.systemPrompt,
+                    input,
+                    max_output_tokens: params.maxTokens ?? constants_1.OPENAI.MAX_COMPLETION_TOKENS,
+                    text: params.responseAsJson ? { format: { type: 'json_object' } } : undefined,
+                    ...(params.previousResponseId ? { previous_response_id: params.previousResponseId } : {}),
+                    ...(reasoningEffort !== 'none'
+                        ? {
+                            reasoning: { effort: reasoningEffort },
+                        }
+                        : {}),
+                });
+                const content = response.output_text;
+                if (!content) {
+                    throw new Error('Empty response from OpenAI');
                 }
-                : {}),
-        });
-        const content = response.output_text;
-        if (!content) {
-            throw new Error('Empty response from OpenAI');
+                const tokensUsed = getTokenUsage(response);
+                return tokensUsed === undefined
+                    ? { text: content, responseId: response.id }
+                    : { text: content, responseId: response.id, tokensUsed };
+            }
+            catch (error) {
+                core.warning(`OpenAI custom prompt attempt ${attempt} failed: ${error}`);
+                if (attempt === this.maxRetries) {
+                    throw new Error(`Failed to get custom prompt response from OpenAI after ${this.maxRetries} attempts: ${error}`);
+                }
+                await this.delay(this.retryDelay * attempt);
+            }
         }
-        return { text: content, responseId: response.id };
+        throw new Error('Failed to get custom prompt response from OpenAI after all retries');
     }
 }
 exports.OpenAIClient = OpenAIClient;
@@ -4566,6 +4605,9 @@ class PipelineCoordinator {
                         await skillStore.recordOutcome(skill.id, false);
                         core.info(`📝 Saved failed skill trajectory ${skill.id}`);
                     }
+                    core.info(`📊 learning-telemetry verdict=${classification.verdict} ` +
+                        `savedSkillId=${skill.id} fixSucceeded=${fixSucceeded} ` +
+                        `iterations=${iterations}`);
                 }
             }
         }
@@ -5001,7 +5043,7 @@ async function generateFixRecommendation(inputs, repoDetails, errorData, openaiC
         return null;
     }
 }
-async function iterativeFixValidateLoop(inputs, repoDetails, autoFixTargetRepo, errorData, openaiClient, octokit, skillStore, classificationResponseId, investigationContext, repoContext) {
+async function iterativeFixValidateLoop(inputs, repoDetails, autoFixTargetRepo, errorData, openaiClient, octokit, skillStore, _classificationResponseId, investigationContext, repoContext) {
     const maxIterations = constants_1.FIX_VALIDATE_LOOP.MAX_ITERATIONS;
     let fixRecommendation = null;
     let autoFixResult = null;
@@ -5014,7 +5056,6 @@ async function iterativeFixValidateLoop(inputs, repoDetails, autoFixTargetRepo, 
     const failedFixFingerprints = new Set();
     const minConfidence = inputs.autoFixMinConfidence ?? constants_1.AUTO_FIX.DEFAULT_MIN_CONFIDENCE;
     const baseBranch = inputs.branch || inputs.autoFixBaseBranch || 'main';
-    let lastResponseId = classificationResponseId;
     const validator = new local_fix_validator_1.LocalFixValidator({
         owner: autoFixTargetRepo.owner,
         repo: autoFixTargetRepo.repo,
@@ -5031,14 +5072,13 @@ async function iterativeFixValidateLoop(inputs, repoDetails, autoFixTargetRepo, 
         for (let iteration = 0; iteration < maxIterations; iteration++) {
             completedIterations = iteration + 1;
             core.info(`\n${'='.repeat(60)}\n🔄 Fix-Validate iteration ${iteration + 1}/${maxIterations}\n${'='.repeat(60)}`);
-            const fixResult = await generateFixRecommendation(inputs, repoDetails, errorData, openaiClient, octokit, previousAttempt, lastResponseId, skillStore, investigationContext, repoContext);
+            const fixResult = await generateFixRecommendation(inputs, repoDetails, errorData, openaiClient, octokit, previousAttempt, undefined, skillStore, investigationContext, repoContext);
             if (!fixResult) {
                 fixRecommendation = null;
                 core.warning(`Iteration ${iteration + 1}: could not generate fix recommendation`);
                 break;
             }
             fixRecommendation = fixResult.fix;
-            lastResponseId = fixResult.lastResponseId ?? lastResponseId;
             if (fixResult.agentRootCause)
                 agentRootCause = fixResult.agentRootCause;
             if (fixResult.agentInvestigationFindings)
@@ -5072,9 +5112,11 @@ async function iterativeFixValidateLoop(inputs, repoDetails, autoFixTargetRepo, 
                 const baseline = await validator.baselineCheck();
                 if (baseline.passed) {
                     core.info('✅ Baseline check passed — test passes without fix. Failure was likely transient.');
+                    core.info('📊 learning-telemetry baseline=passed validation=skipped iterations=0');
                     return { fixRecommendation: null, autoFixResult: null, iterations: 0, agentRootCause, agentInvestigationFindings, autoFixSkipped, autoFixSkippedReason };
                 }
                 core.info('❌ Baseline check confirmed failure — proceeding with fix.');
+                core.info(`📊 learning-telemetry baseline=failed durationMs=${baseline.durationMs}`);
             }
             try {
                 await validator.applyFix(fixRecommendation.proposedChanges);
@@ -5087,6 +5129,7 @@ async function iterativeFixValidateLoop(inputs, repoDetails, autoFixTargetRepo, 
             const testResult = await validator.runTest();
             if (testResult.passed) {
                 core.info(`\n✅ Test PASSED on iteration ${iteration + 1}! (${testResult.durationMs}ms)`);
+                core.info(`📊 learning-telemetry validation=passed iteration=${iteration + 1} durationMs=${testResult.durationMs}`);
                 const branchName = (0, fix_applier_1.generateFixBranchName)(fixRecommendation.proposedChanges[0].file);
                 try {
                     const pushResult = await validator.pushAndCreatePR({
@@ -5118,6 +5161,7 @@ async function iterativeFixValidateLoop(inputs, repoDetails, autoFixTargetRepo, 
                 return { fixRecommendation, autoFixResult, iterations: iteration + 1, agentRootCause, agentInvestigationFindings, autoFixSkipped, autoFixSkippedReason };
             }
             core.warning(`\n❌ Test FAILED on iteration ${iteration + 1} (exit code: ${testResult.exitCode}, ${testResult.durationMs}ms)`);
+            core.info(`📊 learning-telemetry validation=failed iteration=${iteration + 1} durationMs=${testResult.durationMs}`);
             failedFixFingerprints.add(fingerprint);
             await validator.reset();
             if (iteration < maxIterations - 1) {
@@ -6585,13 +6629,17 @@ class LocalFixValidator {
     }
     async preValidateFix(changes) {
         for (const change of changes) {
-            const cleanPath = change.file
-                .replace(/^\.\//, '')
-                .replace(/^\/home\/runner\/work\/[^/]+\/[^/]+\//, '');
-            const filePath = path.join(this._workDir, cleanPath);
-            if (!filePath.startsWith(this._workDir)) {
-                return { valid: false, reason: `Path traversal rejected: ${cleanPath}` };
+            let resolved;
+            try {
+                resolved = this.resolveChangePath(change.file);
             }
+            catch (error) {
+                return {
+                    valid: false,
+                    reason: error instanceof Error ? error.message : String(error),
+                };
+            }
+            const { cleanPath, filePath } = resolved;
             if (!fs.existsSync(filePath)) {
                 return { valid: false, reason: `File not found: ${cleanPath}` };
             }
@@ -6610,6 +6658,17 @@ class LocalFixValidator {
             }
         }
         return { valid: true };
+    }
+    resolveChangePath(rawPath) {
+        const cleanPath = rawPath
+            .replace(/^\.\//, '')
+            .replace(/^\/home\/runner\/work\/[^/]+\/[^/]+\//, '');
+        const workDirRoot = path.resolve(this._workDir);
+        const filePath = path.resolve(workDirRoot, cleanPath);
+        if (!filePath.startsWith(`${workDirRoot}${path.sep}`)) {
+            throw new Error(`Path traversal rejected: ${cleanPath}`);
+        }
+        return { cleanPath, filePath };
     }
     quickTypeCheck(filePath) {
         const tscPath = path.join(this._workDir, 'node_modules', '.bin', 'tsc');
@@ -6644,13 +6703,7 @@ class LocalFixValidator {
             throw new Error(`Pre-validation failed: ${preCheck.reason}`);
         }
         for (const change of changes) {
-            const cleanPath = change.file
-                .replace(/^\.\//, '')
-                .replace(/^\/home\/runner\/work\/[^/]+\/[^/]+\//, '');
-            const filePath = path.join(this._workDir, cleanPath);
-            if (!filePath.startsWith(this._workDir)) {
-                throw new Error(`Path traversal rejected: ${cleanPath}`);
-            }
+            const { cleanPath, filePath } = this.resolveChangePath(change.file);
             const content = fs.readFileSync(filePath, 'utf-8');
             const idx = content.indexOf(change.oldCode);
             if (idx === -1) {
@@ -7800,8 +7853,12 @@ class SkillStore {
                 `   fix: ${sanitizeForPrompt(s.fix.summary)}`,
                 `   confidence: ${s.confidence}%`,
             ];
-            if (s.classificationOutcome === 'correct' ||
-                s.classificationOutcome === 'incorrect') {
+            if (s.isSeed) {
+                lines.push('   source: curated seed skill (operator-provided guidance, not runtime outcome evidence)');
+            }
+            if (!s.isSeed &&
+                (s.classificationOutcome === 'correct' ||
+                    s.classificationOutcome === 'incorrect')) {
                 lines.push(`   classificationOutcome: ${s.classificationOutcome}`);
             }
             return lines.join('\n');
@@ -7826,11 +7883,16 @@ class SkillStore {
             const date = s.createdAt.split('T')[0];
             const outcome = s.classificationOutcome ?? 'unknown';
             let entry = `${i + 1}. Prior investigation for ${sanitizeForPrompt(s.spec)} (${date}):`;
+            if (s.isSeed) {
+                entry += '\n   Source: curated seed skill (operator-provided guidance, not runtime outcome evidence)';
+            }
             entry += `\n   Finding: ${sanitizeForPrompt(s.investigationFindings)}`;
             if (s.rootCauseChain) {
                 entry += `\n   Root cause: ${sanitizeForPrompt(s.rootCauseChain)}`;
             }
-            entry += `\n   Outcome: ${outcome}`;
+            entry += s.isSeed
+                ? '\n   Outcome: curated seed'
+                : `\n   Outcome: ${outcome}`;
             if (s.repoContext) {
                 entry += `\n   Repo note: ${sanitizeForPrompt(s.repoContext)}`;
             }
@@ -7962,7 +8024,10 @@ function formatSkillsForPrompt(skills, role, flakiness) {
         const failures = s.failCount ?? 0;
         const total = successes + failures;
         let trackRecord;
-        if (total > 0) {
+        if (s.isSeed) {
+            trackRecord = 'curated seed, not runtime outcome evidence';
+        }
+        else if (total > 0) {
             trackRecord = `${successes}/${total} successful`;
         }
         else if (s.validatedLocally === true) {
@@ -7971,13 +8036,16 @@ function formatSkillsForPrompt(skills, role, flakiness) {
         else {
             trackRecord = 'untested';
         }
-        const outcome = s.classificationOutcome && s.classificationOutcome !== 'unknown'
+        const outcome = !s.isSeed && s.classificationOutcome && s.classificationOutcome !== 'unknown'
             ? `, classification: ${s.classificationOutcome}`
             : '';
         const lines = [
             `**Fix ${i + 1}** (${s.createdAt.split('T')[0]}, ${s.confidence}% confidence, ${s.iterations} iteration${s.iterations !== 1 ? 's' : ''})`,
             `- Spec: ${sanitizeForPrompt(s.spec)}`,
         ];
+        if (s.isSeed) {
+            lines.push('- Source: curated seed skill (operator-provided guidance, not runtime validation)');
+        }
         if (s.testName && s.testName.trim()) {
             lines.push(`- Test: ${sanitizeForPrompt(s.testName)}`);
         }
@@ -8387,6 +8455,23 @@ function detectInfrastructureFailure(errorData) {
     };
 }
 //# sourceMappingURL=simplified-analyzer.js.map
+
+/***/ }),
+
+/***/ 25026:
+/***/ ((__unused_webpack_module, exports) => {
+
+"use strict";
+
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.clampConfidence = clampConfidence;
+function clampConfidence(value, fallback = 50) {
+    const numeric = typeof value === 'number' && Number.isFinite(value)
+        ? value
+        : fallback;
+    return Math.max(0, Math.min(100, numeric));
+}
+//# sourceMappingURL=number-utils.js.map
 
 /***/ }),
 

@@ -97,6 +97,36 @@ describe('ReviewAgent', () => {
       expect(result.data?.fixConfidence).toBe(90);
     });
 
+    it('should clamp out-of-range fixConfidence values from the model', async () => {
+      mockOpenAIClient.generateWithCustomPrompt = jest.fn().mockResolvedValue({
+        text: JSON.stringify({
+          approved: true,
+          issues: [],
+          assessment: 'The fix is valid',
+          fixConfidence: 1000,
+        }),
+        responseId: 'mock-resp-id',
+      });
+
+      const context = createAgentContext({
+        errorMessage: 'Element not found',
+        testFile: 'test.cy.ts',
+        testName: 'test',
+        sourceFileContent: 'cy.get(\'[data-testid="submit"]\').click()',
+      });
+
+      const result = await agent.execute(
+        {
+          proposedFix: mockProposedFix,
+          analysis: mockAnalysis,
+        },
+        context
+      );
+
+      expect(result.success).toBe(true);
+      expect(result.data?.fixConfidence).toBe(100);
+    });
+
     it('should reject fix with critical issues', async () => {
       const mockResponse: ReviewOutput = {
         approved: false,

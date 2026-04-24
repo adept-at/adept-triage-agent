@@ -248,6 +248,21 @@ describe('InvestigationAgent — enum whitelisting at parse time (v1.49.2)', () 
         evidence: [],
       });
     });
+
+    it('clamps out-of-range investigation and override confidence values', async () => {
+      const r = await runWith({
+        ...baseValid,
+        confidence: -20,
+        verdictOverride: {
+          suggestedLocation: 'APP_CODE',
+          confidence: 1000,
+          evidence: [],
+        },
+      });
+
+      expect(r.data?.confidence).toBe(0);
+      expect(r.data?.verdictOverride?.confidence).toBe(100);
+    });
   });
 
   // Downstream integration contract: the parser is the gate that prevents

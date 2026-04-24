@@ -51,6 +51,11 @@ describe('OpenAIClient', () => {
     it('should successfully analyze error and return response', async () => {
       const mockResponse = {
         id: 'resp-abc',
+        usage: {
+          input_tokens: 100,
+          output_tokens: 25,
+          total_tokens: 125,
+        },
         output_text: JSON.stringify({
           verdict: 'TEST_ISSUE',
           reasoning: 'This is a test synchronization issue',
@@ -67,6 +72,7 @@ describe('OpenAIClient', () => {
         reasoning: 'This is a test synchronization issue',
         indicators: ['timeout', 'element not found'],
         responseId: 'resp-abc',
+        tokensUsed: 125,
       });
 
       expect(mockCreate).toHaveBeenCalledWith(
@@ -325,6 +331,10 @@ describe('OpenAIClient', () => {
     it('should call OpenAI Responses API with custom system and user prompts', async () => {
       const mockResponse = {
         id: 'resp_mock_1',
+        usage: {
+          input_tokens: 50,
+          output_tokens: 20,
+        },
         output_text: JSON.stringify({
           confidence: 85,
           reasoning: 'Test fix identified',
@@ -338,12 +348,13 @@ describe('OpenAIClient', () => {
         systemPrompt: 'You are an expert at fixing tests.',
         userContent: 'Fix this test failure.',
         responseAsJson: true,
+        maxTokens: 6000,
       });
 
       expect(mockCreate).toHaveBeenCalledWith(
         expect.objectContaining({
           model: OPENAI.MODEL,
-          max_output_tokens: OPENAI.MAX_COMPLETION_TOKENS,
+          max_output_tokens: 6000,
           text: { format: { type: 'json_object' } },
           instructions: 'You are an expert at fixing tests.',
           input: [{ role: 'user', content: 'Fix this test failure.\n\nRespond with a JSON object.' }],
@@ -357,6 +368,7 @@ describe('OpenAIClient', () => {
           changes: [],
         }),
         responseId: 'resp_mock_1',
+        tokensUsed: 70,
       });
     });
 
@@ -432,12 +444,33 @@ describe('OpenAIClient', () => {
     });
 
     it('should throw error when response is empty', async () => {
-      mockCreate.mockResolvedValueOnce({ output_text: null });
+      mockCreate
+        .mockResolvedValueOnce({ output_text: null })
+        .mockResolvedValueOnce({ output_text: null })
+        .mockResolvedValueOnce({ output_text: null });
 
       await expect(client.generateWithCustomPrompt({
         systemPrompt: 'Test',
         userContent: 'Test',
-      })).rejects.toThrow('Empty response from OpenAI');
+      })).rejects.toThrow('Failed to get custom prompt response from OpenAI after 3 attempts');
+      expect(mockCreate).toHaveBeenCalledTimes(3);
+    });
+
+    it('should retry custom prompt calls on transient failure', async () => {
+      mockCreate
+        .mockRejectedValueOnce(new Error('temporary outage'))
+        .mockResolvedValueOnce({
+          id: 'resp_custom_retry',
+          output_text: 'Recovered',
+        });
+
+      const result = await client.generateWithCustomPrompt({
+        systemPrompt: 'Test',
+        userContent: 'Test',
+      });
+
+      expect(result).toEqual({ text: 'Recovered', responseId: 'resp_custom_retry' });
+      expect(mockCreate).toHaveBeenCalledTimes(2);
     });
 
     it('should not include text format when responseAsJson is false', async () => {

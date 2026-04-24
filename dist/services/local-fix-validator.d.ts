@@ -38,6 +38,7 @@ export declare class LocalFixValidator {
         valid: boolean;
         reason?: string;
     }>;
+    private resolveChangePath;
     private quickTypeCheck;
     applyFix(changes: Array<{
         file: string;

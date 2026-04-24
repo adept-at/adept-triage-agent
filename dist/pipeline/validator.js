@@ -99,7 +99,7 @@ async function generateFixRecommendation(inputs, repoDetails, errorData, openaiC
         return null;
     }
 }
-async function iterativeFixValidateLoop(inputs, repoDetails, autoFixTargetRepo, errorData, openaiClient, octokit, skillStore, classificationResponseId, investigationContext, repoContext) {
+async function iterativeFixValidateLoop(inputs, repoDetails, autoFixTargetRepo, errorData, openaiClient, octokit, skillStore, _classificationResponseId, investigationContext, repoContext) {
     const maxIterations = constants_1.FIX_VALIDATE_LOOP.MAX_ITERATIONS;
     let fixRecommendation = null;
     let autoFixResult = null;
@@ -112,7 +112,6 @@ async function iterativeFixValidateLoop(inputs, repoDetails, autoFixTargetRepo, 
     const failedFixFingerprints = new Set();
     const minConfidence = inputs.autoFixMinConfidence ?? constants_1.AUTO_FIX.DEFAULT_MIN_CONFIDENCE;
     const baseBranch = inputs.branch || inputs.autoFixBaseBranch || 'main';
-    let lastResponseId = classificationResponseId;
     const validator = new local_fix_validator_1.LocalFixValidator({
         owner: autoFixTargetRepo.owner,
         repo: autoFixTargetRepo.repo,
@@ -129,14 +128,13 @@ async function iterativeFixValidateLoop(inputs, repoDetails, autoFixTargetRepo, 
         for (let iteration = 0; iteration < maxIterations; iteration++) {
             completedIterations = iteration + 1;
             core.info(`\n${'='.repeat(60)}\n🔄 Fix-Validate iteration ${iteration + 1}/${maxIterations}\n${'='.repeat(60)}`);
-            const fixResult = await generateFixRecommendation(inputs, repoDetails, errorData, openaiClient, octokit, previousAttempt, lastResponseId, skillStore, investigationContext, repoContext);
+            const fixResult = await generateFixRecommendation(inputs, repoDetails, errorData, openaiClient, octokit, previousAttempt, undefined, skillStore, investigationContext, repoContext);
             if (!fixResult) {
                 fixRecommendation = null;
                 core.warning(`Iteration ${iteration + 1}: could not generate fix recommendation`);
                 break;
             }
             fixRecommendation = fixResult.fix;
-            lastResponseId = fixResult.lastResponseId ?? lastResponseId;
             if (fixResult.agentRootCause)
                 agentRootCause = fixResult.agentRootCause;
             if (fixResult.agentInvestigationFindings)
@@ -170,9 +168,11 @@ async function iterativeFixValidateLoop(inputs, repoDetails, autoFixTargetRepo, 
                 const baseline = await validator.baselineCheck();
                 if (baseline.passed) {
                     core.info('✅ Baseline check passed — test passes without fix. Failure was likely transient.');
+                    core.info('📊 learning-telemetry baseline=passed validation=skipped iterations=0');
                     return { fixRecommendation: null, autoFixResult: null, iterations: 0, agentRootCause, agentInvestigationFindings, autoFixSkipped, autoFixSkippedReason };
                 }
                 core.info('❌ Baseline check confirmed failure — proceeding with fix.');
+                core.info(`📊 learning-telemetry baseline=failed durationMs=${baseline.durationMs}`);
             }
             try {
                 await validator.applyFix(fixRecommendation.proposedChanges);
@@ -185,6 +185,7 @@ async function iterativeFixValidateLoop(inputs, repoDetails, autoFixTargetRepo, 
             const testResult = await validator.runTest();
             if (testResult.passed) {
                 core.info(`\n✅ Test PASSED on iteration ${iteration + 1}! (${testResult.durationMs}ms)`);
+                core.info(`📊 learning-telemetry validation=passed iteration=${iteration + 1} durationMs=${testResult.durationMs}`);
                 const branchName = (0, fix_applier_1.generateFixBranchName)(fixRecommendation.proposedChanges[0].file);
                 try {
                     const pushResult = await validator.pushAndCreatePR({
@@ -216,6 +217,7 @@ async function iterativeFixValidateLoop(inputs, repoDetails, autoFixTargetRepo, 
                 return { fixRecommendation, autoFixResult, iterations: iteration + 1, agentRootCause, agentInvestigationFindings, autoFixSkipped, autoFixSkippedReason };
             }
             core.warning(`\n❌ Test FAILED on iteration ${iteration + 1} (exit code: ${testResult.exitCode}, ${testResult.durationMs}ms)`);
+            core.info(`📊 learning-telemetry validation=failed iteration=${iteration + 1} durationMs=${testResult.durationMs}`);
             failedFixFingerprints.add(fingerprint);
             await validator.reset();
             if (iteration < maxIterations - 1) {

@@ -116,6 +116,47 @@ describe('FixGenerationAgent', () => {
       expect(result.data?.confidence).toBe(85);
     });
 
+    it('should clamp out-of-range confidence values from the model', async () => {
+      const mockResponse: FixGenerationOutput = {
+        changes: [
+          {
+            file: 'test.cy.ts',
+            line: 10,
+            oldCode: 'cy.get(".old")',
+            newCode: 'cy.get(".new")',
+            justification: 'Update selector',
+            changeType: 'SELECTOR_UPDATE',
+          },
+        ],
+        confidence: -10,
+        summary: 'Update selector',
+        reasoning: 'Selector changed',
+        evidence: [],
+        risks: [],
+      };
+
+      mockOpenAIClient.generateWithCustomPrompt = jest
+        .fn()
+        .mockResolvedValue({ text: JSON.stringify(mockResponse), responseId: 'mock-resp-id' });
+
+      const context = createAgentContext({
+        errorMessage: 'Error',
+        testFile: 'test.cy.ts',
+        testName: 'test',
+      });
+
+      const result = await agent.execute(
+        {
+          analysis: mockAnalysis,
+          investigation: mockInvestigation,
+        },
+        context
+      );
+
+      expect(result.success).toBe(true);
+      expect(result.data?.confidence).toBe(0);
+    });
+
     it('should handle multiple changes', async () => {
       const mockResponse: FixGenerationOutput = {
         changes: [

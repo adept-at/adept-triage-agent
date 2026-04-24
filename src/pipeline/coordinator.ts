@@ -437,6 +437,11 @@ export class PipelineCoordinator {
             await skillStore.recordOutcome(skill.id, false);
             core.info(`📝 Saved failed skill trajectory ${skill.id}`);
           }
+          core.info(
+            `📊 learning-telemetry verdict=${classification.verdict} ` +
+              `savedSkillId=${skill.id} fixSucceeded=${fixSucceeded} ` +
+              `iterations=${iterations}`
+          );
         }
       }
     }

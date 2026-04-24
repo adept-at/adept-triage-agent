@@ -230,13 +230,17 @@ class LocalFixValidator {
     }
     async preValidateFix(changes) {
         for (const change of changes) {
-            const cleanPath = change.file
-                .replace(/^\.\//, '')
-                .replace(/^\/home\/runner\/work\/[^/]+\/[^/]+\//, '');
-            const filePath = path.join(this._workDir, cleanPath);
-            if (!filePath.startsWith(this._workDir)) {
-                return { valid: false, reason: `Path traversal rejected: ${cleanPath}` };
+            let resolved;
+            try {
+                resolved = this.resolveChangePath(change.file);
             }
+            catch (error) {
+                return {
+                    valid: false,
+                    reason: error instanceof Error ? error.message : String(error),
+                };
+            }
+            const { cleanPath, filePath } = resolved;
             if (!fs.existsSync(filePath)) {
                 return { valid: false, reason: `File not found: ${cleanPath}` };
             }
@@ -255,6 +259,17 @@ class LocalFixValidator {
             }
         }
         return { valid: true };
+    }
+    resolveChangePath(rawPath) {
+        const cleanPath = rawPath
+            .replace(/^\.\//, '')
+            .replace(/^\/home\/runner\/work\/[^/]+\/[^/]+\//, '');
+        const workDirRoot = path.resolve(this._workDir);
+        const filePath = path.resolve(workDirRoot, cleanPath);
+        if (!filePath.startsWith(`${workDirRoot}${path.sep}`)) {
+            throw new Error(`Path traversal rejected: ${cleanPath}`);
+        }
+        return { cleanPath, filePath };
     }
     quickTypeCheck(filePath) {
         const tscPath = path.join(this._workDir, 'node_modules', '.bin', 'tsc');
@@ -289,13 +304,7 @@ class LocalFixValidator {
             throw new Error(`Pre-validation failed: ${preCheck.reason}`);
         }
         for (const change of changes) {
-            const cleanPath = change.file
-                .replace(/^\.\//, '')
-                .replace(/^\/home\/runner\/work\/[^/]+\/[^/]+\//, '');
-            const filePath = path.join(this._workDir, cleanPath);
-            if (!filePath.startsWith(this._workDir)) {
-                throw new Error(`Path traversal rejected: ${cleanPath}`);
-            }
+            const { cleanPath, filePath } = this.resolveChangePath(change.file);
             const content = fs.readFileSync(filePath, 'utf-8');
             const idx = content.indexOf(change.oldCode);
             if (idx === -1) {

@@ -4,6 +4,7 @@ exports.InvestigationAgent = void 0;
 const base_agent_1 = require("./base-agent");
 const constants_1 = require("../config/constants");
 const text_utils_1 = require("../utils/text-utils");
+const number_utils_1 = require("../utils/number-utils");
 const FINDING_TYPES = [
     'SELECTOR_CHANGE',
     'MISSING_ELEMENT',
@@ -161,9 +162,7 @@ You MUST respond with a JSON object matching this schema:
             const verdictOverride = suggestedLocation
                 ? {
                     suggestedLocation,
-                    confidence: typeof parsed.verdictOverride.confidence === 'number'
-                        ? parsed.verdictOverride.confidence
-                        : 50,
+                    confidence: (0, number_utils_1.clampConfidence)(parsed.verdictOverride.confidence),
                     evidence: Array.isArray(parsed.verdictOverride.evidence)
                         ? parsed.verdictOverride.evidence
                         : [],
@@ -178,7 +177,7 @@ You MUST respond with a JSON object matching this schema:
                 isTestCodeFixable: parsed.isTestCodeFixable !== false,
                 recommendedApproach: parsed.recommendedApproach || '',
                 selectorsToUpdate,
-                confidence: typeof parsed.confidence === 'number' ? parsed.confidence : 50,
+                confidence: (0, number_utils_1.clampConfidence)(parsed.confidence),
                 verdictOverride,
             };
         }

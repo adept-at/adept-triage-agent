@@ -4,6 +4,7 @@ exports.AnalysisAgent = void 0;
 const base_agent_1 = require("./base-agent");
 const constants_1 = require("../config/constants");
 const text_utils_1 = require("../utils/text-utils");
+const number_utils_1 = require("../utils/number-utils");
 const ROOT_CAUSE_CATEGORIES = [
     'SELECTOR_MISMATCH',
     'TIMING_ISSUE',
@@ -167,7 +168,7 @@ You MUST respond with a JSON object matching this schema:
             return {
                 rootCauseCategory: (0, text_utils_1.coerceEnum)(parsed.rootCauseCategory, ROOT_CAUSE_CATEGORIES, 'UNKNOWN'),
                 contributingFactors: contributingFactors.map((c) => (0, text_utils_1.coerceEnum)(c, ROOT_CAUSE_CATEGORIES, 'UNKNOWN')),
-                confidence: parsed.confidence,
+                confidence: (0, number_utils_1.clampConfidence)(parsed.confidence),
                 explanation: parsed.explanation || '',
                 selectors,
                 elements,

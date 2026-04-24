@@ -15,6 +15,7 @@ import { DEFAULT_PRODUCT_REPO, OPENAI, AGENT_MODEL, REASONING_EFFORT } from '../
 import { AnalysisOutput } from './analysis-agent';
 import { InvestigationOutput } from './investigation-agent';
 import { coerceEnum } from '../utils/text-utils';
+import { clampConfidence } from '../utils/number-utils';
 
 /**
  * Whitelisted `changeType` values, matching the CodeChange type union
@@ -450,7 +451,6 @@ export class FixGenerationAgent extends BaseAgent<
       ...config,
       model: resolvedModel,
       reasoningEffort: resolvedEffort,
-      maxTokens: 6000,
     });
   }
 
@@ -751,8 +751,7 @@ export class FixGenerationAgent extends BaseAgent<
 
       return {
         changes,
-        confidence:
-          typeof parsed.confidence === 'number' ? parsed.confidence : 50,
+        confidence: clampConfidence(parsed.confidence),
         summary: parsed.summary || '',
         reasoning: parsed.reasoning || '',
         evidence: Array.isArray(parsed.evidence) ? parsed.evidence : [],

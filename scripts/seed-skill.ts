@@ -216,17 +216,17 @@ async function insertOne(
     confidence: seed.confidence,
     iterations: 0,
     prUrl: '',
-    // Curated skills are validated by definition — that's the whole
-    // point of seeding. Without this, `findForClassifier` (which
-    // requires `validatedLocally === true`) would never surface them.
+    // Keep seeds eligible for classifier retrieval, but do not give
+    // them runtime success counters. Prompt renderers label them as
+    // curated guidance so they do not look empirically proven.
     validatedLocally: true,
     priorSkillCount: 0,
-    successCount: 1,
+    successCount: 0,
     failCount: 0,
     lastUsedAt: now,
     retired: false,
     investigationFindings: seed.investigationFindings ?? '',
-    classificationOutcome: 'correct',
+    classificationOutcome: 'unknown',
     rootCauseChain: seed.rootCauseChain ?? '',
     repoContext: seed.repoContext ?? '',
     isSeed: true,

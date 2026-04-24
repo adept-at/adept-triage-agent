@@ -1,6 +1,6 @@
 # Adept Triage Agent — Architecture
 
-> **Current version:** v1.52.0
+> **Current version:** v1.52.2
 > **Scope:** end-to-end architecture of the agent — entry point, pipeline, five-agent orchestration, skill-memory / repo-context learning loop, observability, operator surface.
 > **Audience:** engineers who need to understand the system deeply enough to extend or debug it without surprises.
 
@@ -53,6 +53,7 @@ The Adept Triage Agent is a Node 24 GitHub Action (`action.yml` → `dist/index.
 | v1.51.0 | Fix-gen + review upgraded to `gpt-5.4` xhigh reasoning; agent timeout bumped to 300s. |
 | v1.51.1 | Extraction-quality hardening (causal vs background rule, reject URL file-attribution). |
 | **v1.52.0** | **Repo context (bundled + remote)**; **seed skills with `isSeed` pruning protection**; **`normalizeSpec` on write and read** so seeds written with relative paths match runtime absolute paths. |
+| **v1.52.2** | **Safety + measurement tightening**: local path traversal uses resolved-path containment, confidence values are clamped to 0–100, outer validation retries no longer chain hidden Responses API history, custom prompt calls retry and emit token usage, seed skills are labeled as curated guidance. |
 
 ---
 
@@ -117,7 +118,7 @@ One class, five methods worth knowing:
 
 The local-validation loop. Maximum `FIX_VALIDATE_LOOP.MAX_ITERATIONS = 3`. For each iteration:
 
-1. `generateFixRecommendation(...)` — builds a `RepairContext`, spins up `SimplifiedRepairAgent` with model overrides, calls `repairAgent.generateFixRecommendation(...)`. Returns `{ fix, agentRootCause, agentInvestigationFindings, lastResponseId }` or `null`.
+1. `generateFixRecommendation(...)` — builds a `RepairContext`, spins up `SimplifiedRepairAgent` with model overrides, calls `repairAgent.generateFixRecommendation(...)`. Returns `{ fix, agentRootCause, agentInvestigationFindings, lastResponseId }` or `null`. Local validation retries intentionally start each full orchestrator run without a cross-iteration `previous_response_id`; the retry signal is the explicit sanitized `previousAttempt` block below.
 2. If `null` or no `proposedChanges` → break.
 3. **Blast-radius gate** (`requiredConfidence` in `src/pipeline/validator.ts`):
    - `+10` to the required confidence if any changed path touches shared code (`/pageobjects/`, `/helpers/`, `/commands/`, ...).
@@ -126,7 +127,7 @@ The local-validation loop. Maximum `FIX_VALIDATE_LOOP.MAX_ITERATIONS = 3`. For e
    - If the scaled threshold blocks the fix **because scaling kicked in** (not because confidence was just below the base threshold), set `autoFixSkipped=true` with the reasons; otherwise break silently.
 4. **Duplicate-fix fingerprint**: if this fix has the same `fixFingerprint(...)` as a previously failed fix in this loop, break. Prevents infinite retry-same-attempt loops.
 5. **First iteration only**: `validator.setup()` — clones the target repo, `npm ci`/`install`, optional Cypress binary cache. Then **`baselineCheck()`** — runs the test **3 consecutive times** without any fix applied. If all 3 pass, conclude the original failure was transient and return `{ fixRecommendation: null, autoFixResult: null, iterations: 0 }`. If any pass fails, short-circuit (it's a real failure).
-6. `applyFix` (on-disk patch), `runTest`.
+6. `applyFix` (on-disk patch using resolved-path containment), `runTest`.
 7. **On pass**: `pushAndCreatePR` (create branch, commit, push, open PR). Return with `autoFixResult.success = true`. Push-failure edge case: fix passed locally but push failed → return with `success=false` + `validationStatus=passed` (so operators can tell "the fix works, GitHub just rejected the push" apart from a real failure).
 8. **On fail**: add fingerprint to failed set, `validator.reset()` (git clean), build `previousAttempt` for next iteration with the failed fix diff + sanitized validation logs + prior agent reasoning. Loop.
 9. **After the loop**: `validator.cleanup()` always runs (`try { ... } finally { ... }`).
@@ -141,7 +142,7 @@ interface ClassificationResult {
   summary?: string;
   indicators?: string[];
   suggestedSourceLocations?: Array<{ file: string; lines: string; reason: string }>;
-  responseId?: string;              // for OpenAI Responses API chaining
+  responseId?: string;              // classifier response id, not chained across local validation retries
   fixRecommendation?: FixRecommendation;
   classifierSkillIds?: string[];    // surfaced skills — written for future "classification outcome" feedback loop
 }
@@ -288,7 +289,7 @@ Three entry points, different framings to prevent anchoring bias:
   - `fix_generation`: "validated approaches are starting points; use the causal trace as a reasoning template."
   - `review`: "check alignment with prior validated patterns; weaker current trace is a WARNING signal."
 - **`formatForInvestigation({ framework, spec, errorMessage })`** — used by coordinator to build `investigationContext` passed through as `priorInvestigationContext`. Filters to skills that have `investigationFindings` set. Top 3 rendered as "Prior investigation for `<spec>` (<date>)".
-- **`formatSkillsForClassifierContext(skills)`** — used by coordinator for the classifier context block. Numbered lines of (errorPattern, rootCauseCategory, fix summary, confidence, optional classificationOutcome).
+- **`formatSkillsForClassifierContext(skills)`** — used by coordinator for the classifier context block. Numbered lines of (errorPattern, rootCauseCategory, fix summary, confidence, optional classificationOutcome). Seed skills are explicitly labeled as curated guidance and do not render `classificationOutcome`, even if older seeded rows still carry one.
 
 **Trace rendering** is gated to avoid feeding "how this fix reasoned" under skills that failed:
 - Only for roles `fix_generation` and `review`.
@@ -296,6 +297,7 @@ Three entry points, different framings to prevent anchoring bias:
 - Each trace sub-field capped at 200 chars.
 
 **Track-record wording** is three-state honest:
+- Seed skills → `"curated seed, not runtime outcome evidence"`.
 - `successCount + failCount > 0` → `"X/Y successful"`.
 - No runtime counters, `validatedLocally === true` → `"validated on save, no runtime track record yet"`.
 - No runtime counters, not validated-at-save → `"untested"`.
@@ -311,6 +313,8 @@ When iteration N of `iterativeFixValidateLoop` runs, `buildPriorAttemptContext(.
 - Explicit instruction to try a *different* approach.
 
 Every field goes through `sanitizeForPrompt` — test-runner logs can contain prompt-injection patterns quoted from user code.
+
+The explicit `previousAttempt` block is the only cross-validation-iteration retry memory. The Responses API `previous_response_id` chain is intentionally not carried from one full local-validation attempt into the next, so the next analysis does not inherit hidden model history from a failed path.
 
 ### `sanitizeForPrompt`
 
@@ -344,8 +348,8 @@ In `SimplifiedRepairAgent.generateFixRecommendation()` (`src/repair/simplified-r
 
 Happy path (`src/agents/agent-orchestrator.ts`):
 
-1. Wrap the whole pipeline in a `Promise.race` against a `totalTimeoutMs` timer (default **300,000 ms** — bumped in v1.51.0 for xhigh reasoning latency).
-2. **Analysis** — receives `skillsPrompt` pre-rendered with role `investigation` (by design — analysis shares investigation's "don't anchor" framing). Runs with `lastResponseId` as `previousResponseId` for Responses-API chaining across outer iterations.
+1. Wrap the whole pipeline in a `Promise.race` against a `totalTimeoutMs` timer (default **300,000 ms** — bumped in v1.51.0 for xhigh reasoning latency). `BaseAgent.DEFAULT_AGENT_CONFIG.timeoutMs` uses the same value, so inner agent calls no longer time out at 60 seconds while the orchestrator still has budget.
+2. **Analysis** — receives `skillsPrompt` pre-rendered with role `investigation` (by design — analysis shares investigation's "don't anchor" framing). Local-validation retries start analysis fresh from an API-history perspective; they receive prior failure state through the explicit `previousAttempt` context instead.
 3. **Code reading** — no LLM, no chaining. Sets `context.sourceFileContent` (line-numbered) and `context.relatedFiles`.
 4. **Investigation** — chains to analysis **only** when `analysis.confidence < AGENT_CONFIG.INVESTIGATION_CHAIN_CONFIDENCE` (default **80**). Lower analysis confidence = pull in analysis's reasoning context; higher = start fresh to avoid cascading over-confident analysis.
 5. **Verdict gates** — abort repair if `verdictOverride.suggestedLocation === 'APP_CODE'` with high-enough confidence, or if `!isTestCodeFixable && !verdictOverride`.
@@ -358,6 +362,8 @@ Happy path (`src/agents/agent-orchestrator.ts`):
    - Approved + no blocking CRITICALs → return fix with `approach: 'agentic'`.
    - Not approved → build `reviewFeedback` from issues + (if blocking CRITICAL with prior trace) explicit replay of `previousFix.failureModeTrace` → next iteration.
 7. **Max iterations fallback inside agentic only** — if the review loop ran out of iterations but the last agentic fix has acceptable confidence AND no blocking quality CRITICALs, return it with a warning ("not review-approved; validation is the final gate"). Otherwise error.
+
+All model-produced confidence values are clamped to `0–100` at parse boundaries before they reach gates (`analysis`, `investigation`, `verdictOverride`, `fix_generation`, and `review`).
 
 ---
 
@@ -462,10 +468,10 @@ Curated, hand-written skills inserted manually via `scripts/seed-skill.ts`. Purp
 Seeds are normal skills with `isSeed: true` and these defaults:
 
 - `validatedLocally: true`
-- `successCount: 1`
-- `classificationOutcome: 'correct'`
+- `successCount: 0`
+- `classificationOutcome: 'unknown'`
 
-These defaults make seeds immediately eligible for `findForClassifier` (which requires `validatedLocally === true`) and give them a neutral starting track record. They score the same way as auto-saved skills — the `isSeed` flag only affects pruning and audit behavior.
+These defaults make seeds immediately eligible for `findForClassifier` (which requires `validatedLocally === true`) without making them look empirically successful. Prompt renderers label `isSeed` rows as curated operator-provided guidance and suppress `classificationOutcome` for seeds, so a bootstrap exemplar does not overstate runtime evidence. Seeds score the same way as auto-saved skills; the `isSeed` flag affects pruning, audit behavior, and prompt trust framing.
 
 **CLI**: `scripts/seed-skill.ts` takes a single file, a directory (recursive), `--list`, or `--remove <id-prefix>`. Validates `SeedInput` shape before inserting. Applies `normalizeSpec` and `normalizeError` the same way `buildSkill` does.
 
@@ -577,9 +583,13 @@ Every grep-stable log line, what it means, and when to care.
 | `📝 Loaded N skill(s) from DynamoDB (<table>) for <owner>/<repo>` | Skills loaded. If missing, check AWS creds / table / region. |
 | `📝 skill-telemetry role=<role> count=<n> ids=<csv>` | Which skills reached which prompt on this run. Proves retrieval is actually working. |
 | `📊 skill-telemetry-summary loaded=N surfaced=M saved=K` | Per-run rollup. Emitted even when all zero (explicit "no activity"). |
+| `📊 learning-telemetry baseline=<passed or failed> ...` | Baseline outcome and duration for local validation. |
+| `📊 learning-telemetry validation=<passed or failed> iteration=N ...` | Local validation test outcome by iteration. |
+| `📊 learning-telemetry verdict=<verdict> savedSkillId=<id> fixSucceeded=<bool> iterations=N` | Connects a saved skill to the verdict and validation outcome that produced it. |
 | `📝 Saved validated skill <id>` / `📝 Saved failed skill trajectory <id>` | Skill persisted after a fix attempt. |
 | `🧹 Pruned N old skill(s) from DynamoDB` | `MAX_SKILLS` cap enforcement. Seeds are never pruned. |
 | `⚠️ Skill <id> retired — X% failure rate` | Auto-retirement threshold hit. |
+| `[<AgentName>] Token usage: N` / `🧮 <model> analysis token usage: N` | OpenAI Responses API usage metadata when the API returns token counts. |
 
 ### Repo context
 
@@ -627,6 +637,8 @@ Every numeric / string default operators might want to know.
 | `BASELINE_PASS_COUNT` | `3` | `src/services/local-fix-validator.ts` |
 | `AGENT_CONFIG.MAX_AGENT_ITERATIONS` | `3` | `src/config/constants.ts` |
 | `AGENT_CONFIG.AGENT_TIMEOUT_MS` | `300_000` | `src/config/constants.ts` |
+| `BaseAgent.DEFAULT_AGENT_CONFIG.timeoutMs` | `AGENT_CONFIG.AGENT_TIMEOUT_MS` | `src/agents/base-agent.ts` |
+| `BaseAgent.DEFAULT_AGENT_CONFIG.maxTokens` | `OPENAI.MAX_COMPLETION_TOKENS` | `src/agents/base-agent.ts` |
 | `AGENT_CONFIG.REVIEW_REQUIRED_CONFIDENCE` | `70` | `src/config/constants.ts` |
 | `AGENT_CONFIG.INVESTIGATION_CHAIN_CONFIDENCE` | `80` | `src/config/constants.ts` |
 | `MAX_SKILLS` (per repo partition) | `100` | `src/services/skill-store.ts` |
@@ -634,6 +646,7 @@ Every numeric / string default operators might want to know.
 | `REPO_CONTEXT_MAX_CHARS` | `6500` | `src/services/repo-context-fetcher.ts` |
 | `OPENAI.LEGACY_MODEL` | `gpt-5.3-codex` | `src/config/constants.ts` |
 | `OPENAI.UPGRADED_MODEL` | `gpt-5.4` | `src/config/constants.ts` |
+| `OPENAI.MAX_COMPLETION_TOKENS` | `24_000` | `src/config/constants.ts` |
 | `AGENT_MODEL.classification` | `LEGACY_MODEL` (the pre-repair `classify()` step) | `src/config/constants.ts` |
 | `AGENT_MODEL.analysis` / `investigation` | `LEGACY_MODEL` | `src/config/constants.ts` |
 | `AGENT_MODEL.fixGeneration` / `review` | `UPGRADED_MODEL` (v1.51.0 upgrade) | `src/config/constants.ts` |
@@ -657,7 +670,9 @@ Things that are load-bearing across the codebase. If you break one of these, som
 - **Bundled context takes precedence over in-repo context**. For repos in `BUNDLED_REPO_CONTEXTS`, the in-repo `.adept-triage/context.md` is never fetched. This is intentional — adding a repo to the bundle map is an explicit "keep it here" signal.
 - **`normalizeSpec` must be applied on both sides of equality**. Seeds write relative paths; runtime writes absolute paths. Without normalization on the read side, seeds are inert.
 - **Seeds are never pruned**. `selectSkillsToPrune` filters `!isSeed` before picking prune candidates.
-- **`validatedLocally: true` on seeds**. Without it, seeds would never surface through `findForClassifier`.
+- **`validatedLocally: true` on seeds, but no synthetic success counter**. Without `validatedLocally`, seeds would never surface through `findForClassifier`; without the seed prompt label, they would look like runtime-proven memory.
+- **Local fix paths must be resolved inside the clone workdir**. `LocalFixValidator` uses `path.resolve(workDir, cleanPath)` and requires the resolved path to start with `${workDir}${path.sep}` so sibling-prefix paths cannot escape.
+- **Model confidence values are clamped at parse time**. Gates assume `0–100`; malformed model output must not bypass thresholds.
 - **Analysis `rootCauseCategory` is whitelisted at parse time**. A drifting model can't land arbitrary strings that propagate into storage + logs.
 - **Investigation `verdictOverride` trumps analysis when its confidence is >= analysis's**. Orchestrator aborts repair in this case; don't silently proceed.
 - **Review approval is parsed safely**. Any CRITICAL issue forces `approved = false` even if the model claims `approved: true`.

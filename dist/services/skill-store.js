@@ -456,8 +456,12 @@ class SkillStore {
                 `   fix: ${sanitizeForPrompt(s.fix.summary)}`,
                 `   confidence: ${s.confidence}%`,
             ];
-            if (s.classificationOutcome === 'correct' ||
-                s.classificationOutcome === 'incorrect') {
+            if (s.isSeed) {
+                lines.push('   source: curated seed skill (operator-provided guidance, not runtime outcome evidence)');
+            }
+            if (!s.isSeed &&
+                (s.classificationOutcome === 'correct' ||
+                    s.classificationOutcome === 'incorrect')) {
                 lines.push(`   classificationOutcome: ${s.classificationOutcome}`);
             }
             return lines.join('\n');
@@ -482,11 +486,16 @@ class SkillStore {
             const date = s.createdAt.split('T')[0];
             const outcome = s.classificationOutcome ?? 'unknown';
             let entry = `${i + 1}. Prior investigation for ${sanitizeForPrompt(s.spec)} (${date}):`;
+            if (s.isSeed) {
+                entry += '\n   Source: curated seed skill (operator-provided guidance, not runtime outcome evidence)';
+            }
             entry += `\n   Finding: ${sanitizeForPrompt(s.investigationFindings)}`;
             if (s.rootCauseChain) {
                 entry += `\n   Root cause: ${sanitizeForPrompt(s.rootCauseChain)}`;
             }
-            entry += `\n   Outcome: ${outcome}`;
+            entry += s.isSeed
+                ? '\n   Outcome: curated seed'
+                : `\n   Outcome: ${outcome}`;
             if (s.repoContext) {
                 entry += `\n   Repo note: ${sanitizeForPrompt(s.repoContext)}`;
             }
@@ -618,7 +627,10 @@ function formatSkillsForPrompt(skills, role, flakiness) {
         const failures = s.failCount ?? 0;
         const total = successes + failures;
         let trackRecord;
-        if (total > 0) {
+        if (s.isSeed) {
+            trackRecord = 'curated seed, not runtime outcome evidence';
+        }
+        else if (total > 0) {
             trackRecord = `${successes}/${total} successful`;
         }
         else if (s.validatedLocally === true) {
@@ -627,13 +639,16 @@ function formatSkillsForPrompt(skills, role, flakiness) {
         else {
             trackRecord = 'untested';
         }
-        const outcome = s.classificationOutcome && s.classificationOutcome !== 'unknown'
+        const outcome = !s.isSeed && s.classificationOutcome && s.classificationOutcome !== 'unknown'
             ? `, classification: ${s.classificationOutcome}`
             : '';
         const lines = [
             `**Fix ${i + 1}** (${s.createdAt.split('T')[0]}, ${s.confidence}% confidence, ${s.iterations} iteration${s.iterations !== 1 ? 's' : ''})`,
             `- Spec: ${sanitizeForPrompt(s.spec)}`,
         ];
+        if (s.isSeed) {
+            lines.push('- Source: curated seed skill (operator-provided guidance, not runtime validation)');
+        }
         if (s.testName && s.testName.trim()) {
             lines.push(`- Test: ${sanitizeForPrompt(s.testName)}`);
         }

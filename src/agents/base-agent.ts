@@ -6,7 +6,7 @@
 import * as core from '@actions/core';
 import OpenAI from 'openai';
 import { OpenAIClient } from '../openai-client';
-import { ReasoningEffort } from '../config/constants';
+import { AGENT_CONFIG, OPENAI, ReasoningEffort } from '../config/constants';
 
 type ChatContentPart =
   | OpenAI.Chat.Completions.ChatCompletionContentPartText
@@ -134,9 +134,9 @@ export interface AgentConfig {
  * Default agent configuration
  */
 export const DEFAULT_AGENT_CONFIG: AgentConfig = {
-  timeoutMs: 60000,
+  timeoutMs: AGENT_CONFIG.AGENT_TIMEOUT_MS,
   temperature: 0.3,
-  maxTokens: 4000,
+  maxTokens: OPENAI.MAX_COMPLETION_TOKENS,
   verbose: false,
 };
 
@@ -213,11 +213,14 @@ export abstract class BaseAgent<TInput, TOutput> {
       apiCalls++;
 
       // Race between task and timeout
-      const { data: result, responseId } = await Promise.race([taskPromise, timeoutPromise]);
+      const { data: result, responseId, tokensUsed } = await Promise.race([taskPromise, timeoutPromise]);
       clearTimeout(timeoutId);
 
       const executionTimeMs = Date.now() - startTime;
       core.info(`[${this.agentName}] Completed in ${executionTimeMs}ms`);
+      if (tokensUsed !== undefined) {
+        core.info(`[${this.agentName}] Token usage: ${tokensUsed}`);
+      }
 
       return {
         success: true,
@@ -225,6 +228,7 @@ export abstract class BaseAgent<TInput, TOutput> {
         executionTimeMs,
         apiCalls,
         responseId,
+        tokensUsed,
       };
     } catch (error) {
       clearTimeout(timeoutId);
@@ -250,7 +254,7 @@ export abstract class BaseAgent<TInput, TOutput> {
     input: TInput,
     context: AgentContext,
     previousResponseId?: string
-  ): Promise<{ data: TOutput; responseId: string }> {
+  ): Promise<{ data: TOutput; responseId: string; tokensUsed?: number }> {
     // Compose the system prompt: agent-specific instructions first,
     // then repo conventions appended below. Order matters — the
     // agent's role/contract should set the frame, repo conventions
@@ -291,7 +295,7 @@ export abstract class BaseAgent<TInput, TOutput> {
       }
     }
 
-    const { text, responseId } = await this.openaiClient.generateWithCustomPrompt({
+    const { text, responseId, tokensUsed } = await this.openaiClient.generateWithCustomPrompt({
       systemPrompt,
       userContent: content,
       temperature: this.config.temperature,
@@ -299,6 +303,7 @@ export abstract class BaseAgent<TInput, TOutput> {
       previousResponseId,
       model: this.config.model,
       reasoningEffort: this.config.reasoningEffort,
+      maxTokens: this.config.maxTokens,
     });
 
     const parsed = this.parseResponse(text);
@@ -306,7 +311,7 @@ export abstract class BaseAgent<TInput, TOutput> {
       throw new Error('Failed to parse agent response');
     }
 
-    return { data: parsed, responseId };
+    return { data: parsed, responseId, tokensUsed };
   }
 
   /**

@@ -123,7 +123,7 @@ export async function iterativeFixValidateLoop(
   openaiClient: OpenAIClient,
   octokit: Octokit,
   skillStore?: SkillStore,
-  classificationResponseId?: string,
+  _classificationResponseId?: string,
   investigationContext?: string,
   /** See `generateFixRecommendation.repoContext` */
   repoContext?: string
@@ -163,7 +163,6 @@ export async function iterativeFixValidateLoop(
   const failedFixFingerprints = new Set<string>();
   const minConfidence = inputs.autoFixMinConfidence ?? AUTO_FIX.DEFAULT_MIN_CONFIDENCE;
   const baseBranch = inputs.branch || inputs.autoFixBaseBranch || 'main';
-  let lastResponseId: string | undefined = classificationResponseId;
 
   const validator = new LocalFixValidator(
     {
@@ -196,7 +195,7 @@ export async function iterativeFixValidateLoop(
         openaiClient,
         octokit,
         previousAttempt,
-        lastResponseId,
+        undefined,
         skillStore,
         investigationContext,
         repoContext
@@ -209,7 +208,6 @@ export async function iterativeFixValidateLoop(
       }
 
       fixRecommendation = fixResult.fix;
-      lastResponseId = fixResult.lastResponseId ?? lastResponseId;
       if (fixResult.agentRootCause) agentRootCause = fixResult.agentRootCause;
       if (fixResult.agentInvestigationFindings) agentInvestigationFindings = fixResult.agentInvestigationFindings;
 
@@ -260,9 +258,11 @@ export async function iterativeFixValidateLoop(
         const baseline = await validator.baselineCheck();
         if (baseline.passed) {
           core.info('✅ Baseline check passed — test passes without fix. Failure was likely transient.');
+          core.info('📊 learning-telemetry baseline=passed validation=skipped iterations=0');
           return { fixRecommendation: null, autoFixResult: null, iterations: 0, agentRootCause, agentInvestigationFindings, autoFixSkipped, autoFixSkippedReason };
         }
         core.info('❌ Baseline check confirmed failure — proceeding with fix.');
+        core.info(`📊 learning-telemetry baseline=failed durationMs=${baseline.durationMs}`);
       }
 
       try {
@@ -279,6 +279,7 @@ export async function iterativeFixValidateLoop(
         core.info(
           `\n✅ Test PASSED on iteration ${iteration + 1}! (${testResult.durationMs}ms)`
         );
+        core.info(`📊 learning-telemetry validation=passed iteration=${iteration + 1} durationMs=${testResult.durationMs}`);
 
         const branchName = generateFixBranchName(
           fixRecommendation.proposedChanges[0].file
@@ -319,6 +320,7 @@ export async function iterativeFixValidateLoop(
       core.warning(
         `\n❌ Test FAILED on iteration ${iteration + 1} (exit code: ${testResult.exitCode}, ${testResult.durationMs}ms)`
       );
+      core.info(`📊 learning-telemetry validation=failed iteration=${iteration + 1} durationMs=${testResult.durationMs}`);
       failedFixFingerprints.add(fingerprint);
       await validator.reset();
 

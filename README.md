@@ -4,7 +4,7 @@
 
 AI-powered GitHub Action that triages test failures, proposes fixes, validates them against the test, and opens a PR when they pass. Learns across runs via a DynamoDB-backed skill store and per-repo conventions files.
 
-**Current version**: v1.52.0
+**Current version**: v1.52.2
 
 ## Documentation
 
@@ -33,13 +33,13 @@ When a test fails in your CI, this action can:
   - `gpt-5.3-codex` — everything else: top-level `classify()` pre-repair step, analysis agent, investigation agent, and code-reading agent.
 - **Multimodal context** — screenshots, job logs, test-repo PR/commit diffs, and recent commits in the product repo (`adept-at/learn-webapp` by default).
 - **Skill memory** — per-repo DynamoDB partition of canonical fix patterns. Retrieved by spec-match and error-similarity scoring. Auto-retired when success rate falls below 40%.
-- **Seed skills** (v1.52.0) — hand-curated canonical fix exemplars, protected from pruning via `isSeed`. Bootstrap the learning loop before it's seen real failures.
+- **Seed skills** (v1.52.0+) — hand-curated canonical fix exemplars, protected from pruning via `isSeed` and labeled as curated guidance rather than runtime-proven memory. Bootstrap the learning loop before it's seen real failures.
 - **Repo conventions** (v1.52.0) — opt-in `.adept-triage/context.md` file in the consumer repo (or bundled in the agent for high-traffic repos) that describes selector strategy, wait rules, auth flow. Prepended to every agent's system prompt.
 - **Causal trace** (v1.48.1+) — fix-gen must emit a 4-field `failureModeTrace` (`originalState`, `rootMechanism`, `newStateAfterFix`, `whyAssertionPassesNow`). Review audits it as a quality CRITICAL.
 - **Blast-radius confidence scaling** (v1.48.1+) — changes to shared code (`pageobjects/`, `helpers/`) automatically require higher confidence before auto-fix.
 - **Chronic flakiness gate** — specs auto-fixed 3+ times in the flakiness window are flagged and auto-fix is skipped (human follow-up needed).
 - **Local validation loop** — clones the target repo, runs the test command in-container, pushes only after a validated pass. Baseline check requires 3 consecutive passes to conclude "no fix needed."
-- **Observability** — grep-stable log lines (`skill-telemetry role=...`, `Loaded repo context from ...`, `Agentic approach: ...`). See [ARCHITECTURE.md → Observability](docs/ARCHITECTURE.md#observability) for the full catalog.
+- **Observability** — grep-stable log lines (`skill-telemetry role=...`, `learning-telemetry ...`, token usage, `Loaded repo context from ...`, `Agentic approach: ...`). See [ARCHITECTURE.md → Observability](docs/ARCHITECTURE.md#observability) for the full catalog.
 
 ## Quick start
 

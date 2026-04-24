@@ -755,6 +755,27 @@ describe('SkillStore.formatForClassifier (v1.49.3 A1)', () => {
     expect(out).not.toContain('classificationOutcome');
   });
 
+  it('labels seed skills as curated guidance and does not render their classificationOutcome', () => {
+    const store = storeWith([
+      makeValidated({
+        id: 'seed',
+        errorPattern: 'seeded selector failure',
+        rootCauseCategory: 'SELECTOR_MISMATCH',
+        classificationOutcome: 'correct',
+        isSeed: true,
+      }),
+    ]);
+
+    const out = store.formatForClassifier({
+      framework: 'cypress',
+      spec: 'target.ts',
+      errorMessage: 'seeded selector failure',
+    });
+
+    expect(out).toContain('source: curated seed skill');
+    expect(out).not.toContain('classificationOutcome: correct');
+  });
+
   it('still renders the baseline errorPattern / rootCause / fix / confidence fields', () => {
     // Smoke: adding a new field should not have removed or reordered
     // existing content.
@@ -1070,6 +1091,22 @@ describe('formatSkillsForPrompt', () => {
       expect(result).toContain('Track record: 2/3 successful');
       expect(result).not.toContain('untested');
       expect(result).not.toContain('validated on save');
+    });
+
+    it('labels seed skill track records as curated rather than runtime evidence', () => {
+      const skill = makeSkill({
+        isSeed: true,
+        validatedLocally: true,
+        successCount: 1,
+        failCount: 0,
+        classificationOutcome: 'correct',
+      });
+      const result = formatSkillsForPrompt([skill], 'fix_generation');
+
+      expect(result).toContain('Source: curated seed skill');
+      expect(result).toContain('Track record: curated seed, not runtime outcome evidence');
+      expect(result).not.toContain('Track record: 1/1 successful');
+      expect(result).not.toContain('classification: correct');
     });
 
     // Consistency check: the v1.49.2 review flagged that a skill could
