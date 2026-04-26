@@ -102,9 +102,9 @@ inputs:
   MODEL_OVERRIDE_FIX_GEN:
     description: >
       Optional override for the fix-generation agent model. When set
-      (e.g. "gpt-5.3-codex"), fix-gen reverts to this model without
+      (e.g. "gpt-5.5-pro"), fix-gen reverts to this model without
       requiring a new release. Reasoning effort automatically resets
-      to 'none' when the override is not a 5.4-class model.
+      to 'none' when the override is not a gpt-5.5 model.
     required: false
     default: ''
   MODEL_OVERRIDE_REVIEW:

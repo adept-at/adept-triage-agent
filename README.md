@@ -4,7 +4,7 @@
 
 AI-powered GitHub Action that triages test failures, proposes fixes, validates them against the test, and opens a PR when they pass. Learns across runs via a DynamoDB-backed skill store and per-repo conventions files.
 
-**Current version**: v1.52.2
+**Current version**: v1.52.3
 
 ## Documentation
 
@@ -29,8 +29,9 @@ When a test fails in your CI, this action can:
 
 - **Multi-agent repair pipeline** — five specialized agents with an internal fix/review loop. If the orchestrator cannot produce an approved fix, the agent fails honestly instead of running a weaker fallback path.
 - **Models** (from `AGENT_MODEL` in `src/config/constants.ts`):
-  - `gpt-5.4` with `xhigh` reasoning — fix-generation agent, review agent (upgraded in v1.51.0 for the reasoning-heavy repair work).
-  - `gpt-5.3-codex` — everything else: top-level `classify()` pre-repair step, analysis agent, investigation agent, and code-reading agent.
+  - `gpt-5.5` with `high` reasoning — top-level `classify()` pre-repair step, analysis agent, and investigation agent.
+  - `gpt-5.5` with `xhigh` reasoning — fix-generation agent and review agent.
+  - Code-reading agent is deterministic and does not call an LLM.
 - **Multimodal context** — screenshots, job logs, test-repo PR/commit diffs, and recent commits in the product repo (`adept-at/learn-webapp` by default).
 - **Skill memory** — per-repo DynamoDB partition of canonical fix patterns. Retrieved by spec-match and error-similarity scoring. Auto-retired when success rate falls below 40%.
 - **Seed skills** (v1.52.0+) — hand-curated canonical fix exemplars, protected from pruning via `isSeed` and labeled as curated guidance rather than runtime-proven memory. Bootstrap the learning loop before it's seen real failures.
@@ -246,7 +247,7 @@ uses: adept-at/adept-triage-agent@v1   # recommended — backward-compatible upd
 Or pin to a specific version for full reproducibility:
 
 ```yaml
-uses: adept-at/adept-triage-agent@v1.52.0
+uses: adept-at/adept-triage-agent@v1.52.3
 ```
 
 The `v1` tag is automatically moved to each new `v1.x.y` release by `.github/workflows/release.yml`.
@@ -255,7 +256,7 @@ The `v1` tag is automatically moved to each new `v1.x.y` release by `.github/wor
 
 ```bash
 npm install
-npm test                       # full jest suite (660 tests as of v1.52.0)
+npm test                       # full jest suite (660 tests as of v1.52.3)
 npm run lint                   # eslint
 npm run build                  # tsc
 npm run package                # ncc bundle into dist/index.js

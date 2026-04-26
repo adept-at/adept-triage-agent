@@ -17,7 +17,7 @@ function formatTraceField(value) {
 class ReviewAgent extends base_agent_1.BaseAgent {
     constructor(openaiClient, config) {
         const resolvedModel = config?.model ?? constants_1.AGENT_MODEL.review;
-        const resolvedEffort = resolvedModel === constants_1.OPENAI.UPGRADED_MODEL
+        const resolvedEffort = (0, constants_1.supportsReasoningEffort)(resolvedModel)
             ? (config?.reasoningEffort ?? constants_1.REASONING_EFFORT.review)
             : 'none';
         super(openaiClient, 'ReviewAgent', {

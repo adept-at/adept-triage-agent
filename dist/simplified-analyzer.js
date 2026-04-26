@@ -152,7 +152,10 @@ async function analyzeFailure(client, errorData, skillContext) {
                 indicators: infrastructureHeuristic.indicators
             };
         }
-        const response = await client.analyze(errorData, FEW_SHOT_EXAMPLES, skillContext);
+        const response = await client.analyze(errorData, FEW_SHOT_EXAMPLES, skillContext, {
+            model: constants_1.AGENT_MODEL.classification,
+            reasoningEffort: constants_1.REASONING_EFFORT.classification,
+        });
         const confidence = calculateConfidence(response, errorData);
         const summary = generateSummary(response, errorData);
         const result = {

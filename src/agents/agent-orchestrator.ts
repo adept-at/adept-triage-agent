@@ -42,10 +42,8 @@ export interface OrchestratorConfig {
  */
 export const DEFAULT_ORCHESTRATOR_CONFIG: OrchestratorConfig = {
   maxIterations: 3,
-  // Bumped in v1.51.0 from 120s to 300s to accommodate xhigh reasoning-effort
-  // latency on fix-gen + review (see R3 in gpt-5-4-upgrade-plan.md). A 3-iteration
-  // repair at xhigh can reach ~245s; 300s provides margin.
-  totalTimeoutMs: 300000,
+  // Keep in sync with AGENT_CONFIG.AGENT_TIMEOUT_MS: 15 minutes for GPT-5.5 xhigh.
+  totalTimeoutMs: 900_000,
   minConfidence: 70,
   requireReview: true,
 };

@@ -1,6 +1,7 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.BLAST_RADIUS = exports.CHRONIC_FLAKINESS_THRESHOLD = exports.FIX_VALIDATE_LOOP = exports.AGENT_CONFIG = exports.DEFAULT_PRODUCT_URL = exports.DEFAULT_PRODUCT_REPO = exports.AUTO_FIX = exports.TEST_ISSUE_CATEGORIES = exports.ERROR_TYPES = exports.FORMATTING = exports.ARTIFACTS = exports.SHORT_SHA_LENGTH = exports.REASONING_EFFORT = exports.AGENT_MODEL = exports.OPENAI = exports.CONFIDENCE = exports.LOG_LIMITS = void 0;
+exports.supportsReasoningEffort = supportsReasoningEffort;
 exports.LOG_LIMITS = {
     GITHUB_MAX_SIZE: 50_000,
     ARTIFACT_SOFT_CAP: 20_000,
@@ -23,9 +24,9 @@ exports.CONFIDENCE = {
     MIN_FIX_CONFIDENCE: 50,
 };
 exports.OPENAI = {
-    MODEL: 'gpt-5.3-codex',
-    LEGACY_MODEL: 'gpt-5.3-codex',
-    UPGRADED_MODEL: 'gpt-5.4',
+    MODEL: 'gpt-5.5',
+    LEGACY_MODEL: 'gpt-5.5',
+    UPGRADED_MODEL: 'gpt-5.5',
     MAX_COMPLETION_TOKENS: 24000,
     MAX_RETRIES: 3,
     RETRY_DELAY_MS: 1000,
@@ -38,12 +39,15 @@ exports.AGENT_MODEL = {
     review: exports.OPENAI.UPGRADED_MODEL,
 };
 exports.REASONING_EFFORT = {
-    classification: 'none',
-    analysis: 'none',
-    investigation: 'none',
+    classification: 'high',
+    analysis: 'high',
+    investigation: 'high',
     fixGeneration: 'xhigh',
     review: 'xhigh',
 };
+function supportsReasoningEffort(model) {
+    return model.startsWith('gpt-5.5');
+}
 exports.SHORT_SHA_LENGTH = 7;
 exports.ARTIFACTS = {
     MAX_PR_DIFF_FILES: 30,
@@ -79,13 +83,13 @@ exports.DEFAULT_PRODUCT_REPO = 'adept-at/learn-webapp';
 exports.DEFAULT_PRODUCT_URL = 'https://learn.adept.at';
 exports.AGENT_CONFIG = {
     MAX_AGENT_ITERATIONS: 3,
-    AGENT_TIMEOUT_MS: 300_000,
+    AGENT_TIMEOUT_MS: 900_000,
     REVIEW_REQUIRED_CONFIDENCE: 70,
     INVESTIGATION_CHAIN_CONFIDENCE: 80,
 };
 exports.FIX_VALIDATE_LOOP = {
     MAX_ITERATIONS: 3,
-    TEST_TIMEOUT_MS: 300_000,
+    TEST_TIMEOUT_MS: 900_000,
 };
 exports.CHRONIC_FLAKINESS_THRESHOLD = 3;
 exports.BLAST_RADIUS = {

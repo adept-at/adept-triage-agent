@@ -3,7 +3,7 @@ import { AnalysisResult, ErrorData, FewShotExample, OpenAIResponse } from './typ
 import * as core from '@actions/core';
 import { generateAnalysisSummary } from './analysis/summary-generator';
 import { categorizeTestIssue, extractTestIssueEvidence } from './analysis/error-classifier';
-import { CONFIDENCE, LOG_LIMITS } from './config/constants';
+import { AGENT_MODEL, CONFIDENCE, LOG_LIMITS, REASONING_EFFORT } from './config/constants';
 import { ANSI_ESCAPE_REGEX } from './utils/text-utils';
 
 /**
@@ -145,7 +145,10 @@ export async function analyzeFailure(client: OpenAIClient, errorData: ErrorData,
     }
     
     // Get AI analysis
-    const response = await client.analyze(errorData, FEW_SHOT_EXAMPLES, skillContext);
+    const response = await client.analyze(errorData, FEW_SHOT_EXAMPLES, skillContext, {
+      model: AGENT_MODEL.classification,
+      reasoningEffort: REASONING_EFFORT.classification,
+    });
     
     // Calculate confidence
     const confidence = calculateConfidence(response, errorData);

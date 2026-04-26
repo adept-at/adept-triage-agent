@@ -2,7 +2,7 @@
 
 > Visual reference for how a triage run flows end-to-end.
 > For textual deep-dive, see [ARCHITECTURE.md](ARCHITECTURE.md).
-> **Current version:** v1.52.2
+> **Current version:** v1.52.3
 
 ---
 
@@ -80,13 +80,13 @@ flowchart TB
 
 ## 3. Agentic repair pipeline — the five-agent orchestrator
 
-Happy path inside `AgentOrchestrator.orchestrate()` (`src/agents/agent-orchestrator.ts`). Wrapped in a `Promise.race` against `totalTimeoutMs = 300000` (v1.51.0 for xhigh latency).
+Happy path inside `AgentOrchestrator.orchestrate()` (`src/agents/agent-orchestrator.ts`). Wrapped in a `Promise.race` against `totalTimeoutMs = 900000` (15 minutes for GPT-5.5 xhigh latency).
 
 ```mermaid
 flowchart TB
     START["orchestrate(context, errorData,<br/>previousResponseId usually unset,<br/>skills)"]
     START --> SKILL_PROMPT_A["context.skillsPrompt<br/>= formatSkillsForPrompt(skills, 'investigation', flakiness)"]
-    SKILL_PROMPT_A --> ANALYSIS["<b>Analysis Agent</b><br/>gpt-5.3-codex<br/>→ rootCauseCategory, issueLocation,<br/>selectors, confidence"]
+    SKILL_PROMPT_A --> ANALYSIS["<b>Analysis Agent</b><br/>gpt-5.5 high<br/>→ rootCauseCategory, issueLocation,<br/>selectors, confidence"]
 
     ANALYSIS --> CODE_READ["<b>Code Reading Agent</b><br/>no LLM — direct octokit getContent<br/>→ test file + page objects + support files"]
 
@@ -98,7 +98,7 @@ flowchart TB
     CHAIN_NO --> SKILL_PROMPT_I
 
     SKILL_PROMPT_I["context.skillsPrompt<br/>= priorInvestigationContext<br/>+ baseInvestigationSkills"]
-    SKILL_PROMPT_I --> INVESTIGATION["<b>Investigation Agent</b><br/>gpt-5.3-codex<br/>→ findings, recommendedApproach,<br/>selectorsToUpdate, isTestCodeFixable,<br/>verdictOverride?"]
+    SKILL_PROMPT_I --> INVESTIGATION["<b>Investigation Agent</b><br/>gpt-5.5 high<br/>→ findings, recommendedApproach,<br/>selectorsToUpdate, isTestCodeFixable,<br/>verdictOverride?"]
 
     INVESTIGATION --> OVERRIDE{"verdictOverride<br/>APP_CODE with<br/>higher conf?"}
     OVERRIDE -- yes --> ABORT_APP["ABORT:<br/>investigation outvoted analysis —<br/>not test-fixable"]
@@ -107,13 +107,13 @@ flowchart TB
     TEST_FIXABLE -- yes --> LOOP_START
 
     LOOP_START["Fix/Review loop<br/>maxIterations = 3"]
-    LOOP_START --> FIX_GEN["<b>Fix Generation Agent</b><br/>gpt-5.4 xhigh<br/>+ CYPRESS_PATTERNS / WDIO_PATTERNS<br/>→ changes[], failureModeTrace (4 fields),<br/>confidence, reasoning"]
+    LOOP_START --> FIX_GEN["<b>Fix Generation Agent</b><br/>gpt-5.5 xhigh<br/>+ CYPRESS_PATTERNS / WDIO_PATTERNS<br/>→ changes[], failureModeTrace (4 fields),<br/>confidence, reasoning"]
 
     FIX_GEN --> AUTO_CORRECT["autoCorrectOldCode<br/>(snap near-miss oldCode to source)"]
 
     AUTO_CORRECT --> CONF_GATE{"confidence >=<br/>70?"}
     CONF_GATE -- no --> FEEDBACK_CONF["reviewFeedback<br/>= low-confidence msg<br/>→ next iteration"]
-    CONF_GATE -- yes --> REVIEW["<b>Review Agent</b><br/>gpt-5.4 xhigh<br/>audits: oldCode match, trace quality,<br/>logical strengthening, APP_CODE justification,<br/>verdictOverride alignment,<br/>recommendedApproach honored"]
+    CONF_GATE -- yes --> REVIEW["<b>Review Agent</b><br/>gpt-5.5 xhigh<br/>audits: oldCode match, trace quality,<br/>logical strengthening, APP_CODE justification,<br/>verdictOverride alignment,<br/>recommendedApproach honored"]
 
     REVIEW --> APPROVED{"approved<br/>+ no CRITICAL?"}
     APPROVED -- yes --> SHIP["return fix<br/>approach: agentic"]

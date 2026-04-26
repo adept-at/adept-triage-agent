@@ -11,7 +11,7 @@ import {
   getFrameworkLabel,
 } from './base-agent';
 import { OpenAIClient } from '../openai-client';
-import { DEFAULT_PRODUCT_REPO } from '../config/constants';
+import { AGENT_MODEL, DEFAULT_PRODUCT_REPO, REASONING_EFFORT } from '../config/constants';
 import { AnalysisOutput } from './analysis-agent';
 import { CodeReadingOutput } from './code-reading-agent';
 import { coerceEnum, coerceEnumOrNull } from '../utils/text-utils';
@@ -109,7 +109,11 @@ export class InvestigationAgent extends BaseAgent<
   InvestigationOutput
 > {
   constructor(openaiClient: OpenAIClient, config?: Partial<AgentConfig>) {
-    super(openaiClient, 'InvestigationAgent', config);
+    super(openaiClient, 'InvestigationAgent', {
+      ...config,
+      model: config?.model ?? AGENT_MODEL.investigation,
+      reasoningEffort: config?.reasoningEffort ?? REASONING_EFFORT.investigation,
+    });
   }
 
   /**

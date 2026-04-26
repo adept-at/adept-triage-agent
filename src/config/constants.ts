@@ -47,11 +47,11 @@ export const CONFIDENCE = {
 /** OpenAI API configuration */
 export const OPENAI = {
   /** @deprecated Use LEGACY_MODEL or UPGRADED_MODEL. Kept for backward compat with tests/scripts that reference OPENAI.MODEL. */
-  MODEL: 'gpt-5.3-codex',
-  /** Pre-v1.51 model — used by classification, analysis, and investigation */
-  LEGACY_MODEL: 'gpt-5.3-codex',
-  /** v1.51+ model — used by fix-generation and review agents */
-  UPGRADED_MODEL: 'gpt-5.4',
+  MODEL: 'gpt-5.5',
+  /** Default model for classification, analysis, and investigation. */
+  LEGACY_MODEL: 'gpt-5.5',
+  /** Model family used by fix-generation and review agents. */
+  UPGRADED_MODEL: 'gpt-5.5',
   /** Maximum completion tokens */
   MAX_COMPLETION_TOKENS: 24000,
   /** Maximum retry attempts */
@@ -75,19 +75,22 @@ export const AGENT_MODEL = {
 } as const;
 
 /**
- * Per-agent reasoning effort. 'none' means no `reasoning` field in the
- * Responses-API call — bit-exact with today's pre-v1.51 behavior. Only
- * the upgraded agents send an effort value.
+ * Per-agent reasoning effort. Classification, analysis, and investigation
+ * use high reasoning; fix-generation and review use xhigh.
  */
 export const REASONING_EFFORT = {
-  classification: 'none',
-  analysis: 'none',
-  investigation: 'none',
+  classification: 'high',
+  analysis: 'high',
+  investigation: 'high',
   fixGeneration: 'xhigh',
   review: 'xhigh',
 } as const;
 
 export type ReasoningEffort = 'none' | 'low' | 'medium' | 'high' | 'xhigh';
+
+export function supportsReasoningEffort(model: string): boolean {
+  return model.startsWith('gpt-5.5');
+}
 
 /** Short SHA display length */
 export const SHORT_SHA_LENGTH = 7;
@@ -153,17 +156,17 @@ export const AGENT_CONFIG = {
   /** Maximum iterations for the fix generation/review loop */
   MAX_AGENT_ITERATIONS: 3,
   /**
-   * Total timeout for the entire agent orchestration. Bumped from
-   * 120_000 (2 min) to 300_000 (5 min) in v1.51.0 to accommodate
-   * xhigh reasoning-effort latency on fix-gen + review. A 3-iteration
-   * repair at xhigh can reach ~245s; 300s provides margin.
+   * Total timeout for the entire agent orchestration. GPT-5.5 xhigh can
+   * spend several minutes on fix-generation + review, especially across
+   * the 3-iteration loop, so the action allows a 15-minute orchestration
+   * budget before giving up.
    *
    * This is the value passed as `totalTimeoutMs` into the orchestrator
    * at construction time (simplified-repair-agent.ts), which overrides
    * the `DEFAULT_ORCHESTRATOR_CONFIG.totalTimeoutMs` default — so both
    * must be bumped for the increase to take effect in production.
    */
-  AGENT_TIMEOUT_MS: 300_000,
+  AGENT_TIMEOUT_MS: 900_000,
   /** Minimum confidence required to accept a fix from review agent */
   REVIEW_REQUIRED_CONFIDENCE: 70,
   /** Below this confidence, chain analysis context into investigation for richer context */
@@ -173,8 +176,8 @@ export const AGENT_CONFIG = {
 /** Iterative fix-validate loop configuration */
 export const FIX_VALIDATE_LOOP = {
   MAX_ITERATIONS: 3,
-  /** Maximum time for a single local test run (5 minutes) */
-  TEST_TIMEOUT_MS: 300_000,
+  /** Maximum time for a single local test run (15 minutes) */
+  TEST_TIMEOUT_MS: 900_000,
 } as const;
 
 /**

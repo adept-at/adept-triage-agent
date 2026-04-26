@@ -61,7 +61,7 @@ export class OpenAIClient {
             ? {
                 // Cast rationale: the installed OpenAI SDK's ReasoningEffort
                 // type does not yet include 'xhigh'. The API accepts it
-                // (gpt-5.4 introduced the level), so the runtime value
+                // (gpt-5.5 supports the level), so the runtime value
                 // passes through unchanged — the cast is purely to satisfy
                 // the SDK's compile-time narrower type. DO NOT narrow the
                 // input type to remove this cast; that would silently drop
@@ -695,7 +695,7 @@ Changed Product Files:
    * Uses the Responses API. The model defaults to OPENAI.LEGACY_MODEL when
    * not overridden. Note: temperature parameter is accepted for backward
    * compatibility but is not supported by reasoning-class models
-   * (gpt-5.3-codex, gpt-5.4) that do not expose a temperature parameter.
+   * such as gpt-5.5 that do not expose a temperature parameter.
    * The value will be ignored.
    */
   async generateWithCustomPrompt(params: {
@@ -727,7 +727,7 @@ Changed Product Files:
           ...(reasoningEffort !== 'none'
             ? {
                 // Cast rationale: see parallel comment in analyze(). SDK's
-                // ReasoningEffort type does not include 'xhigh' yet; the API
+            // ReasoningEffort type does not include 'xhigh' yet; the API
                 // accepts it. DO NOT narrow input type to remove this cast.
                 reasoning: { effort: reasoningEffort as 'low' | 'medium' | 'high' },
               }

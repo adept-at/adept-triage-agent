@@ -22,6 +22,7 @@ import { processWorkflowLogs } from '../../src/services/log-processor';
 import { analyzeFailure } from '../../src/simplified-analyzer';
 import { OpenAIClient } from '../../src/openai-client';
 import { ArtifactFetcher } from '../../src/artifact-fetcher';
+import { AGENT_MODEL, REASONING_EFFORT } from '../../src/config/constants';
 import type { ActionInputs } from '../../src/types';
 
 jest.mock('@actions/core', () => ({
@@ -153,7 +154,11 @@ describe('WDIO Triage Integration', () => {
         message: expect.stringContaining('still not visible'),
       }),
       expect.any(Array),
-      undefined
+      undefined,
+      {
+        model: AGENT_MODEL.classification,
+        reasoningEffort: REASONING_EFFORT.classification,
+      }
     );
   });
 });

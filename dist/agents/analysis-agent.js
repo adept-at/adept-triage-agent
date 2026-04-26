@@ -19,7 +19,11 @@ const ROOT_CAUSE_CATEGORIES = [
 const ISSUE_LOCATIONS = ['TEST_CODE', 'APP_CODE', 'BOTH', 'UNKNOWN'];
 class AnalysisAgent extends base_agent_1.BaseAgent {
     constructor(openaiClient, config) {
-        super(openaiClient, 'AnalysisAgent', config);
+        super(openaiClient, 'AnalysisAgent', {
+            ...config,
+            model: config?.model ?? constants_1.AGENT_MODEL.analysis,
+            reasoningEffort: config?.reasoningEffort ?? constants_1.REASONING_EFFORT.analysis,
+        });
     }
     async execute(input, context, previousResponseId) {
         return this.executeWithTimeout(input, context, previousResponseId);

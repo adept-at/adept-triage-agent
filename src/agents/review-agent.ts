@@ -10,7 +10,7 @@ import {
   AgentConfig,
 } from './base-agent';
 import { OpenAIClient } from '../openai-client';
-import { OPENAI, AGENT_MODEL, REASONING_EFFORT } from '../config/constants';
+import { AGENT_MODEL, REASONING_EFFORT, supportsReasoningEffort } from '../config/constants';
 import { AnalysisOutput } from './analysis-agent';
 import { CodeReadingOutput } from './code-reading-agent';
 import { FixGenerationOutput } from './fix-generation-agent';
@@ -113,7 +113,7 @@ export class ReviewAgent extends BaseAgent<ReviewInput, ReviewOutput> {
   constructor(openaiClient: OpenAIClient, config?: Partial<AgentConfig>) {
     const resolvedModel = config?.model ?? AGENT_MODEL.review;
     const resolvedEffort =
-      resolvedModel === OPENAI.UPGRADED_MODEL
+      supportsReasoningEffort(resolvedModel)
         ? (config?.reasoningEffort ?? REASONING_EFFORT.review)
         : 'none' as const;
     super(openaiClient, 'ReviewAgent', {

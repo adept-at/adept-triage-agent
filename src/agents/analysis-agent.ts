@@ -11,7 +11,7 @@ import {
   getFrameworkLabel,
 } from './base-agent';
 import { OpenAIClient } from '../openai-client';
-import { DEFAULT_PRODUCT_REPO } from '../config/constants';
+import { AGENT_MODEL, DEFAULT_PRODUCT_REPO, REASONING_EFFORT } from '../config/constants';
 import { coerceEnum } from '../utils/text-utils';
 import { clampConfidence } from '../utils/number-utils';
 
@@ -95,7 +95,11 @@ export interface AnalysisInput {
  */
 export class AnalysisAgent extends BaseAgent<AnalysisInput, AnalysisOutput> {
   constructor(openaiClient: OpenAIClient, config?: Partial<AgentConfig>) {
-    super(openaiClient, 'AnalysisAgent', config);
+    super(openaiClient, 'AnalysisAgent', {
+      ...config,
+      model: config?.model ?? AGENT_MODEL.analysis,
+      reasoningEffort: config?.reasoningEffort ?? REASONING_EFFORT.analysis,
+    });
   }
 
   /**

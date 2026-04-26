@@ -97,6 +97,39 @@ describe('ReviewAgent', () => {
       expect(result.data?.fixConfidence).toBe(90);
     });
 
+    it('keeps xhigh reasoning when overriding to gpt-5.5-pro', async () => {
+      agent = new ReviewAgent(mockOpenAIClient, { model: 'gpt-5.5-pro' });
+      mockOpenAIClient.generateWithCustomPrompt = jest.fn().mockResolvedValue({
+        text: JSON.stringify({
+          approved: true,
+          issues: [],
+          assessment: 'The fix is valid',
+          fixConfidence: 90,
+        }),
+        responseId: 'mock-resp-id',
+      });
+
+      await agent.execute(
+        {
+          proposedFix: mockProposedFix,
+          analysis: mockAnalysis,
+        },
+        createAgentContext({
+          errorMessage: 'Element not found',
+          testFile: 'test.cy.ts',
+          testName: 'test',
+          sourceFileContent: 'cy.get(\'[data-testid="submit"]\').click()',
+        })
+      );
+
+      expect(mockOpenAIClient.generateWithCustomPrompt).toHaveBeenCalledWith(
+        expect.objectContaining({
+          model: 'gpt-5.5-pro',
+          reasoningEffort: 'xhigh',
+        })
+      );
+    });
+
     it('should clamp out-of-range fixConfidence values from the model', async () => {
       mockOpenAIClient.generateWithCustomPrompt = jest.fn().mockResolvedValue({
         text: JSON.stringify({

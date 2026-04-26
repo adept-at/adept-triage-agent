@@ -116,6 +116,49 @@ describe('FixGenerationAgent', () => {
       expect(result.data?.confidence).toBe(85);
     });
 
+    it('keeps xhigh reasoning when overriding to gpt-5.5-pro', async () => {
+      agent = new FixGenerationAgent(mockOpenAIClient, { model: 'gpt-5.5-pro' });
+      const mockResponse: FixGenerationOutput = {
+        changes: [
+          {
+            file: 'test.cy.ts',
+            line: 10,
+            oldCode: 'cy.get(".old")',
+            newCode: 'cy.get(".new")',
+            justification: 'Update selector',
+            changeType: 'SELECTOR_UPDATE',
+          },
+        ],
+        confidence: 85,
+        summary: 'Update selector',
+        reasoning: 'Selector changed',
+        evidence: [],
+        risks: [],
+      };
+      mockOpenAIClient.generateWithCustomPrompt = jest
+        .fn()
+        .mockResolvedValue({ text: JSON.stringify(mockResponse), responseId: 'mock-resp-id' });
+
+      await agent.execute(
+        {
+          analysis: mockAnalysis,
+          investigation: mockInvestigation,
+        },
+        createAgentContext({
+          errorMessage: 'Error',
+          testFile: 'test.cy.ts',
+          testName: 'test',
+        })
+      );
+
+      expect(mockOpenAIClient.generateWithCustomPrompt).toHaveBeenCalledWith(
+        expect.objectContaining({
+          model: 'gpt-5.5-pro',
+          reasoningEffort: 'xhigh',
+        })
+      );
+    });
+
     it('should clamp out-of-range confidence values from the model', async () => {
       const mockResponse: FixGenerationOutput = {
         changes: [

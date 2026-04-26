@@ -17,7 +17,11 @@ const FINDING_SEVERITIES = ['HIGH', 'MEDIUM', 'LOW'];
 const SUGGESTED_LOCATIONS = ['TEST_CODE', 'APP_CODE', 'BOTH'];
 class InvestigationAgent extends base_agent_1.BaseAgent {
     constructor(openaiClient, config) {
-        super(openaiClient, 'InvestigationAgent', config);
+        super(openaiClient, 'InvestigationAgent', {
+            ...config,
+            model: config?.model ?? constants_1.AGENT_MODEL.investigation,
+            reasoningEffort: config?.reasoningEffort ?? constants_1.REASONING_EFFORT.investigation,
+        });
     }
     async execute(input, context, previousResponseId) {
         return this.executeWithTimeout(input, context, previousResponseId);

@@ -46,7 +46,7 @@ const skill_store_1 = require("../services/skill-store");
 const constants_1 = require("../config/constants");
 exports.DEFAULT_ORCHESTRATOR_CONFIG = {
     maxIterations: 3,
-    totalTimeoutMs: 300000,
+    totalTimeoutMs: 900_000,
     minConfidence: 70,
     requireReview: true,
 };

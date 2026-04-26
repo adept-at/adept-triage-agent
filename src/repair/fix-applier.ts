@@ -548,7 +548,7 @@ export class GitHubFixApplier implements FixApplier {
   async waitForValidation(runId: number): Promise<ValidationOutcome> {
     const { octokit, owner, repo } = this.config;
     const POLL_INTERVAL_MS = 15_000;
-    const POLL_TIMEOUT_MS = 600_000;
+    const POLL_TIMEOUT_MS = 900_000;
     const INITIAL_POLL_DELAY_MS = 20_000;
 
     core.info(`Waiting for validation run ${runId} to complete...`);

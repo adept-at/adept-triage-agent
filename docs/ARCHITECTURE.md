@@ -1,6 +1,6 @@
 # Adept Triage Agent — Architecture
 
-> **Current version:** v1.52.2
+> **Current version:** v1.52.3
 > **Scope:** end-to-end architecture of the agent — entry point, pipeline, five-agent orchestration, skill-memory / repo-context learning loop, observability, operator surface.
 > **Audience:** engineers who need to understand the system deeply enough to extend or debug it without surprises.
 
@@ -50,10 +50,11 @@ The Adept Triage Agent is a Node 24 GitHub Action (`action.yml` → `dist/index.
 | v1.49.3 | Telemetry (`skill-telemetry role=...`), retired-inclusion fix in `detectFlakiness`, `sanitizeForPrompt` accepts `unknown`. |
 | v1.50.0 | Per-run telemetry summary; `testName` + `prUrl` surfaced in prompts. |
 | v1.50.1 | Multi-pass baseline check (3 consecutive passes). |
-| v1.51.0 | Fix-gen + review upgraded to `gpt-5.4` xhigh reasoning; agent timeout bumped to 300s. |
+| v1.51.0 | Fix-gen + review upgraded to the newest frontier model with xhigh reasoning; agent timeout bumped from 120s. |
 | v1.51.1 | Extraction-quality hardening (causal vs background rule, reject URL file-attribution). |
 | **v1.52.0** | **Repo context (bundled + remote)**; **seed skills with `isSeed` pruning protection**; **`normalizeSpec` on write and read** so seeds written with relative paths match runtime absolute paths. |
 | **v1.52.2** | **Safety + measurement tightening**: local path traversal uses resolved-path containment, confidence values are clamped to 0–100, outer validation retries no longer chain hidden Responses API history, custom prompt calls retry and emit token usage, seed skills are labeled as curated guidance. |
+| **v1.52.3** | **GPT-5.5 migration**: all LLM calls use `gpt-5.5`; classification/analysis/investigation use high reasoning, fix-generation/review use xhigh reasoning, and internal/reusable workflow timeouts allow 15-minute triage runs. |
 
 ---
 
@@ -333,7 +334,7 @@ Defensive sanitizer applied to every model-adjacent string before it lands in a 
 
 `SimplifiedRepairAgent.generateFixRecommendation()` now has exactly one repair path: the agentic orchestrator. If the orchestrator cannot produce an approved fix, the method returns `null`; the coordinator reports that no safe fix was generated. There is no weaker fallback repair path.
 
-This is intentional. The removed legacy one-shot path bypassed the investigation agent, review agent, causal-trace enforcement, iterative feedback loop, and the upgraded `gpt-5.4` fix-gen/review model. A weak one-shot fix that happened to pass could be saved as a validated skill and pollute future memory. Failing honestly is safer than creating a low-quality fix.
+This is intentional. The removed legacy one-shot path bypassed the investigation agent, review agent, causal-trace enforcement, iterative feedback loop, and the upgraded `gpt-5.5` fix-gen/review model. A weak one-shot fix that happened to pass could be saved as a validated skill and pollute future memory. Failing honestly is safer than creating a low-quality fix.
 
 ### Entry point
 
@@ -348,7 +349,7 @@ In `SimplifiedRepairAgent.generateFixRecommendation()` (`src/repair/simplified-r
 
 Happy path (`src/agents/agent-orchestrator.ts`):
 
-1. Wrap the whole pipeline in a `Promise.race` against a `totalTimeoutMs` timer (default **300,000 ms** — bumped in v1.51.0 for xhigh reasoning latency). `BaseAgent.DEFAULT_AGENT_CONFIG.timeoutMs` uses the same value, so inner agent calls no longer time out at 60 seconds while the orchestrator still has budget.
+1. Wrap the whole pipeline in a `Promise.race` against a `totalTimeoutMs` timer (default **900,000 ms / 15 minutes** for GPT-5.5 xhigh latency). `BaseAgent.DEFAULT_AGENT_CONFIG.timeoutMs` uses the same value, so inner agent calls share the same budget.
 2. **Analysis** — receives `skillsPrompt` pre-rendered with role `investigation` (by design — analysis shares investigation's "don't anchor" framing). Local-validation retries start analysis fresh from an API-history perspective; they receive prior failure state through the explicit `previousAttempt` context instead.
 3. **Code reading** — no LLM, no chaining. Sets `context.sourceFileContent` (line-numbered) and `context.relatedFiles`.
 4. **Investigation** — chains to analysis **only** when `analysis.confidence < AGENT_CONFIG.INVESTIGATION_CHAIN_CONFIDENCE` (default **80**). Lower analysis confidence = pull in analysis's reasoning context; higher = start fresh to avoid cascading over-confident analysis.
@@ -633,10 +634,10 @@ Every numeric / string default operators might want to know.
 | `BLAST_RADIUS.MULTI_FILE_BOOST` | `+5` | `src/config/constants.ts` |
 | `BLAST_RADIUS.MAX_REQUIRED_CONFIDENCE` | `95` | `src/config/constants.ts` |
 | `FIX_VALIDATE_LOOP.MAX_ITERATIONS` | `3` | `src/config/constants.ts` |
-| `FIX_VALIDATE_LOOP.TEST_TIMEOUT_MS` | `300_000` | `src/config/constants.ts` |
+| `FIX_VALIDATE_LOOP.TEST_TIMEOUT_MS` | `900_000` | `src/config/constants.ts` |
 | `BASELINE_PASS_COUNT` | `3` | `src/services/local-fix-validator.ts` |
 | `AGENT_CONFIG.MAX_AGENT_ITERATIONS` | `3` | `src/config/constants.ts` |
-| `AGENT_CONFIG.AGENT_TIMEOUT_MS` | `300_000` | `src/config/constants.ts` |
+| `AGENT_CONFIG.AGENT_TIMEOUT_MS` | `900_000` | `src/config/constants.ts` |
 | `BaseAgent.DEFAULT_AGENT_CONFIG.timeoutMs` | `AGENT_CONFIG.AGENT_TIMEOUT_MS` | `src/agents/base-agent.ts` |
 | `BaseAgent.DEFAULT_AGENT_CONFIG.maxTokens` | `OPENAI.MAX_COMPLETION_TOKENS` | `src/agents/base-agent.ts` |
 | `AGENT_CONFIG.REVIEW_REQUIRED_CONFIDENCE` | `70` | `src/config/constants.ts` |
@@ -644,12 +645,13 @@ Every numeric / string default operators might want to know.
 | `MAX_SKILLS` (per repo partition) | `100` | `src/services/skill-store.ts` |
 | Skill auto-retire threshold | `failRate > 0.4` AND `failCount >= 3` | `src/services/skill-store.ts` |
 | `REPO_CONTEXT_MAX_CHARS` | `6500` | `src/services/repo-context-fetcher.ts` |
-| `OPENAI.LEGACY_MODEL` | `gpt-5.3-codex` | `src/config/constants.ts` |
-| `OPENAI.UPGRADED_MODEL` | `gpt-5.4` | `src/config/constants.ts` |
+| `OPENAI.LEGACY_MODEL` | `gpt-5.5` | `src/config/constants.ts` |
+| `OPENAI.UPGRADED_MODEL` | `gpt-5.5` | `src/config/constants.ts` |
 | `OPENAI.MAX_COMPLETION_TOKENS` | `24_000` | `src/config/constants.ts` |
-| `AGENT_MODEL.classification` | `LEGACY_MODEL` (the pre-repair `classify()` step) | `src/config/constants.ts` |
-| `AGENT_MODEL.analysis` / `investigation` | `LEGACY_MODEL` | `src/config/constants.ts` |
-| `AGENT_MODEL.fixGeneration` / `review` | `UPGRADED_MODEL` (v1.51.0 upgrade) | `src/config/constants.ts` |
+| `AGENT_MODEL.classification` | `LEGACY_MODEL` (`gpt-5.5`, high reasoning) | `src/config/constants.ts` |
+| `AGENT_MODEL.analysis` / `investigation` | `LEGACY_MODEL` (`gpt-5.5`, high reasoning) | `src/config/constants.ts` |
+| `AGENT_MODEL.fixGeneration` / `review` | `UPGRADED_MODEL` (`gpt-5.5`, xhigh reasoning) | `src/config/constants.ts` |
+| `REASONING_EFFORT.classification` / `analysis` / `investigation` | `high` | `src/config/constants.ts` |
 | `REASONING_EFFORT.fixGeneration` / `review` | `xhigh` | `src/config/constants.ts` |
 | `PRODUCT_REPO` | `adept-at/learn-webapp` | `action.yml` input |
 | `PRODUCT_DIFF_COMMITS` | `5` | `action.yml` input |
