@@ -387,11 +387,9 @@ class AgentOrchestrator {
                     lastResponseId,
                 };
             }
-            core.warning(`Max iterations (${this.config.maxIterations}) reached — review never approved. Returning last fix as fallback.`);
-            core.info(`   Fallback fix: confidence=${lastFix.confidence}%, changes=${lastFix.changes.length}, summary="${lastFix.summary}"`);
-            core.info(`   ⚠️ This fix was NOT approved by the Review Agent — it is being applied because confidence (${lastFix.confidence}%) >= threshold (${this.config.minConfidence}%) and validation will be the final gate.`);
+            core.warning(`Max iterations (${this.config.maxIterations}) reached — review never approved the fix. Refusing to ship unapproved repair. Last fix: confidence=${lastFix.confidence}%, changes=${lastFix.changes.length}, summary="${lastFix.summary}"`);
             return {
-                fix: this.convertToFixRecommendation(lastFix),
+                error: `Max iterations reached without review approval for the last fix`,
                 iterations,
                 lastResponseId,
             };

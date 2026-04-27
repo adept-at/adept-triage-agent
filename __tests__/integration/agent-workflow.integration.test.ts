@@ -477,9 +477,12 @@ describe('Login Page', () => {
       defaultContext.sourceFileContent = testFileContent;
       const result = await orchestrator.orchestrate(defaultContext);
 
-      // Should fail but still return the last fix since confidence is above threshold
+      // Review approval is required. Even a high-confidence fix must not ship
+      // when all review attempts rejected it.
       expect(result.iterations).toBe(3);
-      expect(result.fix).toBeDefined(); // Last fix is returned even without approval
+      expect(result.success).toBe(false);
+      expect(result.fix).toBeUndefined();
+      expect(result.error).toContain('without review approval');
     });
   });
 

@@ -536,12 +536,11 @@ export class AgentOrchestrator {
     }
 
     if (lastFix && lastFix.confidence >= this.config.minConfidence) {
-      // Refuse to ship if the last review had any *quality* CRITICAL open
-      // (trace missing/vague, strictly-stronger logic). These gates exist
-      // precisely to catch "plausible-sounding but causally unsound fix"
-      // and the confidence-based fallback must not bypass them — otherwise
-      // the review CRITICAL becomes advisory and the whole trace-enforced
-      // review layer is decoration.
+      // Refuse to ship when review never approved. Pre-v1.52.4, the
+      // orchestrator returned the last high-confidence fix as a fallback
+      // unless it had a narrow class of quality CRITICALs. That still let
+      // unapproved fixes reach validation and skill storage, which undermines
+      // the agentic-only repair contract. Review approval is now mandatory.
       const blockingCriticals = lastReviewIssues.filter(isBlockingCriticalIssue);
       if (blockingCriticals.length > 0) {
         const reasons = blockingCriticals.map((i) => i.description).join('; ');
@@ -555,13 +554,13 @@ export class AgentOrchestrator {
         };
       }
 
-      core.warning(`Max iterations (${this.config.maxIterations}) reached — review never approved. Returning last fix as fallback.`);
-      core.info(`   Fallback fix: confidence=${lastFix.confidence}%, changes=${lastFix.changes.length}, summary="${lastFix.summary}"`);
-      core.info(`   ⚠️ This fix was NOT approved by the Review Agent — it is being applied because confidence (${lastFix.confidence}%) >= threshold (${this.config.minConfidence}%) and validation will be the final gate.`);
+      core.warning(
+        `Max iterations (${this.config.maxIterations}) reached — review never approved the fix. Refusing to ship unapproved repair. Last fix: confidence=${lastFix.confidence}%, changes=${lastFix.changes.length}, summary="${lastFix.summary}"`
+      );
       return {
-        fix: this.convertToFixRecommendation(lastFix),
+        error: `Max iterations reached without review approval for the last fix`,
         iterations,
-      lastResponseId,
+        lastResponseId,
       };
     }
 
