@@ -85,6 +85,45 @@ export interface RepairContext {
   targetAppPrNumber?: string; // PR in app being tested (if known)
 }
 
+/** Stages inside the agentic repair orchestrator (for telemetry / budget). */
+export type RepairStage =
+  | 'analysis'
+  | 'code_reading'
+  | 'investigation'
+  | 'fix_generation'
+  | 'review';
+
+/**
+ * Repair lifecycle distinct from classifier verdict — surfaces in action
+ * outputs and triage_json so Slack can show e.g. review rejection vs clean TEST_ISSUE.
+ */
+export type RepairStatus =
+  | 'not_started'
+  | 'skipped'
+  | 'in_progress'
+  | 'no_fix_generated'
+  | 'review_rejected'
+  | 'timed_out'
+  | 'cancelled'
+  | 'no_approved_fix'
+  | 'approved'
+  | 'applied'
+  | 'validated';
+
+export interface RepairTelemetry {
+  status: RepairStatus;
+  summary: string;
+  iterations: number;
+  lastStage?: RepairStage;
+  lastReviewIssues?: string[];
+  lastReviewAssessment?: string;
+  lastFixSummary?: string;
+  lastFixConfidence?: number;
+  /** Orchestrator wall-clock budget (ms) when repair ran under AgentOrchestrator */
+  timeoutMs?: number;
+  elapsedMs: number;
+}
+
 export interface AnalysisResult {
   verdict: Verdict;
   confidence: number;
@@ -97,6 +136,8 @@ export interface AnalysisResult {
   fixRecommendation?: FixRecommendation;
   /** OpenAI Responses API ID from the classification call — threads into repair pipeline */
   responseId?: string;
+  /** Agentic repair outcome — orthogonal to classifier verdict */
+  repairTelemetry?: RepairTelemetry;
   /**
    * Set when a policy gate (chronic flakiness, blast-radius scaling, etc.)
    * intentionally held back an auto-fix that would otherwise have been

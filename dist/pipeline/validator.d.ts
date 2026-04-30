@@ -1,6 +1,6 @@
 import { Octokit } from '@octokit/rest';
 import { OpenAIClient } from '../openai-client';
-import { ActionInputs, FixRecommendation } from '../types';
+import { ActionInputs, FixRecommendation, RepairTelemetry } from '../types';
 import { ApplyResult } from '../repair/fix-applier';
 import { SkillStore } from '../services/skill-store';
 export declare function generateFixRecommendation(inputs: ActionInputs, repoDetails: {
@@ -17,11 +17,12 @@ export declare function generateFixRecommendation(inputs: ActionInputs, repoDeta
     priorAgentRootCause?: string;
     priorAgentInvestigationFindings?: string;
 }, previousResponseId?: string, skillStore?: SkillStore, priorInvestigationContext?: string, repoContext?: string): Promise<{
-    fix: FixRecommendation;
+    fix: FixRecommendation | null;
     lastResponseId?: string;
     agentRootCause?: string;
     agentInvestigationFindings?: string;
-} | null>;
+    repairTelemetry?: RepairTelemetry;
+}>;
 export declare function iterativeFixValidateLoop(inputs: ActionInputs, repoDetails: {
     owner: string;
     repo: string;
@@ -42,6 +43,7 @@ export declare function iterativeFixValidateLoop(inputs: ActionInputs, repoDetai
     agentInvestigationFindings?: string;
     autoFixSkipped?: boolean;
     autoFixSkippedReason?: string;
+    repairTelemetry?: RepairTelemetry;
 }>;
 export declare function requiredConfidence(fix: FixRecommendation, baseMinConfidence: number): {
     required: number;

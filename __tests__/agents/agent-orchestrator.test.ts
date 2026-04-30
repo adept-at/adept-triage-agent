@@ -223,6 +223,8 @@ describe('AgentOrchestrator', () => {
 
         expect(result.success).toBe(false);
         expect(result.error).toContain('timed out');
+        expect(result.repairTelemetry?.status).toBe('timed_out');
+        expect(result.repairTelemetry?.lastStage).toBe('analysis');
       } finally {
         jest.useRealTimers();
       }
@@ -524,6 +526,7 @@ describe('AgentOrchestrator', () => {
         errorMessage: 'Error: something went wrong',
         testFile: 'test/example.spec.ts',
         testName: 'example test',
+        sourceFileContent: 'el.click();',
       });
 
       const result = await orchestrator.orchestrate(context);
@@ -599,6 +602,7 @@ describe('AgentOrchestrator', () => {
         errorMessage: 'Expected to find element: mux-player, but never found it',
         testFile: 'skill.video.speed.ts',
         testName: 'should play video with varied speed settings',
+        sourceFileContent: "cy.get('mux-player').should('exist');",
       });
 
       const result = await orchestrator.orchestrate(context);
@@ -606,6 +610,196 @@ describe('AgentOrchestrator', () => {
       expect(result.success).toBe(false);
       expect(result.error).toContain('not test-code-fixable');
       expect(mockOpenAIClient.generateWithCustomPrompt).toHaveBeenCalledTimes(2);
+    });
+
+    it('records review_rejected telemetry when review denies the fix and iterations exhaust', async () => {
+      const analysisResponse = {
+        rootCauseCategory: 'SELECTOR_MISMATCH',
+        contributingFactors: [],
+        confidence: 85,
+        explanation: 'Selector changed',
+        selectors: ['[data-testid="btn"]'],
+        elements: [],
+        issueLocation: 'TEST_CODE',
+        patterns: {
+          hasTimeout: false,
+          hasVisibilityIssue: false,
+          hasNetworkCall: false,
+          hasStateAssertion: false,
+          hasDynamicContent: false,
+          hasResponsiveIssue: false,
+        },
+        suggestedApproach: 'Update selector',
+      };
+      const investigationResponse = {
+        findings: [
+          {
+            type: 'SELECTOR_CHANGE',
+            severity: 'HIGH',
+            description: 'Selector changed',
+            evidence: ['Evidence 1'],
+            relationToError: 'Direct cause',
+          },
+        ],
+        isTestCodeFixable: true,
+        recommendedApproach: 'Update the selector',
+        selectorsToUpdate: [],
+        confidence: 80,
+      };
+      const fixGenerationResponse = {
+        changes: [
+          {
+            file: 'test.ts',
+            line: 10,
+            oldCode: 'cy.get("[data-testid=\\"btn\\"]")',
+            newCode: 'cy.get("[data-testid=\\"submit-btn\\"]")',
+            justification: 'Update selector',
+            changeType: 'SELECTOR_UPDATE',
+          },
+        ],
+        confidence: 85,
+        summary: 'Update selector',
+        reasoning: 'Selector changed in UI',
+        evidence: ['Evidence'],
+        risks: [],
+      };
+      const reviewReject = {
+        approved: false,
+        issues: [{ severity: 'HIGH' as const, description: 'trace too vague', changeIndex: 0 }],
+        assessment: 'Reject',
+        fixConfidence: 40,
+      };
+
+      let callCount = 0;
+      mockOpenAIClient.generateWithCustomPrompt = jest.fn().mockImplementation(() => {
+        callCount++;
+        const wrap = (obj: unknown) => ({ text: JSON.stringify(obj), responseId: `mock-${callCount}` });
+        switch (callCount) {
+          case 1:
+            return Promise.resolve(wrap(analysisResponse));
+          case 2:
+            return Promise.resolve(wrap(investigationResponse));
+          case 3:
+            return Promise.resolve(wrap(fixGenerationResponse));
+          case 4:
+            return Promise.resolve(wrap(reviewReject));
+          default:
+            return Promise.resolve(wrap({}));
+        }
+      });
+
+      const orchestrator = createOrchestrator(mockOpenAIClient, { maxIterations: 1 });
+      const context = createAgentContext({
+        errorMessage: 'Element not found',
+        testFile: 'test.ts',
+        testName: 'test',
+        sourceFileContent: 'cy.get("[data-testid=\\"btn\\"]").click()',
+      });
+
+      const result = await orchestrator.orchestrate(context);
+
+      expect(result.success).toBe(false);
+      expect(result.repairTelemetry?.status).toBe('review_rejected');
+      expect(result.repairTelemetry?.summary).toContain('rejected by review');
+      expect(mockOpenAIClient.generateWithCustomPrompt).toHaveBeenCalledTimes(4);
+    });
+
+    it('does not start a second fix-generation call when budget is too low after review rejection', async () => {
+      let mockTime = 1_700_000_000_000;
+      const nowSpy = jest.spyOn(Date, 'now').mockImplementation(() => mockTime);
+
+      const analysisResponse = {
+        rootCauseCategory: 'SELECTOR_MISMATCH',
+        contributingFactors: [],
+        confidence: 85,
+        explanation: 'Selector changed',
+        selectors: ['[data-testid="btn"]'],
+        elements: [],
+        issueLocation: 'TEST_CODE',
+        patterns: {
+          hasTimeout: false,
+          hasVisibilityIssue: false,
+          hasNetworkCall: false,
+          hasStateAssertion: false,
+          hasDynamicContent: false,
+          hasResponsiveIssue: false,
+        },
+        suggestedApproach: 'Update selector',
+      };
+      const investigationResponse = {
+        findings: [
+          {
+            type: 'SELECTOR_CHANGE',
+            severity: 'HIGH',
+            description: 'Selector changed',
+            evidence: [],
+            relationToError: 'Direct cause',
+          },
+        ],
+        isTestCodeFixable: true,
+        recommendedApproach: 'Update the selector',
+        selectorsToUpdate: [],
+        confidence: 80,
+      };
+      const fixGenerationResponse = {
+        changes: [
+          {
+            file: 'test.ts',
+            line: 10,
+            oldCode: 'cy.get("[data-testid=\\"btn\\"]")',
+            newCode: 'cy.get("[data-testid=\\"submit-btn\\"]")',
+            justification: 'Update selector',
+            changeType: 'SELECTOR_UPDATE',
+          },
+        ],
+        confidence: 85,
+        summary: 'Update selector',
+        reasoning: 'Selector changed in UI',
+        evidence: [],
+        risks: [],
+      };
+      const reviewReject = {
+        approved: false,
+        issues: [{ severity: 'HIGH' as const, description: 'weak trace', changeIndex: 0 }],
+        assessment: 'Reject',
+        fixConfidence: 40,
+      };
+
+      let callCount = 0;
+      mockOpenAIClient.generateWithCustomPrompt = jest.fn().mockImplementation(() => {
+        callCount++;
+        if (callCount === 4) {
+          mockTime += 700_000;
+        }
+        const wrap = (obj: unknown) => ({ text: JSON.stringify(obj), responseId: `mock-${callCount}` });
+        switch (callCount) {
+          case 1:
+            return Promise.resolve(wrap(analysisResponse));
+          case 2:
+            return Promise.resolve(wrap(investigationResponse));
+          case 3:
+            return Promise.resolve(wrap(fixGenerationResponse));
+          case 4:
+            return Promise.resolve(wrap(reviewReject));
+          default:
+            return Promise.resolve(wrap({}));
+        }
+      });
+
+      const orchestrator = createOrchestrator(mockOpenAIClient, { maxIterations: 3, totalTimeoutMs: 900_000 });
+      const context = createAgentContext({
+        errorMessage: 'Element not found',
+        testFile: 'test.ts',
+        testName: 'test',
+        sourceFileContent: 'cy.get("[data-testid=\\"btn\\"]").click()',
+      });
+
+      const result = await orchestrator.orchestrate(context);
+
+      nowSpy.mockRestore();
+      expect(result.success).toBe(false);
+      expect(result.repairTelemetry?.status).toBe('review_rejected');
+      expect(mockOpenAIClient.generateWithCustomPrompt).toHaveBeenCalledTimes(4);
     });
   });
 });

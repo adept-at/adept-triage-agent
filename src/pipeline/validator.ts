@@ -2,7 +2,7 @@ import * as core from '@actions/core';
 import * as github from '@actions/github';
 import { Octokit } from '@octokit/rest';
 import { OpenAIClient } from '../openai-client';
-import { ActionInputs, ErrorData, FixRecommendation } from '../types';
+import { ActionInputs, ErrorData, FixRecommendation, RepairTelemetry } from '../types';
 import { buildRepairContext } from '../repair-context';
 import { SimplifiedRepairAgent } from '../repair/simplified-repair-agent';
 import { createFixApplier, ApplyResult, generateFixBranchName } from '../repair/fix-applier';
@@ -37,7 +37,13 @@ export async function generateFixRecommendation(
    * of the repo. Empty for repos that haven't opted in.
    */
   repoContext?: string
-): Promise<{ fix: FixRecommendation; lastResponseId?: string; agentRootCause?: string; agentInvestigationFindings?: string } | null> {
+): Promise<{
+  fix: FixRecommendation | null;
+  lastResponseId?: string;
+  agentRootCause?: string;
+  agentInvestigationFindings?: string;
+  repairTelemetry?: RepairTelemetry;
+}> {
   try {
     const iterLabel = previousAttempt
       ? ` (iteration ${previousAttempt.iteration + 1})`
@@ -95,7 +101,7 @@ export async function generateFixRecommendation(
       repoContext
     );
 
-    if (result) {
+    if (result.fix) {
       core.info(
         `✅ Fix recommendation generated with ${result.fix.confidence}% confidence`
       );
@@ -104,8 +110,17 @@ export async function generateFixRecommendation(
     }
     return result;
   } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
     core.warning(`Failed to generate fix recommendation: ${error}`);
-    return null;
+    return {
+      fix: null,
+      repairTelemetry: {
+        status: 'no_fix_generated',
+        summary: `No auto-fix applied. generateFixRecommendation failed: ${msg}`,
+        iterations: 0,
+        elapsedMs: 0,
+      },
+    };
   }
 }
 
@@ -142,6 +157,7 @@ export async function iterativeFixValidateLoop(
    */
   autoFixSkipped?: boolean;
   autoFixSkippedReason?: string;
+  repairTelemetry?: RepairTelemetry;
 }> {
   const maxIterations = FIX_VALIDATE_LOOP.MAX_ITERATIONS;
   let fixRecommendation: FixRecommendation | null = null;
@@ -151,6 +167,7 @@ export async function iterativeFixValidateLoop(
   let agentInvestigationFindings: string | undefined;
   let autoFixSkipped = false;
   let autoFixSkippedReason: string | undefined;
+  let repairTelemetry: RepairTelemetry | undefined;
   let previousAttempt:
     | {
         iteration: number;
@@ -201,13 +218,15 @@ export async function iterativeFixValidateLoop(
         repoContext
       );
 
-      if (!fixResult) {
+      if (!fixResult.fix) {
         fixRecommendation = null;
+        repairTelemetry = fixResult.repairTelemetry ?? repairTelemetry;
         core.warning(`Iteration ${iteration + 1}: could not generate fix recommendation`);
         break;
       }
 
       fixRecommendation = fixResult.fix;
+      repairTelemetry = fixResult.repairTelemetry ?? repairTelemetry;
       if (fixResult.agentRootCause) agentRootCause = fixResult.agentRootCause;
       if (fixResult.agentInvestigationFindings) agentInvestigationFindings = fixResult.agentInvestigationFindings;
 
@@ -259,7 +278,21 @@ export async function iterativeFixValidateLoop(
         if (baseline.passed) {
           core.info('✅ Baseline check passed — test passes without fix. Failure was likely transient.');
           core.info('📊 learning-telemetry baseline=passed validation=skipped iterations=0');
-          return { fixRecommendation: null, autoFixResult: null, iterations: 0, agentRootCause, agentInvestigationFindings, autoFixSkipped, autoFixSkippedReason };
+          return {
+            fixRecommendation: null,
+            autoFixResult: null,
+            iterations: 0,
+            agentRootCause,
+            agentInvestigationFindings,
+            autoFixSkipped,
+            autoFixSkippedReason,
+            repairTelemetry: {
+              status: 'skipped',
+              summary: 'Repair skipped: baseline check passed without a fix (failure likely transient).',
+              iterations: 0,
+              elapsedMs: 0,
+            },
+          };
         }
         core.info('❌ Baseline check confirmed failure — proceeding with fix.');
         core.info(`📊 learning-telemetry baseline=failed durationMs=${baseline.durationMs}`);
@@ -308,7 +341,17 @@ export async function iterativeFixValidateLoop(
             },
           };
 
-          return { fixRecommendation, autoFixResult, iterations: iteration + 1, prUrl: pushResult.prUrl, agentRootCause, agentInvestigationFindings, autoFixSkipped, autoFixSkippedReason };
+          return {
+            fixRecommendation,
+            autoFixResult,
+            iterations: iteration + 1,
+            prUrl: pushResult.prUrl,
+            agentRootCause,
+            agentInvestigationFindings,
+            autoFixSkipped,
+            autoFixSkippedReason,
+            repairTelemetry,
+          };
         } catch (pushError) {
           core.warning(`Test passed but push/PR creation failed: ${pushError}`);
           autoFixResult = {
@@ -324,7 +367,16 @@ export async function iterativeFixValidateLoop(
           };
         }
 
-        return { fixRecommendation, autoFixResult, iterations: iteration + 1, agentRootCause, agentInvestigationFindings, autoFixSkipped, autoFixSkippedReason };
+        return {
+          fixRecommendation,
+          autoFixResult,
+          iterations: iteration + 1,
+          agentRootCause,
+          agentInvestigationFindings,
+          autoFixSkipped,
+          autoFixSkippedReason,
+          repairTelemetry,
+        };
       }
 
       core.warning(
@@ -361,7 +413,16 @@ export async function iterativeFixValidateLoop(
     }
   }
 
-  return { fixRecommendation, autoFixResult, iterations: completedIterations, agentRootCause, agentInvestigationFindings, autoFixSkipped, autoFixSkippedReason };
+  return {
+    fixRecommendation,
+    autoFixResult,
+    iterations: completedIterations,
+    agentRootCause,
+    agentInvestigationFindings,
+    autoFixSkipped,
+    autoFixSkippedReason,
+    repairTelemetry,
+  };
 }
 
 /**

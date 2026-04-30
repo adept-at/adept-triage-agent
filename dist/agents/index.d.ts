@@ -1,5 +1,5 @@
 export * from './base-agent';
-export { AgentOrchestrator, DEFAULT_ORCHESTRATOR_CONFIG, createOrchestrator, } from './agent-orchestrator';
+export { AgentOrchestrator, DEFAULT_ORCHESTRATOR_CONFIG, MIN_FIX_GEN_BUDGET_MS, MIN_REVIEW_BUDGET_MS, createOrchestrator, } from './agent-orchestrator';
 export type { OrchestratorConfig, OrchestrationResult, } from './agent-orchestrator';
 export type { SourceFetchContext } from '../types';
 export * from './analysis-agent';

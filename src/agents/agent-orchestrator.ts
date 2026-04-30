@@ -15,7 +15,14 @@ import {
   CodeChange,
 } from './fix-generation-agent';
 import { ReviewAgent, ReviewOutput, ReviewIssue } from './review-agent';
-import { FixRecommendation, ErrorData, SourceFetchContext } from '../types';
+import {
+  FixRecommendation,
+  ErrorData,
+  SourceFetchContext,
+  RepairStage,
+  RepairStatus,
+  RepairTelemetry,
+} from '../types';
 import { TriageSkill, FlakinessSignal, formatSkillsForPrompt } from '../services/skill-store';
 import { AGENT_CONFIG } from '../config/constants';
 
@@ -48,6 +55,10 @@ export const DEFAULT_ORCHESTRATOR_CONFIG: OrchestratorConfig = {
   requireReview: true,
 };
 
+/** Do not start another fix-gen (+ review) cycle unless this much wall time remains */
+export const MIN_FIX_GEN_BUDGET_MS = 180_000;
+export const MIN_REVIEW_BUDGET_MS = 120_000;
+
 /**
  * Result of the orchestration
  */
@@ -66,6 +77,8 @@ export interface OrchestrationResult {
   approach: 'agentic' | 'failed';
   /** Last OpenAI response ID for conversation chaining across outer iterations */
   lastResponseId?: string;
+  /** Repair pipeline status for Slack / triage_json (orthogonal to success bit) */
+  repairTelemetry?: RepairTelemetry;
   /** Detailed results from each agent */
   agentResults: {
     analysis?: AgentResult<AnalysisOutput>;
@@ -73,6 +86,47 @@ export interface OrchestrationResult {
     investigation?: AgentResult<InvestigationOutput>;
     fixGeneration?: AgentResult<FixGenerationOutput>;
     review?: AgentResult<ReviewOutput>;
+  };
+}
+
+/** Mutable trace for timeout / catch paths — updated before each expensive stage */
+interface OrchestratorRepairTrace {
+  lastStage?: RepairStage;
+  /** Completed fix/review loop iterations (for timeout summaries) */
+  iterations: number;
+  lastReviewIssues?: string[];
+  lastReviewAssessment?: string;
+  lastFixSummary?: string;
+  lastFixConfidence?: number;
+}
+
+function buildReviewIssueLines(issues: ReviewIssue[]): string[] {
+  return issues.map((i) => `[${i.severity}] ${i.description}`);
+}
+
+function buildRepairTelemetry(params: {
+  status: RepairStatus;
+  summary: string;
+  iterations: number;
+  lastStage?: RepairStage;
+  lastReviewIssues?: string[];
+  lastReviewAssessment?: string;
+  lastFixSummary?: string;
+  lastFixConfidence?: number;
+  startedAtMs: number;
+  timeoutMs?: number;
+}): RepairTelemetry {
+  return {
+    status: params.status,
+    summary: params.summary,
+    iterations: params.iterations,
+    lastStage: params.lastStage,
+    lastReviewIssues: params.lastReviewIssues,
+    lastReviewAssessment: params.lastReviewAssessment,
+    lastFixSummary: params.lastFixSummary,
+    lastFixConfidence: params.lastFixConfidence,
+    timeoutMs: params.timeoutMs,
+    elapsedMs: Date.now() - params.startedAtMs,
   };
 }
 
@@ -125,11 +179,13 @@ export class AgentOrchestrator {
 
     core.info('🤖 Starting agentic repair pipeline...');
 
+    const trace: OrchestratorRepairTrace = { iterations: 0 };
+
     let timeoutId: ReturnType<typeof setTimeout> | undefined;
 
     try {
       // Create timeout promise that cleans up after itself
-      const timeoutPromise = new Promise<{ fix?: FixRecommendation; error?: string; iterations: number; lastResponseId?: string }>((_, reject) => {
+      const timeoutPromise = new Promise<never>((_, reject) => {
         timeoutId = setTimeout(() => {
           reject(
             new Error(
@@ -145,7 +201,9 @@ export class AgentOrchestrator {
         errorData,
         agentResults,
         previousResponseId,
-        skills
+        skills,
+        startTime,
+        trace
       );
 
       const result = await Promise.race([pipelinePromise, timeoutPromise]);
@@ -165,6 +223,7 @@ export class AgentOrchestrator {
           iterations,
           approach: 'agentic',
           lastResponseId: result.lastResponseId,
+          repairTelemetry: result.repairTelemetry,
           agentResults,
         };
       }
@@ -175,6 +234,7 @@ export class AgentOrchestrator {
         totalTimeMs,
         iterations,
         approach: 'failed',
+        repairTelemetry: result.repairTelemetry,
         agentResults,
       };
     } catch (error) {
@@ -185,12 +245,40 @@ export class AgentOrchestrator {
 
       core.error(`Orchestration failed: ${errorMessage}`);
 
+      const timedOut = errorMessage.includes('Orchestration timed out');
+      const repairTelemetry = timedOut
+        ? buildRepairTelemetry({
+            status: 'timed_out',
+            summary: `No auto-fix applied. Repair timed out during ${trace.lastStage || 'unknown'} after ${trace.iterations} iteration(s).`,
+            iterations: trace.iterations,
+            lastStage: trace.lastStage,
+            lastReviewIssues: trace.lastReviewIssues,
+            lastReviewAssessment: trace.lastReviewAssessment,
+            lastFixSummary: trace.lastFixSummary,
+            lastFixConfidence: trace.lastFixConfidence,
+            startedAtMs: startTime,
+            timeoutMs: this.config.totalTimeoutMs,
+          })
+        : buildRepairTelemetry({
+            status: 'no_fix_generated',
+            summary: `No auto-fix applied. Repair aborted: ${errorMessage}`,
+            iterations: trace.iterations,
+            lastStage: trace.lastStage,
+            lastReviewIssues: trace.lastReviewIssues,
+            lastReviewAssessment: trace.lastReviewAssessment,
+            lastFixSummary: trace.lastFixSummary,
+            lastFixConfidence: trace.lastFixConfidence,
+            startedAtMs: startTime,
+            timeoutMs: this.config.totalTimeoutMs,
+          });
+
       return {
         success: false,
         error: errorMessage,
         totalTimeMs,
-        iterations,
+        iterations: trace.iterations,
         approach: 'failed',
+        repairTelemetry,
         agentResults,
       };
     }
@@ -203,13 +291,22 @@ export class AgentOrchestrator {
     context: AgentContext,
     _errorData: ErrorData | undefined,
     agentResults: OrchestrationResult['agentResults'],
-    previousResponseId?: string,
-    skills?: { relevant: TriageSkill[]; flakiness?: FlakinessSignal }
-  ): Promise<{ fix?: FixRecommendation; error?: string; iterations: number; lastResponseId?: string }> {
+    previousResponseId: string | undefined,
+    skills: { relevant: TriageSkill[]; flakiness?: FlakinessSignal } | undefined,
+    startedAtMs: number,
+    trace: OrchestratorRepairTrace
+  ): Promise<{
+    fix?: FixRecommendation;
+    error?: string;
+    iterations: number;
+    lastResponseId?: string;
+    repairTelemetry: RepairTelemetry;
+  }> {
     let iterations = 0;
     let lastResponseId: string | undefined = previousResponseId;
 
     // Step 1: Analysis Agent
+    trace.lastStage = 'analysis';
     core.info('📊 Step 1: Running Analysis Agent...');
     if (skills && skills.relevant.length > 0) {
       context.skillsPrompt = formatSkillsForPrompt(skills.relevant, 'investigation', skills.flakiness);
@@ -219,10 +316,19 @@ export class AgentOrchestrator {
     lastResponseId = analysisResult.responseId ?? lastResponseId;
 
     if (!analysisResult.success || !analysisResult.data) {
+      trace.iterations = iterations;
       return {
         error: `Analysis agent failed: ${analysisResult.error}`,
         iterations,
-      lastResponseId,
+        lastResponseId,
+        repairTelemetry: buildRepairTelemetry({
+          status: 'no_fix_generated',
+          summary: `No auto-fix applied. Repair stopped during analysis: ${analysisResult.error || 'analysis failed'}.`,
+          iterations,
+          lastStage: 'analysis',
+          startedAtMs,
+          timeoutMs: this.config.totalTimeoutMs,
+        }),
       };
     }
 
@@ -231,6 +337,7 @@ export class AgentOrchestrator {
     core.info(`   Confidence: ${analysis.confidence}%`);
 
     // Step 2: Code Reading Agent
+    trace.lastStage = 'code_reading';
     core.info('📖 Step 2: Running Code Reading Agent...');
     const codeReadingResult = await this.codeReadingAgent.execute(
       {
@@ -241,23 +348,38 @@ export class AgentOrchestrator {
     );
     agentResults.codeReading = codeReadingResult;
 
-    // Update context with code content (add line numbers for precise referencing)
-    if (codeReadingResult.success && codeReadingResult.data) {
-      const rawContent = codeReadingResult.data.testFileContent;
-      context.sourceFileContent = addLineNumbers(rawContent);
-      // Keep raw content for oldCode validation
-      (context as AgentContextWithRaw)._rawSourceFileContent = rawContent;
-      context.relatedFiles = new Map(
-        codeReadingResult.data.relatedFiles.map((f) => [f.path, f.content])
-      );
-      core.info(`   Test file: ${rawContent.length} chars`);
-      for (const f of codeReadingResult.data.relatedFiles) {
-        core.info(`   Related: ${f.path} (${f.content.length} chars) — ${f.relevance}`);
-      }
-      core.info(
-        `   Fetched ${codeReadingResult.data.relatedFiles.length + 1} files`
-      );
+    if (!codeReadingResult.success || !codeReadingResult.data) {
+      trace.iterations = iterations;
+      return {
+        error: `Code reading agent failed: ${codeReadingResult.error}`,
+        iterations,
+        lastResponseId,
+        repairTelemetry: buildRepairTelemetry({
+          status: 'no_fix_generated',
+          summary: `No auto-fix applied. Repair stopped during code reading: ${codeReadingResult.error || 'failed'}.`,
+          iterations,
+          lastStage: 'code_reading',
+          startedAtMs,
+          timeoutMs: this.config.totalTimeoutMs,
+        }),
+      };
     }
+
+    // Update context with code content (add line numbers for precise referencing)
+    const rawContent = codeReadingResult.data.testFileContent;
+    context.sourceFileContent = addLineNumbers(rawContent);
+    // Keep raw content for oldCode validation
+    (context as AgentContextWithRaw)._rawSourceFileContent = rawContent;
+    context.relatedFiles = new Map(
+      codeReadingResult.data.relatedFiles.map((f) => [f.path, f.content])
+    );
+    core.info(`   Test file: ${rawContent.length} chars`);
+    for (const f of codeReadingResult.data.relatedFiles) {
+      core.info(`   Related: ${f.path} (${f.content.length} chars) — ${f.relevance}`);
+    }
+    core.info(
+      `   Fetched ${codeReadingResult.data.relatedFiles.length + 1} files`
+    );
 
     // Log product diff availability
     if (context.productDiff && context.productDiff.files.length > 0) {
@@ -278,6 +400,7 @@ export class AgentOrchestrator {
     }
 
     // Step 3: Investigation Agent
+    trace.lastStage = 'investigation';
     core.info('🔍 Step 3: Running Investigation Agent...');
     const productDiffSummary = context.productDiff && context.productDiff.files.length > 0
       ? `${context.productDiff.files.length} files changed (${context.productDiff.files.slice(0, 3).map(f => f.filename).join(', ')}${context.productDiff.files.length > 3 ? '...' : ''})`
@@ -306,10 +429,19 @@ export class AgentOrchestrator {
     context.includeScreenshots = false;
 
     if (!investigationResult.success || !investigationResult.data) {
+      trace.iterations = iterations;
       return {
         error: `Investigation agent failed: ${investigationResult.error}`,
         iterations,
-      lastResponseId,
+        lastResponseId,
+        repairTelemetry: buildRepairTelemetry({
+          status: 'no_fix_generated',
+          summary: `No auto-fix applied. Repair stopped during investigation: ${investigationResult.error || 'investigation failed'}.`,
+          iterations,
+          lastStage: 'investigation',
+          startedAtMs,
+          timeoutMs: this.config.totalTimeoutMs,
+        }),
       };
     }
 
@@ -325,19 +457,39 @@ export class AgentOrchestrator {
         investigation.verdictOverride.confidence >= analysis.confidence) {
       core.warning(`🛑 Investigation override: APP_CODE (${investigation.verdictOverride.confidence}% confidence) > Analysis (${analysis.confidence}%). Aborting repair.`);
       core.info(`   Evidence: ${investigation.verdictOverride.evidence.join('; ')}`);
+      trace.iterations = iterations;
       return {
         error: 'Investigation verdict override: product-side regression confirmed with higher confidence than initial classification',
         iterations,
         lastResponseId: investigationResult.responseId ?? lastResponseId,
+        repairTelemetry: buildRepairTelemetry({
+          status: 'no_approved_fix',
+          summary:
+            'No auto-fix applied. Investigation flagged product-side regression with higher confidence than the initial classification.',
+          iterations,
+          lastStage: 'investigation',
+          startedAtMs,
+          timeoutMs: this.config.totalTimeoutMs,
+        }),
       };
     }
 
     if (!investigation.isTestCodeFixable && !investigation.verdictOverride) {
       core.warning('🛑 Investigation says not test-code-fixable but no verdict override — aborting conservatively');
+      trace.iterations = iterations;
       return {
         error: 'Investigation determined issue is not test-code-fixable',
         iterations,
         lastResponseId: investigationResult.responseId ?? lastResponseId,
+        repairTelemetry: buildRepairTelemetry({
+          status: 'no_approved_fix',
+          summary:
+            'No auto-fix applied. Investigation determined the issue is not safely fixable from test code alone.',
+          iterations,
+          lastStage: 'investigation',
+          startedAtMs,
+          timeoutMs: this.config.totalTimeoutMs,
+        }),
       };
     }
 
@@ -355,9 +507,82 @@ export class AgentOrchestrator {
     // max-iterations fallback can refuse to ship when quality CRITICALs
     // (trace missing/vague, strictly-stronger logic) were still open.
     let lastReviewIssues: ReviewIssue[] = [];
+    let lastReviewRejected = false;
+    let lastReviewAssessment: string | undefined;
 
     while (iterations < this.config.maxIterations) {
+      const remaining = startedAtMs + this.config.totalTimeoutMs - Date.now();
+      const minForFullRound =
+        MIN_FIX_GEN_BUDGET_MS +
+        (this.config.requireReview ? MIN_REVIEW_BUDGET_MS : 0);
+      if (remaining < minForFullRound) {
+        trace.iterations = iterations;
+        trace.lastFixSummary = lastFix?.summary;
+        trace.lastFixConfidence = lastFix?.confidence;
+        trace.lastReviewIssues = lastReviewIssues.length
+          ? buildReviewIssueLines(lastReviewIssues)
+          : undefined;
+        trace.lastReviewAssessment = lastReviewAssessment;
+        if (lastReviewRejected && lastReviewIssues.length > 0) {
+          const topIssue = lastReviewIssues[0]?.description || 'rejected by review';
+          return {
+            error: 'Insufficient orchestration budget after review rejection',
+            iterations,
+            lastResponseId,
+            repairTelemetry: buildRepairTelemetry({
+              status: 'review_rejected',
+              summary: `No auto-fix applied. Generated fix was rejected by review: ${topIssue}`,
+              iterations,
+              lastStage: 'review',
+              lastReviewIssues: buildReviewIssueLines(lastReviewIssues),
+              lastReviewAssessment,
+              lastFixSummary: lastFix?.summary,
+              lastFixConfidence: lastFix?.confidence,
+              startedAtMs,
+              timeoutMs: this.config.totalTimeoutMs,
+            }),
+          };
+        }
+        if (iterations > 0) {
+          return {
+            error: 'Insufficient orchestration budget for another fix iteration',
+            iterations,
+            lastResponseId,
+            repairTelemetry: buildRepairTelemetry({
+              status: 'no_approved_fix',
+              summary:
+                'No auto-fix applied. Repair stopped: not enough remaining orchestration time for another fix-generation cycle.',
+              iterations,
+              lastStage: trace.lastStage || 'fix_generation',
+              lastReviewIssues: lastReviewIssues.length
+                ? buildReviewIssueLines(lastReviewIssues)
+                : undefined,
+              lastReviewAssessment,
+              lastFixSummary: lastFix?.summary,
+              lastFixConfidence: lastFix?.confidence,
+              startedAtMs,
+              timeoutMs: this.config.totalTimeoutMs,
+            }),
+          };
+        }
+        return {
+          error: 'Insufficient orchestration budget before first fix attempt',
+          iterations: 0,
+          lastResponseId,
+          repairTelemetry: buildRepairTelemetry({
+            status: 'timed_out',
+            summary: `No auto-fix applied. Repair timed out during investigation after 0 iteration(s).`,
+            iterations: 0,
+            lastStage: 'investigation',
+            startedAtMs,
+            timeoutMs: this.config.totalTimeoutMs,
+          }),
+        };
+      }
+
       iterations++;
+      trace.iterations = iterations;
+      trace.lastStage = 'fix_generation';
       core.info(
         `🔧 Step 4: Running Fix Generation Agent (iteration ${iterations})...`
       );
@@ -452,6 +677,30 @@ export class AgentOrchestrator {
 
       // Step 5: Review Agent (if required)
       if (this.config.requireReview) {
+        const remainingForReview =
+          startedAtMs + this.config.totalTimeoutMs - Date.now();
+        if (remainingForReview < MIN_REVIEW_BUDGET_MS) {
+          trace.iterations = iterations;
+          trace.lastStage = 'fix_generation';
+          return {
+            error: 'Insufficient orchestration budget before review step',
+            iterations,
+            lastResponseId,
+            repairTelemetry: buildRepairTelemetry({
+              status: 'no_approved_fix',
+              summary:
+                'No auto-fix applied. Repair stopped: not enough remaining time to run the review agent after fix generation.',
+              iterations,
+              lastStage: 'fix_generation',
+              lastFixSummary: lastFix.summary,
+              lastFixConfidence: lastFix.confidence,
+              startedAtMs,
+              timeoutMs: this.config.totalTimeoutMs,
+            }),
+          };
+        }
+
+        trace.lastStage = 'review';
         core.info('✅ Step 5: Running Review Agent...');
         context.delegationContext = this.buildDelegationContext('review', {
           analysis,
@@ -494,13 +743,33 @@ export class AgentOrchestrator {
 
           if (review.approved) {
             core.info(`   ✅ Fix APPROVED by Review Agent on iteration ${iterations}`);
+            lastReviewRejected = false;
+            trace.iterations = iterations;
+            trace.lastStage = 'review';
+            trace.lastReviewIssues = undefined;
+            trace.lastReviewAssessment = review.assessment;
             return {
               fix: this.convertToFixRecommendation(lastFix),
               iterations,
-      lastResponseId,
+              lastResponseId,
+              repairTelemetry: buildRepairTelemetry({
+                status: 'approved',
+                summary: 'Fix passed review (not yet applied to a branch by the triage action).',
+                iterations,
+                lastStage: 'review',
+                lastReviewAssessment: review.assessment,
+                lastFixSummary: lastFix.summary,
+                lastFixConfidence: lastFix.confidence,
+                startedAtMs,
+                timeoutMs: this.config.totalTimeoutMs,
+              }),
             };
           } else {
+            lastReviewRejected = true;
+            lastReviewAssessment = review.assessment;
             lastReviewIssues = review.issues;
+            trace.lastReviewIssues = buildReviewIssueLines(lastReviewIssues);
+            trace.lastReviewAssessment = lastReviewAssessment;
             const issueLines = review.issues
               .map((i) => `[${i.severity}] ${i.description}`)
               .join('\n');
@@ -527,10 +796,22 @@ export class AgentOrchestrator {
         }
       } else {
         // No review required, return fix directly
+        trace.iterations = iterations;
+        trace.lastStage = 'fix_generation';
         return {
           fix: this.convertToFixRecommendation(lastFix),
           iterations,
-      lastResponseId,
+          lastResponseId,
+          repairTelemetry: buildRepairTelemetry({
+            status: 'approved',
+            summary: 'Fix produced without review gate (requireReview=false).',
+            iterations,
+            lastStage: 'fix_generation',
+            lastFixSummary: lastFix.summary,
+            lastFixConfidence: lastFix.confidence,
+            startedAtMs,
+            timeoutMs: this.config.totalTimeoutMs,
+          }),
         };
       }
     }
@@ -547,28 +828,74 @@ export class AgentOrchestrator {
         core.warning(
           `Max iterations (${this.config.maxIterations}) reached with unresolved quality CRITICAL(s) — refusing to ship the fix. Reasons: ${reasons}`
         );
+        trace.iterations = iterations;
         return {
           error: `Max iterations reached with unresolved quality CRITICAL(s): ${reasons}`,
           iterations,
           lastResponseId,
+          repairTelemetry: buildRepairTelemetry({
+            status: lastReviewRejected ? 'review_rejected' : 'no_approved_fix',
+            summary: lastReviewRejected && lastReviewIssues[0]
+              ? `No auto-fix applied. Generated fix was rejected by review: ${lastReviewIssues[0].description}`
+              : `No auto-fix applied. Repair exhausted iterations without an approved fix (${reasons}).`,
+            iterations,
+            lastStage: 'review',
+            lastReviewIssues: lastReviewIssues.length
+              ? buildReviewIssueLines(lastReviewIssues)
+              : undefined,
+            lastReviewAssessment,
+            lastFixSummary: lastFix.summary,
+            lastFixConfidence: lastFix.confidence,
+            startedAtMs,
+            timeoutMs: this.config.totalTimeoutMs,
+          }),
         };
       }
 
       core.warning(
         `Max iterations (${this.config.maxIterations}) reached — review never approved the fix. Refusing to ship unapproved repair. Last fix: confidence=${lastFix.confidence}%, changes=${lastFix.changes.length}, summary="${lastFix.summary}"`
       );
+      trace.iterations = iterations;
       return {
         error: `Max iterations reached without review approval for the last fix`,
         iterations,
         lastResponseId,
+        repairTelemetry: buildRepairTelemetry({
+          status: lastReviewRejected ? 'review_rejected' : 'no_approved_fix',
+          summary:
+            lastReviewRejected && lastReviewIssues[0]
+              ? `No auto-fix applied. Generated fix was rejected by review: ${lastReviewIssues[0].description}`
+              : 'No auto-fix applied. Repair exhausted iterations without an approved fix.',
+          iterations,
+          lastStage: 'review',
+          lastReviewIssues: lastReviewIssues.length
+            ? buildReviewIssueLines(lastReviewIssues)
+            : undefined,
+          lastReviewAssessment,
+          lastFixSummary: lastFix.summary,
+          lastFixConfidence: lastFix.confidence,
+          startedAtMs,
+          timeoutMs: this.config.totalTimeoutMs,
+        }),
       };
     }
 
     core.error(`Max iterations (${this.config.maxIterations}) reached without a viable fix (last confidence: ${lastFix?.confidence ?? 'N/A'}%, threshold: ${this.config.minConfidence}%)`);
+    trace.iterations = iterations;
     return {
       error: `Max iterations (${this.config.maxIterations}) reached without valid fix`,
       iterations,
       lastResponseId,
+      repairTelemetry: buildRepairTelemetry({
+        status: 'no_fix_generated',
+        summary: `No auto-fix applied. Fix generation did not reach the confidence threshold within ${this.config.maxIterations} iteration(s).`,
+        iterations,
+        lastStage: 'fix_generation',
+        lastFixSummary: lastFix?.summary,
+        lastFixConfidence: lastFix?.confidence,
+        startedAtMs,
+        timeoutMs: this.config.totalTimeoutMs,
+      }),
     };
   }
 

@@ -1,6 +1,12 @@
 import * as core from '@actions/core';
 import { OpenAIClient } from '../openai-client';
-import { RepairContext, ErrorData, FixRecommendation, SourceFetchContext } from '../types';
+import {
+  RepairContext,
+  ErrorData,
+  FixRecommendation,
+  SourceFetchContext,
+  RepairTelemetry,
+} from '../types';
 import { AGENT_CONFIG } from '../config/constants';
 import {
   AgentOrchestrator,
@@ -378,7 +384,13 @@ export class SimplifiedRepairAgent {
      * knowledge. Empty string for repos that haven't opted in.
      */
     repoContext?: string
-  ): Promise<{ fix: FixRecommendation; lastResponseId?: string; agentRootCause?: string; agentInvestigationFindings?: string } | null> {
+  ): Promise<{
+    fix: FixRecommendation | null;
+    lastResponseId?: string;
+    agentRootCause?: string;
+    agentInvestigationFindings?: string;
+    repairTelemetry?: RepairTelemetry;
+  }> {
     try {
       core.info('🔧 Generating fix recommendation...');
 
@@ -386,7 +398,16 @@ export class SimplifiedRepairAgent {
         core.warning(
           'Agentic repair is unavailable because source-fetch context is missing; no fallback repair path will run.'
         );
-        return null;
+        return {
+          fix: null,
+          repairTelemetry: {
+            status: 'no_fix_generated',
+            summary:
+              'No auto-fix applied. Agentic repair is unavailable (source-fetch context missing).',
+            iterations: 0,
+            elapsedMs: 0,
+          },
+        };
       }
 
       core.info('🤖 Attempting agentic repair...');
@@ -400,20 +421,28 @@ export class SimplifiedRepairAgent {
         repoContext
       );
 
-      if (agenticResult) {
+      if (agenticResult.fix) {
         core.info(
           `✅ Agentic repair succeeded with ${agenticResult.fix.confidence}% confidence`
         );
-        return agenticResult;
+      } else {
+        core.warning(
+          '🤖 Agentic repair did not produce an approved fix; no weaker fallback repair path will run.'
+        );
       }
-
-      core.warning(
-        '🤖 Agentic repair did not produce an approved fix; no weaker fallback repair path will run.'
-      );
-      return null;
+      return agenticResult;
     } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
       core.warning(`Failed to generate fix recommendation: ${error}`);
-      return null;
+      return {
+        fix: null,
+        repairTelemetry: {
+          status: 'no_fix_generated',
+          summary: `No auto-fix applied. Repair failed: ${msg}`,
+          iterations: 0,
+          elapsedMs: 0,
+        },
+      };
     }
   }
 
@@ -446,9 +475,23 @@ export class SimplifiedRepairAgent {
     skills?: { relevant: TriageSkill[]; flakiness?: FlakinessSignal },
     priorInvestigationContext?: string,
     repoContext?: string
-  ): Promise<{ fix: FixRecommendation; lastResponseId?: string; agentRootCause?: string; agentInvestigationFindings?: string } | null> {
+  ): Promise<{
+    fix: FixRecommendation | null;
+    lastResponseId?: string;
+    agentRootCause?: string;
+    agentInvestigationFindings?: string;
+    repairTelemetry?: RepairTelemetry;
+  }> {
     if (!this.orchestrator) {
-      return null;
+      return {
+        fix: null,
+        repairTelemetry: {
+          status: 'no_fix_generated',
+          summary: 'No auto-fix applied. Orchestrator was not initialized.',
+          iterations: 0,
+          elapsedMs: 0,
+        },
+      };
     }
 
     try {
@@ -518,17 +561,39 @@ export class SimplifiedRepairAgent {
         const agentRootCause = analysis?.rootCauseCategory;
         const agentInvestigationFindings = summarizeInvestigationForRetry(investigation);
 
-        return { fix: result.fix, lastResponseId: result.lastResponseId, agentRootCause, agentInvestigationFindings };
+        return {
+          fix: result.fix,
+          lastResponseId: result.lastResponseId,
+          agentRootCause,
+          agentInvestigationFindings,
+          repairTelemetry: result.repairTelemetry,
+        };
       }
 
       core.info(
         `🤖 Agentic approach failed: ${result.error || 'No fix generated'}`
       );
-      return null;
+      const analysis = result.agentResults.analysis?.data;
+      const investigation = result.agentResults.investigation?.data;
+      return {
+        fix: null,
+        lastResponseId: result.lastResponseId,
+        agentRootCause: analysis?.rootCauseCategory,
+        agentInvestigationFindings: summarizeInvestigationForRetry(investigation),
+        repairTelemetry: result.repairTelemetry,
+      };
     } catch (error) {
       const errorMsg = error instanceof Error ? error.message : String(error);
       core.warning(`Agentic repair error: ${errorMsg}`);
-      return null;
+      return {
+        fix: null,
+        repairTelemetry: {
+          status: 'no_fix_generated',
+          summary: `No auto-fix applied. Repair error: ${errorMsg}`,
+          iterations: 0,
+          elapsedMs: 0,
+        },
+      };
     }
   }
   /**

@@ -40,7 +40,7 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.AgentOrchestrator = exports.DEFAULT_ORCHESTRATOR_CONFIG = void 0;
+exports.AgentOrchestrator = exports.MIN_REVIEW_BUDGET_MS = exports.MIN_FIX_GEN_BUDGET_MS = exports.DEFAULT_ORCHESTRATOR_CONFIG = void 0;
 exports.isBlockingCriticalIssue = isBlockingCriticalIssue;
 exports.createOrchestrator = createOrchestrator;
 const core = __importStar(__nccwpck_require__(37484));
@@ -57,6 +57,25 @@ exports.DEFAULT_ORCHESTRATOR_CONFIG = {
     minConfidence: 70,
     requireReview: true,
 };
+exports.MIN_FIX_GEN_BUDGET_MS = 180_000;
+exports.MIN_REVIEW_BUDGET_MS = 120_000;
+function buildReviewIssueLines(issues) {
+    return issues.map((i) => `[${i.severity}] ${i.description}`);
+}
+function buildRepairTelemetry(params) {
+    return {
+        status: params.status,
+        summary: params.summary,
+        iterations: params.iterations,
+        lastStage: params.lastStage,
+        lastReviewIssues: params.lastReviewIssues,
+        lastReviewAssessment: params.lastReviewAssessment,
+        lastFixSummary: params.lastFixSummary,
+        lastFixConfidence: params.lastFixConfidence,
+        timeoutMs: params.timeoutMs,
+        elapsedMs: Date.now() - params.startedAtMs,
+    };
+}
 class AgentOrchestrator {
     config;
     analysisAgent;
@@ -77,6 +96,7 @@ class AgentOrchestrator {
         const agentResults = {};
         let iterations = 0;
         core.info('🤖 Starting agentic repair pipeline...');
+        const trace = { iterations: 0 };
         let timeoutId;
         try {
             const timeoutPromise = new Promise((_, reject) => {
@@ -84,7 +104,7 @@ class AgentOrchestrator {
                     reject(new Error(`Orchestration timed out after ${this.config.totalTimeoutMs}ms`));
                 }, this.config.totalTimeoutMs);
             });
-            const pipelinePromise = this.runPipeline(context, errorData, agentResults, previousResponseId, skills);
+            const pipelinePromise = this.runPipeline(context, errorData, agentResults, previousResponseId, skills, startTime, trace);
             const result = await Promise.race([pipelinePromise, timeoutPromise]);
             clearTimeout(timeoutId);
             iterations = result.iterations;
@@ -98,6 +118,7 @@ class AgentOrchestrator {
                     iterations,
                     approach: 'agentic',
                     lastResponseId: result.lastResponseId,
+                    repairTelemetry: result.repairTelemetry,
                     agentResults,
                 };
             }
@@ -107,6 +128,7 @@ class AgentOrchestrator {
                 totalTimeMs,
                 iterations,
                 approach: 'failed',
+                repairTelemetry: result.repairTelemetry,
                 agentResults,
             };
         }
@@ -115,19 +137,47 @@ class AgentOrchestrator {
             const totalTimeMs = Date.now() - startTime;
             const errorMessage = error instanceof Error ? error.message : String(error);
             core.error(`Orchestration failed: ${errorMessage}`);
+            const timedOut = errorMessage.includes('Orchestration timed out');
+            const repairTelemetry = timedOut
+                ? buildRepairTelemetry({
+                    status: 'timed_out',
+                    summary: `No auto-fix applied. Repair timed out during ${trace.lastStage || 'unknown'} after ${trace.iterations} iteration(s).`,
+                    iterations: trace.iterations,
+                    lastStage: trace.lastStage,
+                    lastReviewIssues: trace.lastReviewIssues,
+                    lastReviewAssessment: trace.lastReviewAssessment,
+                    lastFixSummary: trace.lastFixSummary,
+                    lastFixConfidence: trace.lastFixConfidence,
+                    startedAtMs: startTime,
+                    timeoutMs: this.config.totalTimeoutMs,
+                })
+                : buildRepairTelemetry({
+                    status: 'no_fix_generated',
+                    summary: `No auto-fix applied. Repair aborted: ${errorMessage}`,
+                    iterations: trace.iterations,
+                    lastStage: trace.lastStage,
+                    lastReviewIssues: trace.lastReviewIssues,
+                    lastReviewAssessment: trace.lastReviewAssessment,
+                    lastFixSummary: trace.lastFixSummary,
+                    lastFixConfidence: trace.lastFixConfidence,
+                    startedAtMs: startTime,
+                    timeoutMs: this.config.totalTimeoutMs,
+                });
             return {
                 success: false,
                 error: errorMessage,
                 totalTimeMs,
-                iterations,
+                iterations: trace.iterations,
                 approach: 'failed',
+                repairTelemetry,
                 agentResults,
             };
         }
     }
-    async runPipeline(context, _errorData, agentResults, previousResponseId, skills) {
+    async runPipeline(context, _errorData, agentResults, previousResponseId, skills, startedAtMs, trace) {
         let iterations = 0;
         let lastResponseId = previousResponseId;
+        trace.lastStage = 'analysis';
         core.info('📊 Step 1: Running Analysis Agent...');
         if (skills && skills.relevant.length > 0) {
             context.skillsPrompt = (0, skill_store_1.formatSkillsForPrompt)(skills.relevant, 'investigation', skills.flakiness);
@@ -136,32 +186,56 @@ class AgentOrchestrator {
         agentResults.analysis = analysisResult;
         lastResponseId = analysisResult.responseId ?? lastResponseId;
         if (!analysisResult.success || !analysisResult.data) {
+            trace.iterations = iterations;
             return {
                 error: `Analysis agent failed: ${analysisResult.error}`,
                 iterations,
                 lastResponseId,
+                repairTelemetry: buildRepairTelemetry({
+                    status: 'no_fix_generated',
+                    summary: `No auto-fix applied. Repair stopped during analysis: ${analysisResult.error || 'analysis failed'}.`,
+                    iterations,
+                    lastStage: 'analysis',
+                    startedAtMs,
+                    timeoutMs: this.config.totalTimeoutMs,
+                }),
             };
         }
         const analysis = analysisResult.data;
         core.info(`   Root cause: ${analysis.rootCauseCategory}`);
         core.info(`   Confidence: ${analysis.confidence}%`);
+        trace.lastStage = 'code_reading';
         core.info('📖 Step 2: Running Code Reading Agent...');
         const codeReadingResult = await this.codeReadingAgent.execute({
             testFile: context.testFile,
             errorSelectors: analysis.selectors,
         }, context);
         agentResults.codeReading = codeReadingResult;
-        if (codeReadingResult.success && codeReadingResult.data) {
-            const rawContent = codeReadingResult.data.testFileContent;
-            context.sourceFileContent = addLineNumbers(rawContent);
-            context._rawSourceFileContent = rawContent;
-            context.relatedFiles = new Map(codeReadingResult.data.relatedFiles.map((f) => [f.path, f.content]));
-            core.info(`   Test file: ${rawContent.length} chars`);
-            for (const f of codeReadingResult.data.relatedFiles) {
-                core.info(`   Related: ${f.path} (${f.content.length} chars) — ${f.relevance}`);
-            }
-            core.info(`   Fetched ${codeReadingResult.data.relatedFiles.length + 1} files`);
+        if (!codeReadingResult.success || !codeReadingResult.data) {
+            trace.iterations = iterations;
+            return {
+                error: `Code reading agent failed: ${codeReadingResult.error}`,
+                iterations,
+                lastResponseId,
+                repairTelemetry: buildRepairTelemetry({
+                    status: 'no_fix_generated',
+                    summary: `No auto-fix applied. Repair stopped during code reading: ${codeReadingResult.error || 'failed'}.`,
+                    iterations,
+                    lastStage: 'code_reading',
+                    startedAtMs,
+                    timeoutMs: this.config.totalTimeoutMs,
+                }),
+            };
         }
+        const rawContent = codeReadingResult.data.testFileContent;
+        context.sourceFileContent = addLineNumbers(rawContent);
+        context._rawSourceFileContent = rawContent;
+        context.relatedFiles = new Map(codeReadingResult.data.relatedFiles.map((f) => [f.path, f.content]));
+        core.info(`   Test file: ${rawContent.length} chars`);
+        for (const f of codeReadingResult.data.relatedFiles) {
+            core.info(`   Related: ${f.path} (${f.content.length} chars) — ${f.relevance}`);
+        }
+        core.info(`   Fetched ${codeReadingResult.data.relatedFiles.length + 1} files`);
         if (context.productDiff && context.productDiff.files.length > 0) {
             core.info(`📦 Product diff available: ${context.productDiff.files.length} files changed`);
             for (const f of context.productDiff.files.slice(0, 5)) {
@@ -177,6 +251,7 @@ class AgentOrchestrator {
                 core.warning(`⚠️ ${skills.flakiness.message}`);
             }
         }
+        trace.lastStage = 'investigation';
         core.info('🔍 Step 3: Running Investigation Agent...');
         const productDiffSummary = context.productDiff && context.productDiff.files.length > 0
             ? `${context.productDiff.files.length} files changed (${context.productDiff.files.slice(0, 3).map(f => f.filename).join(', ')}${context.productDiff.files.length > 3 ? '...' : ''})`
@@ -199,10 +274,19 @@ class AgentOrchestrator {
         lastResponseId = investigationResult.responseId ?? lastResponseId;
         context.includeScreenshots = false;
         if (!investigationResult.success || !investigationResult.data) {
+            trace.iterations = iterations;
             return {
                 error: `Investigation agent failed: ${investigationResult.error}`,
                 iterations,
                 lastResponseId,
+                repairTelemetry: buildRepairTelemetry({
+                    status: 'no_fix_generated',
+                    summary: `No auto-fix applied. Repair stopped during investigation: ${investigationResult.error || 'investigation failed'}.`,
+                    iterations,
+                    lastStage: 'investigation',
+                    startedAtMs,
+                    timeoutMs: this.config.totalTimeoutMs,
+                }),
             };
         }
         const investigation = investigationResult.data;
@@ -214,18 +298,36 @@ class AgentOrchestrator {
             investigation.verdictOverride.confidence >= analysis.confidence) {
             core.warning(`🛑 Investigation override: APP_CODE (${investigation.verdictOverride.confidence}% confidence) > Analysis (${analysis.confidence}%). Aborting repair.`);
             core.info(`   Evidence: ${investigation.verdictOverride.evidence.join('; ')}`);
+            trace.iterations = iterations;
             return {
                 error: 'Investigation verdict override: product-side regression confirmed with higher confidence than initial classification',
                 iterations,
                 lastResponseId: investigationResult.responseId ?? lastResponseId,
+                repairTelemetry: buildRepairTelemetry({
+                    status: 'no_approved_fix',
+                    summary: 'No auto-fix applied. Investigation flagged product-side regression with higher confidence than the initial classification.',
+                    iterations,
+                    lastStage: 'investigation',
+                    startedAtMs,
+                    timeoutMs: this.config.totalTimeoutMs,
+                }),
             };
         }
         if (!investigation.isTestCodeFixable && !investigation.verdictOverride) {
             core.warning('🛑 Investigation says not test-code-fixable but no verdict override — aborting conservatively');
+            trace.iterations = iterations;
             return {
                 error: 'Investigation determined issue is not test-code-fixable',
                 iterations,
                 lastResponseId: investigationResult.responseId ?? lastResponseId,
+                repairTelemetry: buildRepairTelemetry({
+                    status: 'no_approved_fix',
+                    summary: 'No auto-fix applied. Investigation determined the issue is not safely fixable from test code alone.',
+                    iterations,
+                    lastStage: 'investigation',
+                    startedAtMs,
+                    timeoutMs: this.config.totalTimeoutMs,
+                }),
             };
         }
         context.investigationSummary = [
@@ -237,8 +339,78 @@ class AgentOrchestrator {
         let reviewFeedback = null;
         let fixReviewChainId;
         let lastReviewIssues = [];
+        let lastReviewRejected = false;
+        let lastReviewAssessment;
         while (iterations < this.config.maxIterations) {
+            const remaining = startedAtMs + this.config.totalTimeoutMs - Date.now();
+            const minForFullRound = exports.MIN_FIX_GEN_BUDGET_MS +
+                (this.config.requireReview ? exports.MIN_REVIEW_BUDGET_MS : 0);
+            if (remaining < minForFullRound) {
+                trace.iterations = iterations;
+                trace.lastFixSummary = lastFix?.summary;
+                trace.lastFixConfidence = lastFix?.confidence;
+                trace.lastReviewIssues = lastReviewIssues.length
+                    ? buildReviewIssueLines(lastReviewIssues)
+                    : undefined;
+                trace.lastReviewAssessment = lastReviewAssessment;
+                if (lastReviewRejected && lastReviewIssues.length > 0) {
+                    const topIssue = lastReviewIssues[0]?.description || 'rejected by review';
+                    return {
+                        error: 'Insufficient orchestration budget after review rejection',
+                        iterations,
+                        lastResponseId,
+                        repairTelemetry: buildRepairTelemetry({
+                            status: 'review_rejected',
+                            summary: `No auto-fix applied. Generated fix was rejected by review: ${topIssue}`,
+                            iterations,
+                            lastStage: 'review',
+                            lastReviewIssues: buildReviewIssueLines(lastReviewIssues),
+                            lastReviewAssessment,
+                            lastFixSummary: lastFix?.summary,
+                            lastFixConfidence: lastFix?.confidence,
+                            startedAtMs,
+                            timeoutMs: this.config.totalTimeoutMs,
+                        }),
+                    };
+                }
+                if (iterations > 0) {
+                    return {
+                        error: 'Insufficient orchestration budget for another fix iteration',
+                        iterations,
+                        lastResponseId,
+                        repairTelemetry: buildRepairTelemetry({
+                            status: 'no_approved_fix',
+                            summary: 'No auto-fix applied. Repair stopped: not enough remaining orchestration time for another fix-generation cycle.',
+                            iterations,
+                            lastStage: trace.lastStage || 'fix_generation',
+                            lastReviewIssues: lastReviewIssues.length
+                                ? buildReviewIssueLines(lastReviewIssues)
+                                : undefined,
+                            lastReviewAssessment,
+                            lastFixSummary: lastFix?.summary,
+                            lastFixConfidence: lastFix?.confidence,
+                            startedAtMs,
+                            timeoutMs: this.config.totalTimeoutMs,
+                        }),
+                    };
+                }
+                return {
+                    error: 'Insufficient orchestration budget before first fix attempt',
+                    iterations: 0,
+                    lastResponseId,
+                    repairTelemetry: buildRepairTelemetry({
+                        status: 'timed_out',
+                        summary: `No auto-fix applied. Repair timed out during investigation after 0 iteration(s).`,
+                        iterations: 0,
+                        lastStage: 'investigation',
+                        startedAtMs,
+                        timeoutMs: this.config.totalTimeoutMs,
+                    }),
+                };
+            }
             iterations++;
+            trace.iterations = iterations;
+            trace.lastStage = 'fix_generation';
             core.info(`🔧 Step 4: Running Fix Generation Agent (iteration ${iterations})...`);
             context.delegationContext = this.buildDelegationContext('fix_generation', {
                 analysis,
@@ -317,6 +489,27 @@ class AgentOrchestrator {
                 }
             }
             if (this.config.requireReview) {
+                const remainingForReview = startedAtMs + this.config.totalTimeoutMs - Date.now();
+                if (remainingForReview < exports.MIN_REVIEW_BUDGET_MS) {
+                    trace.iterations = iterations;
+                    trace.lastStage = 'fix_generation';
+                    return {
+                        error: 'Insufficient orchestration budget before review step',
+                        iterations,
+                        lastResponseId,
+                        repairTelemetry: buildRepairTelemetry({
+                            status: 'no_approved_fix',
+                            summary: 'No auto-fix applied. Repair stopped: not enough remaining time to run the review agent after fix generation.',
+                            iterations,
+                            lastStage: 'fix_generation',
+                            lastFixSummary: lastFix.summary,
+                            lastFixConfidence: lastFix.confidence,
+                            startedAtMs,
+                            timeoutMs: this.config.totalTimeoutMs,
+                        }),
+                    };
+                }
+                trace.lastStage = 'review';
                 core.info('✅ Step 5: Running Review Agent...');
                 context.delegationContext = this.buildDelegationContext('review', {
                     analysis,
@@ -349,14 +542,34 @@ class AgentOrchestrator {
                     }
                     if (review.approved) {
                         core.info(`   ✅ Fix APPROVED by Review Agent on iteration ${iterations}`);
+                        lastReviewRejected = false;
+                        trace.iterations = iterations;
+                        trace.lastStage = 'review';
+                        trace.lastReviewIssues = undefined;
+                        trace.lastReviewAssessment = review.assessment;
                         return {
                             fix: this.convertToFixRecommendation(lastFix),
                             iterations,
                             lastResponseId,
+                            repairTelemetry: buildRepairTelemetry({
+                                status: 'approved',
+                                summary: 'Fix passed review (not yet applied to a branch by the triage action).',
+                                iterations,
+                                lastStage: 'review',
+                                lastReviewAssessment: review.assessment,
+                                lastFixSummary: lastFix.summary,
+                                lastFixConfidence: lastFix.confidence,
+                                startedAtMs,
+                                timeoutMs: this.config.totalTimeoutMs,
+                            }),
                         };
                     }
                     else {
+                        lastReviewRejected = true;
+                        lastReviewAssessment = review.assessment;
                         lastReviewIssues = review.issues;
+                        trace.lastReviewIssues = buildReviewIssueLines(lastReviewIssues);
+                        trace.lastReviewAssessment = lastReviewAssessment;
                         const issueLines = review.issues
                             .map((i) => `[${i.severity}] ${i.description}`)
                             .join('\n');
@@ -376,10 +589,22 @@ class AgentOrchestrator {
                 }
             }
             else {
+                trace.iterations = iterations;
+                trace.lastStage = 'fix_generation';
                 return {
                     fix: this.convertToFixRecommendation(lastFix),
                     iterations,
                     lastResponseId,
+                    repairTelemetry: buildRepairTelemetry({
+                        status: 'approved',
+                        summary: 'Fix produced without review gate (requireReview=false).',
+                        iterations,
+                        lastStage: 'fix_generation',
+                        lastFixSummary: lastFix.summary,
+                        lastFixConfidence: lastFix.confidence,
+                        startedAtMs,
+                        timeoutMs: this.config.totalTimeoutMs,
+                    }),
                 };
             }
         }
@@ -388,24 +613,69 @@ class AgentOrchestrator {
             if (blockingCriticals.length > 0) {
                 const reasons = blockingCriticals.map((i) => i.description).join('; ');
                 core.warning(`Max iterations (${this.config.maxIterations}) reached with unresolved quality CRITICAL(s) — refusing to ship the fix. Reasons: ${reasons}`);
+                trace.iterations = iterations;
                 return {
                     error: `Max iterations reached with unresolved quality CRITICAL(s): ${reasons}`,
                     iterations,
                     lastResponseId,
+                    repairTelemetry: buildRepairTelemetry({
+                        status: lastReviewRejected ? 'review_rejected' : 'no_approved_fix',
+                        summary: lastReviewRejected && lastReviewIssues[0]
+                            ? `No auto-fix applied. Generated fix was rejected by review: ${lastReviewIssues[0].description}`
+                            : `No auto-fix applied. Repair exhausted iterations without an approved fix (${reasons}).`,
+                        iterations,
+                        lastStage: 'review',
+                        lastReviewIssues: lastReviewIssues.length
+                            ? buildReviewIssueLines(lastReviewIssues)
+                            : undefined,
+                        lastReviewAssessment,
+                        lastFixSummary: lastFix.summary,
+                        lastFixConfidence: lastFix.confidence,
+                        startedAtMs,
+                        timeoutMs: this.config.totalTimeoutMs,
+                    }),
                 };
             }
             core.warning(`Max iterations (${this.config.maxIterations}) reached — review never approved the fix. Refusing to ship unapproved repair. Last fix: confidence=${lastFix.confidence}%, changes=${lastFix.changes.length}, summary="${lastFix.summary}"`);
+            trace.iterations = iterations;
             return {
                 error: `Max iterations reached without review approval for the last fix`,
                 iterations,
                 lastResponseId,
+                repairTelemetry: buildRepairTelemetry({
+                    status: lastReviewRejected ? 'review_rejected' : 'no_approved_fix',
+                    summary: lastReviewRejected && lastReviewIssues[0]
+                        ? `No auto-fix applied. Generated fix was rejected by review: ${lastReviewIssues[0].description}`
+                        : 'No auto-fix applied. Repair exhausted iterations without an approved fix.',
+                    iterations,
+                    lastStage: 'review',
+                    lastReviewIssues: lastReviewIssues.length
+                        ? buildReviewIssueLines(lastReviewIssues)
+                        : undefined,
+                    lastReviewAssessment,
+                    lastFixSummary: lastFix.summary,
+                    lastFixConfidence: lastFix.confidence,
+                    startedAtMs,
+                    timeoutMs: this.config.totalTimeoutMs,
+                }),
             };
         }
         core.error(`Max iterations (${this.config.maxIterations}) reached without a viable fix (last confidence: ${lastFix?.confidence ?? 'N/A'}%, threshold: ${this.config.minConfidence}%)`);
+        trace.iterations = iterations;
         return {
             error: `Max iterations (${this.config.maxIterations}) reached without valid fix`,
             iterations,
             lastResponseId,
+            repairTelemetry: buildRepairTelemetry({
+                status: 'no_fix_generated',
+                summary: `No auto-fix applied. Fix generation did not reach the confidence threshold within ${this.config.maxIterations} iteration(s).`,
+                iterations,
+                lastStage: 'fix_generation',
+                lastFixSummary: lastFix?.summary,
+                lastFixConfidence: lastFix?.confidence,
+                startedAtMs,
+                timeoutMs: this.config.totalTimeoutMs,
+            }),
         };
     }
     buildDelegationContext(stage, priorResults) {
@@ -1059,6 +1329,9 @@ function createAgentContext(params) {
         productDiff: params.productDiff,
         framework: params.framework,
         repoContext: params.repoContext,
+        ...(params.sourceFileContent
+            ? { sourceFileContent: params.sourceFileContent }
+            : {}),
     };
 }
 //# sourceMappingURL=base-agent.js.map
@@ -2116,11 +2389,13 @@ var __exportStar = (this && this.__exportStar) || function(m, exports) {
     for (var p in m) if (p !== "default" && !Object.prototype.hasOwnProperty.call(exports, p)) __createBinding(exports, m, p);
 };
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.CodeReadingAgent = exports.createOrchestrator = exports.DEFAULT_ORCHESTRATOR_CONFIG = exports.AgentOrchestrator = void 0;
+exports.CodeReadingAgent = exports.createOrchestrator = exports.MIN_REVIEW_BUDGET_MS = exports.MIN_FIX_GEN_BUDGET_MS = exports.DEFAULT_ORCHESTRATOR_CONFIG = exports.AgentOrchestrator = void 0;
 __exportStar(__nccwpck_require__(46575), exports);
 var agent_orchestrator_1 = __nccwpck_require__(24674);
 Object.defineProperty(exports, "AgentOrchestrator", ({ enumerable: true, get: function () { return agent_orchestrator_1.AgentOrchestrator; } }));
 Object.defineProperty(exports, "DEFAULT_ORCHESTRATOR_CONFIG", ({ enumerable: true, get: function () { return agent_orchestrator_1.DEFAULT_ORCHESTRATOR_CONFIG; } }));
+Object.defineProperty(exports, "MIN_FIX_GEN_BUDGET_MS", ({ enumerable: true, get: function () { return agent_orchestrator_1.MIN_FIX_GEN_BUDGET_MS; } }));
+Object.defineProperty(exports, "MIN_REVIEW_BUDGET_MS", ({ enumerable: true, get: function () { return agent_orchestrator_1.MIN_REVIEW_BUDGET_MS; } }));
 Object.defineProperty(exports, "createOrchestrator", ({ enumerable: true, get: function () { return agent_orchestrator_1.createOrchestrator; } }));
 __exportStar(__nccwpck_require__(27216), exports);
 var code_reading_agent_1 = __nccwpck_require__(8410);
@@ -4516,6 +4791,7 @@ class PipelineCoordinator {
         let agentInvestigationFindings;
         let autoFixSkipped;
         let autoFixSkippedReason;
+        let repairTelemetry;
         if (this.inputs.enableAutoFix &&
             this.inputs.enableValidation &&
             this.inputs.enableLocalValidation &&
@@ -4530,12 +4806,14 @@ class PipelineCoordinator {
             agentInvestigationFindings = loopResult.agentInvestigationFindings;
             autoFixSkipped = loopResult.autoFixSkipped;
             autoFixSkippedReason = loopResult.autoFixSkippedReason;
+            repairTelemetry = loopResult.repairTelemetry;
         }
         else {
             const singleResult = await (0, validator_1.generateFixRecommendation)(this.inputs, this.repoDetails, errorData, this.openaiClient, this.octokit, undefined, undefined, skillStore, investigationContext, repoContext);
-            fixRecommendation = singleResult?.fix ?? null;
-            agentRootCause = singleResult?.agentRootCause;
-            agentInvestigationFindings = singleResult?.agentInvestigationFindings;
+            fixRecommendation = singleResult.fix ?? null;
+            agentRootCause = singleResult.agentRootCause;
+            agentInvestigationFindings = singleResult.agentInvestigationFindings;
+            repairTelemetry = singleResult.repairTelemetry;
             if (fixRecommendation && this.inputs.enableAutoFix && autoFixTargetRepo) {
                 const outcome = await (0, validator_1.attemptAutoFix)(this.inputs, fixRecommendation, this.octokit, autoFixTargetRepo, errorData);
                 autoFixResult = outcome.applied;
@@ -4555,6 +4833,7 @@ class PipelineCoordinator {
             agentInvestigationFindings,
             autoFixSkipped,
             autoFixSkippedReason,
+            repairTelemetry,
         };
     }
     async execute() {
@@ -4595,10 +4874,16 @@ class PipelineCoordinator {
                 ...classification,
                 autoFixSkipped: true,
                 autoFixSkippedReason: reason,
+                repairTelemetry: {
+                    status: 'skipped',
+                    summary: reason,
+                    iterations: 0,
+                    elapsedMs: 0,
+                },
             }, errorData, null, chronicFlakinessSignal);
             return;
         }
-        const { fixRecommendation, autoFixResult, iterations, prUrl: skillPrUrl, agentRootCause, agentInvestigationFindings, autoFixSkipped: repairAutoFixSkipped, autoFixSkippedReason: repairAutoFixSkippedReason, } = await this.repair(classification, errorData, skillStore);
+        const { fixRecommendation, autoFixResult, iterations, prUrl: skillPrUrl, agentRootCause, agentInvestigationFindings, autoFixSkipped: repairAutoFixSkipped, autoFixSkippedReason: repairAutoFixSkippedReason, repairTelemetry: repairTelemetryFromRun, } = await this.repair(classification, errorData, skillStore);
         if (skillStore && autoFixTargetRepo && errorData) {
             const validationStatus = autoFixResult?.validationResult?.status || autoFixResult?.validationStatus;
             const fixSucceeded = !!(autoFixResult?.success && validationStatus === 'passed');
@@ -4671,6 +4956,7 @@ class PipelineCoordinator {
                 result.autoFixSkippedReason = repairAutoFixSkippedReason;
             }
         }
+        result.repairTelemetry = (0, output_1.finalizeRepairTelemetry)(repairTelemetryFromRun, fixRecommendation, autoFixResult);
         const flakinessSignal = skillStore
             ? skillStore.detectFlakiness(errorData.fileName || 'unknown')
             : undefined;
@@ -4711,11 +4997,13 @@ class PipelineCoordinator {
                                 reasoning: `Job '${this.inputs.jobName}' did not fail (conclusion: ${targetJob.conclusion}). No triage needed.`,
                                 summary: `No failure detected — job concluded with ${targetJob.conclusion}`,
                                 indicators: [],
+                                repair: output_1.NOT_STARTED_REPAIR,
                                 metadata: {
                                     analyzedAt: new Date().toISOString(),
                                     jobConclusion: targetJob.conclusion,
                                 },
                             }));
+                            (0, output_1.emitRepairOutputs)(output_1.NOT_STARTED_REPAIR);
                             return;
                         }
                     }
@@ -4730,6 +5018,7 @@ class PipelineCoordinator {
                     reasoning: 'Workflow is still running. Please wait for it to complete before running triage analysis.',
                     summary: 'Analysis pending - workflow not completed',
                     indicators: [],
+                    repair: output_1.NOT_STARTED_REPAIR,
                     metadata: {
                         analyzedAt: new Date().toISOString(),
                         workflowStatus: workflowRun.data.status,
@@ -4740,6 +5029,7 @@ class PipelineCoordinator {
                 core.setOutput('reasoning', 'Workflow is still running. Please wait for it to complete before running triage analysis.');
                 core.setOutput('summary', 'Analysis pending - workflow not completed');
                 core.setOutput('triage_json', JSON.stringify(pendingTriageJson));
+                (0, output_1.emitRepairOutputs)(output_1.NOT_STARTED_REPAIR);
                 return;
             }
         }
@@ -4834,7 +5124,10 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.NOT_STARTED_REPAIR = void 0;
 exports.resolveAutoFixTargetRepo = resolveAutoFixTargetRepo;
+exports.finalizeRepairTelemetry = finalizeRepairTelemetry;
+exports.emitRepairOutputs = emitRepairOutputs;
 exports.setInconclusiveOutput = setInconclusiveOutput;
 exports.setErrorOutput = setErrorOutput;
 exports.setSuccessOutput = setSuccessOutput;
@@ -4844,6 +5137,69 @@ const repo_utils_1 = __nccwpck_require__(74843);
 function resolveAutoFixTargetRepo(inputs) {
     return (0, repo_utils_1.parseRepoString)(inputs.autoFixTargetRepo, 'AUTO_FIX_TARGET_REPO');
 }
+exports.NOT_STARTED_REPAIR = {
+    status: 'not_started',
+    summary: 'Repair did not run for this outcome.',
+    iterations: 0,
+    elapsedMs: 0,
+};
+function finalizeRepairTelemetry(base, fixRecommendation, autoFixResult) {
+    if (base?.status === 'skipped') {
+        return base;
+    }
+    if (!base) {
+        if (fixRecommendation) {
+            return {
+                status: 'approved',
+                summary: 'Fix recommendation produced; branch apply / validation not completed in this run.',
+                iterations: 0,
+                elapsedMs: 0,
+                lastFixSummary: fixRecommendation.summary,
+                lastFixConfidence: fixRecommendation.confidence,
+            };
+        }
+        return { ...exports.NOT_STARTED_REPAIR };
+    }
+    let status = base.status;
+    let summary = base.summary;
+    if (autoFixResult?.success) {
+        const vs = autoFixResult.validationResult?.status || autoFixResult.validationStatus;
+        if (vs === 'passed') {
+            status = 'validated';
+            summary = 'Auto-fix validated.';
+        }
+        else if (vs === 'pending') {
+            status = 'applied';
+            summary = 'Auto-fix applied; remote validation pending.';
+        }
+        else if (vs === 'skipped') {
+            status = 'applied';
+            summary = 'Auto-fix applied (validation skipped).';
+        }
+        else {
+            status = 'applied';
+            summary = 'Auto-fix applied (branch created).';
+        }
+    }
+    return { ...base, status, summary };
+}
+function emitRepairOutputs(repair) {
+    core.setOutput('repair_status', repair.status);
+    core.setOutput('repair_summary', repair.summary);
+    core.setOutput('repair_details', JSON.stringify({
+        iterations: repair.iterations,
+        lastStage: repair.lastStage,
+        lastReviewIssues: repair.lastReviewIssues,
+        lastReviewAssessment: repair.lastReviewAssessment,
+        lastFixSummary: repair.lastFixSummary,
+        lastFixConfidence: repair.lastFixConfidence,
+        timeoutMs: repair.timeoutMs,
+        elapsedMs: repair.elapsedMs,
+    }));
+    core.setOutput('repair_iterations', String(repair.iterations));
+    core.setOutput('repair_last_stage', repair.lastStage || '');
+    core.setOutput('repair_review_issues', repair.lastReviewIssues?.length ? repair.lastReviewIssues.join('\n') : '');
+}
 function setInconclusiveOutput(result, inputs, errorData) {
     const inconclusiveTriageJson = {
         verdict: 'INCONCLUSIVE',
@@ -4851,6 +5207,7 @@ function setInconclusiveOutput(result, inputs, errorData) {
         reasoning: `Low confidence: ${result.reasoning}`,
         summary: 'Analysis inconclusive due to low confidence',
         indicators: result.indicators || [],
+        repair: exports.NOT_STARTED_REPAIR,
         metadata: {
             analyzedAt: new Date().toISOString(),
             confidenceThreshold: inputs.confidenceThreshold,
@@ -4863,23 +5220,34 @@ function setInconclusiveOutput(result, inputs, errorData) {
     core.setOutput('reasoning', `Low confidence: ${result.reasoning}`);
     core.setOutput('summary', 'Analysis inconclusive due to low confidence');
     core.setOutput('triage_json', JSON.stringify(inconclusiveTriageJson));
+    emitRepairOutputs(exports.NOT_STARTED_REPAIR);
 }
 function setErrorOutput(reason) {
     core.setOutput('verdict', 'ERROR');
     core.setOutput('confidence', '0');
     core.setOutput('reasoning', reason);
     core.setOutput('summary', `Triage failed: ${reason}`);
+    const errorRepair = {
+        status: 'not_started',
+        summary: `Repair did not run (triage error: ${reason}).`,
+        iterations: 0,
+        elapsedMs: 0,
+    };
     core.setOutput('triage_json', JSON.stringify({
         verdict: 'ERROR',
         confidence: 0,
         reasoning: reason,
         summary: `Triage failed: ${reason}`,
         indicators: [],
+        repair: errorRepair,
         metadata: { analyzedAt: new Date().toISOString(), error: true },
     }));
+    emitRepairOutputs(errorRepair);
     core.setFailed(reason);
 }
 function setSuccessOutput(result, errorData, autoFixResult, flakiness) {
+    const repairBlock = result.repairTelemetry ??
+        finalizeRepairTelemetry(undefined, result.fixRecommendation, autoFixResult);
     const triageJson = {
         verdict: result.verdict,
         confidence: result.confidence,
@@ -4929,6 +5297,7 @@ function setSuccessOutput(result, errorData, autoFixResult, flakiness) {
                 },
             }
             : {}),
+        repair: repairBlock,
         metadata: {
             analyzedAt: new Date().toISOString(),
             hasScreenshots: (errorData.screenshots && errorData.screenshots.length > 0) || false,
@@ -4943,6 +5312,7 @@ function setSuccessOutput(result, errorData, autoFixResult, flakiness) {
     core.setOutput('reasoning', result.reasoning);
     core.setOutput('summary', result.summary || '');
     core.setOutput('triage_json', JSON.stringify(triageJson));
+    emitRepairOutputs(repairBlock);
     if (result.fixRecommendation) {
         core.setOutput('has_fix_recommendation', 'true');
         core.setOutput('fix_recommendation', JSON.stringify(result.fixRecommendation));
@@ -4987,6 +5357,8 @@ function setSuccessOutput(result, errorData, autoFixResult, flakiness) {
     core.info(`Verdict: ${result.verdict}`);
     core.info(`Confidence: ${result.confidence}%`);
     core.info(`Summary: ${result.summary}`);
+    core.info(`Repair: status=${repairBlock.status} iterations=${repairBlock.iterations}` +
+        (repairBlock.lastStage ? ` lastStage=${repairBlock.lastStage}` : ''));
     if (result.autoFixSkipped) {
         core.info(`\n⏭️  Auto-fix intentionally skipped: ${result.autoFixSkippedReason || 'see triage_json.autoFixSkippedReason'}`);
     }
@@ -5133,7 +5505,7 @@ async function generateFixRecommendation(inputs, repoDetails, errorData, openaiC
             }
             : undefined;
         const result = await repairAgent.generateFixRecommendation(repairContext, errorData, previousAttempt, previousResponseId, skills, priorInvestigationContext, repoContext);
-        if (result) {
+        if (result.fix) {
             core.info(`✅ Fix recommendation generated with ${result.fix.confidence}% confidence`);
         }
         else {
@@ -5142,8 +5514,17 @@ async function generateFixRecommendation(inputs, repoDetails, errorData, openaiC
         return result;
     }
     catch (error) {
+        const msg = error instanceof Error ? error.message : String(error);
         core.warning(`Failed to generate fix recommendation: ${error}`);
-        return null;
+        return {
+            fix: null,
+            repairTelemetry: {
+                status: 'no_fix_generated',
+                summary: `No auto-fix applied. generateFixRecommendation failed: ${msg}`,
+                iterations: 0,
+                elapsedMs: 0,
+            },
+        };
     }
 }
 async function iterativeFixValidateLoop(inputs, repoDetails, autoFixTargetRepo, errorData, openaiClient, octokit, skillStore, _classificationResponseId, investigationContext, repoContext) {
@@ -5155,6 +5536,7 @@ async function iterativeFixValidateLoop(inputs, repoDetails, autoFixTargetRepo, 
     let agentInvestigationFindings;
     let autoFixSkipped = false;
     let autoFixSkippedReason;
+    let repairTelemetry;
     let previousAttempt;
     const failedFixFingerprints = new Set();
     const minConfidence = inputs.autoFixMinConfidence ?? constants_1.AUTO_FIX.DEFAULT_MIN_CONFIDENCE;
@@ -5176,12 +5558,14 @@ async function iterativeFixValidateLoop(inputs, repoDetails, autoFixTargetRepo, 
             completedIterations = iteration + 1;
             core.info(`\n${'='.repeat(60)}\n🔄 Fix-Validate iteration ${iteration + 1}/${maxIterations}\n${'='.repeat(60)}`);
             const fixResult = await generateFixRecommendation(inputs, repoDetails, errorData, openaiClient, octokit, previousAttempt, undefined, skillStore, investigationContext, repoContext);
-            if (!fixResult) {
+            if (!fixResult.fix) {
                 fixRecommendation = null;
+                repairTelemetry = fixResult.repairTelemetry ?? repairTelemetry;
                 core.warning(`Iteration ${iteration + 1}: could not generate fix recommendation`);
                 break;
             }
             fixRecommendation = fixResult.fix;
+            repairTelemetry = fixResult.repairTelemetry ?? repairTelemetry;
             if (fixResult.agentRootCause)
                 agentRootCause = fixResult.agentRootCause;
             if (fixResult.agentInvestigationFindings)
@@ -5216,7 +5600,21 @@ async function iterativeFixValidateLoop(inputs, repoDetails, autoFixTargetRepo, 
                 if (baseline.passed) {
                     core.info('✅ Baseline check passed — test passes without fix. Failure was likely transient.');
                     core.info('📊 learning-telemetry baseline=passed validation=skipped iterations=0');
-                    return { fixRecommendation: null, autoFixResult: null, iterations: 0, agentRootCause, agentInvestigationFindings, autoFixSkipped, autoFixSkippedReason };
+                    return {
+                        fixRecommendation: null,
+                        autoFixResult: null,
+                        iterations: 0,
+                        agentRootCause,
+                        agentInvestigationFindings,
+                        autoFixSkipped,
+                        autoFixSkippedReason,
+                        repairTelemetry: {
+                            status: 'skipped',
+                            summary: 'Repair skipped: baseline check passed without a fix (failure likely transient).',
+                            iterations: 0,
+                            elapsedMs: 0,
+                        },
+                    };
                 }
                 core.info('❌ Baseline check confirmed failure — proceeding with fix.');
                 core.info(`📊 learning-telemetry baseline=failed durationMs=${baseline.durationMs}`);
@@ -5255,7 +5653,17 @@ async function iterativeFixValidateLoop(inputs, repoDetails, autoFixTargetRepo, 
                             conclusion: 'success',
                         },
                     };
-                    return { fixRecommendation, autoFixResult, iterations: iteration + 1, prUrl: pushResult.prUrl, agentRootCause, agentInvestigationFindings, autoFixSkipped, autoFixSkippedReason };
+                    return {
+                        fixRecommendation,
+                        autoFixResult,
+                        iterations: iteration + 1,
+                        prUrl: pushResult.prUrl,
+                        agentRootCause,
+                        agentInvestigationFindings,
+                        autoFixSkipped,
+                        autoFixSkippedReason,
+                        repairTelemetry,
+                    };
                 }
                 catch (pushError) {
                     core.warning(`Test passed but push/PR creation failed: ${pushError}`);
@@ -5271,7 +5679,16 @@ async function iterativeFixValidateLoop(inputs, repoDetails, autoFixTargetRepo, 
                         },
                     };
                 }
-                return { fixRecommendation, autoFixResult, iterations: iteration + 1, agentRootCause, agentInvestigationFindings, autoFixSkipped, autoFixSkippedReason };
+                return {
+                    fixRecommendation,
+                    autoFixResult,
+                    iterations: iteration + 1,
+                    agentRootCause,
+                    agentInvestigationFindings,
+                    autoFixSkipped,
+                    autoFixSkippedReason,
+                    repairTelemetry,
+                };
             }
             core.warning(`\n❌ Test FAILED on iteration ${iteration + 1} (exit code: ${testResult.exitCode}, ${testResult.durationMs}ms)`);
             core.info(`📊 learning-telemetry validation=failed iteration=${iteration + 1} durationMs=${testResult.durationMs}`);
@@ -5291,7 +5708,16 @@ async function iterativeFixValidateLoop(inputs, repoDetails, autoFixTargetRepo, 
             await validator.cleanup();
         }
     }
-    return { fixRecommendation, autoFixResult, iterations: completedIterations, agentRootCause, agentInvestigationFindings, autoFixSkipped, autoFixSkippedReason };
+    return {
+        fixRecommendation,
+        autoFixResult,
+        iterations: completedIterations,
+        agentRootCause,
+        agentInvestigationFindings,
+        autoFixSkipped,
+        autoFixSkippedReason,
+        repairTelemetry,
+    };
 }
 function normalizeFileForPatternMatch(path) {
     return ('/' + path.replace(/^\.\//, '').replace(/\\/g, '/')).toLowerCase();
@@ -6477,25 +6903,51 @@ class SimplifiedRepairAgent {
             core.info('🔧 Generating fix recommendation...');
             if (!this.orchestrator) {
                 core.warning('Agentic repair is unavailable because source-fetch context is missing; no fallback repair path will run.');
-                return null;
+                return {
+                    fix: null,
+                    repairTelemetry: {
+                        status: 'no_fix_generated',
+                        summary: 'No auto-fix applied. Agentic repair is unavailable (source-fetch context missing).',
+                        iterations: 0,
+                        elapsedMs: 0,
+                    },
+                };
             }
             core.info('🤖 Attempting agentic repair...');
             const agenticResult = await this.tryAgenticRepair(repairContext, errorData, previousAttempt, previousResponseId, skills, priorInvestigationContext, repoContext);
-            if (agenticResult) {
+            if (agenticResult.fix) {
                 core.info(`✅ Agentic repair succeeded with ${agenticResult.fix.confidence}% confidence`);
-                return agenticResult;
             }
-            core.warning('🤖 Agentic repair did not produce an approved fix; no weaker fallback repair path will run.');
-            return null;
+            else {
+                core.warning('🤖 Agentic repair did not produce an approved fix; no weaker fallback repair path will run.');
+            }
+            return agenticResult;
         }
         catch (error) {
+            const msg = error instanceof Error ? error.message : String(error);
             core.warning(`Failed to generate fix recommendation: ${error}`);
-            return null;
+            return {
+                fix: null,
+                repairTelemetry: {
+                    status: 'no_fix_generated',
+                    summary: `No auto-fix applied. Repair failed: ${msg}`,
+                    iterations: 0,
+                    elapsedMs: 0,
+                },
+            };
         }
     }
     async tryAgenticRepair(repairContext, errorData, previousAttempt, previousResponseId, skills, priorInvestigationContext, repoContext) {
         if (!this.orchestrator) {
-            return null;
+            return {
+                fix: null,
+                repairTelemetry: {
+                    status: 'no_fix_generated',
+                    summary: 'No auto-fix applied. Orchestrator was not initialized.',
+                    iterations: 0,
+                    elapsedMs: 0,
+                },
+            };
         }
         try {
             let enrichedErrorMessage = repairContext.errorMessage;
@@ -6549,15 +7001,37 @@ class SimplifiedRepairAgent {
                 const investigation = result.agentResults.investigation?.data;
                 const agentRootCause = analysis?.rootCauseCategory;
                 const agentInvestigationFindings = summarizeInvestigationForRetry(investigation);
-                return { fix: result.fix, lastResponseId: result.lastResponseId, agentRootCause, agentInvestigationFindings };
+                return {
+                    fix: result.fix,
+                    lastResponseId: result.lastResponseId,
+                    agentRootCause,
+                    agentInvestigationFindings,
+                    repairTelemetry: result.repairTelemetry,
+                };
             }
             core.info(`🤖 Agentic approach failed: ${result.error || 'No fix generated'}`);
-            return null;
+            const analysis = result.agentResults.analysis?.data;
+            const investigation = result.agentResults.investigation?.data;
+            return {
+                fix: null,
+                lastResponseId: result.lastResponseId,
+                agentRootCause: analysis?.rootCauseCategory,
+                agentInvestigationFindings: summarizeInvestigationForRetry(investigation),
+                repairTelemetry: result.repairTelemetry,
+            };
         }
         catch (error) {
             const errorMsg = error instanceof Error ? error.message : String(error);
             core.warning(`Agentic repair error: ${errorMsg}`);
-            return null;
+            return {
+                fix: null,
+                repairTelemetry: {
+                    status: 'no_fix_generated',
+                    summary: `No auto-fix applied. Repair error: ${errorMsg}`,
+                    iterations: 0,
+                    elapsedMs: 0,
+                },
+            };
         }
     }
     extractFilePath(rawPath) {

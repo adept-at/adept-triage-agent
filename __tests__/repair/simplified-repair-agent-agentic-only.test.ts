@@ -22,7 +22,7 @@ describe('SimplifiedRepairAgent agentic-only contract', () => {
     repository: 'adept-at/lib-cypress-canary',
   };
 
-  it('returns null when source-fetch context is missing and does not run a fallback LLM call', async () => {
+  it('returns no fix and repairTelemetry when source-fetch context is missing (no fallback LLM)', async () => {
     const openaiClient = {
       generateWithCustomPrompt: jest.fn(),
     } as unknown as OpenAIClient;
@@ -30,7 +30,8 @@ describe('SimplifiedRepairAgent agentic-only contract', () => {
     const agent = new SimplifiedRepairAgent(openaiClient);
     const result = await agent.generateFixRecommendation(repairContext);
 
-    expect(result).toBeNull();
+    expect(result?.fix).toBeNull();
+    expect(result?.repairTelemetry?.status).toBe('no_fix_generated');
     expect(openaiClient.generateWithCustomPrompt).not.toHaveBeenCalled();
     expect(core.warning).toHaveBeenCalledWith(
       'Agentic repair is unavailable because source-fetch context is missing; no fallback repair path will run.'

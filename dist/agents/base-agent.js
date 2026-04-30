@@ -175,6 +175,9 @@ function createAgentContext(params) {
         productDiff: params.productDiff,
         framework: params.framework,
         repoContext: params.repoContext,
+        ...(params.sourceFileContent
+            ? { sourceFileContent: params.sourceFileContent }
+            : {}),
     };
 }
 //# sourceMappingURL=base-agent.js.map

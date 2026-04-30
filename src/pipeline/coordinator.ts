@@ -3,7 +3,15 @@ import * as github from '@actions/github';
 import { Octokit } from '@octokit/rest';
 import { OpenAIClient } from '../openai-client';
 import { ArtifactFetcher } from '../artifact-fetcher';
-import { ActionInputs, AnalysisResult, ErrorData, FailedFixEvidence, FixRecommendation, Verdict } from '../types';
+import {
+  ActionInputs,
+  AnalysisResult,
+  ErrorData,
+  FailedFixEvidence,
+  FixRecommendation,
+  RepairTelemetry,
+  Verdict,
+} from '../types';
 import { ApplyResult } from '../repair/fix-applier';
 import { analyzeFailure } from '../simplified-analyzer';
 import { processWorkflowLogs } from '../services/log-processor';
@@ -16,6 +24,9 @@ import {
   setSuccessOutput,
   setInconclusiveOutput,
   setErrorOutput,
+  finalizeRepairTelemetry,
+  emitRepairOutputs,
+  NOT_STARTED_REPAIR,
 } from './output';
 import {
   generateFixRecommendation,
@@ -76,6 +87,7 @@ export interface RepairResult {
    */
   autoFixSkipped?: boolean;
   autoFixSkippedReason?: string;
+  repairTelemetry?: RepairTelemetry;
 }
 
 interface PipelineCoordinatorDeps {
@@ -208,6 +220,7 @@ export class PipelineCoordinator {
     let agentInvestigationFindings: string | undefined;
     let autoFixSkipped: boolean | undefined;
     let autoFixSkippedReason: string | undefined;
+    let repairTelemetry: RepairTelemetry | undefined;
 
     // LOCAL validation path: clone + apply + test in-container, push/PR on pass.
     // Requires ENABLE_LOCAL_VALIDATION explicitly true. Without this gate, a
@@ -240,6 +253,7 @@ export class PipelineCoordinator {
       agentInvestigationFindings = loopResult.agentInvestigationFindings;
       autoFixSkipped = loopResult.autoFixSkipped;
       autoFixSkippedReason = loopResult.autoFixSkippedReason;
+      repairTelemetry = loopResult.repairTelemetry;
     } else {
       const singleResult = await generateFixRecommendation(
         this.inputs,
@@ -253,9 +267,10 @@ export class PipelineCoordinator {
         investigationContext,
         repoContext
       );
-      fixRecommendation = singleResult?.fix ?? null;
-      agentRootCause = singleResult?.agentRootCause;
-      agentInvestigationFindings = singleResult?.agentInvestigationFindings;
+      fixRecommendation = singleResult.fix ?? null;
+      agentRootCause = singleResult.agentRootCause;
+      agentInvestigationFindings = singleResult.agentInvestigationFindings;
+      repairTelemetry = singleResult.repairTelemetry;
       if (fixRecommendation && this.inputs.enableAutoFix && autoFixTargetRepo) {
         const outcome = await attemptAutoFix(
           this.inputs,
@@ -282,6 +297,7 @@ export class PipelineCoordinator {
       agentInvestigationFindings,
       autoFixSkipped,
       autoFixSkippedReason,
+      repairTelemetry,
     };
   }
 
@@ -361,6 +377,12 @@ export class PipelineCoordinator {
           ...classification,
           autoFixSkipped: true,
           autoFixSkippedReason: reason,
+          repairTelemetry: {
+            status: 'skipped',
+            summary: reason,
+            iterations: 0,
+            elapsedMs: 0,
+          },
         },
         errorData,
         null,
@@ -378,6 +400,7 @@ export class PipelineCoordinator {
       agentInvestigationFindings,
       autoFixSkipped: repairAutoFixSkipped,
       autoFixSkippedReason: repairAutoFixSkippedReason,
+      repairTelemetry: repairTelemetryFromRun,
     } = await this.repair(classification, errorData, skillStore);
 
     if (skillStore && autoFixTargetRepo && errorData) {
@@ -477,6 +500,12 @@ export class PipelineCoordinator {
       }
     }
 
+    result.repairTelemetry = finalizeRepairTelemetry(
+      repairTelemetryFromRun,
+      fixRecommendation,
+      autoFixResult
+    );
+
     const flakinessSignal = skillStore
       ? skillStore.detectFlakiness(errorData.fileName || 'unknown')
       : undefined;
@@ -537,12 +566,14 @@ export class PipelineCoordinator {
                   reasoning: `Job '${this.inputs.jobName}' did not fail (conclusion: ${targetJob.conclusion}). No triage needed.`,
                   summary: `No failure detected — job concluded with ${targetJob.conclusion}`,
                   indicators: [],
+                  repair: NOT_STARTED_REPAIR,
                   metadata: {
                     analyzedAt: new Date().toISOString(),
                     jobConclusion: targetJob.conclusion,
                   },
                 })
               );
+              emitRepairOutputs(NOT_STARTED_REPAIR);
               return;
             }
           } catch (jobCheckError) {
@@ -560,6 +591,7 @@ export class PipelineCoordinator {
             'Workflow is still running. Please wait for it to complete before running triage analysis.',
           summary: 'Analysis pending - workflow not completed',
           indicators: [],
+          repair: NOT_STARTED_REPAIR,
           metadata: {
             analyzedAt: new Date().toISOString(),
             workflowStatus: workflowRun.data.status,
@@ -576,6 +608,7 @@ export class PipelineCoordinator {
           'Analysis pending - workflow not completed'
         );
         core.setOutput('triage_json', JSON.stringify(pendingTriageJson));
+        emitRepairOutputs(NOT_STARTED_REPAIR);
         return;
       }
     } catch (error) {

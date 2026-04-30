@@ -99,14 +99,15 @@ Error occurred at:
       const repairAgent = new SimplifiedRepairAgent(openaiClient);
       const startFix = Date.now();
 
-      const fixRecommendation = await repairAgent.generateFixRecommendation(
+      const genResult = await repairAgent.generateFixRecommendation(
         repairContext,
         testErrorData
       );
 
       const fixTime = ((Date.now() - startFix) / 1000).toFixed(2);
 
-      if (fixRecommendation) {
+      if (genResult.fix) {
+        const fixRecommendation = genResult.fix;
         console.log(`\n✅ Fix recommendation generated in ${fixTime}s`);
         console.log('─'.repeat(60));
         console.log(`Confidence: ${fixRecommendation.confidence}%`);
@@ -121,6 +122,9 @@ Error occurred at:
         }
       } else {
         console.log(`\n⚠️  No fix recommendation generated (confidence too low)`);
+        if (genResult.repairTelemetry) {
+          console.log(`   Repair status: ${genResult.repairTelemetry.status} — ${genResult.repairTelemetry.summary}`);
+        }
       }
     } else {
       console.log('\n📌 PRODUCT_ISSUE detected - no fix recommendation needed');

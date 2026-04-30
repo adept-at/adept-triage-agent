@@ -6,6 +6,8 @@ export * from './base-agent';
 export {
   AgentOrchestrator,
   DEFAULT_ORCHESTRATOR_CONFIG,
+  MIN_FIX_GEN_BUDGET_MS,
+  MIN_REVIEW_BUDGET_MS,
   createOrchestrator,
 } from './agent-orchestrator';
 export type {

@@ -174,7 +174,7 @@ export async function runPipeline(
       repairContext,
       errorData
     );
-    fixRecommendation = generated?.fix ?? null;
+    fixRecommendation = generated.fix ?? null;
   }
 
   return {

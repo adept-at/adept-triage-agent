@@ -1,6 +1,6 @@
 import * as core from '@actions/core';
 import * as github from '@actions/github';
-import { ActionInputs, FixRecommendation } from '../types';
+import { ActionInputs, FixRecommendation, RepairStatus, RepairTelemetry } from '../types';
 import { ApplyResult } from '../repair/fix-applier';
 import { parseRepoString } from '../utils/repo-utils';
 
@@ -9,6 +9,89 @@ export function resolveAutoFixTargetRepo(inputs: ActionInputs): {
   repo: string;
 } {
   return parseRepoString(inputs.autoFixTargetRepo, 'AUTO_FIX_TARGET_REPO');
+}
+
+export const NOT_STARTED_REPAIR: RepairTelemetry = {
+  status: 'not_started',
+  summary: 'Repair did not run for this outcome.',
+  iterations: 0,
+  elapsedMs: 0,
+};
+
+/**
+ * Merge orchestrator repair telemetry with auto-fix / validation outcomes.
+ * Idempotent for `skipped` (chronic flakiness) — preserves coordinator intent.
+ */
+export function finalizeRepairTelemetry(
+  base: RepairTelemetry | undefined,
+  fixRecommendation: FixRecommendation | null | undefined,
+  autoFixResult: ApplyResult | null | undefined
+): RepairTelemetry {
+  if (base?.status === 'skipped') {
+    return base;
+  }
+
+  if (!base) {
+    if (fixRecommendation) {
+      return {
+        status: 'approved',
+        summary:
+          'Fix recommendation produced; branch apply / validation not completed in this run.',
+        iterations: 0,
+        elapsedMs: 0,
+        lastFixSummary: fixRecommendation.summary,
+        lastFixConfidence: fixRecommendation.confidence,
+      };
+    }
+    return { ...NOT_STARTED_REPAIR };
+  }
+
+  let status: RepairStatus = base.status;
+  let summary = base.summary;
+
+  if (autoFixResult?.success) {
+    const vs =
+      autoFixResult.validationResult?.status || autoFixResult.validationStatus;
+    if (vs === 'passed') {
+      status = 'validated';
+      summary = 'Auto-fix validated.';
+    } else if (vs === 'pending') {
+      status = 'applied';
+      summary = 'Auto-fix applied; remote validation pending.';
+    } else if (vs === 'skipped') {
+      status = 'applied';
+      summary = 'Auto-fix applied (validation skipped).';
+    } else {
+      status = 'applied';
+      summary = 'Auto-fix applied (branch created).';
+    }
+  }
+
+  return { ...base, status, summary };
+}
+
+export function emitRepairOutputs(repair: RepairTelemetry): void {
+  core.setOutput('repair_status', repair.status);
+  core.setOutput('repair_summary', repair.summary);
+  core.setOutput(
+    'repair_details',
+    JSON.stringify({
+      iterations: repair.iterations,
+      lastStage: repair.lastStage,
+      lastReviewIssues: repair.lastReviewIssues,
+      lastReviewAssessment: repair.lastReviewAssessment,
+      lastFixSummary: repair.lastFixSummary,
+      lastFixConfidence: repair.lastFixConfidence,
+      timeoutMs: repair.timeoutMs,
+      elapsedMs: repair.elapsedMs,
+    })
+  );
+  core.setOutput('repair_iterations', String(repair.iterations));
+  core.setOutput('repair_last_stage', repair.lastStage || '');
+  core.setOutput(
+    'repair_review_issues',
+    repair.lastReviewIssues?.length ? repair.lastReviewIssues.join('\n') : ''
+  );
 }
 
 export function setInconclusiveOutput(
@@ -22,6 +105,7 @@ export function setInconclusiveOutput(
     reasoning: `Low confidence: ${result.reasoning}`,
     summary: 'Analysis inconclusive due to low confidence',
     indicators: result.indicators || [],
+    repair: NOT_STARTED_REPAIR,
     metadata: {
       analyzedAt: new Date().toISOString(),
       confidenceThreshold: inputs.confidenceThreshold,
@@ -35,6 +119,7 @@ export function setInconclusiveOutput(
   core.setOutput('reasoning', `Low confidence: ${result.reasoning}`);
   core.setOutput('summary', 'Analysis inconclusive due to low confidence');
   core.setOutput('triage_json', JSON.stringify(inconclusiveTriageJson));
+  emitRepairOutputs(NOT_STARTED_REPAIR);
 }
 
 export function setErrorOutput(reason: string): void {
@@ -42,6 +127,12 @@ export function setErrorOutput(reason: string): void {
   core.setOutput('confidence', '0');
   core.setOutput('reasoning', reason);
   core.setOutput('summary', `Triage failed: ${reason}`);
+  const errorRepair: RepairTelemetry = {
+    status: 'not_started',
+    summary: `Repair did not run (triage error: ${reason}).`,
+    iterations: 0,
+    elapsedMs: 0,
+  };
   core.setOutput(
     'triage_json',
     JSON.stringify({
@@ -50,9 +141,11 @@ export function setErrorOutput(reason: string): void {
       reasoning: reason,
       summary: `Triage failed: ${reason}`,
       indicators: [],
+      repair: errorRepair,
       metadata: { analyzedAt: new Date().toISOString(), error: true },
     })
   );
+  emitRepairOutputs(errorRepair);
   core.setFailed(reason);
 }
 
@@ -77,11 +170,16 @@ export function setSuccessOutput(
      */
     autoFixSkipped?: boolean;
     autoFixSkippedReason?: string;
+    repairTelemetry?: RepairTelemetry;
   },
   errorData: { screenshots?: Array<{ name: string }>; logs?: string[] },
   autoFixResult?: ApplyResult | null,
   flakiness?: { isFlaky: boolean; fixCount: number; windowDays: number; message: string }
 ): void {
+  const repairBlock =
+    result.repairTelemetry ??
+    finalizeRepairTelemetry(undefined, result.fixRecommendation, autoFixResult);
+
   const triageJson = {
     verdict: result.verdict,
     confidence: result.confidence,
@@ -131,6 +229,7 @@ export function setSuccessOutput(
           },
         }
       : {}),
+    repair: repairBlock,
     metadata: {
       analyzedAt: new Date().toISOString(),
       hasScreenshots:
@@ -147,6 +246,7 @@ export function setSuccessOutput(
   core.setOutput('reasoning', result.reasoning);
   core.setOutput('summary', result.summary || '');
   core.setOutput('triage_json', JSON.stringify(triageJson));
+  emitRepairOutputs(repairBlock);
 
   if (result.fixRecommendation) {
     core.setOutput('has_fix_recommendation', 'true');
@@ -223,6 +323,10 @@ export function setSuccessOutput(
   core.info(`Verdict: ${result.verdict}`);
   core.info(`Confidence: ${result.confidence}%`);
   core.info(`Summary: ${result.summary}`);
+  core.info(
+    `Repair: status=${repairBlock.status} iterations=${repairBlock.iterations}` +
+      (repairBlock.lastStage ? ` lastStage=${repairBlock.lastStage}` : '')
+  );
 
   if (result.autoFixSkipped) {
     core.info(

@@ -128,6 +128,7 @@ class PipelineCoordinator {
         let agentInvestigationFindings;
         let autoFixSkipped;
         let autoFixSkippedReason;
+        let repairTelemetry;
         if (this.inputs.enableAutoFix &&
             this.inputs.enableValidation &&
             this.inputs.enableLocalValidation &&
@@ -142,12 +143,14 @@ class PipelineCoordinator {
             agentInvestigationFindings = loopResult.agentInvestigationFindings;
             autoFixSkipped = loopResult.autoFixSkipped;
             autoFixSkippedReason = loopResult.autoFixSkippedReason;
+            repairTelemetry = loopResult.repairTelemetry;
         }
         else {
             const singleResult = await (0, validator_1.generateFixRecommendation)(this.inputs, this.repoDetails, errorData, this.openaiClient, this.octokit, undefined, undefined, skillStore, investigationContext, repoContext);
-            fixRecommendation = singleResult?.fix ?? null;
-            agentRootCause = singleResult?.agentRootCause;
-            agentInvestigationFindings = singleResult?.agentInvestigationFindings;
+            fixRecommendation = singleResult.fix ?? null;
+            agentRootCause = singleResult.agentRootCause;
+            agentInvestigationFindings = singleResult.agentInvestigationFindings;
+            repairTelemetry = singleResult.repairTelemetry;
             if (fixRecommendation && this.inputs.enableAutoFix && autoFixTargetRepo) {
                 const outcome = await (0, validator_1.attemptAutoFix)(this.inputs, fixRecommendation, this.octokit, autoFixTargetRepo, errorData);
                 autoFixResult = outcome.applied;
@@ -167,6 +170,7 @@ class PipelineCoordinator {
             agentInvestigationFindings,
             autoFixSkipped,
             autoFixSkippedReason,
+            repairTelemetry,
         };
     }
     async execute() {
@@ -207,10 +211,16 @@ class PipelineCoordinator {
                 ...classification,
                 autoFixSkipped: true,
                 autoFixSkippedReason: reason,
+                repairTelemetry: {
+                    status: 'skipped',
+                    summary: reason,
+                    iterations: 0,
+                    elapsedMs: 0,
+                },
             }, errorData, null, chronicFlakinessSignal);
             return;
         }
-        const { fixRecommendation, autoFixResult, iterations, prUrl: skillPrUrl, agentRootCause, agentInvestigationFindings, autoFixSkipped: repairAutoFixSkipped, autoFixSkippedReason: repairAutoFixSkippedReason, } = await this.repair(classification, errorData, skillStore);
+        const { fixRecommendation, autoFixResult, iterations, prUrl: skillPrUrl, agentRootCause, agentInvestigationFindings, autoFixSkipped: repairAutoFixSkipped, autoFixSkippedReason: repairAutoFixSkippedReason, repairTelemetry: repairTelemetryFromRun, } = await this.repair(classification, errorData, skillStore);
         if (skillStore && autoFixTargetRepo && errorData) {
             const validationStatus = autoFixResult?.validationResult?.status || autoFixResult?.validationStatus;
             const fixSucceeded = !!(autoFixResult?.success && validationStatus === 'passed');
@@ -283,6 +293,7 @@ class PipelineCoordinator {
                 result.autoFixSkippedReason = repairAutoFixSkippedReason;
             }
         }
+        result.repairTelemetry = (0, output_1.finalizeRepairTelemetry)(repairTelemetryFromRun, fixRecommendation, autoFixResult);
         const flakinessSignal = skillStore
             ? skillStore.detectFlakiness(errorData.fileName || 'unknown')
             : undefined;
@@ -323,11 +334,13 @@ class PipelineCoordinator {
                                 reasoning: `Job '${this.inputs.jobName}' did not fail (conclusion: ${targetJob.conclusion}). No triage needed.`,
                                 summary: `No failure detected — job concluded with ${targetJob.conclusion}`,
                                 indicators: [],
+                                repair: output_1.NOT_STARTED_REPAIR,
                                 metadata: {
                                     analyzedAt: new Date().toISOString(),
                                     jobConclusion: targetJob.conclusion,
                                 },
                             }));
+                            (0, output_1.emitRepairOutputs)(output_1.NOT_STARTED_REPAIR);
                             return;
                         }
                     }
@@ -342,6 +355,7 @@ class PipelineCoordinator {
                     reasoning: 'Workflow is still running. Please wait for it to complete before running triage analysis.',
                     summary: 'Analysis pending - workflow not completed',
                     indicators: [],
+                    repair: output_1.NOT_STARTED_REPAIR,
                     metadata: {
                         analyzedAt: new Date().toISOString(),
                         workflowStatus: workflowRun.data.status,
@@ -352,6 +366,7 @@ class PipelineCoordinator {
                 core.setOutput('reasoning', 'Workflow is still running. Please wait for it to complete before running triage analysis.');
                 core.setOutput('summary', 'Analysis pending - workflow not completed');
                 core.setOutput('triage_json', JSON.stringify(pendingTriageJson));
+                (0, output_1.emitRepairOutputs)(output_1.NOT_STARTED_REPAIR);
                 return;
             }
         }

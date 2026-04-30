@@ -152,6 +152,18 @@ outputs:
     description: 'Whether auto-fix was intentionally withheld (true/false). Set to true when the agent decides not to apply a fix despite a TEST_ISSUE verdict — typically because the spec is chronically flaky and needs human investigation rather than another fallback fix. Verdict/confidence/reasoning still reflect the honest classification; only the auto-fix step is skipped.'
   auto_fix_skipped_reason:
     description: 'Human-readable reason when auto_fix_skipped is true (e.g., chronic flakiness message, recommendation for human follow-up).'
+  repair_status:
+    description: 'Repair pipeline lifecycle: not_started, skipped, in_progress, no_fix_generated, review_rejected, timed_out, cancelled, no_approved_fix, approved, applied, validated'
+  repair_summary:
+    description: 'Human-readable repair outcome for Slack (orthogonal to classifier verdict)'
+  repair_details:
+    description: 'JSON object with iterations, lastStage, review issues, fix summary, timing'
+  repair_iterations:
+    description: 'Fix/review loop iterations completed in agentic repair'
+  repair_last_stage:
+    description: 'Last repair stage reached: analysis, code_reading, investigation, fix_generation, review'
+  repair_review_issues:
+    description: 'Newline-separated review issue lines when review rejected a fix (empty otherwise)'
 
 runs:
   using: 'node24'

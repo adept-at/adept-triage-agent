@@ -96,5 +96,6 @@ export declare function createAgentContext(params: {
     };
     framework?: string;
     repoContext?: string;
+    sourceFileContent?: string;
 }): AgentContext;
 //# sourceMappingURL=base-agent.d.ts.map

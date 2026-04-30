@@ -1,7 +1,7 @@
 import { Octokit } from '@octokit/rest';
 import { OpenAIClient } from '../openai-client';
 import { ArtifactFetcher } from '../artifact-fetcher';
-import { ActionInputs, ErrorData, FixRecommendation, Verdict } from '../types';
+import { ActionInputs, ErrorData, FixRecommendation, RepairTelemetry, Verdict } from '../types';
 import { ApplyResult } from '../repair/fix-applier';
 import { SkillStore } from '../services/skill-store';
 export interface ClassificationResult {
@@ -29,6 +29,7 @@ export interface RepairResult {
     agentInvestigationFindings?: string;
     autoFixSkipped?: boolean;
     autoFixSkippedReason?: string;
+    repairTelemetry?: RepairTelemetry;
 }
 interface PipelineCoordinatorDeps {
     octokit: Octokit;

@@ -221,7 +221,15 @@ describe('Fix Recommendation Integration', () => {
         indicators: ['indicator1'],
       });
 
-      mockGenerateFixRecommendation.mockResolvedValue(null);
+      mockGenerateFixRecommendation.mockResolvedValue({
+        fix: null,
+        repairTelemetry: {
+          status: 'no_fix_generated',
+          summary: 'No fix',
+          iterations: 0,
+          elapsedMs: 0,
+        },
+      });
 
       // Run the action
       await run();

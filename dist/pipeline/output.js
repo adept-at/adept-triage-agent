@@ -33,7 +33,10 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.NOT_STARTED_REPAIR = void 0;
 exports.resolveAutoFixTargetRepo = resolveAutoFixTargetRepo;
+exports.finalizeRepairTelemetry = finalizeRepairTelemetry;
+exports.emitRepairOutputs = emitRepairOutputs;
 exports.setInconclusiveOutput = setInconclusiveOutput;
 exports.setErrorOutput = setErrorOutput;
 exports.setSuccessOutput = setSuccessOutput;
@@ -43,6 +46,69 @@ const repo_utils_1 = require("../utils/repo-utils");
 function resolveAutoFixTargetRepo(inputs) {
     return (0, repo_utils_1.parseRepoString)(inputs.autoFixTargetRepo, 'AUTO_FIX_TARGET_REPO');
 }
+exports.NOT_STARTED_REPAIR = {
+    status: 'not_started',
+    summary: 'Repair did not run for this outcome.',
+    iterations: 0,
+    elapsedMs: 0,
+};
+function finalizeRepairTelemetry(base, fixRecommendation, autoFixResult) {
+    if (base?.status === 'skipped') {
+        return base;
+    }
+    if (!base) {
+        if (fixRecommendation) {
+            return {
+                status: 'approved',
+                summary: 'Fix recommendation produced; branch apply / validation not completed in this run.',
+                iterations: 0,
+                elapsedMs: 0,
+                lastFixSummary: fixRecommendation.summary,
+                lastFixConfidence: fixRecommendation.confidence,
+            };
+        }
+        return { ...exports.NOT_STARTED_REPAIR };
+    }
+    let status = base.status;
+    let summary = base.summary;
+    if (autoFixResult?.success) {
+        const vs = autoFixResult.validationResult?.status || autoFixResult.validationStatus;
+        if (vs === 'passed') {
+            status = 'validated';
+            summary = 'Auto-fix validated.';
+        }
+        else if (vs === 'pending') {
+            status = 'applied';
+            summary = 'Auto-fix applied; remote validation pending.';
+        }
+        else if (vs === 'skipped') {
+            status = 'applied';
+            summary = 'Auto-fix applied (validation skipped).';
+        }
+        else {
+            status = 'applied';
+            summary = 'Auto-fix applied (branch created).';
+        }
+    }
+    return { ...base, status, summary };
+}
+function emitRepairOutputs(repair) {
+    core.setOutput('repair_status', repair.status);
+    core.setOutput('repair_summary', repair.summary);
+    core.setOutput('repair_details', JSON.stringify({
+        iterations: repair.iterations,
+        lastStage: repair.lastStage,
+        lastReviewIssues: repair.lastReviewIssues,
+        lastReviewAssessment: repair.lastReviewAssessment,
+        lastFixSummary: repair.lastFixSummary,
+        lastFixConfidence: repair.lastFixConfidence,
+        timeoutMs: repair.timeoutMs,
+        elapsedMs: repair.elapsedMs,
+    }));
+    core.setOutput('repair_iterations', String(repair.iterations));
+    core.setOutput('repair_last_stage', repair.lastStage || '');
+    core.setOutput('repair_review_issues', repair.lastReviewIssues?.length ? repair.lastReviewIssues.join('\n') : '');
+}
 function setInconclusiveOutput(result, inputs, errorData) {
     const inconclusiveTriageJson = {
         verdict: 'INCONCLUSIVE',
@@ -50,6 +116,7 @@ function setInconclusiveOutput(result, inputs, errorData) {
         reasoning: `Low confidence: ${result.reasoning}`,
         summary: 'Analysis inconclusive due to low confidence',
         indicators: result.indicators || [],
+        repair: exports.NOT_STARTED_REPAIR,
         metadata: {
             analyzedAt: new Date().toISOString(),
             confidenceThreshold: inputs.confidenceThreshold,
@@ -62,23 +129,34 @@ function setInconclusiveOutput(result, inputs, errorData) {
     core.setOutput('reasoning', `Low confidence: ${result.reasoning}`);
     core.setOutput('summary', 'Analysis inconclusive due to low confidence');
     core.setOutput('triage_json', JSON.stringify(inconclusiveTriageJson));
+    emitRepairOutputs(exports.NOT_STARTED_REPAIR);
 }
 function setErrorOutput(reason) {
     core.setOutput('verdict', 'ERROR');
     core.setOutput('confidence', '0');
     core.setOutput('reasoning', reason);
     core.setOutput('summary', `Triage failed: ${reason}`);
+    const errorRepair = {
+        status: 'not_started',
+        summary: `Repair did not run (triage error: ${reason}).`,
+        iterations: 0,
+        elapsedMs: 0,
+    };
     core.setOutput('triage_json', JSON.stringify({
         verdict: 'ERROR',
         confidence: 0,
         reasoning: reason,
         summary: `Triage failed: ${reason}`,
         indicators: [],
+        repair: errorRepair,
         metadata: { analyzedAt: new Date().toISOString(), error: true },
     }));
+    emitRepairOutputs(errorRepair);
     core.setFailed(reason);
 }
 function setSuccessOutput(result, errorData, autoFixResult, flakiness) {
+    const repairBlock = result.repairTelemetry ??
+        finalizeRepairTelemetry(undefined, result.fixRecommendation, autoFixResult);
     const triageJson = {
         verdict: result.verdict,
         confidence: result.confidence,
@@ -128,6 +206,7 @@ function setSuccessOutput(result, errorData, autoFixResult, flakiness) {
                 },
             }
             : {}),
+        repair: repairBlock,
         metadata: {
             analyzedAt: new Date().toISOString(),
             hasScreenshots: (errorData.screenshots && errorData.screenshots.length > 0) || false,
@@ -142,6 +221,7 @@ function setSuccessOutput(result, errorData, autoFixResult, flakiness) {
     core.setOutput('reasoning', result.reasoning);
     core.setOutput('summary', result.summary || '');
     core.setOutput('triage_json', JSON.stringify(triageJson));
+    emitRepairOutputs(repairBlock);
     if (result.fixRecommendation) {
         core.setOutput('has_fix_recommendation', 'true');
         core.setOutput('fix_recommendation', JSON.stringify(result.fixRecommendation));
@@ -186,6 +266,8 @@ function setSuccessOutput(result, errorData, autoFixResult, flakiness) {
     core.info(`Verdict: ${result.verdict}`);
     core.info(`Confidence: ${result.confidence}%`);
     core.info(`Summary: ${result.summary}`);
+    core.info(`Repair: status=${repairBlock.status} iterations=${repairBlock.iterations}` +
+        (repairBlock.lastStage ? ` lastStage=${repairBlock.lastStage}` : ''));
     if (result.autoFixSkipped) {
         core.info(`\n⏭️  Auto-fix intentionally skipped: ${result.autoFixSkippedReason || 'see triage_json.autoFixSkippedReason'}`);
     }

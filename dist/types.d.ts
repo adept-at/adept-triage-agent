@@ -57,6 +57,20 @@ export interface RepairContext {
     prNumber?: string;
     targetAppPrNumber?: string;
 }
+export type RepairStage = 'analysis' | 'code_reading' | 'investigation' | 'fix_generation' | 'review';
+export type RepairStatus = 'not_started' | 'skipped' | 'in_progress' | 'no_fix_generated' | 'review_rejected' | 'timed_out' | 'cancelled' | 'no_approved_fix' | 'approved' | 'applied' | 'validated';
+export interface RepairTelemetry {
+    status: RepairStatus;
+    summary: string;
+    iterations: number;
+    lastStage?: RepairStage;
+    lastReviewIssues?: string[];
+    lastReviewAssessment?: string;
+    lastFixSummary?: string;
+    lastFixConfidence?: number;
+    timeoutMs?: number;
+    elapsedMs: number;
+}
 export interface AnalysisResult {
     verdict: Verdict;
     confidence: number;
@@ -68,6 +82,7 @@ export interface AnalysisResult {
     category?: string;
     fixRecommendation?: FixRecommendation;
     responseId?: string;
+    repairTelemetry?: RepairTelemetry;
     autoFixSkipped?: boolean;
     autoFixSkippedReason?: string;
 }

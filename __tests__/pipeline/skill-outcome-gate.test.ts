@@ -48,4 +48,5 @@ describe('shouldWriteSkillOutcome', () => {
 
     expect(shouldWriteSkillOutcome(result)).toBe(false);
   });
+
 });

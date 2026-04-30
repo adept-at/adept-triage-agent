@@ -5,7 +5,7 @@ import { CodeReadingOutput } from './code-reading-agent';
 import { InvestigationOutput } from './investigation-agent';
 import { FixGenerationOutput } from './fix-generation-agent';
 import { ReviewOutput, ReviewIssue } from './review-agent';
-import { FixRecommendation, ErrorData, SourceFetchContext } from '../types';
+import { FixRecommendation, ErrorData, SourceFetchContext, RepairTelemetry } from '../types';
 import { TriageSkill, FlakinessSignal } from '../services/skill-store';
 export interface OrchestratorConfig {
     maxIterations: number;
@@ -16,6 +16,8 @@ export interface OrchestratorConfig {
     modelOverrideReview?: string;
 }
 export declare const DEFAULT_ORCHESTRATOR_CONFIG: OrchestratorConfig;
+export declare const MIN_FIX_GEN_BUDGET_MS = 180000;
+export declare const MIN_REVIEW_BUDGET_MS = 120000;
 export interface OrchestrationResult {
     success: boolean;
     fix?: FixRecommendation;
@@ -24,6 +26,7 @@ export interface OrchestrationResult {
     iterations: number;
     approach: 'agentic' | 'failed';
     lastResponseId?: string;
+    repairTelemetry?: RepairTelemetry;
     agentResults: {
         analysis?: AgentResult<AnalysisOutput>;
         codeReading?: AgentResult<CodeReadingOutput>;

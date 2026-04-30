@@ -190,25 +190,51 @@ class SimplifiedRepairAgent {
             core.info('🔧 Generating fix recommendation...');
             if (!this.orchestrator) {
                 core.warning('Agentic repair is unavailable because source-fetch context is missing; no fallback repair path will run.');
-                return null;
+                return {
+                    fix: null,
+                    repairTelemetry: {
+                        status: 'no_fix_generated',
+                        summary: 'No auto-fix applied. Agentic repair is unavailable (source-fetch context missing).',
+                        iterations: 0,
+                        elapsedMs: 0,
+                    },
+                };
             }
             core.info('🤖 Attempting agentic repair...');
             const agenticResult = await this.tryAgenticRepair(repairContext, errorData, previousAttempt, previousResponseId, skills, priorInvestigationContext, repoContext);
-            if (agenticResult) {
+            if (agenticResult.fix) {
                 core.info(`✅ Agentic repair succeeded with ${agenticResult.fix.confidence}% confidence`);
-                return agenticResult;
             }
-            core.warning('🤖 Agentic repair did not produce an approved fix; no weaker fallback repair path will run.');
-            return null;
+            else {
+                core.warning('🤖 Agentic repair did not produce an approved fix; no weaker fallback repair path will run.');
+            }
+            return agenticResult;
         }
         catch (error) {
+            const msg = error instanceof Error ? error.message : String(error);
             core.warning(`Failed to generate fix recommendation: ${error}`);
-            return null;
+            return {
+                fix: null,
+                repairTelemetry: {
+                    status: 'no_fix_generated',
+                    summary: `No auto-fix applied. Repair failed: ${msg}`,
+                    iterations: 0,
+                    elapsedMs: 0,
+                },
+            };
         }
     }
     async tryAgenticRepair(repairContext, errorData, previousAttempt, previousResponseId, skills, priorInvestigationContext, repoContext) {
         if (!this.orchestrator) {
-            return null;
+            return {
+                fix: null,
+                repairTelemetry: {
+                    status: 'no_fix_generated',
+                    summary: 'No auto-fix applied. Orchestrator was not initialized.',
+                    iterations: 0,
+                    elapsedMs: 0,
+                },
+            };
         }
         try {
             let enrichedErrorMessage = repairContext.errorMessage;
@@ -262,15 +288,37 @@ class SimplifiedRepairAgent {
                 const investigation = result.agentResults.investigation?.data;
                 const agentRootCause = analysis?.rootCauseCategory;
                 const agentInvestigationFindings = summarizeInvestigationForRetry(investigation);
-                return { fix: result.fix, lastResponseId: result.lastResponseId, agentRootCause, agentInvestigationFindings };
+                return {
+                    fix: result.fix,
+                    lastResponseId: result.lastResponseId,
+                    agentRootCause,
+                    agentInvestigationFindings,
+                    repairTelemetry: result.repairTelemetry,
+                };
             }
             core.info(`🤖 Agentic approach failed: ${result.error || 'No fix generated'}`);
-            return null;
+            const analysis = result.agentResults.analysis?.data;
+            const investigation = result.agentResults.investigation?.data;
+            return {
+                fix: null,
+                lastResponseId: result.lastResponseId,
+                agentRootCause: analysis?.rootCauseCategory,
+                agentInvestigationFindings: summarizeInvestigationForRetry(investigation),
+                repairTelemetry: result.repairTelemetry,
+            };
         }
         catch (error) {
             const errorMsg = error instanceof Error ? error.message : String(error);
             core.warning(`Agentic repair error: ${errorMsg}`);
-            return null;
+            return {
+                fix: null,
+                repairTelemetry: {
+                    status: 'no_fix_generated',
+                    summary: `No auto-fix applied. Repair error: ${errorMsg}`,
+                    iterations: 0,
+                    elapsedMs: 0,
+                },
+            };
         }
     }
     extractFilePath(rawPath) {

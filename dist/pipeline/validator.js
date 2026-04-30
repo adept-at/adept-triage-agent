@@ -86,7 +86,7 @@ async function generateFixRecommendation(inputs, repoDetails, errorData, openaiC
             }
             : undefined;
         const result = await repairAgent.generateFixRecommendation(repairContext, errorData, previousAttempt, previousResponseId, skills, priorInvestigationContext, repoContext);
-        if (result) {
+        if (result.fix) {
             core.info(`✅ Fix recommendation generated with ${result.fix.confidence}% confidence`);
         }
         else {
@@ -95,8 +95,17 @@ async function generateFixRecommendation(inputs, repoDetails, errorData, openaiC
         return result;
     }
     catch (error) {
+        const msg = error instanceof Error ? error.message : String(error);
         core.warning(`Failed to generate fix recommendation: ${error}`);
-        return null;
+        return {
+            fix: null,
+            repairTelemetry: {
+                status: 'no_fix_generated',
+                summary: `No auto-fix applied. generateFixRecommendation failed: ${msg}`,
+                iterations: 0,
+                elapsedMs: 0,
+            },
+        };
     }
 }
 async function iterativeFixValidateLoop(inputs, repoDetails, autoFixTargetRepo, errorData, openaiClient, octokit, skillStore, _classificationResponseId, investigationContext, repoContext) {
@@ -108,6 +117,7 @@ async function iterativeFixValidateLoop(inputs, repoDetails, autoFixTargetRepo, 
     let agentInvestigationFindings;
     let autoFixSkipped = false;
     let autoFixSkippedReason;
+    let repairTelemetry;
     let previousAttempt;
     const failedFixFingerprints = new Set();
     const minConfidence = inputs.autoFixMinConfidence ?? constants_1.AUTO_FIX.DEFAULT_MIN_CONFIDENCE;
@@ -129,12 +139,14 @@ async function iterativeFixValidateLoop(inputs, repoDetails, autoFixTargetRepo, 
             completedIterations = iteration + 1;
             core.info(`\n${'='.repeat(60)}\n🔄 Fix-Validate iteration ${iteration + 1}/${maxIterations}\n${'='.repeat(60)}`);
             const fixResult = await generateFixRecommendation(inputs, repoDetails, errorData, openaiClient, octokit, previousAttempt, undefined, skillStore, investigationContext, repoContext);
-            if (!fixResult) {
+            if (!fixResult.fix) {
                 fixRecommendation = null;
+                repairTelemetry = fixResult.repairTelemetry ?? repairTelemetry;
                 core.warning(`Iteration ${iteration + 1}: could not generate fix recommendation`);
                 break;
             }
             fixRecommendation = fixResult.fix;
+            repairTelemetry = fixResult.repairTelemetry ?? repairTelemetry;
             if (fixResult.agentRootCause)
                 agentRootCause = fixResult.agentRootCause;
             if (fixResult.agentInvestigationFindings)
@@ -169,7 +181,21 @@ async function iterativeFixValidateLoop(inputs, repoDetails, autoFixTargetRepo, 
                 if (baseline.passed) {
                     core.info('✅ Baseline check passed — test passes without fix. Failure was likely transient.');
                     core.info('📊 learning-telemetry baseline=passed validation=skipped iterations=0');
-                    return { fixRecommendation: null, autoFixResult: null, iterations: 0, agentRootCause, agentInvestigationFindings, autoFixSkipped, autoFixSkippedReason };
+                    return {
+                        fixRecommendation: null,
+                        autoFixResult: null,
+                        iterations: 0,
+                        agentRootCause,
+                        agentInvestigationFindings,
+                        autoFixSkipped,
+                        autoFixSkippedReason,
+                        repairTelemetry: {
+                            status: 'skipped',
+                            summary: 'Repair skipped: baseline check passed without a fix (failure likely transient).',
+                            iterations: 0,
+                            elapsedMs: 0,
+                        },
+                    };
                 }
                 core.info('❌ Baseline check confirmed failure — proceeding with fix.');
                 core.info(`📊 learning-telemetry baseline=failed durationMs=${baseline.durationMs}`);
@@ -208,7 +234,17 @@ async function iterativeFixValidateLoop(inputs, repoDetails, autoFixTargetRepo, 
                             conclusion: 'success',
                         },
                     };
-                    return { fixRecommendation, autoFixResult, iterations: iteration + 1, prUrl: pushResult.prUrl, agentRootCause, agentInvestigationFindings, autoFixSkipped, autoFixSkippedReason };
+                    return {
+                        fixRecommendation,
+                        autoFixResult,
+                        iterations: iteration + 1,
+                        prUrl: pushResult.prUrl,
+                        agentRootCause,
+                        agentInvestigationFindings,
+                        autoFixSkipped,
+                        autoFixSkippedReason,
+                        repairTelemetry,
+                    };
                 }
                 catch (pushError) {
                     core.warning(`Test passed but push/PR creation failed: ${pushError}`);
@@ -224,7 +260,16 @@ async function iterativeFixValidateLoop(inputs, repoDetails, autoFixTargetRepo, 
                         },
                     };
                 }
-                return { fixRecommendation, autoFixResult, iterations: iteration + 1, agentRootCause, agentInvestigationFindings, autoFixSkipped, autoFixSkippedReason };
+                return {
+                    fixRecommendation,
+                    autoFixResult,
+                    iterations: iteration + 1,
+                    agentRootCause,
+                    agentInvestigationFindings,
+                    autoFixSkipped,
+                    autoFixSkippedReason,
+                    repairTelemetry,
+                };
             }
             core.warning(`\n❌ Test FAILED on iteration ${iteration + 1} (exit code: ${testResult.exitCode}, ${testResult.durationMs}ms)`);
             core.info(`📊 learning-telemetry validation=failed iteration=${iteration + 1} durationMs=${testResult.durationMs}`);
@@ -244,7 +289,16 @@ async function iterativeFixValidateLoop(inputs, repoDetails, autoFixTargetRepo, 
             await validator.cleanup();
         }
     }
-    return { fixRecommendation, autoFixResult, iterations: completedIterations, agentRootCause, agentInvestigationFindings, autoFixSkipped, autoFixSkippedReason };
+    return {
+        fixRecommendation,
+        autoFixResult,
+        iterations: completedIterations,
+        agentRootCause,
+        agentInvestigationFindings,
+        autoFixSkipped,
+        autoFixSkippedReason,
+        repairTelemetry,
+    };
 }
 function normalizeFileForPatternMatch(path) {
     return ('/' + path.replace(/^\.\//, '').replace(/\\/g, '/')).toLowerCase();

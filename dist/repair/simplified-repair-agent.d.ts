@@ -1,5 +1,5 @@
 import { OpenAIClient } from '../openai-client';
-import { RepairContext, ErrorData, FixRecommendation, SourceFetchContext } from '../types';
+import { RepairContext, ErrorData, FixRecommendation, SourceFetchContext, RepairTelemetry } from '../types';
 import { OrchestratorConfig } from '../agents';
 import { InvestigationOutput } from '../agents/investigation-agent';
 import { TriageSkill, FlakinessSignal } from '../services/skill-store';
@@ -35,11 +35,12 @@ export declare class SimplifiedRepairAgent {
         relevant: TriageSkill[];
         flakiness?: FlakinessSignal;
     }, priorInvestigationContext?: string, repoContext?: string): Promise<{
-        fix: FixRecommendation;
+        fix: FixRecommendation | null;
         lastResponseId?: string;
         agentRootCause?: string;
         agentInvestigationFindings?: string;
-    } | null>;
+        repairTelemetry?: RepairTelemetry;
+    }>;
     private tryAgenticRepair;
     private extractFilePath;
 }

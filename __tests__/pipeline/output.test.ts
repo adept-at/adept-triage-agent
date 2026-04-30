@@ -1,5 +1,5 @@
 import * as core from '@actions/core';
-import { setSuccessOutput } from '../../src/pipeline/output';
+import { finalizeRepairTelemetry, setSuccessOutput } from '../../src/pipeline/output';
 import { CHRONIC_FLAKINESS_THRESHOLD } from '../../src/config/constants';
 
 jest.mock('@actions/core');
@@ -41,6 +41,9 @@ describe('setSuccessOutput — auto-fix skip signal', () => {
     const triage = JSON.parse(outputs.get('triage_json')!);
     expect(triage.autoFixSkipped).toBeUndefined();
     expect(triage.metadata.autoFixSkipped).toBe(false);
+    expect(triage.repair.status).toBe('not_started');
+    expect(outputs.get('repair_status')).toBe('not_started');
+    expect(outputs.get('repair_summary')).toContain('Repair did not run');
   });
 
   it('emits auto_fix_skipped=true + reason when the coordinator withholds the fix', () => {
@@ -279,6 +282,60 @@ describe('setSuccessOutput — auto-fix skip signal', () => {
       mode: 'local',
       conclusion: 'success',
     });
+  });
+
+  it('emits repair_* outputs and triage_json.repair for review_rejected telemetry', () => {
+    setSuccessOutput(
+      {
+        ...baseResult,
+        repairTelemetry: {
+          status: 'review_rejected',
+          summary:
+            'No auto-fix applied. Generated fix was rejected by review: trace too vague',
+          iterations: 1,
+          lastStage: 'review',
+          lastReviewIssues: ['[CRITICAL] failureModeTrace too vague'],
+          lastReviewAssessment: 'Reject',
+          lastFixSummary: 'Add wait',
+          lastFixConfidence: 85,
+          elapsedMs: 1200,
+        },
+      },
+      errorData,
+      null
+    );
+
+    expect(outputs.get('repair_status')).toBe('review_rejected');
+    expect(outputs.get('repair_summary')).toContain('rejected by review');
+    expect(outputs.get('repair_iterations')).toBe('1');
+    expect(outputs.get('repair_last_stage')).toBe('review');
+    expect(outputs.get('repair_review_issues')).toContain('CRITICAL');
+
+    const triage = JSON.parse(outputs.get('triage_json')!);
+    expect(triage.repair.status).toBe('review_rejected');
+    expect(triage.repair.iterations).toBe(1);
+  });
+
+  it('finalizeRepairTelemetry promotes approved to validated when validation passed', () => {
+    const merged = finalizeRepairTelemetry(
+      {
+        status: 'approved',
+        summary: 'Fix passed review',
+        iterations: 1,
+        elapsedMs: 100,
+      },
+      null,
+      {
+        success: true,
+        modifiedFiles: ['a.ts'],
+        commitSha: 'c1',
+        branchName: 'fix/b',
+        validationResult: { status: 'passed', mode: 'remote', conclusion: 'success' },
+        validationStatus: 'passed',
+      }
+    );
+    expect(merged.status).toBe('validated');
+    expect(merged.summary).toBe('Auto-fix validated.');
   });
 });
 

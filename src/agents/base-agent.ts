@@ -359,6 +359,8 @@ export function createAgentContext(params: {
   framework?: string;
   /** Repo-level conventions (pre-rendered) — see AgentContext.repoContext */
   repoContext?: string;
+  /** Pre-seeded test source (e.g. unit tests) — skips GitHub fetch when set */
+  sourceFileContent?: string;
 }): AgentContext {
   return {
     errorMessage: params.errorMessage,
@@ -373,5 +375,8 @@ export function createAgentContext(params: {
     productDiff: params.productDiff,
     framework: params.framework,
     repoContext: params.repoContext,
+    ...(params.sourceFileContent
+      ? { sourceFileContent: params.sourceFileContent }
+      : {}),
   };
 }
