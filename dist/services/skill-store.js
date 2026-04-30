@@ -107,6 +107,7 @@ function backfillDefaults(skill) {
         classificationOutcome: skill.classificationOutcome ?? 'unknown',
         rootCauseChain: skill.rootCauseChain ?? '',
         repoContext: skill.repoContext ?? '',
+        failedFixEvidence: skill.failedFixEvidence,
     };
 }
 function parseSkillTimestamp(value) {
@@ -540,6 +541,7 @@ function buildSkill(params) {
         rootCauseChain: params.rootCauseChain ?? '',
         repoContext: params.repoContext ?? '',
         ...(params.failureModeTrace ? { failureModeTrace: params.failureModeTrace } : {}),
+        ...(params.failedFixEvidence ? { failedFixEvidence: params.failedFixEvidence } : {}),
     };
 }
 function describeFixPattern(changes) {
@@ -658,6 +660,16 @@ function formatSkillsForPrompt(skills, role, flakiness) {
             s.prUrl.trim();
         if (shouldRenderPrUrl) {
             lines.push(`- Shipped as: ${sanitizeForPrompt(s.prUrl)} (prior validated fix landed as this PR — strong trust signal)`);
+        }
+        if ((role === 'fix_generation' || role === 'review') && s.failedFixEvidence) {
+            const failed = s.failedFixEvidence;
+            lines.push('- Prior failed validation (do not repeat as a proven pattern):', `  - originalFailure: ${sanitizeForPrompt(failed.originalFailureSignature, 200)}`, `  - validationFailure: ${sanitizeForPrompt(failed.validationFailureSignature, 200)}`, `  - failureStage: ${sanitizeForPrompt(failed.failureStage, 80)}`, `  - changedFailureSignature: ${failed.changedFailureSignature}`);
+            if (failed.failedAssertion) {
+                lines.push(`  - failedAssertion: ${sanitizeForPrompt(failed.failedAssertion, 200)}`);
+            }
+            if (failed.reasonTheFixWasWrong) {
+                lines.push(`  - whyItFailed: ${sanitizeForPrompt(failed.reasonTheFixWasWrong, 200)}`);
+            }
         }
         const isValidated = s.validatedLocally === true || (s.successCount ?? 0) > 0;
         if (includeTrace && s.failureModeTrace && isValidated) {

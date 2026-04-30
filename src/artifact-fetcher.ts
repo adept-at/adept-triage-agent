@@ -67,20 +67,55 @@ export class ArtifactFetcher {
                (name.includes('cy-') && (name.includes('logs') || name.includes('artifacts')));
       });
 
-      // If jobName is provided, try to narrow to job-specific artifacts
+      // If jobName is provided, try to narrow to job-specific artifacts.
+      // First, try the exact-job heuristic (matrix-name fragment or full
+      // name). If that fails, try a looser token-overlap match before
+      // falling back to "use everything" — the overlap heuristic catches
+      // common consumer naming patterns like job=`cancelTest`,
+      // artifact=`wdio-logs-cancel`, where exact substring fails but
+      // tokens overlap meaningfully.
       if (jobName) {
         const matrixMatch = jobName.match(/\((.*?)\)/);
         const searchName = matrixMatch ? matrixMatch[1] : jobName;
-        
-        const jobSpecificArtifacts = screenshotArtifacts.filter(artifact => 
-          artifact.name.toLowerCase().includes(searchName.toLowerCase())
+        const jobLower = jobName.toLowerCase();
+        const searchLower = searchName.toLowerCase();
+
+        let jobSpecificArtifacts = screenshotArtifacts.filter(artifact =>
+          artifact.name.toLowerCase().includes(searchLower)
         );
-        
+
+        if (jobSpecificArtifacts.length === 0) {
+          const jobTokens = jobLower
+            .split(/[^a-z0-9]+/)
+            .filter((t) => t.length >= 3);
+          if (jobTokens.length > 0) {
+            jobSpecificArtifacts = screenshotArtifacts.filter((artifact) => {
+              const artifactLower = artifact.name.toLowerCase();
+              return jobTokens.some((token) => artifactLower.includes(token));
+            });
+            if (jobSpecificArtifacts.length > 0) {
+              core.info(
+                `Found ${jobSpecificArtifacts.length} artifact(s) via token-overlap match for job "${jobName}" (tokens: ${jobTokens.join(', ')})`
+              );
+            }
+          }
+        }
+
         if (jobSpecificArtifacts.length > 0) {
-          core.info(`Found ${jobSpecificArtifacts.length} artifact(s) specific to job: ${jobName} (searching for: ${searchName})`);
+          if (jobSpecificArtifacts.length !== screenshotArtifacts.length) {
+            core.info(
+              `Narrowed to ${jobSpecificArtifacts.length} artifact(s) specific to job: ${jobName} (searching for: ${searchName})`
+            );
+          }
           screenshotArtifacts = jobSpecificArtifacts;
         } else {
-          core.info(`No job-specific artifacts for "${searchName}", using all ${screenshotArtifacts.length} matching artifact(s)`);
+          // Falling back to all matching artifacts is dangerous when a
+          // workflow has multiple sibling jobs — sibling-job screenshots
+          // can contaminate the classifier. Keep the fallback because
+          // some single-job consumers rely on it, but warn loudly.
+          core.warning(
+            `No artifacts specifically matched job "${jobName}" (also tried tokens). Falling back to all ${screenshotArtifacts.length} matching artifact(s) — sibling-job contamination is possible.`
+          );
         }
       }
 

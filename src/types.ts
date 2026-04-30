@@ -169,6 +169,43 @@ export interface FixRecommendation {
   failureModeTrace?: FailureModeTrace;
 }
 
+export type ValidationStatus =
+  | 'pending'
+  | 'passed'
+  | 'failed'
+  | 'skipped'
+  | 'inconclusive';
+
+export interface ValidationResult {
+  status: ValidationStatus;
+  mode: 'local' | 'remote';
+  runId?: number;
+  url?: string;
+  conclusion?: string;
+  testEvidence?: {
+    trustworthy: boolean;
+    reason: string;
+    matched?: string;
+  };
+  failure?: {
+    primaryError: string;
+    failedAssertion?: string;
+    failureStage: 'baseline' | 'apply' | 'validation' | 'post_validation';
+    changedFailureSignature?: boolean;
+  };
+}
+
+export interface FailedFixEvidence {
+  fixCommit?: string;
+  validationRunId?: number;
+  originalFailureSignature: string;
+  validationFailureSignature: string;
+  failedAssertion?: string;
+  failureStage: string;
+  reasonTheFixWasWrong?: string;
+  changedFailureSignature: boolean;
+}
+
 export interface SourceLocation {
   file: string;
   lines: string;

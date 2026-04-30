@@ -121,6 +121,165 @@ describe('setSuccessOutput — auto-fix skip signal', () => {
     expect(outputs.get('auto_fix_applied')).toBe('false');
     expect(outputs.get('validation_status')).toBe('skipped');
   });
+
+  it('emits structured remote validation details in triage_json and outputs', () => {
+    setSuccessOutput(
+      {
+        ...baseResult,
+        fixRecommendation: {
+          confidence: 84,
+          summary: 'wait for persisted image',
+          proposedChanges: [
+            {
+              file: 'cypress/spec.cy.ts',
+              line: 42,
+              oldCode: 'cy.wait(2000)',
+              newCode: "cy.wait('@save')",
+              justification: 'replace fixed sleep with network synchronization',
+            },
+          ],
+          evidence: ['validation evidence'],
+          reasoning: 'the fixed wait was not deterministic',
+        },
+      },
+      errorData,
+      {
+        success: true,
+        modifiedFiles: ['cypress/spec.cy.ts'],
+        commitSha: 'abc123',
+        branchName: 'fix/triage-agent/spec-20260430-001',
+        validationRunId: 123,
+        validationStatus: 'failed',
+        validationUrl: 'https://github.com/test-owner/test-repo/actions/runs/123',
+        validationResult: {
+          status: 'failed',
+          mode: 'remote',
+          runId: 123,
+          url: 'https://github.com/test-owner/test-repo/actions/runs/123',
+          conclusion: 'failure',
+          failure: {
+            primaryError: 'AssertionError: expected undefined to exist',
+            failedAssertion: 'expected undefined to exist',
+            failureStage: 'validation',
+          },
+        },
+      }
+    );
+
+    expect(outputs.get('auto_fix_applied')).toBe('true');
+    expect(outputs.get('validation_status')).toBe('failed');
+    expect(outputs.get('validation_run_id')).toBe('123');
+
+    const triage = JSON.parse(outputs.get('triage_json')!);
+    const expectedValidation = {
+      status: 'failed',
+      mode: 'remote',
+      runId: 123,
+      url: 'https://github.com/test-owner/test-repo/actions/runs/123',
+      conclusion: 'failure',
+      failure: {
+        primaryError: 'AssertionError: expected undefined to exist',
+        failedAssertion: 'expected undefined to exist',
+        failureStage: 'validation',
+      },
+    };
+    expect(triage.autoFix.validation).toEqual(expectedValidation);
+    expect(triage.validation).toEqual(expectedValidation);
+  });
+
+  it('keeps pending remote validation mode when no run id was found', () => {
+    setSuccessOutput(
+      {
+        ...baseResult,
+        fixRecommendation: {
+          confidence: 84,
+          summary: 'wait for persisted image',
+          proposedChanges: [
+            {
+              file: 'cypress/spec.cy.ts',
+              line: 42,
+              oldCode: 'cy.wait(2000)',
+              newCode: "cy.wait('@save')",
+              justification: 'replace fixed sleep with network synchronization',
+            },
+          ],
+          evidence: ['validation dispatched'],
+          reasoning: 'remote validation is still pending',
+        },
+      },
+      errorData,
+      {
+        success: true,
+        modifiedFiles: ['cypress/spec.cy.ts'],
+        commitSha: 'abc123',
+        branchName: 'fix/triage-agent/spec-20260430-001',
+        validationStatus: 'pending',
+        validationResult: {
+          status: 'pending',
+          mode: 'remote',
+          conclusion: 'dispatched-run-not-found',
+        },
+      }
+    );
+
+    expect(outputs.get('validation_status')).toBe('pending');
+    const triage = JSON.parse(outputs.get('triage_json')!);
+    expect(triage.autoFix.validation).toEqual({
+      status: 'pending',
+      mode: 'remote',
+      conclusion: 'dispatched-run-not-found',
+    });
+    expect(triage.validation).toEqual({
+      status: 'pending',
+      mode: 'remote',
+      conclusion: 'dispatched-run-not-found',
+    });
+  });
+
+  it('emits validation details even when push failed after local validation passed', () => {
+    setSuccessOutput(
+      {
+        ...baseResult,
+        fixRecommendation: {
+          confidence: 84,
+          summary: 'wait for persisted image',
+          proposedChanges: [
+            {
+              file: 'cypress/spec.cy.ts',
+              line: 42,
+              oldCode: 'cy.wait(2000)',
+              newCode: "cy.wait('@save')",
+              justification: 'replace fixed sleep with network synchronization',
+            },
+          ],
+          evidence: ['local validation passed'],
+          reasoning: 'validation passed before push failed',
+        },
+      },
+      errorData,
+      {
+        success: false,
+        modifiedFiles: ['cypress/spec.cy.ts'],
+        error: 'Push failed after successful test',
+        validationStatus: 'passed',
+        validationResult: {
+          status: 'passed',
+          mode: 'local',
+          conclusion: 'success',
+        },
+      }
+    );
+
+    expect(outputs.get('auto_fix_applied')).toBe('false');
+    expect(outputs.get('validation_status')).toBe('passed');
+    const triage = JSON.parse(outputs.get('triage_json')!);
+    expect(triage.autoFix).toBeUndefined();
+    expect(triage.validation).toEqual({
+      status: 'passed',
+      mode: 'local',
+      conclusion: 'success',
+    });
+  });
 });
 
 describe('CHRONIC_FLAKINESS_THRESHOLD', () => {

@@ -5,6 +5,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { execSync, execFileSync } from 'child_process';
 import { Octokit } from '@octokit/rest';
+import { verifyTestEvidence } from './test-evidence';
 
 export interface LocalValidatorConfig {
   owner: string;
@@ -415,9 +416,31 @@ export class LocalFixValidator {
       });
 
       const durationMs = Date.now() - start;
+      const truncatedLogs = output.slice(-MAX_LOG_CHARS);
+
+      // Exit code 0 alone is not proof tests ran. Consumer scripts have
+      // shipped runners through `tee` without `pipefail`, masking the
+      // real exit, and bare-basename specs can make Cypress exit 0 with
+      // "no spec files were found." Require concrete pass evidence
+      // before accepting passed=true so the skill store can't be
+      // poisoned by false validations.
+      const evidence = verifyTestEvidence(truncatedLogs);
+      if (!evidence.trustworthy) {
+        core.warning(
+          `Test command exited 0 but ${evidence.reason} — treating as failed to avoid poisoning the skill store with a false validation.`
+        );
+        return {
+          passed: false,
+          logs: truncatedLogs,
+          exitCode: 0,
+          durationMs,
+        };
+      }
+
+      core.info(`✅ Test evidence verified: ${evidence.reason}`);
       return {
         passed: true,
-        logs: output.slice(-MAX_LOG_CHARS),
+        logs: truncatedLogs,
         exitCode: 0,
         durationMs,
       };

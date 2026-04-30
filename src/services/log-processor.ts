@@ -224,6 +224,21 @@ export async function processWorkflowLogs(
 }
 
 /**
+ * Terminal job conclusions that warrant triage. `failure` is the most
+ * common path; `timed_out` and `cancelled` also produce useful evidence
+ * (a Sauce session timeout, a Vercel preview that never came up, a
+ * killed runner) and historically routed to the no-data fallback,
+ * which surfaced as `ERROR` rather than a meaningful verdict. Treat
+ * them as triageable so the classifier / infrastructure heuristic can
+ * label them appropriately (typically INCONCLUSIVE for timeouts).
+ */
+const TRIAGEABLE_CONCLUSIONS = new Set<string>([
+  'failure',
+  'timed_out',
+  'cancelled',
+]);
+
+/**
  * Find the target job to analyze
  */
 function findTargetJob(
@@ -243,24 +258,33 @@ function findTargetJob(
         'Current job is still in progress, analyzing available logs...'
       );
     } else if (
-      targetJob.conclusion !== 'failure' &&
-      targetJob.status === 'completed'
+      targetJob.status === 'completed' &&
+      !TRIAGEABLE_CONCLUSIONS.has(targetJob.conclusion ?? '')
     ) {
       core.warning(
         `Job '${inputs.jobName}' did not fail (conclusion: ${targetJob.conclusion})`
       );
       return null;
+    } else if (
+      targetJob.status === 'completed' &&
+      targetJob.conclusion !== 'failure'
+    ) {
+      core.info(
+        `Job '${inputs.jobName}' completed with conclusion=${targetJob.conclusion} — triaging as a failure-equivalent (likely infrastructure / timeout).`
+      );
     }
     return targetJob;
   }
 
-  // Look for any failed job
-  const failedJob = jobs.find((job) => job.conclusion === 'failure');
-  if (!failedJob) {
+  // Look for any triageable job (failure / timed_out / cancelled).
+  const targetJob = jobs.find((job) =>
+    TRIAGEABLE_CONCLUSIONS.has(job.conclusion ?? '')
+  );
+  if (!targetJob) {
     core.warning('No failed jobs found');
     return null;
   }
-  return failedJob;
+  return targetJob;
 }
 
 /**

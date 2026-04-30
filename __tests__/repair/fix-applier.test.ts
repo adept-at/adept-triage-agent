@@ -15,6 +15,11 @@ jest.mock('@actions/core');
 describe('fix-applier', () => {
   let mockCore: jest.Mocked<typeof core>;
   let mockOctokit: {
+    actions: {
+      getWorkflowRun: jest.Mock;
+      listJobsForWorkflowRun: jest.Mock;
+      downloadJobLogsForWorkflowRun: jest.Mock;
+    };
     git: {
       getRef: jest.Mock;
       createRef: jest.Mock;
@@ -43,6 +48,11 @@ describe('fix-applier', () => {
 
     // Create mock Octokit
     mockOctokit = {
+      actions: {
+        getWorkflowRun: jest.fn(),
+        listJobsForWorkflowRun: jest.fn(),
+        downloadJobLogsForWorkflowRun: jest.fn(),
+      },
       git: {
         getRef: jest.fn(),
         createRef: jest.fn(),
@@ -1213,6 +1223,160 @@ describe('fix-applier', () => {
       // Unique name has base36 timestamp (longer, more unique)
       expect(uniqueName).not.toMatch(/-\d{3}$/);
       expect(uniqueName.length).toBeGreaterThan(normalName.length);
+    });
+  });
+
+  describe('GitHubFixApplier.waitForValidation()', () => {
+    let timeoutSpy: jest.SpyInstance;
+
+    beforeEach(() => {
+      timeoutSpy = jest
+        .spyOn(global, 'setTimeout')
+        .mockImplementation((callback: (...args: unknown[]) => void) => {
+          callback();
+          return 0 as unknown as NodeJS.Timeout;
+        });
+    });
+
+    afterEach(() => {
+      timeoutSpy.mockRestore();
+    });
+
+    it('returns a passed remote validation result when success has concrete pass evidence', async () => {
+      const applier = new GitHubFixApplier(createConfig());
+      mockOctokit.actions.getWorkflowRun.mockResolvedValue({
+        data: {
+          status: 'completed',
+          conclusion: 'success',
+          html_url: 'https://github.com/test-owner/test-repo/actions/runs/123',
+        },
+      });
+      mockOctokit.actions.listJobsForWorkflowRun.mockResolvedValue({
+        data: { jobs: [{ id: 10, conclusion: 'success' }] },
+      });
+      mockOctokit.actions.downloadJobLogsForWorkflowRun.mockResolvedValue({
+        data: '1 passing (5s)',
+      });
+
+      const result = await applier.waitForValidation(123);
+
+      expect(result.passed).toBe(true);
+      expect(result.validationResult).toEqual({
+        status: 'passed',
+        mode: 'remote',
+        runId: 123,
+        url: 'https://github.com/test-owner/test-repo/actions/runs/123',
+        conclusion: 'success',
+        testEvidence: {
+          trustworthy: true,
+          reason: 'concrete pass evidence (matched "1 passing")',
+          matched: '1 passing',
+        },
+      });
+    });
+
+    it('uses pass evidence from any validation job, not just the first job', async () => {
+      const applier = new GitHubFixApplier(createConfig());
+      mockOctokit.actions.getWorkflowRun.mockResolvedValue({
+        data: {
+          status: 'completed',
+          conclusion: 'success',
+          html_url: 'https://github.com/test-owner/test-repo/actions/runs/126',
+        },
+      });
+      mockOctokit.actions.listJobsForWorkflowRun.mockResolvedValue({
+        data: {
+          jobs: [
+            { id: 20, name: 'setup', conclusion: 'success' },
+            { id: 21, name: 'validate', conclusion: 'success' },
+          ],
+        },
+      });
+      mockOctokit.actions.downloadJobLogsForWorkflowRun
+        .mockResolvedValueOnce({ data: 'npm ci completed' })
+        .mockResolvedValueOnce({ data: '1 passing (5s)' });
+
+      const result = await applier.waitForValidation(126);
+
+      expect(result.passed).toBe(true);
+      expect(result.validationResult?.status).toBe('passed');
+      expect(mockOctokit.actions.downloadJobLogsForWorkflowRun).toHaveBeenCalledTimes(2);
+    });
+
+    it('downgrades success without trustworthy test evidence to inconclusive', async () => {
+      const applier = new GitHubFixApplier(createConfig());
+      mockOctokit.actions.getWorkflowRun.mockResolvedValue({
+        data: {
+          status: 'completed',
+          conclusion: 'success',
+          html_url: 'https://github.com/test-owner/test-repo/actions/runs/124',
+        },
+      });
+      mockOctokit.actions.listJobsForWorkflowRun.mockResolvedValue({
+        data: { jobs: [{ id: 11, conclusion: 'success' }] },
+      });
+      mockOctokit.actions.downloadJobLogsForWorkflowRun.mockResolvedValue({
+        data: 'No spec files were found',
+      });
+
+      const result = await applier.waitForValidation(124);
+
+      expect(result.passed).toBe(false);
+      expect(result.conclusion).toBe('success-without-test-evidence');
+      expect(result.validationResult?.status).toBe('inconclusive');
+      expect(result.validationResult?.testEvidence?.trustworthy).toBe(false);
+      expect(result.validationResult?.testEvidence?.reason).toContain('zero tests ran');
+    });
+
+    it('extracts failure details from failed validation logs', async () => {
+      const applier = new GitHubFixApplier(createConfig());
+      mockOctokit.actions.getWorkflowRun.mockResolvedValue({
+        data: {
+          status: 'completed',
+          conclusion: 'failure',
+          html_url: 'https://github.com/test-owner/test-repo/actions/runs/125',
+        },
+      });
+      mockOctokit.actions.listJobsForWorkflowRun.mockResolvedValue({
+        data: { jobs: [{ id: 12, conclusion: 'failure' }] },
+      });
+      mockOctokit.actions.downloadJobLogsForWorkflowRun.mockResolvedValue({
+        data: '1 failing\nAssertionError: image component should be persisted before preview: expected undefined to exist',
+      });
+
+      const result = await applier.waitForValidation(125);
+
+      expect(result.passed).toBe(false);
+      expect(result.validationResult?.status).toBe('failed');
+      expect(result.validationResult?.failure).toEqual({
+        primaryError:
+          'AssertionError: image component should be persisted before preview: expected undefined to exist',
+        failedAssertion: 'expected undefined to exist',
+        failureStage: 'validation',
+      });
+    });
+
+    it('treats cancelled validation without concrete failure evidence as inconclusive', async () => {
+      const applier = new GitHubFixApplier(createConfig());
+      mockOctokit.actions.getWorkflowRun.mockResolvedValue({
+        data: {
+          status: 'completed',
+          conclusion: 'cancelled',
+          html_url: 'https://github.com/test-owner/test-repo/actions/runs/127',
+        },
+      });
+      mockOctokit.actions.listJobsForWorkflowRun.mockResolvedValue({
+        data: { jobs: [{ id: 13, conclusion: 'cancelled' }] },
+      });
+      mockOctokit.actions.downloadJobLogsForWorkflowRun.mockResolvedValue({
+        data: 'The workflow was cancelled before tests completed',
+      });
+
+      const result = await applier.waitForValidation(127);
+
+      expect(result.passed).toBe(false);
+      expect(result.validationResult?.status).toBe('inconclusive');
+      expect(result.validationResult?.failure).toBeUndefined();
     });
   });
 

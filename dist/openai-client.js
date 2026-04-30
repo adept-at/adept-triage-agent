@@ -61,7 +61,7 @@ class OpenAIClient {
     async analyze(errorData, examples, skillContext, options) {
         const model = options?.model ?? constants_1.OPENAI.LEGACY_MODEL;
         const reasoningEffort = options?.reasoningEffort ?? 'none';
-        core.info(`🧠 Using ${model} model for analysis (Responses API)`);
+        core.info(`🧠 Using ${model} model for analysis (Responses API) reasoningEffort=${reasoningEffort}`);
         const systemPrompt = this.getSystemPrompt();
         const userContent = this.buildUserContent(errorData, examples, skillContext);
         const screenshotCount = errorData.screenshots?.length || 0;
@@ -491,12 +491,19 @@ FOR PRODUCT_ISSUES: You MUST analyze the diff patches above to:
     formatProductDiffSection(productDiff) {
         const maxFiles = constants_1.ARTIFACTS.MAX_PR_DIFF_FILES;
         const maxPatchLines = constants_1.ARTIFACTS.MAX_PATCH_LINES;
-        let section = `\n⚠️ Recent Product Repo Changes (${constants_1.DEFAULT_PRODUCT_REPO}):
+        let section = `\nRecent Product Repo Changes (${constants_1.DEFAULT_PRODUCT_REPO}):
 - Total files changed: ${productDiff.totalChanges}
 - Lines added: ${productDiff.additions}
 - Lines deleted: ${productDiff.deletions}
 
-These are the most recent changes to the product codebase. If any of these changes affect selectors, components, layouts, or APIs that the failing test depends on, this is likely a PRODUCT_ISSUE — the test is correctly detecting that the product changed.
+These are recent commits on the product repo's main branch. They may or may not be deployed at the time of the failure, and most likely have no causal relationship to this specific test. Treat them as background context only.
+
+A causal link to a PRODUCT_ISSUE requires ALL of:
+1. A specific changed file directly touches a selector, component, layout, or API the failing test depends on (cite the file + line range).
+2. The runtime evidence (logs, stack trace, screenshot) is consistent with that change.
+3. No simpler test-side explanation (timing, selector mismatch, empty-state UI) covers the observed failure.
+
+Without all three, do NOT escalate this section to a PRODUCT_ISSUE verdict.
 
 Changed Product Files:
 `;
@@ -594,6 +601,7 @@ Changed Product Files:
             ? this.ensureJsonMention(params.userContent)
             : params.userContent;
         const input = this.convertToResponsesInput(userContent);
+        core.info(`🧠 Using ${model} model (Responses API) reasoningEffort=${reasoningEffort}`);
         for (let attempt = 1; attempt <= this.maxRetries; attempt++) {
             try {
                 const response = await this.openai.responses.create({

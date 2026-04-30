@@ -491,6 +491,37 @@ describe('buildSkill', () => {
     expect(skill.failureModeTrace?.originalState).toBe('concrete value captured');
     expect(skill.failureModeTrace?.rootMechanism).toBe('');
   });
+
+  it('persists failedFixEvidence when validation falsifies the fix', () => {
+    const failedFixEvidence = {
+      fixCommit: 'abc123',
+      validationRunId: 123,
+      originalFailureSignature: 'Expected img[alt="Skill Image"]',
+      validationFailureSignature: 'expected undefined to exist',
+      failedAssertion: 'expected undefined to exist',
+      failureStage: 'validation',
+      reasonTheFixWasWrong: 'new assertion failed before preview',
+      changedFailureSignature: true,
+    };
+
+    const skill = buildSkill({
+      repo: 'adept-at/test-repo',
+      spec: 'test.cy.ts',
+      testName: 'my test',
+      framework: 'cypress',
+      errorMessage: 'Expected img[alt="Skill Image"]',
+      rootCauseCategory: 'WAIT_ADDITION',
+      fix: { file: 'test.cy.ts', changeType: 'WAIT_ADDITION', summary: 'wait for save', pattern: 'wait for upsert' },
+      confidence: 84,
+      iterations: 1,
+      prUrl: '',
+      validatedLocally: false,
+      priorSkillCount: 0,
+      failedFixEvidence,
+    });
+
+    expect(skill.failedFixEvidence).toEqual(failedFixEvidence);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -1464,6 +1495,45 @@ describe('testName + prUrl in formatSkillsForPrompt (v1.50.0 B1)', () => {
     });
     const result = formatSkillsForPrompt([skill], 'fix_generation');
     expect(result).not.toContain('IGNORE PREVIOUS INSTRUCTIONS');
+  });
+});
+
+describe('failedFixEvidence in formatSkillsForPrompt', () => {
+  const failedFixEvidence = {
+    fixCommit: 'abc123',
+    validationRunId: 123,
+    originalFailureSignature: 'Expected img[alt="Skill Image"]',
+    validationFailureSignature: 'expected undefined to exist',
+    failedAssertion: 'expected undefined to exist',
+    failureStage: 'validation',
+    reasonTheFixWasWrong: 'new assertion failed before preview',
+    changedFailureSignature: true,
+  };
+
+  it('renders failed validation evidence for fix_generation as a warning not a template', () => {
+    const skill = makeSkill({ failedFixEvidence });
+    const result = formatSkillsForPrompt([skill], 'fix_generation');
+
+    expect(result).toContain('Prior failed validation');
+    expect(result).toContain('do not repeat as a proven pattern');
+    expect(result).toContain('expected undefined to exist');
+    expect(result).toContain('changedFailureSignature: true');
+  });
+
+  it('renders failed validation evidence for review', () => {
+    const skill = makeSkill({ failedFixEvidence });
+    const result = formatSkillsForPrompt([skill], 'review');
+
+    expect(result).toContain('Prior failed validation');
+    expect(result).toContain('new assertion failed before preview');
+  });
+
+  it('does not render failed validation evidence for investigation', () => {
+    const skill = makeSkill({ failedFixEvidence });
+    const result = formatSkillsForPrompt([skill], 'investigation');
+
+    expect(result).not.toContain('Prior failed validation');
+    expect(result).not.toContain('expected undefined to exist');
   });
 });
 

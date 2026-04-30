@@ -101,12 +101,18 @@ export function setSuccessOutput(
             branch: autoFixResult.branchName,
             commit: autoFixResult.commitSha,
             files: autoFixResult.modifiedFiles,
-            validation: {
+            validation: mergeValidationResult(autoFixResult) || {
               status: autoFixResult.validationStatus || 'skipped',
+              mode: autoFixResult.validationRunId ? 'remote' : 'local',
               runId: autoFixResult.validationRunId,
               url: autoFixResult.validationUrl,
             },
           },
+        }
+      : {}),
+    ...(autoFixResult?.validationResult
+      ? {
+          validation: mergeValidationResult(autoFixResult),
         }
       : {}),
     ...(result.autoFixSkipped
@@ -166,29 +172,36 @@ export function setSuccessOutput(
       JSON.stringify(autoFixResult.modifiedFiles)
     );
 
-    if (autoFixResult.validationRunId) {
+    const validationStatus =
+      autoFixResult.validationResult?.status || autoFixResult.validationStatus;
+    const validationUrl =
+      autoFixResult.validationResult?.url || autoFixResult.validationUrl;
+    const validationRunId =
+      autoFixResult.validationResult?.runId || autoFixResult.validationRunId;
+
+    if (validationRunId) {
       core.setOutput(
         'validation_run_id',
-        autoFixResult.validationRunId.toString()
+        validationRunId.toString()
       );
       core.setOutput(
         'validation_status',
-        autoFixResult.validationStatus || 'pending'
+        validationStatus || 'pending'
       );
       core.setOutput(
         'validation_url',
-        autoFixResult.validationUrl ||
-          `https://github.com/${github.context.repo.owner}/${github.context.repo.repo}/actions/runs/${autoFixResult.validationRunId}`
+        validationUrl ||
+          `https://github.com/${github.context.repo.owner}/${github.context.repo.repo}/actions/runs/${validationRunId}`
       );
-    } else if (autoFixResult.validationStatus === 'pending') {
+    } else if (validationStatus === 'pending') {
       core.setOutput('validation_status', 'pending');
-      if (autoFixResult.validationUrl) {
-        core.setOutput('validation_url', autoFixResult.validationUrl);
+      if (validationUrl) {
+        core.setOutput('validation_url', validationUrl);
       }
     } else {
       core.setOutput(
         'validation_status',
-        autoFixResult.validationStatus || 'skipped'
+        validationStatus || 'skipped'
       );
     }
   } else {
@@ -247,14 +260,28 @@ export function setSuccessOutput(
       core.info(`  Commit: ${autoFixResult.commitSha}`);
       core.info(`  Files: ${autoFixResult.modifiedFiles.join(', ')}`);
 
-      if (autoFixResult.validationStatus === 'passed') {
+      const validationStatus =
+        autoFixResult.validationResult?.status || autoFixResult.validationStatus;
+      if (validationStatus === 'passed') {
         core.info('\n🧪 Validation: passed (locally validated before push)');
       } else if (autoFixResult.validationRunId) {
-        core.info(`\n🧪 Validation: ${autoFixResult.validationStatus}`);
+        core.info(`\n🧪 Validation: ${validationStatus}`);
         core.info(`  Run ID: ${autoFixResult.validationRunId}`);
+        if (autoFixResult.validationResult?.failure?.primaryError) {
+          core.info(`  Failure: ${autoFixResult.validationResult.failure.primaryError}`);
+        }
       } else {
-        core.info(`\n🧪 Validation: ${autoFixResult.validationStatus || 'skipped'}`);
+        core.info(`\n🧪 Validation: ${validationStatus || 'skipped'}`);
       }
     }
   }
+}
+
+function mergeValidationResult(autoFixResult: ApplyResult): ApplyResult['validationResult'] {
+  if (!autoFixResult.validationResult) return undefined;
+  return {
+    ...autoFixResult.validationResult,
+    runId: autoFixResult.validationResult.runId || autoFixResult.validationRunId,
+    url: autoFixResult.validationResult.url || autoFixResult.validationUrl,
+  };
 }

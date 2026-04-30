@@ -38,6 +38,8 @@ exports.createFixApplier = createFixApplier;
 exports.generateFixBranchName = generateFixBranchName;
 const core = __importStar(require("@actions/core"));
 const constants_1 = require("../config/constants");
+const test_evidence_1 = require("../services/test-evidence");
+const text_utils_1 = require("../utils/text-utils");
 const RETRY_CONFIG = {
     maxRetries: 3,
     baseDelayMs: 1000,
@@ -227,6 +229,9 @@ class GitHubFixApplier {
         core.info(`  Branch: ${params.branch}`);
         core.info(`  Spec: ${params.spec}`);
         core.info(`  Preview URL: ${params.previewUrl}`);
+        if (params.spec && !params.spec.includes('/')) {
+            core.warning(`Spec "${params.spec}" looks like a bare basename. Consumer validate-fix workflows must resolve it against the test root (e.g. \`find ./cypress -type f -name "$BASENAME"\`) or the runner will exit cleanly without running any tests. Prefer passing a repo-relative path in VALIDATION_SPEC.`);
+        }
         try {
             await withRetry(() => octokit.actions.createWorkflowDispatch({
                 owner,
@@ -313,12 +318,61 @@ class GitHubFixApplier {
                 const { status, conclusion, html_url } = run.data;
                 core.info(`  Validation run ${runId}: status=${status}, conclusion=${conclusion ?? 'n/a'}`);
                 if (status === 'completed') {
-                    const passed = conclusion === 'success';
-                    let logs;
-                    if (!passed) {
-                        logs = await this.getValidationFailureLogs(runId);
+                    const apiPassed = conclusion === 'success';
+                    const logs = await this.getValidationFailureLogs(runId);
+                    if (apiPassed) {
+                        const evidence = (0, test_evidence_1.verifyTestEvidence)(logs);
+                        if (!evidence.trustworthy) {
+                            const status = deriveFailedValidationStatus('success-without-test-evidence', logs);
+                            core.warning(`Validation run ${runId} reported conclusion=success but ${evidence.reason} — treating as failed to avoid poisoning the skill store with a false validation.`);
+                            return {
+                                passed: false,
+                                conclusion: 'success-without-test-evidence',
+                                logs,
+                                runId,
+                                url: html_url,
+                                validationResult: buildRemoteValidationResult({
+                                    status,
+                                    runId,
+                                    url: html_url,
+                                    conclusion: 'success-without-test-evidence',
+                                    logs,
+                                    testEvidence: evidence,
+                                }),
+                            };
+                        }
+                        core.info(`✅ Test evidence verified: ${evidence.reason}`);
+                        return {
+                            passed: true,
+                            conclusion: conclusion || 'success',
+                            logs: undefined,
+                            runId,
+                            url: html_url,
+                            validationResult: buildRemoteValidationResult({
+                                status: 'passed',
+                                runId,
+                                url: html_url,
+                                conclusion: conclusion || 'success',
+                                logs,
+                                testEvidence: evidence,
+                            }),
+                        };
                     }
-                    return { passed, conclusion: conclusion || 'unknown', logs, runId, url: html_url };
+                    const status = deriveFailedValidationStatus(conclusion || 'unknown', logs);
+                    return {
+                        passed: false,
+                        conclusion: conclusion || 'unknown',
+                        logs,
+                        runId,
+                        url: html_url,
+                        validationResult: buildRemoteValidationResult({
+                            status,
+                            runId,
+                            url: html_url,
+                            conclusion: conclusion || 'unknown',
+                            logs,
+                        }),
+                    };
                 }
             }
             catch (error) {
@@ -331,6 +385,12 @@ class GitHubFixApplier {
             conclusion: 'timeout',
             logs: `Validation run ${runId} did not complete within ${POLL_TIMEOUT_MS / 1000}s`,
             runId,
+            validationResult: {
+                status: 'pending',
+                mode: 'remote',
+                runId,
+                conclusion: 'timeout',
+            },
         };
     }
     async getValidationFailureLogs(runId) {
@@ -342,18 +402,33 @@ class GitHubFixApplier {
                 run_id: runId,
                 filter: 'latest',
             }), `listing jobs for validation run ${runId}`);
-            const failedJob = jobs.data.jobs.find((j) => j.conclusion === 'failure') ||
-                jobs.data.jobs[0];
-            if (!failedJob)
+            const jobsToRead = [...jobs.data.jobs].sort((a, b) => {
+                if (a.conclusion === 'failure' && b.conclusion !== 'failure')
+                    return -1;
+                if (b.conclusion === 'failure' && a.conclusion !== 'failure')
+                    return 1;
+                return 0;
+            });
+            if (jobsToRead.length === 0)
                 return 'No job found in validation run';
-            const logsResponse = await withRetry(() => octokit.actions.downloadJobLogsForWorkflowRun({
-                owner,
-                repo,
-                job_id: failedJob.id,
-            }), `downloading logs for validation job ${failedJob.id}`);
-            const rawLogs = typeof logsResponse.data === 'string'
-                ? logsResponse.data
-                : String(logsResponse.data);
+            const logChunks = [];
+            for (const job of jobsToRead) {
+                try {
+                    const logsResponse = await withRetry(() => octokit.actions.downloadJobLogsForWorkflowRun({
+                        owner,
+                        repo,
+                        job_id: job.id,
+                    }), `downloading logs for validation job ${job.id}`);
+                    const rawLogs = typeof logsResponse.data === 'string'
+                        ? logsResponse.data
+                        : String(logsResponse.data);
+                    logChunks.push(`--- job ${job.name || job.id} (${job.conclusion || 'unknown'}) ---\n${rawLogs}`);
+                }
+                catch (jobLogError) {
+                    core.warning(`Failed to fetch logs for validation job ${job.id}: ${jobLogError}`);
+                }
+            }
+            const rawLogs = logChunks.join('\n\n') || 'No validation job logs could be downloaded';
             const maxLen = 20_000;
             if (rawLogs.length > maxLen) {
                 return rawLogs.slice(-maxLen);
@@ -581,6 +656,64 @@ function generateFixBranchName(testFile, timestamp = new Date(), forceUnique = f
         ? `-${timestamp.getTime().toString(36)}`
         : `-${timestamp.getMilliseconds().toString().padStart(3, '0')}`;
     return `${constants_1.AUTO_FIX.BRANCH_PREFIX}${sanitizedFile}-${dateStr}${uniqueSuffix}`;
+}
+function deriveFailedValidationStatus(conclusion, logs) {
+    if (hasConcreteFailureEvidence(logs))
+        return 'failed';
+    if (conclusion === 'failure')
+        return 'failed';
+    return 'inconclusive';
+}
+function hasConcreteFailureEvidence(logs) {
+    if (!logs)
+        return false;
+    return /(?:\b\d+\s+failing\b|AssertionError|CypressError|TimeoutError|Process completed with exit code [1-9])/i.test(logs);
+}
+function buildRemoteValidationResult(params) {
+    const primaryError = extractPrimaryValidationError(params.logs);
+    return {
+        status: params.status,
+        mode: 'remote',
+        runId: params.runId,
+        url: params.url,
+        conclusion: params.conclusion,
+        ...(params.testEvidence ? { testEvidence: params.testEvidence } : {}),
+        ...(primaryError
+            ? {
+                failure: {
+                    primaryError,
+                    failedAssertion: extractFailedAssertion(primaryError),
+                    failureStage: 'validation',
+                },
+            }
+            : {}),
+    };
+}
+function extractPrimaryValidationError(logs) {
+    if (!logs)
+        return undefined;
+    const clean = logs.replace(text_utils_1.ANSI_ESCAPE_REGEX, '');
+    const patterns = [
+        /AssertionError:[^\n]+/i,
+        /CypressError:[^\n]+/i,
+        /TimeoutError:[^\n]+/i,
+        /Error:[^\n]+/i,
+    ];
+    for (const pattern of patterns) {
+        const match = clean.match(pattern);
+        if (match)
+            return match[0].trim().slice(0, 500);
+    }
+    return undefined;
+}
+function extractFailedAssertion(primaryError) {
+    const expectedMatch = primaryError.match(/expected\s+(.+)/i);
+    if (expectedMatch)
+        return expectedMatch[0].slice(0, 300);
+    const timedOutMatch = primaryError.match(/Timed out[^:]*:\s*(.+)/i);
+    if (timedOutMatch)
+        return timedOutMatch[1].slice(0, 300);
+    return undefined;
 }
 function computeLineSimilarity(a, b) {
     const aLines = a.split('\n').map((l) => l.trim()).filter(Boolean);

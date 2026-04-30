@@ -1,6 +1,6 @@
 import * as core from '@actions/core';
 import * as crypto from 'crypto';
-import { FailureModeTrace } from '../types';
+import { FailedFixEvidence, FailureModeTrace } from '../types';
 
 /**
  * A recorded fix pattern that the agent can recall on future runs.
@@ -75,6 +75,13 @@ export interface TriageSkill {
    * doesn't have one to persist either.
    */
   failureModeTrace?: FailureModeTrace;
+
+  /**
+   * Structured evidence from a validation failure that falsified this fix.
+   * Rendered only as "what did not work" context, never as a reusable
+   * success template.
+   */
+  failedFixEvidence?: FailedFixEvidence;
 
   /**
    * Curated seed skill — inserted manually (via `scripts/seed-skill.ts`)
@@ -267,6 +274,7 @@ function backfillDefaults(skill: TriageSkill): TriageSkill {
     classificationOutcome: skill.classificationOutcome ?? 'unknown',
     rootCauseChain: skill.rootCauseChain ?? '',
     repoContext: skill.repoContext ?? '',
+    failedFixEvidence: skill.failedFixEvidence,
   };
 }
 
@@ -1008,6 +1016,7 @@ export function buildSkill(params: {
    * still useful without it.
    */
   failureModeTrace?: FailureModeTrace;
+  failedFixEvidence?: FailedFixEvidence;
 }): TriageSkill {
   return {
     id: crypto.randomUUID(),
@@ -1041,6 +1050,7 @@ export function buildSkill(params: {
     // DynamoDB items lean and makes the "skill has trace?" check simple
     // (`skill.failureModeTrace` is truthy or not).
     ...(params.failureModeTrace ? { failureModeTrace: params.failureModeTrace } : {}),
+    ...(params.failedFixEvidence ? { failedFixEvidence: params.failedFixEvidence } : {}),
   };
 }
 
@@ -1272,6 +1282,27 @@ export function formatSkillsForPrompt(
       lines.push(
         `- Shipped as: ${sanitizeForPrompt(s.prUrl)} (prior validated fix landed as this PR — strong trust signal)`
       );
+    }
+
+    if ((role === 'fix_generation' || role === 'review') && s.failedFixEvidence) {
+      const failed = s.failedFixEvidence;
+      lines.push(
+        '- Prior failed validation (do not repeat as a proven pattern):',
+        `  - originalFailure: ${sanitizeForPrompt(failed.originalFailureSignature, 200)}`,
+        `  - validationFailure: ${sanitizeForPrompt(failed.validationFailureSignature, 200)}`,
+        `  - failureStage: ${sanitizeForPrompt(failed.failureStage, 80)}`,
+        `  - changedFailureSignature: ${failed.changedFailureSignature}`
+      );
+      if (failed.failedAssertion) {
+        lines.push(
+          `  - failedAssertion: ${sanitizeForPrompt(failed.failedAssertion, 200)}`
+        );
+      }
+      if (failed.reasonTheFixWasWrong) {
+        lines.push(
+          `  - whyItFailed: ${sanitizeForPrompt(failed.reasonTheFixWasWrong, 200)}`
+        );
+      }
     }
 
     // Validation gate (v1.49.2): only surface the causal trace when the

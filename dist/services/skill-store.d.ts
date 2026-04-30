@@ -1,4 +1,4 @@
-import { FailureModeTrace } from '../types';
+import { FailedFixEvidence, FailureModeTrace } from '../types';
 export interface TriageSkill {
     id: string;
     createdAt: string;
@@ -28,6 +28,7 @@ export interface TriageSkill {
     rootCauseChain?: string;
     repoContext?: string;
     failureModeTrace?: FailureModeTrace;
+    failedFixEvidence?: FailedFixEvidence;
     isSeed?: boolean;
 }
 export interface FlakinessSignal {
@@ -109,6 +110,7 @@ export declare function buildSkill(params: {
     rootCauseChain?: string;
     repoContext?: string;
     failureModeTrace?: FailureModeTrace;
+    failedFixEvidence?: FailedFixEvidence;
 }): TriageSkill;
 export declare function describeFixPattern(changes: Array<{
     file: string;

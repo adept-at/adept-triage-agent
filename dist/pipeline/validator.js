@@ -202,6 +202,11 @@ async function iterativeFixValidateLoop(inputs, repoDetails, autoFixTargetRepo, 
                         commitSha: pushResult.commitSha,
                         branchName: pushResult.branchName,
                         validationStatus: 'passed',
+                        validationResult: {
+                            status: 'passed',
+                            mode: 'local',
+                            conclusion: 'success',
+                        },
                     };
                     return { fixRecommendation, autoFixResult, iterations: iteration + 1, prUrl: pushResult.prUrl, agentRootCause, agentInvestigationFindings, autoFixSkipped, autoFixSkippedReason };
                 }
@@ -212,6 +217,11 @@ async function iterativeFixValidateLoop(inputs, repoDetails, autoFixTargetRepo, 
                         modifiedFiles: fixRecommendation.proposedChanges.map((c) => c.file),
                         error: `Push failed after successful test: ${pushError}`,
                         validationStatus: 'passed',
+                        validationResult: {
+                            status: 'passed',
+                            mode: 'local',
+                            conclusion: 'success',
+                        },
                     };
                 }
                 return { fixRecommendation, autoFixResult, iterations: iteration + 1, agentRootCause, agentInvestigationFindings, autoFixSkipped, autoFixSkippedReason };
@@ -340,9 +350,35 @@ async function attemptAutoFix(inputs, fixRecommendation, octokit, repoDetails, e
                         result.validationUrl = validationResult.url;
                         if (validationResult.runId) {
                             core.info(`✅ Validation workflow triggered: run ID ${validationResult.runId}`);
+                            const validationOutcome = await fixApplier.waitForValidation(validationResult.runId);
+                            const structured = validationOutcome.validationResult ?? {
+                                status: validationOutcome.passed ? 'passed' : 'failed',
+                                mode: 'remote',
+                                runId: validationOutcome.runId,
+                                url: validationOutcome.url,
+                                conclusion: validationOutcome.conclusion,
+                            };
+                            result.validationResult = structured;
+                            result.validationStatus = structured.status;
+                            result.validationUrl = structured.url || validationResult.url;
+                            if (structured.status === 'passed') {
+                                core.info('✅ Remote validation passed');
+                            }
+                            else if (structured.status === 'pending') {
+                                core.warning('⏳ Remote validation is still pending after wait budget');
+                            }
+                            else {
+                                core.warning(`❌ Remote validation ${structured.status}: ${structured.failure?.primaryError || structured.conclusion || 'no failure detail'}`);
+                            }
                         }
                         else {
                             core.info('✅ Validation workflow triggered: run ID not available yet');
+                            result.validationResult = {
+                                status: 'pending',
+                                mode: 'remote',
+                                url: validationResult.url,
+                                conclusion: 'dispatched-run-not-found',
+                            };
                         }
                     }
                     else {

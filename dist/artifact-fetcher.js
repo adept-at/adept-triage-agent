@@ -83,13 +83,31 @@ class ArtifactFetcher {
             if (jobName) {
                 const matrixMatch = jobName.match(/\((.*?)\)/);
                 const searchName = matrixMatch ? matrixMatch[1] : jobName;
-                const jobSpecificArtifacts = screenshotArtifacts.filter(artifact => artifact.name.toLowerCase().includes(searchName.toLowerCase()));
+                const jobLower = jobName.toLowerCase();
+                const searchLower = searchName.toLowerCase();
+                let jobSpecificArtifacts = screenshotArtifacts.filter(artifact => artifact.name.toLowerCase().includes(searchLower));
+                if (jobSpecificArtifacts.length === 0) {
+                    const jobTokens = jobLower
+                        .split(/[^a-z0-9]+/)
+                        .filter((t) => t.length >= 3);
+                    if (jobTokens.length > 0) {
+                        jobSpecificArtifacts = screenshotArtifacts.filter((artifact) => {
+                            const artifactLower = artifact.name.toLowerCase();
+                            return jobTokens.some((token) => artifactLower.includes(token));
+                        });
+                        if (jobSpecificArtifacts.length > 0) {
+                            core.info(`Found ${jobSpecificArtifacts.length} artifact(s) via token-overlap match for job "${jobName}" (tokens: ${jobTokens.join(', ')})`);
+                        }
+                    }
+                }
                 if (jobSpecificArtifacts.length > 0) {
-                    core.info(`Found ${jobSpecificArtifacts.length} artifact(s) specific to job: ${jobName} (searching for: ${searchName})`);
+                    if (jobSpecificArtifacts.length !== screenshotArtifacts.length) {
+                        core.info(`Narrowed to ${jobSpecificArtifacts.length} artifact(s) specific to job: ${jobName} (searching for: ${searchName})`);
+                    }
                     screenshotArtifacts = jobSpecificArtifacts;
                 }
                 else {
-                    core.info(`No job-specific artifacts for "${searchName}", using all ${screenshotArtifacts.length} matching artifact(s)`);
+                    core.warning(`No artifacts specifically matched job "${jobName}" (also tried tokens). Falling back to all ${screenshotArtifacts.length} matching artifact(s) — sibling-job contamination is possible.`);
                 }
             }
             if (screenshotArtifacts.length === 0) {

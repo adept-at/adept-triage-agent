@@ -6,8 +6,10 @@
 
 import * as core from '@actions/core';
 import { Octokit } from '@octokit/rest';
-import { FixRecommendation } from '../types';
+import { FixRecommendation, ValidationResult, ValidationStatus } from '../types';
 import { AUTO_FIX } from '../config/constants';
+import { verifyTestEvidence } from '../services/test-evidence';
+import { ANSI_ESCAPE_REGEX } from '../utils/text-utils';
 
 /**
  * Result of applying a fix
@@ -26,9 +28,11 @@ export interface ApplyResult {
   /** Validation workflow run ID (if validation was triggered) */
   validationRunId?: number;
   /** Validation status */
-  validationStatus?: 'pending' | 'passed' | 'failed' | 'skipped';
+  validationStatus?: ValidationStatus;
   /** Validation workflow URL (if available) */
   validationUrl?: string;
+  /** Structured validation result for audit output and learning. */
+  validationResult?: ValidationResult;
 }
 
 /**
@@ -83,6 +87,8 @@ export interface ValidationOutcome {
   runId: number;
   /** URL to the workflow run */
   url?: string;
+  /** Structured validation result for audit output and learning. */
+  validationResult?: ValidationResult;
 }
 
 /**
@@ -437,6 +443,21 @@ export class GitHubFixApplier implements FixApplier {
     core.info(`  Spec: ${params.spec}`);
     core.info(`  Preview URL: ${params.previewUrl}`);
 
+    // Defensive: a bare spec basename (no `/`) is a known foot-gun.
+    // Consumer `validate-fix.yml` workflows that don't resolve the
+    // basename against the repo's test root will run the runner with
+    // a missing spec, which the runner often handles by exiting 0 and
+    // logging "no spec files were found." That used to round-trip back
+    // to the agent as a successful validation. The test-evidence gate
+    // in waitForValidation now catches the false success, but the
+    // operator-facing root cause is much easier to fix at the source —
+    // pass a repo-relative path or fix the workflow's spec resolution.
+    if (params.spec && !params.spec.includes('/')) {
+      core.warning(
+        `Spec "${params.spec}" looks like a bare basename. Consumer validate-fix workflows must resolve it against the test root (e.g. \`find ./cypress -type f -name "$BASENAME"\`) or the runner will exit cleanly without running any tests. Prefer passing a repo-relative path in VALIDATION_SPEC.`
+      );
+    }
+
     try {
       // Trigger the workflow
       await withRetry(
@@ -568,12 +589,77 @@ export class GitHubFixApplier implements FixApplier {
         core.info(`  Validation run ${runId}: status=${status}, conclusion=${conclusion ?? 'n/a'}`);
 
         if (status === 'completed') {
-          const passed = conclusion === 'success';
-          let logs: string | undefined;
-          if (!passed) {
-            logs = await this.getValidationFailureLogs(runId);
+          // The workflow's reported conclusion is necessary but not
+          // sufficient — consumer `validate-fix.yml` scripts have shipped
+          // runners through `tee` without `pipefail`, masking the real
+          // Cypress exit, and bare spec basenames can make the runner
+          // log "no spec files were found" and exit 0. Both produce
+          // `conclusion === 'success'` despite zero tests running.
+          // Always fetch the run logs and require concrete pass evidence
+          // before accepting passed=true.
+          const apiPassed = conclusion === 'success';
+          const logs = await this.getValidationFailureLogs(runId);
+
+          if (apiPassed) {
+            const evidence = verifyTestEvidence(logs);
+            if (!evidence.trustworthy) {
+              const status = deriveFailedValidationStatus(
+                'success-without-test-evidence',
+                logs
+              );
+              core.warning(
+                `Validation run ${runId} reported conclusion=success but ${evidence.reason} — treating as failed to avoid poisoning the skill store with a false validation.`
+              );
+              return {
+                passed: false,
+                conclusion: 'success-without-test-evidence',
+                logs,
+                runId,
+                url: html_url,
+                validationResult: buildRemoteValidationResult({
+                  status,
+                  runId,
+                  url: html_url,
+                  conclusion: 'success-without-test-evidence',
+                  logs,
+                  testEvidence: evidence,
+                }),
+              };
+            }
+            core.info(`✅ Test evidence verified: ${evidence.reason}`);
+
+            return {
+              passed: true,
+              conclusion: conclusion || 'success',
+              logs: undefined,
+              runId,
+              url: html_url,
+              validationResult: buildRemoteValidationResult({
+                status: 'passed',
+                runId,
+                url: html_url,
+                conclusion: conclusion || 'success',
+                logs,
+                testEvidence: evidence,
+              }),
+            };
           }
-          return { passed, conclusion: conclusion || 'unknown', logs, runId, url: html_url };
+
+          const status = deriveFailedValidationStatus(conclusion || 'unknown', logs);
+          return {
+            passed: false,
+            conclusion: conclusion || 'unknown',
+            logs,
+            runId,
+            url: html_url,
+            validationResult: buildRemoteValidationResult({
+              status,
+              runId,
+              url: html_url,
+              conclusion: conclusion || 'unknown',
+              logs,
+            }),
+          };
         }
       } catch (error) {
         core.warning(`Error polling validation run ${runId}: ${error}`);
@@ -587,6 +673,12 @@ export class GitHubFixApplier implements FixApplier {
       conclusion: 'timeout',
       logs: `Validation run ${runId} did not complete within ${POLL_TIMEOUT_MS / 1000}s`,
       runId,
+      validationResult: {
+        status: 'pending',
+        mode: 'remote',
+        runId,
+        conclusion: 'timeout',
+      },
     };
   }
 
@@ -608,26 +700,37 @@ export class GitHubFixApplier implements FixApplier {
         `listing jobs for validation run ${runId}`
       );
 
-      const failedJob =
-        jobs.data.jobs.find((j) => j.conclusion === 'failure') ||
-        jobs.data.jobs[0];
+      const jobsToRead = [...jobs.data.jobs].sort((a, b) => {
+        if (a.conclusion === 'failure' && b.conclusion !== 'failure') return -1;
+        if (b.conclusion === 'failure' && a.conclusion !== 'failure') return 1;
+        return 0;
+      });
 
-      if (!failedJob) return 'No job found in validation run';
+      if (jobsToRead.length === 0) return 'No job found in validation run';
 
-      const logsResponse = await withRetry(
-        () =>
-          octokit.actions.downloadJobLogsForWorkflowRun({
-            owner,
-            repo,
-            job_id: failedJob.id,
-          }),
-        `downloading logs for validation job ${failedJob.id}`
-      );
+      const logChunks: string[] = [];
+      for (const job of jobsToRead) {
+        try {
+          const logsResponse = await withRetry(
+            () =>
+              octokit.actions.downloadJobLogsForWorkflowRun({
+                owner,
+                repo,
+                job_id: job.id,
+              }),
+            `downloading logs for validation job ${job.id}`
+          );
+          const rawLogs =
+            typeof logsResponse.data === 'string'
+              ? logsResponse.data
+              : String(logsResponse.data);
+          logChunks.push(`--- job ${job.name || job.id} (${job.conclusion || 'unknown'}) ---\n${rawLogs}`);
+        } catch (jobLogError) {
+          core.warning(`Failed to fetch logs for validation job ${job.id}: ${jobLogError}`);
+        }
+      }
 
-      const rawLogs =
-        typeof logsResponse.data === 'string'
-          ? logsResponse.data
-          : String(logsResponse.data);
+      const rawLogs = logChunks.join('\n\n') || 'No validation job logs could be downloaded';
 
       // Keep the last 20K chars — the tail is where the failure details are
       const maxLen = 20_000;
@@ -966,6 +1069,74 @@ export function generateFixBranchName(
     : `-${timestamp.getMilliseconds().toString().padStart(3, '0')}`; // Just milliseconds normally
 
   return `${AUTO_FIX.BRANCH_PREFIX}${sanitizedFile}-${dateStr}${uniqueSuffix}`;
+}
+
+function deriveFailedValidationStatus(
+  conclusion: string,
+  logs?: string
+): Exclude<ValidationStatus, 'passed' | 'skipped' | 'pending'> {
+  if (hasConcreteFailureEvidence(logs)) return 'failed';
+  if (conclusion === 'failure') return 'failed';
+  return 'inconclusive';
+}
+
+function hasConcreteFailureEvidence(logs?: string): boolean {
+  if (!logs) return false;
+  return /(?:\b\d+\s+failing\b|AssertionError|CypressError|TimeoutError|Process completed with exit code [1-9])/i.test(
+    logs
+  );
+}
+
+function buildRemoteValidationResult(params: {
+  status: ValidationResult['status'];
+  runId: number;
+  url?: string;
+  conclusion: string;
+  logs?: string;
+  testEvidence?: ValidationResult['testEvidence'];
+}): ValidationResult {
+  const primaryError = extractPrimaryValidationError(params.logs);
+  return {
+    status: params.status,
+    mode: 'remote',
+    runId: params.runId,
+    url: params.url,
+    conclusion: params.conclusion,
+    ...(params.testEvidence ? { testEvidence: params.testEvidence } : {}),
+    ...(primaryError
+      ? {
+          failure: {
+            primaryError,
+            failedAssertion: extractFailedAssertion(primaryError),
+            failureStage: 'validation' as const,
+          },
+        }
+      : {}),
+  };
+}
+
+function extractPrimaryValidationError(logs?: string): string | undefined {
+  if (!logs) return undefined;
+  const clean = logs.replace(ANSI_ESCAPE_REGEX, '');
+  const patterns = [
+    /AssertionError:[^\n]+/i,
+    /CypressError:[^\n]+/i,
+    /TimeoutError:[^\n]+/i,
+    /Error:[^\n]+/i,
+  ];
+  for (const pattern of patterns) {
+    const match = clean.match(pattern);
+    if (match) return match[0].trim().slice(0, 500);
+  }
+  return undefined;
+}
+
+function extractFailedAssertion(primaryError: string): string | undefined {
+  const expectedMatch = primaryError.match(/expected\s+(.+)/i);
+  if (expectedMatch) return expectedMatch[0].slice(0, 300);
+  const timedOutMatch = primaryError.match(/Timed out[^:]*:\s*(.+)/i);
+  if (timedOutMatch) return timedOutMatch[1].slice(0, 300);
+  return undefined;
 }
 
 /**

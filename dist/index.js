@@ -2954,13 +2954,31 @@ class ArtifactFetcher {
             if (jobName) {
                 const matrixMatch = jobName.match(/\((.*?)\)/);
                 const searchName = matrixMatch ? matrixMatch[1] : jobName;
-                const jobSpecificArtifacts = screenshotArtifacts.filter(artifact => artifact.name.toLowerCase().includes(searchName.toLowerCase()));
+                const jobLower = jobName.toLowerCase();
+                const searchLower = searchName.toLowerCase();
+                let jobSpecificArtifacts = screenshotArtifacts.filter(artifact => artifact.name.toLowerCase().includes(searchLower));
+                if (jobSpecificArtifacts.length === 0) {
+                    const jobTokens = jobLower
+                        .split(/[^a-z0-9]+/)
+                        .filter((t) => t.length >= 3);
+                    if (jobTokens.length > 0) {
+                        jobSpecificArtifacts = screenshotArtifacts.filter((artifact) => {
+                            const artifactLower = artifact.name.toLowerCase();
+                            return jobTokens.some((token) => artifactLower.includes(token));
+                        });
+                        if (jobSpecificArtifacts.length > 0) {
+                            core.info(`Found ${jobSpecificArtifacts.length} artifact(s) via token-overlap match for job "${jobName}" (tokens: ${jobTokens.join(', ')})`);
+                        }
+                    }
+                }
                 if (jobSpecificArtifacts.length > 0) {
-                    core.info(`Found ${jobSpecificArtifacts.length} artifact(s) specific to job: ${jobName} (searching for: ${searchName})`);
+                    if (jobSpecificArtifacts.length !== screenshotArtifacts.length) {
+                        core.info(`Narrowed to ${jobSpecificArtifacts.length} artifact(s) specific to job: ${jobName} (searching for: ${searchName})`);
+                    }
                     screenshotArtifacts = jobSpecificArtifacts;
                 }
                 else {
-                    core.info(`No job-specific artifacts for "${searchName}", using all ${screenshotArtifacts.length} matching artifact(s)`);
+                    core.warning(`No artifacts specifically matched job "${jobName}" (also tried tokens). Falling back to all ${screenshotArtifacts.length} matching artifact(s) — sibling-job contamination is possible.`);
                 }
             }
             if (screenshotArtifacts.length === 0) {
@@ -3783,7 +3801,7 @@ class OpenAIClient {
     async analyze(errorData, examples, skillContext, options) {
         const model = options?.model ?? constants_1.OPENAI.LEGACY_MODEL;
         const reasoningEffort = options?.reasoningEffort ?? 'none';
-        core.info(`🧠 Using ${model} model for analysis (Responses API)`);
+        core.info(`🧠 Using ${model} model for analysis (Responses API) reasoningEffort=${reasoningEffort}`);
         const systemPrompt = this.getSystemPrompt();
         const userContent = this.buildUserContent(errorData, examples, skillContext);
         const screenshotCount = errorData.screenshots?.length || 0;
@@ -4213,12 +4231,19 @@ FOR PRODUCT_ISSUES: You MUST analyze the diff patches above to:
     formatProductDiffSection(productDiff) {
         const maxFiles = constants_1.ARTIFACTS.MAX_PR_DIFF_FILES;
         const maxPatchLines = constants_1.ARTIFACTS.MAX_PATCH_LINES;
-        let section = `\n⚠️ Recent Product Repo Changes (${constants_1.DEFAULT_PRODUCT_REPO}):
+        let section = `\nRecent Product Repo Changes (${constants_1.DEFAULT_PRODUCT_REPO}):
 - Total files changed: ${productDiff.totalChanges}
 - Lines added: ${productDiff.additions}
 - Lines deleted: ${productDiff.deletions}
 
-These are the most recent changes to the product codebase. If any of these changes affect selectors, components, layouts, or APIs that the failing test depends on, this is likely a PRODUCT_ISSUE — the test is correctly detecting that the product changed.
+These are recent commits on the product repo's main branch. They may or may not be deployed at the time of the failure, and most likely have no causal relationship to this specific test. Treat them as background context only.
+
+A causal link to a PRODUCT_ISSUE requires ALL of:
+1. A specific changed file directly touches a selector, component, layout, or API the failing test depends on (cite the file + line range).
+2. The runtime evidence (logs, stack trace, screenshot) is consistent with that change.
+3. No simpler test-side explanation (timing, selector mismatch, empty-state UI) covers the observed failure.
+
+Without all three, do NOT escalate this section to a PRODUCT_ISSUE verdict.
 
 Changed Product Files:
 `;
@@ -4316,6 +4341,7 @@ Changed Product Files:
             ? this.ensureJsonMention(params.userContent)
             : params.userContent;
         const input = this.convertToResponsesInput(userContent);
+        core.info(`🧠 Using ${model} model (Responses API) reasoningEffort=${reasoningEffort}`);
         for (let attempt = 1; attempt <= this.maxRetries; attempt++) {
             try {
                 const response = await this.openai.responses.create({
@@ -4396,6 +4422,7 @@ var __importStar = (this && this.__importStar) || (function () {
 })();
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.PipelineCoordinator = void 0;
+exports.shouldWriteSkillOutcome = shouldWriteSkillOutcome;
 const core = __importStar(__nccwpck_require__(37484));
 const github = __importStar(__nccwpck_require__(93228));
 const simplified_analyzer_1 = __nccwpck_require__(20078);
@@ -4573,12 +4600,24 @@ class PipelineCoordinator {
         }
         const { fixRecommendation, autoFixResult, iterations, prUrl: skillPrUrl, agentRootCause, agentInvestigationFindings, autoFixSkipped: repairAutoFixSkipped, autoFixSkippedReason: repairAutoFixSkippedReason, } = await this.repair(classification, errorData, skillStore);
         if (skillStore && autoFixTargetRepo && errorData) {
-            const fixSucceeded = !!(autoFixResult?.success && autoFixResult.validationStatus === 'passed');
+            const validationStatus = autoFixResult?.validationResult?.status || autoFixResult?.validationStatus;
+            const fixSucceeded = !!(autoFixResult?.success && validationStatus === 'passed');
             const fixAttempted = !!fixRecommendation;
-            if (fixAttempted) {
+            const shouldSaveSkill = shouldWriteSkillOutcome(autoFixResult);
+            const validationPending = validationStatus === 'pending';
+            if (fixAttempted && validationPending) {
+                core.info('📝 Skipping skill outcome write while remote validation is pending');
+            }
+            if (fixAttempted && !shouldSaveSkill && !validationPending) {
+                core.info('📝 Skipping skill outcome write because no validation attempt produced a terminal result');
+            }
+            if (fixAttempted && shouldSaveSkill) {
                 const firstChange = fixRecommendation.proposedChanges?.[0];
                 const rootCause = agentRootCause || inferRootCauseCategory(fixRecommendation);
                 const currentFindings = agentInvestigationFindings || '';
+                const failedFixEvidence = fixSucceeded
+                    ? undefined
+                    : buildFailedFixEvidence(errorData, autoFixResult);
                 const skill = (0, skill_store_1.buildSkill)({
                     repo: `${autoFixTargetRepo.owner}/${autoFixTargetRepo.repo}`,
                     spec: errorData.fileName || 'unknown',
@@ -4600,6 +4639,7 @@ class PipelineCoordinator {
                     investigationFindings: currentFindings,
                     rootCauseChain: `${rootCause} → ${fixRecommendation.summary?.slice(0, 80)}`,
                     failureModeTrace: fixRecommendation.failureModeTrace,
+                    failedFixEvidence,
                 });
                 const saveSucceeded = await skillStore.save(skill).catch((err) => {
                     core.warning(`Failed to save skill: ${err}`);
@@ -4720,6 +4760,37 @@ function inferRootCauseCategory(fix) {
         .filter(Boolean)
         .join(' '));
 }
+function buildFailedFixEvidence(errorData, autoFixResult) {
+    const validationFailure = autoFixResult?.validationResult?.failure?.primaryError ||
+        autoFixResult?.error ||
+        'Fix did not produce a validated passing result';
+    const originalFailure = errorData.message || 'unknown original failure';
+    return {
+        fixCommit: autoFixResult?.commitSha,
+        validationRunId: autoFixResult?.validationResult?.runId || autoFixResult?.validationRunId,
+        originalFailureSignature: normalizeFailureSignature(originalFailure),
+        validationFailureSignature: normalizeFailureSignature(validationFailure),
+        failedAssertion: autoFixResult?.validationResult?.failure?.failedAssertion,
+        failureStage: autoFixResult?.validationResult?.failure?.failureStage ||
+            autoFixResult?.validationResult?.status ||
+            'validation',
+        reasonTheFixWasWrong: autoFixResult?.validationResult?.failure?.primaryError
+            ? 'Validation failed after applying the generated fix; do not reuse this fix as a proven pattern.'
+            : undefined,
+        changedFailureSignature: normalizeFailureSignature(originalFailure) !==
+            normalizeFailureSignature(validationFailure),
+    };
+}
+function normalizeFailureSignature(message) {
+    return message.replace(/\s+/g, ' ').trim().slice(0, 500);
+}
+function shouldWriteSkillOutcome(autoFixResult) {
+    const validationStatus = autoFixResult?.validationResult?.status || autoFixResult?.validationStatus;
+    return (!!autoFixResult &&
+        (validationStatus === 'passed' ||
+            validationStatus === 'failed' ||
+            validationStatus === 'inconclusive'));
+}
 //# sourceMappingURL=coordinator.js.map
 
 /***/ }),
@@ -4828,12 +4899,18 @@ function setSuccessOutput(result, errorData, autoFixResult, flakiness) {
                     branch: autoFixResult.branchName,
                     commit: autoFixResult.commitSha,
                     files: autoFixResult.modifiedFiles,
-                    validation: {
+                    validation: mergeValidationResult(autoFixResult) || {
                         status: autoFixResult.validationStatus || 'skipped',
+                        mode: autoFixResult.validationRunId ? 'remote' : 'local',
                         runId: autoFixResult.validationRunId,
                         url: autoFixResult.validationUrl,
                     },
                 },
+            }
+            : {}),
+        ...(autoFixResult?.validationResult
+            ? {
+                validation: mergeValidationResult(autoFixResult),
             }
             : {}),
         ...(result.autoFixSkipped
@@ -4880,20 +4957,23 @@ function setSuccessOutput(result, errorData, autoFixResult, flakiness) {
         core.setOutput('auto_fix_branch', autoFixResult.branchName || '');
         core.setOutput('auto_fix_commit', autoFixResult.commitSha || '');
         core.setOutput('auto_fix_files', JSON.stringify(autoFixResult.modifiedFiles));
-        if (autoFixResult.validationRunId) {
-            core.setOutput('validation_run_id', autoFixResult.validationRunId.toString());
-            core.setOutput('validation_status', autoFixResult.validationStatus || 'pending');
-            core.setOutput('validation_url', autoFixResult.validationUrl ||
-                `https://github.com/${github.context.repo.owner}/${github.context.repo.repo}/actions/runs/${autoFixResult.validationRunId}`);
+        const validationStatus = autoFixResult.validationResult?.status || autoFixResult.validationStatus;
+        const validationUrl = autoFixResult.validationResult?.url || autoFixResult.validationUrl;
+        const validationRunId = autoFixResult.validationResult?.runId || autoFixResult.validationRunId;
+        if (validationRunId) {
+            core.setOutput('validation_run_id', validationRunId.toString());
+            core.setOutput('validation_status', validationStatus || 'pending');
+            core.setOutput('validation_url', validationUrl ||
+                `https://github.com/${github.context.repo.owner}/${github.context.repo.repo}/actions/runs/${validationRunId}`);
         }
-        else if (autoFixResult.validationStatus === 'pending') {
+        else if (validationStatus === 'pending') {
             core.setOutput('validation_status', 'pending');
-            if (autoFixResult.validationUrl) {
-                core.setOutput('validation_url', autoFixResult.validationUrl);
+            if (validationUrl) {
+                core.setOutput('validation_url', validationUrl);
             }
         }
         else {
-            core.setOutput('validation_status', autoFixResult.validationStatus || 'skipped');
+            core.setOutput('validation_status', validationStatus || 'skipped');
         }
     }
     else {
@@ -4931,18 +5011,31 @@ function setSuccessOutput(result, errorData, autoFixResult, flakiness) {
             core.info(`  Branch: ${autoFixResult.branchName}`);
             core.info(`  Commit: ${autoFixResult.commitSha}`);
             core.info(`  Files: ${autoFixResult.modifiedFiles.join(', ')}`);
-            if (autoFixResult.validationStatus === 'passed') {
+            const validationStatus = autoFixResult.validationResult?.status || autoFixResult.validationStatus;
+            if (validationStatus === 'passed') {
                 core.info('\n🧪 Validation: passed (locally validated before push)');
             }
             else if (autoFixResult.validationRunId) {
-                core.info(`\n🧪 Validation: ${autoFixResult.validationStatus}`);
+                core.info(`\n🧪 Validation: ${validationStatus}`);
                 core.info(`  Run ID: ${autoFixResult.validationRunId}`);
+                if (autoFixResult.validationResult?.failure?.primaryError) {
+                    core.info(`  Failure: ${autoFixResult.validationResult.failure.primaryError}`);
+                }
             }
             else {
-                core.info(`\n🧪 Validation: ${autoFixResult.validationStatus || 'skipped'}`);
+                core.info(`\n🧪 Validation: ${validationStatus || 'skipped'}`);
             }
         }
     }
+}
+function mergeValidationResult(autoFixResult) {
+    if (!autoFixResult.validationResult)
+        return undefined;
+    return {
+        ...autoFixResult.validationResult,
+        runId: autoFixResult.validationResult.runId || autoFixResult.validationRunId,
+        url: autoFixResult.validationResult.url || autoFixResult.validationUrl,
+    };
 }
 //# sourceMappingURL=output.js.map
 
@@ -5156,6 +5249,11 @@ async function iterativeFixValidateLoop(inputs, repoDetails, autoFixTargetRepo, 
                         commitSha: pushResult.commitSha,
                         branchName: pushResult.branchName,
                         validationStatus: 'passed',
+                        validationResult: {
+                            status: 'passed',
+                            mode: 'local',
+                            conclusion: 'success',
+                        },
                     };
                     return { fixRecommendation, autoFixResult, iterations: iteration + 1, prUrl: pushResult.prUrl, agentRootCause, agentInvestigationFindings, autoFixSkipped, autoFixSkippedReason };
                 }
@@ -5166,6 +5264,11 @@ async function iterativeFixValidateLoop(inputs, repoDetails, autoFixTargetRepo, 
                         modifiedFiles: fixRecommendation.proposedChanges.map((c) => c.file),
                         error: `Push failed after successful test: ${pushError}`,
                         validationStatus: 'passed',
+                        validationResult: {
+                            status: 'passed',
+                            mode: 'local',
+                            conclusion: 'success',
+                        },
                     };
                 }
                 return { fixRecommendation, autoFixResult, iterations: iteration + 1, agentRootCause, agentInvestigationFindings, autoFixSkipped, autoFixSkippedReason };
@@ -5294,9 +5397,35 @@ async function attemptAutoFix(inputs, fixRecommendation, octokit, repoDetails, e
                         result.validationUrl = validationResult.url;
                         if (validationResult.runId) {
                             core.info(`✅ Validation workflow triggered: run ID ${validationResult.runId}`);
+                            const validationOutcome = await fixApplier.waitForValidation(validationResult.runId);
+                            const structured = validationOutcome.validationResult ?? {
+                                status: validationOutcome.passed ? 'passed' : 'failed',
+                                mode: 'remote',
+                                runId: validationOutcome.runId,
+                                url: validationOutcome.url,
+                                conclusion: validationOutcome.conclusion,
+                            };
+                            result.validationResult = structured;
+                            result.validationStatus = structured.status;
+                            result.validationUrl = structured.url || validationResult.url;
+                            if (structured.status === 'passed') {
+                                core.info('✅ Remote validation passed');
+                            }
+                            else if (structured.status === 'pending') {
+                                core.warning('⏳ Remote validation is still pending after wait budget');
+                            }
+                            else {
+                                core.warning(`❌ Remote validation ${structured.status}: ${structured.failure?.primaryError || structured.conclusion || 'no failure detail'}`);
+                            }
                         }
                         else {
                             core.info('✅ Validation workflow triggered: run ID not available yet');
+                            result.validationResult = {
+                                status: 'pending',
+                                mode: 'remote',
+                                url: validationResult.url,
+                                conclusion: 'dispatched-run-not-found',
+                            };
                         }
                     }
                     else {
@@ -5395,6 +5524,8 @@ exports.createFixApplier = createFixApplier;
 exports.generateFixBranchName = generateFixBranchName;
 const core = __importStar(__nccwpck_require__(37484));
 const constants_1 = __nccwpck_require__(58361);
+const test_evidence_1 = __nccwpck_require__(92356);
+const text_utils_1 = __nccwpck_require__(11744);
 const RETRY_CONFIG = {
     maxRetries: 3,
     baseDelayMs: 1000,
@@ -5584,6 +5715,9 @@ class GitHubFixApplier {
         core.info(`  Branch: ${params.branch}`);
         core.info(`  Spec: ${params.spec}`);
         core.info(`  Preview URL: ${params.previewUrl}`);
+        if (params.spec && !params.spec.includes('/')) {
+            core.warning(`Spec "${params.spec}" looks like a bare basename. Consumer validate-fix workflows must resolve it against the test root (e.g. \`find ./cypress -type f -name "$BASENAME"\`) or the runner will exit cleanly without running any tests. Prefer passing a repo-relative path in VALIDATION_SPEC.`);
+        }
         try {
             await withRetry(() => octokit.actions.createWorkflowDispatch({
                 owner,
@@ -5670,12 +5804,61 @@ class GitHubFixApplier {
                 const { status, conclusion, html_url } = run.data;
                 core.info(`  Validation run ${runId}: status=${status}, conclusion=${conclusion ?? 'n/a'}`);
                 if (status === 'completed') {
-                    const passed = conclusion === 'success';
-                    let logs;
-                    if (!passed) {
-                        logs = await this.getValidationFailureLogs(runId);
+                    const apiPassed = conclusion === 'success';
+                    const logs = await this.getValidationFailureLogs(runId);
+                    if (apiPassed) {
+                        const evidence = (0, test_evidence_1.verifyTestEvidence)(logs);
+                        if (!evidence.trustworthy) {
+                            const status = deriveFailedValidationStatus('success-without-test-evidence', logs);
+                            core.warning(`Validation run ${runId} reported conclusion=success but ${evidence.reason} — treating as failed to avoid poisoning the skill store with a false validation.`);
+                            return {
+                                passed: false,
+                                conclusion: 'success-without-test-evidence',
+                                logs,
+                                runId,
+                                url: html_url,
+                                validationResult: buildRemoteValidationResult({
+                                    status,
+                                    runId,
+                                    url: html_url,
+                                    conclusion: 'success-without-test-evidence',
+                                    logs,
+                                    testEvidence: evidence,
+                                }),
+                            };
+                        }
+                        core.info(`✅ Test evidence verified: ${evidence.reason}`);
+                        return {
+                            passed: true,
+                            conclusion: conclusion || 'success',
+                            logs: undefined,
+                            runId,
+                            url: html_url,
+                            validationResult: buildRemoteValidationResult({
+                                status: 'passed',
+                                runId,
+                                url: html_url,
+                                conclusion: conclusion || 'success',
+                                logs,
+                                testEvidence: evidence,
+                            }),
+                        };
                     }
-                    return { passed, conclusion: conclusion || 'unknown', logs, runId, url: html_url };
+                    const status = deriveFailedValidationStatus(conclusion || 'unknown', logs);
+                    return {
+                        passed: false,
+                        conclusion: conclusion || 'unknown',
+                        logs,
+                        runId,
+                        url: html_url,
+                        validationResult: buildRemoteValidationResult({
+                            status,
+                            runId,
+                            url: html_url,
+                            conclusion: conclusion || 'unknown',
+                            logs,
+                        }),
+                    };
                 }
             }
             catch (error) {
@@ -5688,6 +5871,12 @@ class GitHubFixApplier {
             conclusion: 'timeout',
             logs: `Validation run ${runId} did not complete within ${POLL_TIMEOUT_MS / 1000}s`,
             runId,
+            validationResult: {
+                status: 'pending',
+                mode: 'remote',
+                runId,
+                conclusion: 'timeout',
+            },
         };
     }
     async getValidationFailureLogs(runId) {
@@ -5699,18 +5888,33 @@ class GitHubFixApplier {
                 run_id: runId,
                 filter: 'latest',
             }), `listing jobs for validation run ${runId}`);
-            const failedJob = jobs.data.jobs.find((j) => j.conclusion === 'failure') ||
-                jobs.data.jobs[0];
-            if (!failedJob)
+            const jobsToRead = [...jobs.data.jobs].sort((a, b) => {
+                if (a.conclusion === 'failure' && b.conclusion !== 'failure')
+                    return -1;
+                if (b.conclusion === 'failure' && a.conclusion !== 'failure')
+                    return 1;
+                return 0;
+            });
+            if (jobsToRead.length === 0)
                 return 'No job found in validation run';
-            const logsResponse = await withRetry(() => octokit.actions.downloadJobLogsForWorkflowRun({
-                owner,
-                repo,
-                job_id: failedJob.id,
-            }), `downloading logs for validation job ${failedJob.id}`);
-            const rawLogs = typeof logsResponse.data === 'string'
-                ? logsResponse.data
-                : String(logsResponse.data);
+            const logChunks = [];
+            for (const job of jobsToRead) {
+                try {
+                    const logsResponse = await withRetry(() => octokit.actions.downloadJobLogsForWorkflowRun({
+                        owner,
+                        repo,
+                        job_id: job.id,
+                    }), `downloading logs for validation job ${job.id}`);
+                    const rawLogs = typeof logsResponse.data === 'string'
+                        ? logsResponse.data
+                        : String(logsResponse.data);
+                    logChunks.push(`--- job ${job.name || job.id} (${job.conclusion || 'unknown'}) ---\n${rawLogs}`);
+                }
+                catch (jobLogError) {
+                    core.warning(`Failed to fetch logs for validation job ${job.id}: ${jobLogError}`);
+                }
+            }
+            const rawLogs = logChunks.join('\n\n') || 'No validation job logs could be downloaded';
             const maxLen = 20_000;
             if (rawLogs.length > maxLen) {
                 return rawLogs.slice(-maxLen);
@@ -5938,6 +6142,64 @@ function generateFixBranchName(testFile, timestamp = new Date(), forceUnique = f
         ? `-${timestamp.getTime().toString(36)}`
         : `-${timestamp.getMilliseconds().toString().padStart(3, '0')}`;
     return `${constants_1.AUTO_FIX.BRANCH_PREFIX}${sanitizedFile}-${dateStr}${uniqueSuffix}`;
+}
+function deriveFailedValidationStatus(conclusion, logs) {
+    if (hasConcreteFailureEvidence(logs))
+        return 'failed';
+    if (conclusion === 'failure')
+        return 'failed';
+    return 'inconclusive';
+}
+function hasConcreteFailureEvidence(logs) {
+    if (!logs)
+        return false;
+    return /(?:\b\d+\s+failing\b|AssertionError|CypressError|TimeoutError|Process completed with exit code [1-9])/i.test(logs);
+}
+function buildRemoteValidationResult(params) {
+    const primaryError = extractPrimaryValidationError(params.logs);
+    return {
+        status: params.status,
+        mode: 'remote',
+        runId: params.runId,
+        url: params.url,
+        conclusion: params.conclusion,
+        ...(params.testEvidence ? { testEvidence: params.testEvidence } : {}),
+        ...(primaryError
+            ? {
+                failure: {
+                    primaryError,
+                    failedAssertion: extractFailedAssertion(primaryError),
+                    failureStage: 'validation',
+                },
+            }
+            : {}),
+    };
+}
+function extractPrimaryValidationError(logs) {
+    if (!logs)
+        return undefined;
+    const clean = logs.replace(text_utils_1.ANSI_ESCAPE_REGEX, '');
+    const patterns = [
+        /AssertionError:[^\n]+/i,
+        /CypressError:[^\n]+/i,
+        /TimeoutError:[^\n]+/i,
+        /Error:[^\n]+/i,
+    ];
+    for (const pattern of patterns) {
+        const match = clean.match(pattern);
+        if (match)
+            return match[0].trim().slice(0, 500);
+    }
+    return undefined;
+}
+function extractFailedAssertion(primaryError) {
+    const expectedMatch = primaryError.match(/expected\s+(.+)/i);
+    if (expectedMatch)
+        return expectedMatch[0].slice(0, 300);
+    const timedOutMatch = primaryError.match(/Timed out[^:]*:\s*(.+)/i);
+    if (timedOutMatch)
+        return timedOutMatch[1].slice(0, 300);
+    return undefined;
 }
 function computeLineSimilarity(a, b) {
     const aLines = a.split('\n').map((l) => l.trim()).filter(Boolean);
@@ -6449,6 +6711,7 @@ const fs = __importStar(__nccwpck_require__(79896));
 const os = __importStar(__nccwpck_require__(70857));
 const path = __importStar(__nccwpck_require__(16928));
 const child_process_1 = __nccwpck_require__(35317);
+const test_evidence_1 = __nccwpck_require__(92356);
 const SECRET_ENV_KEYS = new Set([
     'GITHUB_TOKEN',
     'OPENAI_API_KEY',
@@ -6751,9 +7014,21 @@ class LocalFixValidator {
                 stdio: 'pipe',
             });
             const durationMs = Date.now() - start;
+            const truncatedLogs = output.slice(-MAX_LOG_CHARS);
+            const evidence = (0, test_evidence_1.verifyTestEvidence)(truncatedLogs);
+            if (!evidence.trustworthy) {
+                core.warning(`Test command exited 0 but ${evidence.reason} — treating as failed to avoid poisoning the skill store with a false validation.`);
+                return {
+                    passed: false,
+                    logs: truncatedLogs,
+                    exitCode: 0,
+                    durationMs,
+                };
+            }
+            core.info(`✅ Test evidence verified: ${evidence.reason}`);
             return {
                 passed: true,
-                logs: output.slice(-MAX_LOG_CHARS),
+                logs: truncatedLogs,
                 exitCode: 0,
                 durationMs,
             };
@@ -7013,6 +7288,11 @@ async function processWorkflowLogs(octokit, artifactFetcher, inputs, repoDetails
     fallbackError.structuredSummary = buildStructuredSummary(fallbackError);
     return fallbackError;
 }
+const TRIAGEABLE_CONCLUSIONS = new Set([
+    'failure',
+    'timed_out',
+    'cancelled',
+]);
 function findTargetJob(jobs, inputs, isCurrentJob) {
     if (inputs.jobName) {
         const targetJob = jobs.find((job) => job.name === inputs.jobName);
@@ -7023,19 +7303,23 @@ function findTargetJob(jobs, inputs, isCurrentJob) {
         if (isCurrentJob && targetJob.status === 'in_progress') {
             core.info('Current job is still in progress, analyzing available logs...');
         }
-        else if (targetJob.conclusion !== 'failure' &&
-            targetJob.status === 'completed') {
+        else if (targetJob.status === 'completed' &&
+            !TRIAGEABLE_CONCLUSIONS.has(targetJob.conclusion ?? '')) {
             core.warning(`Job '${inputs.jobName}' did not fail (conclusion: ${targetJob.conclusion})`);
             return null;
         }
+        else if (targetJob.status === 'completed' &&
+            targetJob.conclusion !== 'failure') {
+            core.info(`Job '${inputs.jobName}' completed with conclusion=${targetJob.conclusion} — triaging as a failure-equivalent (likely infrastructure / timeout).`);
+        }
         return targetJob;
     }
-    const failedJob = jobs.find((job) => job.conclusion === 'failure');
-    if (!failedJob) {
+    const targetJob = jobs.find((job) => TRIAGEABLE_CONCLUSIONS.has(job.conclusion ?? ''));
+    if (!targetJob) {
         core.warning('No failed jobs found');
         return null;
     }
-    return failedJob;
+    return targetJob;
 }
 function logDiffResult(diff, source) {
     if (diff) {
@@ -7514,6 +7798,7 @@ function backfillDefaults(skill) {
         classificationOutcome: skill.classificationOutcome ?? 'unknown',
         rootCauseChain: skill.rootCauseChain ?? '',
         repoContext: skill.repoContext ?? '',
+        failedFixEvidence: skill.failedFixEvidence,
     };
 }
 function parseSkillTimestamp(value) {
@@ -7947,6 +8232,7 @@ function buildSkill(params) {
         rootCauseChain: params.rootCauseChain ?? '',
         repoContext: params.repoContext ?? '',
         ...(params.failureModeTrace ? { failureModeTrace: params.failureModeTrace } : {}),
+        ...(params.failedFixEvidence ? { failedFixEvidence: params.failedFixEvidence } : {}),
     };
 }
 function describeFixPattern(changes) {
@@ -8066,6 +8352,16 @@ function formatSkillsForPrompt(skills, role, flakiness) {
         if (shouldRenderPrUrl) {
             lines.push(`- Shipped as: ${sanitizeForPrompt(s.prUrl)} (prior validated fix landed as this PR — strong trust signal)`);
         }
+        if ((role === 'fix_generation' || role === 'review') && s.failedFixEvidence) {
+            const failed = s.failedFixEvidence;
+            lines.push('- Prior failed validation (do not repeat as a proven pattern):', `  - originalFailure: ${sanitizeForPrompt(failed.originalFailureSignature, 200)}`, `  - validationFailure: ${sanitizeForPrompt(failed.validationFailureSignature, 200)}`, `  - failureStage: ${sanitizeForPrompt(failed.failureStage, 80)}`, `  - changedFailureSignature: ${failed.changedFailureSignature}`);
+            if (failed.failedAssertion) {
+                lines.push(`  - failedAssertion: ${sanitizeForPrompt(failed.failedAssertion, 200)}`);
+            }
+            if (failed.reasonTheFixWasWrong) {
+                lines.push(`  - whyItFailed: ${sanitizeForPrompt(failed.reasonTheFixWasWrong, 200)}`);
+            }
+        }
         const isValidated = s.validatedLocally === true || (s.successCount ?? 0) > 0;
         if (includeTrace && s.failureModeTrace && isValidated) {
             const t = s.failureModeTrace;
@@ -8080,6 +8376,66 @@ function formatSkillsForPrompt(skills, role, flakiness) {
     return parts.join('\n');
 }
 //# sourceMappingURL=skill-store.js.map
+
+/***/ }),
+
+/***/ 92356:
+/***/ ((__unused_webpack_module, exports) => {
+
+"use strict";
+
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.verifyTestEvidence = verifyTestEvidence;
+const NO_TESTS_RAN_PATTERNS = [
+    /Can't run because no spec files were found/i,
+    /No spec files? (?:were )?found/i,
+    /No tests? (?:were )?run/i,
+    /running\s+0\s+tests?\b/i,
+    /Tests:\s+0,/i,
+    /\b0\s+passing\b/i,
+    /\b0\s+tests?\s+passed\b/i,
+    /Spec Files:\s+0\s+passed,\s+0\s+failed,\s+0\s+total/i,
+];
+const POSITIVE_EVIDENCE_PATTERNS = [
+    /(\d+)\s+passing\b/i,
+    /Tests?:\s+(\d+)\s+passed/i,
+    /✔\s+All specs passed/i,
+    /\bPASS\b\s+\S+/,
+    /Spec Files:\s+(\d+)\s+passed,\s+0\s+failed/i,
+];
+function verifyTestEvidence(logs) {
+    if (!logs || logs.length === 0) {
+        return {
+            trustworthy: false,
+            reason: 'no logs available to verify test evidence',
+        };
+    }
+    for (const pattern of NO_TESTS_RAN_PATTERNS) {
+        const match = logs.match(pattern);
+        if (match) {
+            return {
+                trustworthy: false,
+                reason: `runner reported zero tests ran (matched "${match[0]}")`,
+                matched: match[0],
+            };
+        }
+    }
+    for (const pattern of POSITIVE_EVIDENCE_PATTERNS) {
+        const match = logs.match(pattern);
+        if (match) {
+            return {
+                trustworthy: true,
+                reason: `concrete pass evidence (matched "${match[0]}")`,
+                matched: match[0],
+            };
+        }
+    }
+    return {
+        trustworthy: false,
+        reason: 'no concrete pass evidence found in logs (neither "N passing" nor a known runner success marker present)',
+    };
+}
+//# sourceMappingURL=test-evidence.js.map
 
 /***/ }),
 

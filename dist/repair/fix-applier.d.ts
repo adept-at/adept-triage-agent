@@ -1,5 +1,5 @@
 import { Octokit } from '@octokit/rest';
-import { FixRecommendation } from '../types';
+import { FixRecommendation, ValidationResult, ValidationStatus } from '../types';
 export interface ApplyResult {
     success: boolean;
     modifiedFiles: string[];
@@ -7,8 +7,9 @@ export interface ApplyResult {
     commitSha?: string;
     branchName?: string;
     validationRunId?: number;
-    validationStatus?: 'pending' | 'passed' | 'failed' | 'skipped';
+    validationStatus?: ValidationStatus;
     validationUrl?: string;
+    validationResult?: ValidationResult;
 }
 export interface FixApplierConfig {
     octokit: Octokit;
@@ -33,6 +34,7 @@ export interface ValidationOutcome {
     logs?: string;
     runId: number;
     url?: string;
+    validationResult?: ValidationResult;
 }
 export interface FixApplier {
     canApply(recommendation: FixRecommendation): boolean;

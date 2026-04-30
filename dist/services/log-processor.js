@@ -155,6 +155,11 @@ async function processWorkflowLogs(octokit, artifactFetcher, inputs, repoDetails
     fallbackError.structuredSummary = buildStructuredSummary(fallbackError);
     return fallbackError;
 }
+const TRIAGEABLE_CONCLUSIONS = new Set([
+    'failure',
+    'timed_out',
+    'cancelled',
+]);
 function findTargetJob(jobs, inputs, isCurrentJob) {
     if (inputs.jobName) {
         const targetJob = jobs.find((job) => job.name === inputs.jobName);
@@ -165,19 +170,23 @@ function findTargetJob(jobs, inputs, isCurrentJob) {
         if (isCurrentJob && targetJob.status === 'in_progress') {
             core.info('Current job is still in progress, analyzing available logs...');
         }
-        else if (targetJob.conclusion !== 'failure' &&
-            targetJob.status === 'completed') {
+        else if (targetJob.status === 'completed' &&
+            !TRIAGEABLE_CONCLUSIONS.has(targetJob.conclusion ?? '')) {
             core.warning(`Job '${inputs.jobName}' did not fail (conclusion: ${targetJob.conclusion})`);
             return null;
         }
+        else if (targetJob.status === 'completed' &&
+            targetJob.conclusion !== 'failure') {
+            core.info(`Job '${inputs.jobName}' completed with conclusion=${targetJob.conclusion} — triaging as a failure-equivalent (likely infrastructure / timeout).`);
+        }
         return targetJob;
     }
-    const failedJob = jobs.find((job) => job.conclusion === 'failure');
-    if (!failedJob) {
+    const targetJob = jobs.find((job) => TRIAGEABLE_CONCLUSIONS.has(job.conclusion ?? ''));
+    if (!targetJob) {
         core.warning('No failed jobs found');
         return null;
     }
-    return failedJob;
+    return targetJob;
 }
 function logDiffResult(diff, source) {
     if (diff) {

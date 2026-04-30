@@ -53,5 +53,6 @@ export declare class PipelineCoordinator {
     private runClassifyAndRepair;
     private handleNoErrorData;
 }
+export declare function shouldWriteSkillOutcome(autoFixResult: ApplyResult | null | undefined): boolean;
 export {};
 //# sourceMappingURL=coordinator.d.ts.map

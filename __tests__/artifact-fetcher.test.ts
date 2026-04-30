@@ -142,8 +142,8 @@ describe('ArtifactFetcher', () => {
 
       expect(result.length).toBe(1);
       expect(result[0].name).toBe('Test-failure-screenshot.png');
-      expect(core.info).toHaveBeenCalledWith(
-        expect.stringContaining('No job-specific artifacts')
+      expect(core.warning).toHaveBeenCalledWith(
+        expect.stringContaining('No artifacts specifically matched job')
       );
     });
 

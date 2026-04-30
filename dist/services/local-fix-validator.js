@@ -40,6 +40,7 @@ const fs = __importStar(require("fs"));
 const os = __importStar(require("os"));
 const path = __importStar(require("path"));
 const child_process_1 = require("child_process");
+const test_evidence_1 = require("./test-evidence");
 const SECRET_ENV_KEYS = new Set([
     'GITHUB_TOKEN',
     'OPENAI_API_KEY',
@@ -342,9 +343,21 @@ class LocalFixValidator {
                 stdio: 'pipe',
             });
             const durationMs = Date.now() - start;
+            const truncatedLogs = output.slice(-MAX_LOG_CHARS);
+            const evidence = (0, test_evidence_1.verifyTestEvidence)(truncatedLogs);
+            if (!evidence.trustworthy) {
+                core.warning(`Test command exited 0 but ${evidence.reason} — treating as failed to avoid poisoning the skill store with a false validation.`);
+                return {
+                    passed: false,
+                    logs: truncatedLogs,
+                    exitCode: 0,
+                    durationMs,
+                };
+            }
+            core.info(`✅ Test evidence verified: ${evidence.reason}`);
             return {
                 passed: true,
-                logs: output.slice(-MAX_LOG_CHARS),
+                logs: truncatedLogs,
                 exitCode: 0,
                 durationMs,
             };

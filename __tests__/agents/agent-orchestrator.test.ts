@@ -190,32 +190,42 @@ describe('AgentOrchestrator', () => {
     });
 
     it('should handle timeout', async () => {
-      // Create a mock that takes longer than the timeout
-      mockOpenAIClient.generateWithCustomPrompt = jest
-        .fn()
-        .mockImplementation(
-          () =>
-            new Promise((resolve) =>
-              setTimeout(
-                () => resolve({ text: '{}', responseId: 'mock-timeout-resp' }),
-                200000
+      jest.useFakeTimers();
+      try {
+        // Create a mock that takes longer than the orchestrator timeout.
+        // Fake timers keep the intentionally pending task from leaking a
+        // real open handle after the timeout assertion completes.
+        mockOpenAIClient.generateWithCustomPrompt = jest
+          .fn()
+          .mockImplementation(
+            () =>
+              new Promise((resolve) =>
+                setTimeout(
+                  () => resolve({ text: '{}', responseId: 'mock-timeout-resp' }),
+                  200000
+                )
               )
-            )
-        );
+          );
 
-      const orchestrator = createOrchestrator(mockOpenAIClient, {
-        totalTimeoutMs: 100, // Very short timeout for testing
-      });
-      const context = createAgentContext({
-        errorMessage: 'Error',
-        testFile: 'test.ts',
-        testName: 'test',
-      });
+        const orchestrator = createOrchestrator(mockOpenAIClient, {
+          totalTimeoutMs: 100, // Very short timeout for testing
+        });
+        const context = createAgentContext({
+          errorMessage: 'Error',
+          testFile: 'test.ts',
+          testName: 'test',
+        });
 
-      const result = await orchestrator.orchestrate(context);
+        const resultPromise = orchestrator.orchestrate(context);
+        await jest.advanceTimersByTimeAsync(100);
+        const result = await resultPromise;
+        jest.clearAllTimers();
 
-      expect(result.success).toBe(false);
-      expect(result.error).toContain('timed out');
+        expect(result.success).toBe(false);
+        expect(result.error).toContain('timed out');
+      } finally {
+        jest.useRealTimers();
+      }
     }, 10000);
 
     it('should track execution time', async () => {

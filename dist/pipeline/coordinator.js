@@ -34,6 +34,7 @@ var __importStar = (this && this.__importStar) || (function () {
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.PipelineCoordinator = void 0;
+exports.shouldWriteSkillOutcome = shouldWriteSkillOutcome;
 const core = __importStar(require("@actions/core"));
 const github = __importStar(require("@actions/github"));
 const simplified_analyzer_1 = require("../simplified-analyzer");
@@ -211,12 +212,24 @@ class PipelineCoordinator {
         }
         const { fixRecommendation, autoFixResult, iterations, prUrl: skillPrUrl, agentRootCause, agentInvestigationFindings, autoFixSkipped: repairAutoFixSkipped, autoFixSkippedReason: repairAutoFixSkippedReason, } = await this.repair(classification, errorData, skillStore);
         if (skillStore && autoFixTargetRepo && errorData) {
-            const fixSucceeded = !!(autoFixResult?.success && autoFixResult.validationStatus === 'passed');
+            const validationStatus = autoFixResult?.validationResult?.status || autoFixResult?.validationStatus;
+            const fixSucceeded = !!(autoFixResult?.success && validationStatus === 'passed');
             const fixAttempted = !!fixRecommendation;
-            if (fixAttempted) {
+            const shouldSaveSkill = shouldWriteSkillOutcome(autoFixResult);
+            const validationPending = validationStatus === 'pending';
+            if (fixAttempted && validationPending) {
+                core.info('📝 Skipping skill outcome write while remote validation is pending');
+            }
+            if (fixAttempted && !shouldSaveSkill && !validationPending) {
+                core.info('📝 Skipping skill outcome write because no validation attempt produced a terminal result');
+            }
+            if (fixAttempted && shouldSaveSkill) {
                 const firstChange = fixRecommendation.proposedChanges?.[0];
                 const rootCause = agentRootCause || inferRootCauseCategory(fixRecommendation);
                 const currentFindings = agentInvestigationFindings || '';
+                const failedFixEvidence = fixSucceeded
+                    ? undefined
+                    : buildFailedFixEvidence(errorData, autoFixResult);
                 const skill = (0, skill_store_1.buildSkill)({
                     repo: `${autoFixTargetRepo.owner}/${autoFixTargetRepo.repo}`,
                     spec: errorData.fileName || 'unknown',
@@ -238,6 +251,7 @@ class PipelineCoordinator {
                     investigationFindings: currentFindings,
                     rootCauseChain: `${rootCause} → ${fixRecommendation.summary?.slice(0, 80)}`,
                     failureModeTrace: fixRecommendation.failureModeTrace,
+                    failedFixEvidence,
                 });
                 const saveSucceeded = await skillStore.save(skill).catch((err) => {
                     core.warning(`Failed to save skill: ${err}`);
@@ -357,5 +371,36 @@ function inferRootCauseCategory(fix) {
     ]
         .filter(Boolean)
         .join(' '));
+}
+function buildFailedFixEvidence(errorData, autoFixResult) {
+    const validationFailure = autoFixResult?.validationResult?.failure?.primaryError ||
+        autoFixResult?.error ||
+        'Fix did not produce a validated passing result';
+    const originalFailure = errorData.message || 'unknown original failure';
+    return {
+        fixCommit: autoFixResult?.commitSha,
+        validationRunId: autoFixResult?.validationResult?.runId || autoFixResult?.validationRunId,
+        originalFailureSignature: normalizeFailureSignature(originalFailure),
+        validationFailureSignature: normalizeFailureSignature(validationFailure),
+        failedAssertion: autoFixResult?.validationResult?.failure?.failedAssertion,
+        failureStage: autoFixResult?.validationResult?.failure?.failureStage ||
+            autoFixResult?.validationResult?.status ||
+            'validation',
+        reasonTheFixWasWrong: autoFixResult?.validationResult?.failure?.primaryError
+            ? 'Validation failed after applying the generated fix; do not reuse this fix as a proven pattern.'
+            : undefined,
+        changedFailureSignature: normalizeFailureSignature(originalFailure) !==
+            normalizeFailureSignature(validationFailure),
+    };
+}
+function normalizeFailureSignature(message) {
+    return message.replace(/\s+/g, ' ').trim().slice(0, 500);
+}
+function shouldWriteSkillOutcome(autoFixResult) {
+    const validationStatus = autoFixResult?.validationResult?.status || autoFixResult?.validationStatus;
+    return (!!autoFixResult &&
+        (validationStatus === 'passed' ||
+            validationStatus === 'failed' ||
+            validationStatus === 'inconclusive'));
 }
 //# sourceMappingURL=coordinator.js.map
