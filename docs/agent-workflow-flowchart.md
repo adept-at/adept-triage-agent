@@ -2,7 +2,7 @@
 
 > Visual reference for how a triage run flows end-to-end.
 > For textual deep-dive, see [ARCHITECTURE.md](ARCHITECTURE.md).
-> **Current version:** v1.52.3
+> **Current version:** v1.52.7
 
 ---
 
@@ -126,14 +126,13 @@ flowchart TB
     REGULAR_FEEDBACK --> LOOP_CHECK
     LOOP_CHECK{"iterations<br/>&lt; 3?"}
     LOOP_CHECK -- yes --> FIX_GEN
-    LOOP_CHECK -- no --> MAX_ITER{"lastFix<br/>confidence OK<br/>+ no blocking<br/>CRITICAL?"}
-    MAX_ITER -- yes --> FALLBACK_SHIP["ship lastFix<br/>with warning<br/>(validation = final gate)"]
-    MAX_ITER -- no --> FAIL["return error<br/>approach: failed"]
+    LOOP_CHECK -- no --> MAX_ITER["max iterations (3/3)<br/>reached — review<br/>never approved<br/>(v1.52.4+)"]
+    MAX_ITER --> FAIL["return error<br/>approach: failed<br/>(review approval mandatory;<br/>no fallback path)"]
 
     style ABORT_APP fill:#f8d7da,color:#000
     style ABORT_TEST fill:#f8d7da,color:#000
     style SHIP fill:#d4edda,color:#000
-    style FALLBACK_SHIP fill:#fff3cd,color:#000
+    style MAX_ITER fill:#f8d7da,color:#000
     style FAIL fill:#f8d7da,color:#000
 ```
 

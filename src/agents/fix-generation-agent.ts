@@ -3,6 +3,7 @@
  * Generates concrete code fixes based on analysis and investigation results
  */
 
+import * as core from '@actions/core';
 import {
   BaseAgent,
   AgentContext,
@@ -441,6 +442,13 @@ export class FixGenerationAgent extends BaseAgent<
   FixGenerationInput,
   FixGenerationOutput
 > {
+  /**
+   * Gate so the unknown-framework warning fires at most once per agent
+   * instance — `getSystemPrompt` is invoked on every fix/review iteration,
+   * and we don't want to spam the action log.
+   */
+  private warnedUnknownFramework = false;
+
   constructor(openaiClient: OpenAIClient, config?: Partial<AgentConfig>) {
     const resolvedModel = config?.model ?? AGENT_MODEL.fixGeneration;
     const resolvedEffort =
@@ -467,6 +475,11 @@ export class FixGenerationAgent extends BaseAgent<
 
   /**
    * Get the system prompt, specialized by framework.
+   *
+   * For unknown/missing frameworks we default to the Cypress pattern block
+   * (action.yml defaults TEST_FRAMEWORKS to 'cypress', so this is the
+   * realistic fallback) instead of concatenating both pattern blocks, which
+   * roughly doubled the prompt size for no benefit.
    */
   protected getSystemPrompt(framework?: string): string {
     switch (framework) {
@@ -475,7 +488,13 @@ export class FixGenerationAgent extends BaseAgent<
       case 'webdriverio':
         return COMMON_PREAMBLE + WDIO_PATTERNS + COMMON_SUFFIX;
       default:
-        return COMMON_PREAMBLE + CYPRESS_PATTERNS + WDIO_PATTERNS + COMMON_SUFFIX;
+        if (!this.warnedUnknownFramework) {
+          this.warnedUnknownFramework = true;
+          core.warning(
+            `[FixGenerationAgent] Framework was unknown or missing (got ${JSON.stringify(framework)}); defaulting to Cypress fix patterns.`
+          );
+        }
+        return COMMON_PREAMBLE + CYPRESS_PATTERNS + COMMON_SUFFIX;
     }
   }
 

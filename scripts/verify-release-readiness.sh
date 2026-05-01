@@ -45,12 +45,15 @@ else
   echo -e "${GREEN}✅ No uncommitted changes${NC}"
 fi
 
-# 3. Ensure Node 20 is being used
+# 3. Ensure Node 24 is being used (matches `runs.using: node24` in action.yml
+# and the GitHub Actions release workflow at .github/workflows/release.yml).
+# Releasing on a different major than the runtime can mask ncc bundling
+# issues that only surface on the target runtime.
 echo ""
 echo "🔧 Setting up Node.js environment..."
 if [ -f ~/.nvm/nvm.sh ]; then
   source ~/.nvm/nvm.sh
-  nvm use 20
+  nvm use 24
 else
   echo "Using system Node.js"
 fi

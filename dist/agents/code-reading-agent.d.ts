@@ -27,6 +27,8 @@ export interface CodeReadingInput {
 }
 export declare class CodeReadingAgent extends BaseAgent<CodeReadingInput, CodeReadingOutput> {
     private sourceFetchContext?;
+    private treePathSet;
+    private treeFetchAttempted;
     constructor(openaiClient: OpenAIClient, sourceFetchContext?: SourceFetchContext, config?: Partial<AgentConfig>);
     execute(input: CodeReadingInput, context: AgentContext, _previousResponseId?: string): Promise<AgentResult<CodeReadingOutput>>;
     protected getSystemPrompt(): string;
@@ -35,6 +37,7 @@ export declare class CodeReadingAgent extends BaseAgent<CodeReadingInput, CodeRe
     private cleanFilePath;
     private extractFilePathsFromError;
     private fetchFile;
+    private ensureTreePathSet;
     private extractImports;
     private extractHelperCalls;
     private extractPageObjectReferences;

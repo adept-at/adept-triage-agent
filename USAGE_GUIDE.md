@@ -3,7 +3,7 @@
 > Integration cookbook for adding the agent to a new repo or debugging a live triage run.
 > For the architectural overview, see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
-**Current version**: v1.52.0
+**Current version**: v1.52.7
 
 ## Table of contents
 
@@ -506,7 +506,7 @@ All require AWS credentials in the env (same ones the action uses).
 If a release breaks your workflow:
 
 ```yaml
-uses: adept-at/adept-triage-agent@v1.51.1   # previous working version
+uses: adept-at/adept-triage-agent@v1.52.6   # previous working version
 ```
 
 ### Revert a repo's `.adept-triage/context.md`

@@ -4,7 +4,7 @@
 
 AI-powered GitHub Action that triages test failures, proposes fixes, validates them against the test, and opens a PR when they pass. Learns across runs via a DynamoDB-backed skill store and per-repo conventions files.
 
-**Current version**: v1.52.3
+**Current version**: v1.52.7
 
 ## Documentation
 
@@ -33,7 +33,7 @@ When a test fails in your CI, this action can:
   - `gpt-5.5` with `xhigh` reasoning — fix-generation agent and review agent.
   - Code-reading agent is deterministic and does not call an LLM.
 - **Multimodal context** — screenshots, job logs, test-repo PR/commit diffs, and recent commits in the product repo (`adept-at/learn-webapp` by default).
-- **Skill memory** — per-repo DynamoDB partition of canonical fix patterns. Retrieved by spec-match and error-similarity scoring. Auto-retired when success rate falls below 40%.
+- **Skill memory** — per-repo DynamoDB partition of canonical fix patterns. Retrieved by spec-match and error-similarity scoring. Auto-retired when failure rate exceeds 40% after at least 3 recorded failures.
 - **Seed skills** (v1.52.0+) — hand-curated canonical fix exemplars, protected from pruning via `isSeed` and labeled as curated guidance rather than runtime-proven memory. Bootstrap the learning loop before it's seen real failures.
 - **Repo conventions** (v1.52.0) — opt-in `.adept-triage/context.md` file in the consumer repo (or bundled in the agent for high-traffic repos) that describes selector strategy, wait rules, auth flow. Prepended to every agent's system prompt.
 - **Causal trace** (v1.48.1+) — fix-gen must emit a 4-field `failureModeTrace` (`originalState`, `rootMechanism`, `newStateAfterFix`, `whyAssertionPassesNow`). Review audits it as a quality CRITICAL.
@@ -201,13 +201,26 @@ All outputs are strings (GitHub Actions convention). JSON blobs are stringified.
 | `auto_fix_skipped` | `true` when a policy gate (chronic flakiness, blast-radius) withheld a fix. |
 | `auto_fix_skipped_reason` | Human-readable reason. |
 
-### Validation outputs (remote path only)
+### Validation outputs
 
 | Output | Values |
 |---|---|
-| `validation_run_id` | Validation workflow run id. |
-| `validation_status` | `passed` \| `pending` \| `skipped` |
-| `validation_url` | URL to the validation run. |
+| `validation_run_id` | Validation workflow run id (remote validation path only). |
+| `validation_status` | `passed` \| `failed` \| `inconclusive` \| `pending` \| `skipped`. Set on both local and remote paths (see `ValidationStatus` in `src/types.ts`). `passed` means the local test succeeded or the remote workflow concluded success with verified test evidence. |
+| `validation_url` | URL to the validation run (typically remote validation path only). |
+
+### Repair lifecycle outputs (v1.52.7+)
+
+Six new outputs surface the orchestrator's repair lifecycle orthogonally to `verdict`. Useful for Slack / dashboards that need to distinguish "TEST_ISSUE classified, fix rejected by review" from "TEST_ISSUE classified, fix validated and shipped." Built from `RepairTelemetry` and emitted by `emitRepairOutputs`.
+
+| Output | Values |
+|---|---|
+| `repair_status` | `not_started` \| `skipped` \| `in_progress` \| `no_fix_generated` \| `review_rejected` \| `timed_out` \| `cancelled` \| `no_approved_fix` \| `approved` \| `applied` \| `validated` |
+| `repair_summary` | Human-readable repair outcome (Slack-friendly). |
+| `repair_details` | Stringified JSON: iterations, lastStage, review issues, fix summary, timing. |
+| `repair_iterations` | Number of fix/review loop iterations completed. |
+| `repair_last_stage` | `analysis` \| `code_reading` \| `investigation` \| `fix_generation` \| `review`. |
+| `repair_review_issues` | Newline-separated review issue lines when review rejected a fix (empty otherwise). |
 
 ## Three repository contexts
 
@@ -247,7 +260,7 @@ uses: adept-at/adept-triage-agent@v1   # recommended — backward-compatible upd
 Or pin to a specific version for full reproducibility:
 
 ```yaml
-uses: adept-at/adept-triage-agent@v1.52.3
+uses: adept-at/adept-triage-agent@v1.52.7
 ```
 
 The `v1` tag is automatically moved to each new `v1.x.y` release by `.github/workflows/release.yml`.
@@ -256,7 +269,7 @@ The `v1` tag is automatically moved to each new `v1.x.y` release by `.github/wor
 
 ```bash
 npm install
-npm test                       # full jest suite (660 tests as of v1.52.3)
+npm test                       # full jest suite (run `npm test` for the current count)
 npm run lint                   # eslint
 npm run build                  # tsc
 npm run package                # ncc bundle into dist/index.js

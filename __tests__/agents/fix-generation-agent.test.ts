@@ -819,12 +819,11 @@ describe('FixGenerationAgent', () => {
       expect(call.systemPrompt).not.toContain('Cypress Fix Patterns');
     });
 
-    it('should include both patterns when framework is unknown', async () => {
-      const unknownContext = createAgentContext({
-        errorMessage: 'test failed',
-        testFile: 'test.ts',
-        testName: 'should work',
-      });
+    it('should default to Cypress patterns and warn once when framework is unknown', async () => {
+      // Spy on core.warning to verify we emit a single warning per agent
+      // instance even across multiple unknown-framework executions.
+      const core = require('@actions/core');
+      const warningSpy = jest.spyOn(core, 'warning').mockImplementation(() => {});
 
       const mockFixResponse = JSON.stringify({
         changes: [{
@@ -834,15 +833,36 @@ describe('FixGenerationAgent', () => {
         confidence: 80, summary: 'fix', reasoning: 'reason', evidence: [], risks: [],
       });
 
-      mockOpenAIClient.generateWithCustomPrompt.mockResolvedValueOnce({
-        text: mockFixResponse, responseId: 'r3',
-      });
+      mockOpenAIClient.generateWithCustomPrompt
+        .mockResolvedValueOnce({ text: mockFixResponse, responseId: 'r3' })
+        .mockResolvedValueOnce({ text: mockFixResponse, responseId: 'r3b' });
 
-      await agent.execute({ analysis: mockAnalysis, investigation: mockInvestigation }, unknownContext);
+      const unknownContext1 = createAgentContext({
+        errorMessage: 'test failed',
+        testFile: 'test.ts',
+        testName: 'should work',
+      });
+      await agent.execute({ analysis: mockAnalysis, investigation: mockInvestigation }, unknownContext1);
+
+      const unknownContext2 = createAgentContext({
+        errorMessage: 'test failed again',
+        testFile: 'test.ts',
+        testName: 'should work',
+      });
+      await agent.execute({ analysis: mockAnalysis, investigation: mockInvestigation }, unknownContext2);
 
       const call = mockOpenAIClient.generateWithCustomPrompt.mock.calls[0][0];
       expect(call.systemPrompt).toContain('Cypress Fix Patterns');
-      expect(call.systemPrompt).toContain('WebDriverIO Fix Patterns');
+      expect(call.systemPrompt).not.toContain('WebDriverIO Fix Patterns');
+
+      // Warning fires once per agent instance, even though we ran two
+      // iterations with an unknown framework.
+      const unknownFrameworkWarnings = warningSpy.mock.calls.filter((args: unknown[]) =>
+        typeof args[0] === 'string' && args[0].includes('Framework was unknown')
+      );
+      expect(unknownFrameworkWarnings).toHaveLength(1);
+
+      warningSpy.mockRestore();
     });
 
     it('should inject skillsPrompt into user prompt when present', async () => {

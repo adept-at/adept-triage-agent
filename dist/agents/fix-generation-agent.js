@@ -1,6 +1,40 @@
 "use strict";
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.FixGenerationAgent = exports.WDIO_PATTERNS = exports.CYPRESS_PATTERNS = void 0;
+const core = __importStar(require("@actions/core"));
 const base_agent_1 = require("./base-agent");
 const constants_1 = require("../config/constants");
 const text_utils_1 = require("../utils/text-utils");
@@ -337,6 +371,7 @@ When recent product repo changes are provided (e.g. from the learn-webapp), you 
 4. **Adapt selectors and assertions**: If a product change renamed an aria-label, CSS class, or restructured DOM, update the test selectors to match the NEW product code — do NOT add fragile workarounds.
 5. If no product diff is provided or the diff is unrelated, state that explicitly in your reasoning.`;
 class FixGenerationAgent extends base_agent_1.BaseAgent {
+    warnedUnknownFramework = false;
     constructor(openaiClient, config) {
         const resolvedModel = config?.model ?? constants_1.AGENT_MODEL.fixGeneration;
         const resolvedEffort = (0, constants_1.supportsReasoningEffort)(resolvedModel)
@@ -358,7 +393,11 @@ class FixGenerationAgent extends base_agent_1.BaseAgent {
             case 'webdriverio':
                 return COMMON_PREAMBLE + exports.WDIO_PATTERNS + COMMON_SUFFIX;
             default:
-                return COMMON_PREAMBLE + exports.CYPRESS_PATTERNS + exports.WDIO_PATTERNS + COMMON_SUFFIX;
+                if (!this.warnedUnknownFramework) {
+                    this.warnedUnknownFramework = true;
+                    core.warning(`[FixGenerationAgent] Framework was unknown or missing (got ${JSON.stringify(framework)}); defaulting to Cypress fix patterns.`);
+                }
+                return COMMON_PREAMBLE + exports.CYPRESS_PATTERNS + COMMON_SUFFIX;
         }
     }
     buildUserPrompt(input, context) {

@@ -4,6 +4,8 @@ exports.CodeReadingAgent = void 0;
 const base_agent_1 = require("./base-agent");
 class CodeReadingAgent extends base_agent_1.BaseAgent {
     sourceFetchContext;
+    treePathSet = null;
+    treeFetchAttempted = false;
     constructor(openaiClient, sourceFetchContext, config) {
         super(openaiClient, 'CodeReadingAgent', config);
         this.sourceFetchContext = sourceFetchContext;
@@ -217,6 +219,47 @@ class CodeReadingAgent extends base_agent_1.BaseAgent {
         }
         return '';
     }
+    async ensureTreePathSet() {
+        if (this.treeFetchAttempted) {
+            return this.treePathSet;
+        }
+        this.treeFetchAttempted = true;
+        if (!this.sourceFetchContext) {
+            return null;
+        }
+        const { octokit, owner, repo, branch } = this.sourceFetchContext;
+        try {
+            const refResponse = await octokit.git.getRef({
+                owner,
+                repo,
+                ref: `heads/${branch}`,
+            });
+            const sha = refResponse.data.object.sha;
+            const treeResponse = await octokit.git.getTree({
+                owner,
+                repo,
+                tree_sha: sha,
+                recursive: 'true',
+            });
+            if (treeResponse.data.truncated) {
+                this.log(`Tree for ${owner}/${repo}@${branch} was truncated; falling back to per-path probing for this run`, 'debug');
+                return null;
+            }
+            const paths = new Set();
+            for (const entry of treeResponse.data.tree || []) {
+                if (entry.type === 'blob' && typeof entry.path === 'string') {
+                    paths.add(entry.path);
+                }
+            }
+            this.treePathSet = paths;
+            this.log(`Cached repo tree for ${owner}/${repo}@${branch}: ${paths.size} files`, 'debug');
+            return this.treePathSet;
+        }
+        catch (error) {
+            this.log(`Could not fetch repo tree for ${owner}/${repo}@${branch}: ${error}; falling back to per-path probing`, 'debug');
+            return null;
+        }
+    }
     extractImports(code) {
         const imports = [];
         const es6Regex = /import\s+(?:(?:\{[^}]+\}|\*\s+as\s+\w+|\w+)\s+from\s+)?['"]([^'"]+)['"]/g;
@@ -327,31 +370,47 @@ class CodeReadingAgent extends base_agent_1.BaseAgent {
             'wdio.conf.ts',
             'wdio.conf.js',
         ];
-        for (const path of supportPaths) {
+        const treePathSet = await this.ensureTreePathSet();
+        const supportPathsToFetch = treePathSet
+            ? supportPaths.filter((p) => treePathSet.has(p))
+            : supportPaths;
+        for (const path of supportPathsToFetch) {
             const content = await this.fetchFile(path);
             if (content) {
                 files.set(path, content);
             }
         }
+        const extensions = [
+            '',
+            '.js',
+            '.ts',
+            '.jsx',
+            '.tsx',
+            '/index.js',
+            '/index.ts',
+        ];
         for (const imp of imports) {
-            if (imp.startsWith('.')) {
-                const resolvedPath = this.resolveRelativePath(testDir, imp);
-                const extensions = [
-                    '',
-                    '.js',
-                    '.ts',
-                    '.jsx',
-                    '.tsx',
-                    '/index.js',
-                    '/index.ts',
-                ];
-                for (const ext of extensions) {
-                    const fullPath = resolvedPath + ext;
-                    const content = await this.fetchFile(fullPath);
+            if (!imp.startsWith('.'))
+                continue;
+            const resolvedPath = this.resolveRelativePath(testDir, imp);
+            if (treePathSet) {
+                const candidate = extensions
+                    .map((ext) => resolvedPath + ext)
+                    .find((p) => treePathSet.has(p));
+                if (candidate) {
+                    const content = await this.fetchFile(candidate);
                     if (content) {
-                        files.set(fullPath, content);
-                        break;
+                        files.set(candidate, content);
                     }
+                }
+                continue;
+            }
+            for (const ext of extensions) {
+                const fullPath = resolvedPath + ext;
+                const content = await this.fetchFile(fullPath);
+                if (content) {
+                    files.set(fullPath, content);
+                    break;
                 }
             }
         }
@@ -376,6 +435,11 @@ class CodeReadingAgent extends base_agent_1.BaseAgent {
             `test/page-objects/${kebabCase}.ts`,
             `test/page-objects/${kebabCase}.js`,
         ];
+        const treePathSet = await this.ensureTreePathSet();
+        if (treePathSet) {
+            const match = possiblePaths.find((p) => treePathSet.has(p));
+            return match ?? null;
+        }
         for (const path of possiblePaths) {
             const content = await this.fetchFile(path);
             if (content) {

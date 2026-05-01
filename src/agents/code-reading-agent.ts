@@ -61,6 +61,21 @@ export class CodeReadingAgent extends BaseAgent<
 > {
   private sourceFetchContext?: SourceFetchContext;
 
+  /**
+   * Per-instance cache of the repository tree, keyed implicitly by the
+   * `sourceFetchContext` (one agent instance ~= one triage run, one repo+ref).
+   * Populated lazily on first call to `ensureTreePathSet`. When non-null,
+   * the value is the set of every blob path in the tree at the configured
+   * branch, used to short-circuit the support-file / page-object / relative-
+   * import probing that would otherwise issue a getContent call per candidate.
+   *
+   * `null` means either: tree fetch hasn't been attempted yet (see
+   * `treeFetchAttempted`), or the tree was truncated / errored and we've
+   * decided to fall back to per-path probing for this run.
+   */
+  private treePathSet: Set<string> | null = null;
+  private treeFetchAttempted = false;
+
   constructor(
     openaiClient: OpenAIClient,
     sourceFetchContext?: SourceFetchContext,
@@ -375,6 +390,86 @@ export class CodeReadingAgent extends BaseAgent<
   }
 
   /**
+   * Lazily fetch and cache the recursive blob-path set for the configured
+   * branch. Used to filter candidate paths (support files, page objects,
+   * relative-import extensions) before issuing per-file `getContent` calls,
+   * collapsing what was ~12 round-trips of mostly-404s per run into a single
+   * tree fetch.
+   *
+   * Returns `null` when the tree is unavailable for any reason (no fetch
+   * context, branch couldn't be resolved to a SHA, getTree failed, or the
+   * tree came back `truncated: true`). Callers must treat `null` as a
+   * signal to fall back to the legacy per-path probing — never throw,
+   * never fail the pipeline.
+   *
+   * The result is cached on the instance for the lifetime of the agent
+   * (one triage run). `treeFetchAttempted` ensures repeated callers don't
+   * re-try a known-failed fetch.
+   */
+  private async ensureTreePathSet(): Promise<Set<string> | null> {
+    if (this.treeFetchAttempted) {
+      return this.treePathSet;
+    }
+    this.treeFetchAttempted = true;
+
+    if (!this.sourceFetchContext) {
+      return null;
+    }
+
+    const { octokit, owner, repo, branch } = this.sourceFetchContext;
+
+    try {
+      // `git.getTree` requires a tree SHA, not a branch name. Resolve
+      // the branch to its commit SHA first; passing the commit SHA as
+      // `tree_sha` with `recursive: 'true'` returns the full repo tree.
+      // Using `git.getRef` here matches the pattern in `fix-applier.ts`.
+      const refResponse = await octokit.git.getRef({
+        owner,
+        repo,
+        ref: `heads/${branch}`,
+      });
+      const sha = refResponse.data.object.sha;
+
+      const treeResponse = await octokit.git.getTree({
+        owner,
+        repo,
+        tree_sha: sha,
+        recursive: 'true',
+      });
+
+      if (treeResponse.data.truncated) {
+        this.log(
+          `Tree for ${owner}/${repo}@${branch} was truncated; falling back to per-path probing for this run`,
+          'debug'
+        );
+        return null;
+      }
+
+      const paths = new Set<string>();
+      for (const entry of treeResponse.data.tree || []) {
+        // Only blob (file) entries are useful here. Trees (directories)
+        // would never be passed to `fetchFile` anyway.
+        if (entry.type === 'blob' && typeof entry.path === 'string') {
+          paths.add(entry.path);
+        }
+      }
+
+      this.treePathSet = paths;
+      this.log(
+        `Cached repo tree for ${owner}/${repo}@${branch}: ${paths.size} files`,
+        'debug'
+      );
+      return this.treePathSet;
+    } catch (error) {
+      this.log(
+        `Could not fetch repo tree for ${owner}/${repo}@${branch}: ${error}; falling back to per-path probing`,
+        'debug'
+      );
+      return null;
+    }
+  }
+
+  /**
    * Extract import statements from code
    */
   private extractImports(code: string): string[] {
@@ -495,6 +590,13 @@ export class CodeReadingAgent extends BaseAgent<
 
   /**
    * Find and fetch support files
+   *
+   * Uses the cached repo tree (when available) to filter candidate paths
+   * down to ones that actually exist before issuing any `getContent` calls.
+   * For repos where the tree is unavailable (truncated, getTree failed,
+   * etc.) this falls back to the original per-path probing so we never
+   * regress correctness. Same fallback applies to relative-import
+   * extension resolution below.
    */
   private async findAndFetchSupportFiles(
     testFile: string,
@@ -520,7 +622,12 @@ export class CodeReadingAgent extends BaseAgent<
       'wdio.conf.js',
     ];
 
-    for (const path of supportPaths) {
+    const treePathSet = await this.ensureTreePathSet();
+    const supportPathsToFetch = treePathSet
+      ? supportPaths.filter((p) => treePathSet.has(p))
+      : supportPaths;
+
+    for (const path of supportPathsToFetch) {
       const content = await this.fetchFile(path);
       if (content) {
         files.set(path, content);
@@ -528,26 +635,44 @@ export class CodeReadingAgent extends BaseAgent<
     }
 
     // Try to resolve relative imports
-    for (const imp of imports) {
-      if (imp.startsWith('.')) {
-        const resolvedPath = this.resolveRelativePath(testDir, imp);
-        const extensions = [
-          '',
-          '.js',
-          '.ts',
-          '.jsx',
-          '.tsx',
-          '/index.js',
-          '/index.ts',
-        ];
+    const extensions = [
+      '',
+      '.js',
+      '.ts',
+      '.jsx',
+      '.tsx',
+      '/index.js',
+      '/index.ts',
+    ];
 
-        for (const ext of extensions) {
-          const fullPath = resolvedPath + ext;
-          const content = await this.fetchFile(fullPath);
+    for (const imp of imports) {
+      if (!imp.startsWith('.')) continue;
+
+      const resolvedPath = this.resolveRelativePath(testDir, imp);
+
+      if (treePathSet) {
+        // With tree available: pick the first extension whose full path
+        // exists in the tree, then fetch only that one. Worst case: 1
+        // network call per import instead of up to 7.
+        const candidate = extensions
+          .map((ext) => resolvedPath + ext)
+          .find((p) => treePathSet.has(p));
+        if (candidate) {
+          const content = await this.fetchFile(candidate);
           if (content) {
-            files.set(fullPath, content);
-            break;
+            files.set(candidate, content);
           }
+        }
+        continue;
+      }
+
+      // Fallback: original probe-each-extension behavior.
+      for (const ext of extensions) {
+        const fullPath = resolvedPath + ext;
+        const content = await this.fetchFile(fullPath);
+        if (content) {
+          files.set(fullPath, content);
+          break;
         }
       }
     }
@@ -557,6 +682,11 @@ export class CodeReadingAgent extends BaseAgent<
 
   /**
    * Find page object file
+   *
+   * When the repo tree is available, filter the 12 hardcoded candidate
+   * paths down to ones that actually exist; the caller then fetches the
+   * single matching path (if any). Falls back to the original per-path
+   * probe loop when the tree isn't available.
    */
   private async findPageObjectFile(
     pageObjectName: string,
@@ -582,6 +712,15 @@ export class CodeReadingAgent extends BaseAgent<
       `test/page-objects/${kebabCase}.js`,
     ];
 
+    const treePathSet = await this.ensureTreePathSet();
+    if (treePathSet) {
+      // Tree available: existence is a Set lookup, no network call.
+      // Caller will issue a single getContent for whichever path we return.
+      const match = possiblePaths.find((p) => treePathSet.has(p));
+      return match ?? null;
+    }
+
+    // Fallback: original probe-each-path behavior.
     for (const path of possiblePaths) {
       const content = await this.fetchFile(path);
       if (content) {

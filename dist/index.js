@@ -1348,6 +1348,8 @@ exports.CodeReadingAgent = void 0;
 const base_agent_1 = __nccwpck_require__(46575);
 class CodeReadingAgent extends base_agent_1.BaseAgent {
     sourceFetchContext;
+    treePathSet = null;
+    treeFetchAttempted = false;
     constructor(openaiClient, sourceFetchContext, config) {
         super(openaiClient, 'CodeReadingAgent', config);
         this.sourceFetchContext = sourceFetchContext;
@@ -1561,6 +1563,47 @@ class CodeReadingAgent extends base_agent_1.BaseAgent {
         }
         return '';
     }
+    async ensureTreePathSet() {
+        if (this.treeFetchAttempted) {
+            return this.treePathSet;
+        }
+        this.treeFetchAttempted = true;
+        if (!this.sourceFetchContext) {
+            return null;
+        }
+        const { octokit, owner, repo, branch } = this.sourceFetchContext;
+        try {
+            const refResponse = await octokit.git.getRef({
+                owner,
+                repo,
+                ref: `heads/${branch}`,
+            });
+            const sha = refResponse.data.object.sha;
+            const treeResponse = await octokit.git.getTree({
+                owner,
+                repo,
+                tree_sha: sha,
+                recursive: 'true',
+            });
+            if (treeResponse.data.truncated) {
+                this.log(`Tree for ${owner}/${repo}@${branch} was truncated; falling back to per-path probing for this run`, 'debug');
+                return null;
+            }
+            const paths = new Set();
+            for (const entry of treeResponse.data.tree || []) {
+                if (entry.type === 'blob' && typeof entry.path === 'string') {
+                    paths.add(entry.path);
+                }
+            }
+            this.treePathSet = paths;
+            this.log(`Cached repo tree for ${owner}/${repo}@${branch}: ${paths.size} files`, 'debug');
+            return this.treePathSet;
+        }
+        catch (error) {
+            this.log(`Could not fetch repo tree for ${owner}/${repo}@${branch}: ${error}; falling back to per-path probing`, 'debug');
+            return null;
+        }
+    }
     extractImports(code) {
         const imports = [];
         const es6Regex = /import\s+(?:(?:\{[^}]+\}|\*\s+as\s+\w+|\w+)\s+from\s+)?['"]([^'"]+)['"]/g;
@@ -1671,31 +1714,47 @@ class CodeReadingAgent extends base_agent_1.BaseAgent {
             'wdio.conf.ts',
             'wdio.conf.js',
         ];
-        for (const path of supportPaths) {
+        const treePathSet = await this.ensureTreePathSet();
+        const supportPathsToFetch = treePathSet
+            ? supportPaths.filter((p) => treePathSet.has(p))
+            : supportPaths;
+        for (const path of supportPathsToFetch) {
             const content = await this.fetchFile(path);
             if (content) {
                 files.set(path, content);
             }
         }
+        const extensions = [
+            '',
+            '.js',
+            '.ts',
+            '.jsx',
+            '.tsx',
+            '/index.js',
+            '/index.ts',
+        ];
         for (const imp of imports) {
-            if (imp.startsWith('.')) {
-                const resolvedPath = this.resolveRelativePath(testDir, imp);
-                const extensions = [
-                    '',
-                    '.js',
-                    '.ts',
-                    '.jsx',
-                    '.tsx',
-                    '/index.js',
-                    '/index.ts',
-                ];
-                for (const ext of extensions) {
-                    const fullPath = resolvedPath + ext;
-                    const content = await this.fetchFile(fullPath);
+            if (!imp.startsWith('.'))
+                continue;
+            const resolvedPath = this.resolveRelativePath(testDir, imp);
+            if (treePathSet) {
+                const candidate = extensions
+                    .map((ext) => resolvedPath + ext)
+                    .find((p) => treePathSet.has(p));
+                if (candidate) {
+                    const content = await this.fetchFile(candidate);
                     if (content) {
-                        files.set(fullPath, content);
-                        break;
+                        files.set(candidate, content);
                     }
+                }
+                continue;
+            }
+            for (const ext of extensions) {
+                const fullPath = resolvedPath + ext;
+                const content = await this.fetchFile(fullPath);
+                if (content) {
+                    files.set(fullPath, content);
+                    break;
                 }
             }
         }
@@ -1720,6 +1779,11 @@ class CodeReadingAgent extends base_agent_1.BaseAgent {
             `test/page-objects/${kebabCase}.ts`,
             `test/page-objects/${kebabCase}.js`,
         ];
+        const treePathSet = await this.ensureTreePathSet();
+        if (treePathSet) {
+            const match = possiblePaths.find((p) => treePathSet.has(p));
+            return match ?? null;
+        }
         for (const path of possiblePaths) {
             const content = await this.fetchFile(path);
             if (content) {
@@ -1817,12 +1881,46 @@ exports.CodeReadingAgent = CodeReadingAgent;
 /***/ }),
 
 /***/ 39302:
-/***/ ((__unused_webpack_module, exports, __nccwpck_require__) => {
+/***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
 
 "use strict";
 
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.FixGenerationAgent = exports.WDIO_PATTERNS = exports.CYPRESS_PATTERNS = void 0;
+const core = __importStar(__nccwpck_require__(37484));
 const base_agent_1 = __nccwpck_require__(46575);
 const constants_1 = __nccwpck_require__(58361);
 const text_utils_1 = __nccwpck_require__(11744);
@@ -2159,6 +2257,7 @@ When recent product repo changes are provided (e.g. from the learn-webapp), you 
 4. **Adapt selectors and assertions**: If a product change renamed an aria-label, CSS class, or restructured DOM, update the test selectors to match the NEW product code — do NOT add fragile workarounds.
 5. If no product diff is provided or the diff is unrelated, state that explicitly in your reasoning.`;
 class FixGenerationAgent extends base_agent_1.BaseAgent {
+    warnedUnknownFramework = false;
     constructor(openaiClient, config) {
         const resolvedModel = config?.model ?? constants_1.AGENT_MODEL.fixGeneration;
         const resolvedEffort = (0, constants_1.supportsReasoningEffort)(resolvedModel)
@@ -2180,7 +2279,11 @@ class FixGenerationAgent extends base_agent_1.BaseAgent {
             case 'webdriverio':
                 return COMMON_PREAMBLE + exports.WDIO_PATTERNS + COMMON_SUFFIX;
             default:
-                return COMMON_PREAMBLE + exports.CYPRESS_PATTERNS + exports.WDIO_PATTERNS + COMMON_SUFFIX;
+                if (!this.warnedUnknownFramework) {
+                    this.warnedUnknownFramework = true;
+                    core.warning(`[FixGenerationAgent] Framework was unknown or missing (got ${JSON.stringify(framework)}); defaulting to Cypress fix patterns.`);
+                }
+                return COMMON_PREAMBLE + exports.CYPRESS_PATTERNS + COMMON_SUFFIX;
         }
     }
     buildUserPrompt(input, context) {

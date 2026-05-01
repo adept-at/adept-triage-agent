@@ -1,6 +1,6 @@
 # Adept Triage Agent — Architecture
 
-> **Current version:** v1.52.3
+> **Current version:** v1.52.7
 > **Scope:** end-to-end architecture of the agent — entry point, pipeline, five-agent orchestration, skill-memory / repo-context learning loop, observability, operator surface.
 > **Audience:** engineers who need to understand the system deeply enough to extend or debug it without surprises.
 
@@ -55,6 +55,10 @@ The Adept Triage Agent is a Node 24 GitHub Action (`action.yml` → `dist/index.
 | **v1.52.0** | **Repo context (bundled + remote)**; **seed skills with `isSeed` pruning protection**; **`normalizeSpec` on write and read** so seeds written with relative paths match runtime absolute paths. |
 | **v1.52.2** | **Safety + measurement tightening**: local path traversal uses resolved-path containment, confidence values are clamped to 0–100, outer validation retries no longer chain hidden Responses API history, custom prompt calls retry and emit token usage, seed skills are labeled as curated guidance. |
 | **v1.52.3** | **GPT-5.5 migration**: all LLM calls use `gpt-5.5`; classification/analysis/investigation use high reasoning, fix-generation/review use xhigh reasoning, and internal/reusable workflow timeouts allow 15-minute triage runs. |
+| **v1.52.4** | **Agentic-only repair contract hardened**: `AgentOrchestrator` now refuses to ship any fix that review never approved. Pre-v1.52.4 the orchestrator returned the last high-confidence fix as a fallback unless it had a narrow class of quality CRITICALs, which still let unapproved fixes reach validation and skill storage. Review approval is now mandatory. |
+| **v1.52.5** | **Remote-validation learning hardening**: structured `ValidationResult` is recorded *before* the skill-store outcome write, so a failed or still-pending remote validation can no longer be persisted as a `validatedLocally` skill that pollutes future repair prompts. `shouldWriteSkillOutcome` gates skill writes to terminal validation states (`passed | failed | inconclusive`); `pending` and missing-validation cases skip the write with explicit log lines. |
+| **v1.52.6** | **Curated-seed expansion**: added `04-mailosaur-concurrent-mailbox-cleanup` to `seeds/lib-wdio-8-multi-remote/` to cover the org-invites Mailosaur race-condition pattern. No code change; see `seeds/DEPLOYED.md`. |
+| **v1.52.7** | **Repair lifecycle outputs**: six new action outputs (`repair_status`, `repair_summary`, `repair_details`, `repair_iterations`, `repair_last_stage`, `repair_review_issues`) surface the orchestrator's lifecycle outcome — `not_started | skipped | in_progress | no_fix_generated | review_rejected | timed_out | cancelled | no_approved_fix | approved | applied | validated` — orthogonally to the classifier `verdict`. The `RepairTelemetry` type is constructed by `AgentOrchestrator`, finalized in `finalizeRepairTelemetry`, and emitted by `emitRepairOutputs` so Slack and dashboards can distinguish e.g. "TEST_ISSUE classified, fix rejected by review" from "TEST_ISSUE classified, fix validated and shipped". |
 
 ---
 
@@ -188,6 +192,7 @@ All live under `src/agents/`. All except `CodeReadingAgent` extend `BaseAgent` a
 - **Output**: `CodeReadingOutput = { testFileContent, relatedFiles[], customCommands[], pageObjects[], summary }`.
 - On a successful read, the orchestrator populates `AgentContext.sourceFileContent` (line-numbered), `AgentContext.relatedFiles`, and stashes raw content for `autoCorrectOldCode`.
 - Returns `success: false` if the test file can't be fetched — the orchestrator short-circuits the run.
+- **Tree-based path resolution** (perf optimization): on first need, `ensureTreePathSet()` resolves the configured branch to a tree SHA via `octokit.git.getRef`, then calls `octokit.git.getTree({ recursive: 'true' })` and caches a per-instance `Set<string>` of every blob path in the repo. `findAndFetchSupportFiles` and `findPageObjectFile` then filter against that set before issuing `getContent`, instead of probe-fetching every candidate path and counting on 404s. The cache is per-`CodeReadingAgent` instance, so each orchestrator run pays the tree fetch at most once. On a truncated tree, `getTree` failure, missing context, or unresolvable branch the helper returns `null` and the methods fall back to legacy probing — every call site treats the tree as a hint, never a hard contract. Net effect on a typical run: ~13–30 round-trips collapse to ~5.
 
 ### Investigation agent — `investigation-agent.ts`
 
@@ -195,7 +200,7 @@ All live under `src/agents/`. All except `CodeReadingAgent` extend `BaseAgent` a
 
 - **Input**: `{ analysis: AnalysisOutput, codeContext?: CodeReadingOutput }`.
 - **Output**: `InvestigationOutput`:
-  - `findings[]`: each has whitelisted `type` (`SELECTOR_DRIFT | TIMING_RACE | STATE_ISSUE | CODE_CHANGE | OTHER`) and `severity` (`HIGH | MEDIUM | LOW`).
+  - `findings[]`: each has whitelisted `type` (`SELECTOR_CHANGE | MISSING_ELEMENT | TIMING_GAP | STATE_ISSUE | CODE_CHANGE | OTHER`) and `severity` (`HIGH | MEDIUM | LOW`).
   - `primaryFinding?`, `isTestCodeFixable`, `recommendedApproach`, `selectorsToUpdate[]`, `confidence`.
   - `verdictOverride?` — `{ suggestedLocation: 'TEST_CODE' | 'APP_CODE' | 'BOTH', confidence, evidence[] }`. Parse-time whitelist; invalid locations cause the entire `verdictOverride` to be dropped.
 - **Verdict override gates** (applied in orchestrator immediately after investigation runs):
@@ -212,9 +217,9 @@ All live under `src/agents/`. All except `CodeReadingAgent` extend `BaseAgent` a
   - `changes[]`: each `CodeChange` has whitelisted `changeType` (`SELECTOR_UPDATE | WAIT_ADDITION | LOGIC_CHANGE | ASSERTION_UPDATE | OTHER`).
   - `confidence`, `summary`, `reasoning`, `evidence[]`, `risks[]`, `alternatives?`.
   - **`failureModeTrace?`** — four sub-fields: `originalState`, `rootMechanism`, `newStateAfterFix`, `whyAssertionPassesNow`. This is the causal rationale the review agent audits; missing/vague trace is a CRITICAL rejection.
-- **System prompt composition**:
+- **System prompt composition** (see `getSystemPrompt` in `src/agents/fix-generation-agent.ts`):
   - `COMMON_PREAMBLE`
-  - Framework-specific patterns block (`CYPRESS_PATTERNS` or `WDIO_PATTERNS`; both concatenated for unknown framework)
+  - Framework-specific patterns block — `CYPRESS_PATTERNS` for `cypress`, `WDIO_PATTERNS` for `webdriverio`. **Unknown / missing framework defaults to `CYPRESS_PATTERNS` only** (matches `action.yml`'s default `TEST_FRAMEWORKS: cypress`); `getSystemPrompt` emits a single `core.warning` per agent instance via the `warnedUnknownFramework` flag so the action log doesn't get spammed across the fix/review loop iterations.
   - `COMMON_SUFFIX` containing the JSON output schema + `failureModeTrace` rules + `oldCode` rules (must verbatim-match source)
 - **Iteration**: driven by the orchestrator. Each iteration may receive `previousFeedback` from prior review issues or low-confidence / oldCode-validation rejections.
 
@@ -223,7 +228,7 @@ All live under `src/agents/`. All except `CodeReadingAgent` extend `BaseAgent` a
 **One-liner**: approve or reject a proposed fix, auditing changes, trace quality, and PR/product consistency.
 
 - **Input**: `{ proposedFix, analysis, investigation?, codeContext? }` — orchestrator always passes `investigation` and `codeContext` when available.
-- **Output**: `{ approved, issues[] (each with severity CRITICAL/WARNING/INFO), assessment, fixConfidence, improvements? }`.
+- **Output**: `{ approved, issues[] (each with severity CRITICAL/WARNING/SUGGESTION), assessment, fixConfidence, improvements? }`.
 - **Parser safety**: any CRITICAL issue forces `approved = false` even if the model says `approved: true`.
 - **Approval rules** (from system prompt): no CRITICAL issues **and** the fix addresses the root cause.
 - **CRITICAL list includes**:
@@ -235,7 +240,7 @@ All live under `src/agents/`. All except `CodeReadingAgent` extend `BaseAgent` a
   - `issueLocation=APP_CODE` without justification.
   - Fix contradicts investigation's `verdictOverride`.
   - Fix ignores investigation's `recommendedApproach`.
-- **Orchestrator integration**: `isBlockingCriticalIssue` helper inspects the issue list; at max iterations, refuses to ship any fix that has an open quality-critical issue (trace missing/vague, strictly-stronger logic).
+- **Orchestrator integration**: `isBlockingCriticalIssue` helper inspects the issue list for quality-critical issues (trace missing/vague, strictly-stronger logic). From v1.52.4 onward, hitting max iterations without review approval always refuses the fix — the helper is now used to classify the refusal reason (blocking-quality-CRITICAL vs simply-never-approved) and to replay the prior trace into `reviewFeedback` for the next fix-gen iteration. Pre-v1.52.4 the helper also gated a narrow fallback path that has since been removed.
 
 ### `AgentContext` (`src/agents/base-agent.ts`)
 
@@ -268,7 +273,7 @@ For every agent except `CodeReadingAgent` (which doesn't call the LLM):
 <repo conventions block, if context.repoContext is set>
 ```
 
-`BaseAgent.runAgentTask` (`src/agents/base-agent.ts:263-266`) does this concatenation automatically. Empty `repoContext` collapses to no-op. **Order matters**: the agent's role frames the task; repo conventions refine "how this repo does things." Swapping the order would risk the model treating conventions as the primary task.
+`BaseAgent.runAgentTask` (`src/agents/base-agent.ts:267-270`) does this concatenation automatically. Empty `repoContext` collapses to no-op. **Order matters**: the agent's role frames the task; repo conventions refine "how this repo does things." Swapping the order would risk the model treating conventions as the primary task.
 
 Fix-gen's system prompt additionally includes `CYPRESS_PATTERNS` or `WDIO_PATTERNS` (~100 lines each of canonical fix patterns) before the JSON schema.
 
@@ -362,7 +367,7 @@ Happy path (`src/agents/agent-orchestrator.ts`):
    - If `requireReview`: run review with the same chain id.
    - Approved + no blocking CRITICALs → return fix with `approach: 'agentic'`.
    - Not approved → build `reviewFeedback` from issues + (if blocking CRITICAL with prior trace) explicit replay of `previousFix.failureModeTrace` → next iteration.
-7. **Max iterations fallback inside agentic only** — if the review loop ran out of iterations but the last agentic fix has acceptable confidence AND no blocking quality CRITICALs, return it with a warning ("not review-approved; validation is the final gate"). Otherwise error.
+7. **Max iterations — review approval is mandatory** — if the review loop exhausts its iterations without the review agent approving the last fix, the orchestrator returns an error regardless of the fix's confidence. There is no "ship unapproved but high-confidence fix" fallback. Pre-v1.52.4 there was a narrow fallback that shipped the last high-confidence fix when it had no blocking quality CRITICALs, with a warning that validation was the final gate. That path was removed because it still allowed unapproved fixes to reach validation and skill storage, undermining the agentic-only repair contract. The orchestrator now classifies the refusal reason (`unresolved quality CRITICAL(s)` vs `max iterations reached without review approval`) for telemetry and logs it, but in every case returns `null` up to the coordinator.
 
 All model-produced confidence values are clamped to `0–100` at parse boundaries before they reach gates (`analysis`, `investigation`, `verdictOverride`, `fix_generation`, and `review`).
 
@@ -561,8 +566,10 @@ All values are strings (GitHub Actions convention). JSON blobs are stringified J
 | `fix_recommendation` | `TEST_ISSUE` with fix | Stringified JSON of fix object. |
 | `fix_summary`, `fix_confidence` | `TEST_ISSUE` with fix | Human summary + confidence. |
 | `auto_fix_applied`, `auto_fix_branch`, `auto_fix_commit`, `auto_fix_files` | Auto-fix created a branch | Note: `auto_fix_commit` not `auto_fix_commit_sha`. |
-| `validation_run_id`, `validation_status`, `validation_url` | Remote validation path | Legacy remote path only. |
+| `validation_status` | Both local and remote validation paths | One of `passed | failed | inconclusive | pending | skipped` (`ValidationStatus` in `src/types.ts`). |
+| `validation_run_id`, `validation_url` | Remote validation path only | Legacy `workflow_dispatch` path. |
 | `auto_fix_skipped`, `auto_fix_skipped_reason` | Intentional auto-fix skip | Chronic flakiness, blast-radius gate, no changes proposed, etc. |
+| `repair_status`, `repair_summary`, `repair_details`, `repair_iterations`, `repair_last_stage`, `repair_review_issues` | Always (orthogonal to `verdict`) | v1.52.7+. Repair-pipeline lifecycle outputs built from `RepairTelemetry`, finalized in `finalizeRepairTelemetry`, emitted by `emitRepairOutputs`. `repair_status` ∈ `not_started | skipped | in_progress | no_fix_generated | review_rejected | timed_out | cancelled | no_approved_fix | approved | applied | validated`. Lets Slack / dashboards tell apart "TEST_ISSUE classified, fix rejected by review" from "TEST_ISSUE classified, fix validated and shipped." |
 
 ### Error contracts
 
@@ -645,8 +652,8 @@ Every numeric / string default operators might want to know.
 | `MAX_SKILLS` (per repo partition) | `100` | `src/services/skill-store.ts` |
 | Skill auto-retire threshold | `failRate > 0.4` AND `failCount >= 3` | `src/services/skill-store.ts` |
 | `REPO_CONTEXT_MAX_CHARS` | `6500` | `src/services/repo-context-fetcher.ts` |
-| `OPENAI.LEGACY_MODEL` | `gpt-5.5` | `src/config/constants.ts` |
-| `OPENAI.UPGRADED_MODEL` | `gpt-5.5` | `src/config/constants.ts` |
+| `OPENAI.LEGACY_MODEL` | `gpt-5.5` (currently identical to `UPGRADED_MODEL`; the split is a structural rollback affordance) | `src/config/constants.ts` |
+| `OPENAI.UPGRADED_MODEL` | `gpt-5.5` (same as `LEGACY_MODEL` today; flipping fix-gen / review back is a one-line edit per the constants comment) | `src/config/constants.ts` |
 | `OPENAI.MAX_COMPLETION_TOKENS` | `24_000` | `src/config/constants.ts` |
 | `AGENT_MODEL.classification` | `LEGACY_MODEL` (`gpt-5.5`, high reasoning) | `src/config/constants.ts` |
 | `AGENT_MODEL.analysis` / `investigation` | `LEGACY_MODEL` (`gpt-5.5`, high reasoning) | `src/config/constants.ts` |

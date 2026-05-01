@@ -1,6 +1,6 @@
 # End-to-End Testing Plan: Triage Agent Auto-Fix + Validation Chain
 
-> **Last aligned with code:** v1.52.0. Cross-reference with `docs/ARCHITECTURE.md` for the authoritative validation-path gates.
+> **Last aligned with code:** v1.52.7. Cross-reference with `docs/ARCHITECTURE.md` for the authoritative validation-path gates.
 
 This document outlines practical approaches to E2E test the triage agent's dispatch → triage → auto-fix → validate chain across the consumer repos.
 
@@ -19,7 +19,7 @@ Test workflow fails
   → [Legacy] workflow_dispatch → validate-fix.yml → run spec on branch → PR if pass
 ```
 
-**Consumer repos as of v1.52.0:** `adept-at/wdio-9-bidi-mux3`, `adept-at/lib-cypress-canary`, `adept-at/lib-wdio-8-e2e-ts`, `adept-at/lib-wdio-8-multi-remote`, `adept-at/learn-webapp`. See `seeds/DEPLOYED.md` for which have `.adept-triage/context.md` deployed and which use the bundled path.
+**Consumer repos as of v1.52.7:** `adept-at/wdio-9-bidi-mux3`, `adept-at/lib-cypress-canary`, `adept-at/lib-wdio-8-e2e-ts`, `adept-at/lib-wdio-8-multi-remote`, `adept-at/learn-webapp`. See `seeds/DEPLOYED.md` for which have `.adept-triage/context.md` deployed and which use the bundled path.
 
 ## Key Challenges
 

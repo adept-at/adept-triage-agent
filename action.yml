@@ -145,7 +145,7 @@ outputs:
   validation_run_id:
     description: 'Workflow run ID of the validation workflow (legacy remote validation path only)'
   validation_status:
-    description: 'Validation status: passed (local test succeeded), pending, or skipped'
+    description: 'Validation status. Set on both local and remote validation paths. Possible values: passed (local test succeeded or remote workflow concluded success with verified test evidence), failed (validation ran and reported a real failure), inconclusive (validation produced mixed/ambiguous evidence), pending (remote validation dispatched but not yet complete), or skipped (validation did not run, e.g., baseline check passed or no spec was identified).'
   validation_url:
     description: 'URL to the validation workflow run (legacy remote validation path only)'
   auto_fix_skipped:

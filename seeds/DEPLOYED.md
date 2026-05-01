@@ -76,18 +76,26 @@ The bundled-path contract is locked in by
 - Remote 404 / error / directory-response all return `''` without throwing.
 - Cache keys on `(owner, repo, ref)` — different refs don't share entries.
 
-## DynamoDB seeds deployed alongside (2026-04-24)
+## DynamoDB seeds deployed alongside
 
-15 hand-curated seed skills, 3 per repo, inserted into
-`triage-skills-v1-live` via `scripts/seed-skill.ts seeds/`:
+Hand-curated seed skills inserted into `triage-skills-v1-live` via
+`scripts/seed-skill.ts seeds/`. Initial batch (15 seeds, 3 per repo)
+deployed 2026-04-24; one additional seed
+(`04-mailosaur-concurrent-mailbox-cleanup`, commit `8000ffb`) added on
+2026-04-30, bringing `lib-wdio-8-multi-remote` to 4 seeds and the
+total to 16:
 
-| Repo | Seed IDs (first 8) |
-|------|---|
-| `adept-at/learn-webapp` | `18168dc5`, `9953792c`, `1f162c03` |
-| `adept-at/lib-cypress-canary` | `5b12791c`, `2e9715e2`, `4189e9b6` |
-| `adept-at/lib-wdio-8-e2e-ts` | `218b14b5`, `2a588301`, `15248843` |
-| `adept-at/lib-wdio-8-multi-remote` | `d2ee1a8f`, `91e68f76`, `25c6958d` |
-| `adept-at/wdio-9-bidi-mux3` | `de4613ea`, `ccb25c19`, `3ccfbac5` |
+| Repo | Seed count | Seed IDs (first 8) |
+|------|---|---|
+| `adept-at/learn-webapp` | 3 | `18168dc5`, `9953792c`, `1f162c03` |
+| `adept-at/lib-cypress-canary` | 3 | `5b12791c`, `2e9715e2`, `4189e9b6` |
+| `adept-at/lib-wdio-8-e2e-ts` | 3 | `218b14b5`, `2a588301`, `15248843` |
+| `adept-at/lib-wdio-8-multi-remote` | 4 | `d2ee1a8f`, `91e68f76`, `25c6958d`, `3357b45e` (`04-mailosaur-concurrent-mailbox-cleanup`) |
+| `adept-at/wdio-9-bidi-mux3` | 3 | `de4613ea`, `ccb25c19`, `3ccfbac5` |
+
+Seed IDs are generated at insert time by `crypto.randomUUID()` in
+`scripts/seed-skill.ts`, so they aren't recorded in the source JSON
+files; the `(first 8)` prefixes above were captured at deploy time.
 
 All seeds have `isSeed: true` so they're protected from pruning and
 skipped by the audit's per-skill maintenance flags. List them any time

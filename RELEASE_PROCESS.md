@@ -49,7 +49,7 @@ This script checks:
 3. **Create release via GitHub UI:**
    - Go to [Releases](https://github.com/adept-at/adept-triage-agent/releases)
    - Click "Draft a new release"
-   - Create tag matching package.json version (e.g., `v1.7.1`)
+   - Create tag matching package.json version (e.g., `v1.52.8`)
    - Target: main branch
    - Write release notes
    - Click "Publish release"
@@ -132,12 +132,12 @@ If a bad release is published:
 
 1. **Delete the bad release:**
    ```bash
-   gh release delete v1.7.1 --yes
+   gh release delete v1.52.8 --yes
    ```
 
 2. **Delete the tag:**
    ```bash
-   git push origin :refs/tags/v1.7.1
+   git push origin :refs/tags/v1.52.8
    ```
 
 3. **Fix the issue and re-release**

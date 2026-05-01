@@ -34,6 +34,7 @@ export interface FixGenerationInput {
     previousFeedback?: string | null;
 }
 export declare class FixGenerationAgent extends BaseAgent<FixGenerationInput, FixGenerationOutput> {
+    private warnedUnknownFramework;
     constructor(openaiClient: OpenAIClient, config?: Partial<AgentConfig>);
     execute(input: FixGenerationInput, context: AgentContext, previousResponseId?: string): Promise<AgentResult<FixGenerationOutput>>;
     protected getSystemPrompt(framework?: string): string;
