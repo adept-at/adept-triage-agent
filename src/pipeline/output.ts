@@ -49,10 +49,19 @@ export function finalizeRepairTelemetry(
   let status: RepairStatus = base.status;
   let summary = base.summary;
 
-  if (autoFixResult?.success) {
-    const vs =
-      autoFixResult.validationResult?.status || autoFixResult.validationStatus;
-    if (vs === 'passed') {
+  // Phase 0: derive validation and apply outcomes independently. Validation
+  // is the authoritative signal for "did the fix actually work"; apply is
+  // for "did we push a branch / create a PR". Treating them as one boolean
+  // (the pre-Phase-0 `autoFixResult.success && validation === 'passed'`)
+  // collapses the publish-failure-after-pass case onto the failure path,
+  // which poisons the skill store.
+  const vs =
+    autoFixResult?.validationResult?.status || autoFixResult?.validationStatus;
+  const validationPassed = vs === 'passed';
+  const applySucceeded = !!autoFixResult?.success;
+
+  if (applySucceeded) {
+    if (validationPassed) {
       status = 'validated';
       summary = 'Auto-fix validated.';
     } else if (vs === 'pending') {
@@ -64,6 +73,28 @@ export function finalizeRepairTelemetry(
     } else {
       status = 'applied';
       summary = 'Auto-fix applied (branch created).';
+    }
+  } else if (validationPassed && autoFixResult) {
+    // Validation succeeded but ApplyResult.success is false. Today the only
+    // production path producing this shape is `iterativeFixValidateLoop`'s
+    // catch-after-pass (validator.ts) where push/PR creation throws after a
+    // passing local test. Detected by the canonical error prefix or by the
+    // `local` validation mode set on that path. Future paths that emit
+    // ApplyResult{success:false, validation:passed} without those markers
+    // bucket as `validated_not_published`.
+    const isPushFailureAfterPass =
+      (typeof autoFixResult.error === 'string' &&
+        autoFixResult.error.startsWith('Push failed after successful test')) ||
+      autoFixResult.validationResult?.mode === 'local';
+
+    if (isPushFailureAfterPass) {
+      status = 'validated_publish_failed';
+      summary = autoFixResult.error
+        ? `Validation passed; publish failed: ${autoFixResult.error}`
+        : 'Validation passed; publish failed.';
+    } else {
+      status = 'validated_not_published';
+      summary = 'Validation passed; publish/apply did not complete.';
     }
   }
 
@@ -180,6 +211,22 @@ export function setSuccessOutput(
     result.repairTelemetry ??
     finalizeRepairTelemetry(undefined, result.fixRecommendation, autoFixResult);
 
+  // Phase 0: derive validation/publish flags once and use everywhere so
+  // `auto_fix_applied` (output), `triage_json.metadata.autoFixApplied`,
+  // and `triage_json.autoFix.applied` agree on the same boolean. Pre-fix
+  // `triage_json.autoFix.applied` was hardcoded `true` whenever
+  // `autoFixResult.success`, which contradicted the new outputs on the
+  // success-but-validation-failed path (code-review finding H1).
+  const applySucceeded = !!autoFixResult?.success;
+  const validationStatus =
+    autoFixResult?.validationResult?.status || autoFixResult?.validationStatus;
+  const validationPassed = validationStatus === 'passed';
+  const validationUrl =
+    autoFixResult?.validationResult?.url || autoFixResult?.validationUrl;
+  const validationRunId =
+    autoFixResult?.validationResult?.runId || autoFixResult?.validationRunId;
+  const fixFullyAccepted = applySucceeded && validationPassed;
+
   const triageJson = {
     verdict: result.verdict,
     confidence: result.confidence,
@@ -192,18 +239,18 @@ export function setSuccessOutput(
     ...(result.verdict === 'TEST_ISSUE' && result.fixRecommendation
       ? { fixRecommendation: result.fixRecommendation }
       : {}),
-    ...(autoFixResult?.success
+    ...(applySucceeded
       ? {
           autoFix: {
-            applied: true,
-            branch: autoFixResult.branchName,
-            commit: autoFixResult.commitSha,
-            files: autoFixResult.modifiedFiles,
-            validation: mergeValidationResult(autoFixResult) || {
-              status: autoFixResult.validationStatus || 'skipped',
-              mode: autoFixResult.validationRunId ? 'remote' : 'local',
-              runId: autoFixResult.validationRunId,
-              url: autoFixResult.validationUrl,
+            applied: fixFullyAccepted,
+            branch: autoFixResult!.branchName,
+            commit: autoFixResult!.commitSha,
+            files: autoFixResult!.modifiedFiles,
+            validation: mergeValidationResult(autoFixResult!) || {
+              status: autoFixResult!.validationStatus || 'skipped',
+              mode: autoFixResult!.validationRunId ? 'remote' : 'local',
+              runId: autoFixResult!.validationRunId,
+              url: autoFixResult!.validationUrl,
             },
           },
         }
@@ -236,7 +283,7 @@ export function setSuccessOutput(
         (errorData.screenshots && errorData.screenshots.length > 0) || false,
       logSize: errorData.logs?.reduce((sum, l) => sum + l.length, 0) ?? 0,
       hasFixRecommendation: !!result.fixRecommendation,
-      autoFixApplied: autoFixResult?.success || false,
+      autoFixApplied: fixFullyAccepted,
       autoFixSkipped: !!result.autoFixSkipped,
     },
   };
@@ -263,52 +310,37 @@ export function setSuccessOutput(
     core.setOutput('has_fix_recommendation', 'false');
   }
 
-  if (autoFixResult?.success) {
-    core.setOutput('auto_fix_applied', 'true');
-    core.setOutput('auto_fix_branch', autoFixResult.branchName || '');
-    core.setOutput('auto_fix_commit', autoFixResult.commitSha || '');
+  // Phase 0: `auto_fix_applied` is true only when both the apply step
+  // succeeded AND validation passed. Flags are hoisted to the top of this
+  // function so triage_json and the action outputs agree on the same boolean.
+  if (applySucceeded) {
+    core.setOutput('auto_fix_branch', autoFixResult!.branchName || '');
+    core.setOutput('auto_fix_commit', autoFixResult!.commitSha || '');
     core.setOutput(
       'auto_fix_files',
-      JSON.stringify(autoFixResult.modifiedFiles)
+      JSON.stringify(autoFixResult!.modifiedFiles)
     );
+  }
 
-    const validationStatus =
-      autoFixResult.validationResult?.status || autoFixResult.validationStatus;
-    const validationUrl =
-      autoFixResult.validationResult?.url || autoFixResult.validationUrl;
-    const validationRunId =
-      autoFixResult.validationResult?.runId || autoFixResult.validationRunId;
+  core.setOutput('auto_fix_applied', fixFullyAccepted ? 'true' : 'false');
 
-    if (validationRunId) {
-      core.setOutput(
-        'validation_run_id',
-        validationRunId.toString()
-      );
-      core.setOutput(
-        'validation_status',
-        validationStatus || 'pending'
-      );
-      core.setOutput(
-        'validation_url',
-        validationUrl ||
-          `https://github.com/${github.context.repo.owner}/${github.context.repo.repo}/actions/runs/${validationRunId}`
-      );
-    } else if (validationStatus === 'pending') {
-      core.setOutput('validation_status', 'pending');
-      if (validationUrl) {
-        core.setOutput('validation_url', validationUrl);
-      }
-    } else {
-      core.setOutput(
-        'validation_status',
-        validationStatus || 'skipped'
-      );
+  if (validationRunId) {
+    core.setOutput('validation_run_id', validationRunId.toString());
+    core.setOutput(
+      'validation_url',
+      validationUrl ||
+        `https://github.com/${github.context.repo.owner}/${github.context.repo.repo}/actions/runs/${validationRunId}`
+    );
+    core.setOutput('validation_status', validationStatus || 'pending');
+  } else if (validationStatus === 'pending') {
+    core.setOutput('validation_status', 'pending');
+    if (validationUrl) {
+      core.setOutput('validation_url', validationUrl);
     }
   } else {
-    core.setOutput('auto_fix_applied', 'false');
     core.setOutput(
       'validation_status',
-      autoFixResult?.validationStatus || 'skipped'
+      validationStatus || 'skipped'
     );
   }
 

@@ -108,7 +108,20 @@ export type RepairStatus =
   | 'no_approved_fix'
   | 'approved'
   | 'applied'
-  | 'validated';
+  | 'validated'
+  /**
+   * Validation passed, but publish/PR creation failed afterward (e.g. push
+   * rejected by branch protection, PAT scope insufficient). The fix was real;
+   * only the delivery step failed. Distinguishing this from a fix failure is
+   * critical for skill-store learning — Phase 0 of the architecture roadmap.
+   */
+  | 'validated_publish_failed'
+  /**
+   * Validation passed without a completed apply/publish having been attempted
+   * for any other reason. Reserved for future ApplyResult shapes; not emitted
+   * by current code paths.
+   */
+  | 'validated_not_published';
 
 export interface RepairTelemetry {
   status: RepairStatus;

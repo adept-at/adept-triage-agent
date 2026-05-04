@@ -55,6 +55,15 @@ export interface FixApplierConfig {
   validationWorkflow?: string;
   /** Original test command template with {spec} and {url} placeholders */
   validationTestCommand?: string;
+  /**
+   * Git ref for `workflow_dispatch` (which revision of the workflow file
+   * GitHub runs). When omitted, the FixApplier resolves it lazily from
+   * `GET /repos` `default_branch` on first `triggerValidation` call, with
+   * fallback to `"main"` if the metadata cannot be read. Phase 5 of the
+   * architecture roadmap: stops 422s on repos whose default branch is not
+   * `main` (e.g. master, develop).
+   */
+  validationWorkflowDispatchRef?: string;
 }
 
 /**
@@ -239,9 +248,50 @@ function getErrorMessage(error: unknown, context: string): string {
  */
 export class GitHubFixApplier implements FixApplier {
   private config: FixApplierConfig;
+  /**
+   * Cached resolution of `workflow_dispatch.ref`. Populated on first call to
+   * `triggerValidation` if the config did not pre-resolve it. Stored as a
+   * Promise so concurrent triggerValidation calls (rare but possible) share
+   * one `repos.get` round trip.
+   */
+  private validationWorkflowDispatchRefPromise?: Promise<string>;
 
   constructor(config: FixApplierConfig) {
     this.config = config;
+  }
+
+  /**
+   * Resolve the `workflow_dispatch.ref` argument lazily. Cached for the
+   * lifetime of the instance. Falls back to `'main'` on any error so existing
+   * main-default-branch repos continue to work even if `repos.get` is blocked
+   * by token scope or returns 404.
+   */
+  private async getValidationWorkflowDispatchRef(): Promise<string> {
+    if (this.config.validationWorkflowDispatchRef) {
+      return this.config.validationWorkflowDispatchRef;
+    }
+    if (!this.validationWorkflowDispatchRefPromise) {
+      this.validationWorkflowDispatchRefPromise = this.resolveDefaultBranch();
+    }
+    return this.validationWorkflowDispatchRefPromise;
+  }
+
+  private async resolveDefaultBranch(): Promise<string> {
+    const { octokit, owner, repo } = this.config;
+    try {
+      const { data } = await withRetry(
+        () => octokit.repos.get({ owner, repo }),
+        `resolving default branch for ${owner}/${repo}`
+      );
+      return data.default_branch || 'main';
+    } catch (error) {
+      core.warning(
+        `Could not resolve default_branch for ${owner}/${repo} ` +
+          `(${error instanceof Error ? error.message : String(error)}); ` +
+          `falling back to 'main' for workflow_dispatch ref`
+      );
+      return 'main';
+    }
   }
 
   /**
@@ -459,6 +509,12 @@ export class GitHubFixApplier implements FixApplier {
     }
 
     try {
+      // Phase 5: resolve dispatch `ref` from the target repo's default branch
+      // instead of hardcoding `'main'`. Falls back to `'main'` if the lookup
+      // fails so existing consumers do not regress.
+      const dispatchRef = await this.getValidationWorkflowDispatchRef();
+      const triageRunId = params.triageRunId || '';
+
       // Trigger the workflow
       await withRetry(
         () =>
@@ -466,12 +522,12 @@ export class GitHubFixApplier implements FixApplier {
             owner,
             repo,
             workflow_id: workflowFile,
-            ref: 'main', // Trigger from main branch, but test the fix branch
+            ref: dispatchRef,
             inputs: {
               branch: params.branch,
               spec: params.spec,
               preview_url: params.previewUrl,
-              triage_run_id: params.triageRunId || '',
+              triage_run_id: triageRunId,
               fix_branch_name: params.branch,
               test_command: params.testCommand || '',
             },
@@ -495,15 +551,44 @@ export class GitHubFixApplier implements FixApplier {
               owner,
               repo,
               workflow_id: workflowFile,
+              event: 'workflow_dispatch',
               per_page: 10,
             }),
           'listing workflow runs'
         );
 
-        const match = runs.data.workflow_runs.find((run) => {
-          const createdAt = new Date(run.created_at);
-          return createdAt >= new Date(dispatchedAt.getTime() - 30_000);
-        });
+        // Phase 5: prefer correlation by run name including the
+        // `triage_run_id`. Consumer `validate-fix.yml` workflows can opt in
+        // by setting `run-name: Triage validate ${{ inputs.triage_run_id }}`;
+        // GitHub exposes that string as `display_title` on the workflow run.
+        // When the title is unset (legacy consumer workflows), fall back to
+        // the time-window heuristic so existing consumers keep attaching,
+        // with their existing concurrency caveat documented via warning.
+        const candidates = runs.data.workflow_runs;
+        let match: typeof candidates[number] | undefined;
+        if (triageRunId) {
+          match = candidates.find(
+            (run) =>
+              typeof run.display_title === 'string' &&
+              run.display_title.includes(triageRunId)
+          );
+        }
+        if (!match) {
+          const fallback = candidates.find((run) => {
+            const createdAt = new Date(run.created_at);
+            return createdAt >= new Date(dispatchedAt.getTime() - 30_000);
+          });
+          if (fallback && triageRunId) {
+            core.warning(
+              `Validation run correlation fell back to time window for ` +
+                `triage_run_id=${triageRunId}. For reliable correlation under ` +
+                `concurrency, set \`run-name\` in the consumer ` +
+                `validate-fix.yml to include the triage_run_id ` +
+                `(e.g. \`run-name: Triage validate \${{ inputs.triage_run_id }}\`).`
+            );
+          }
+          match = fallback;
+        }
 
         if (match) {
           core.info(`Validation workflow run ID: ${match.id}`);

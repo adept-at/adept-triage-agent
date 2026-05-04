@@ -169,7 +169,10 @@ describe('setSuccessOutput — auto-fix skip signal', () => {
       }
     );
 
-    expect(outputs.get('auto_fix_applied')).toBe('true');
+    // Phase 0: auto_fix_applied is true only when apply succeeded AND validation
+    // passed. Here apply succeeded but validation reported a real failure, so
+    // the run is reported as not-applied (the fix didn't work end-to-end).
+    expect(outputs.get('auto_fix_applied')).toBe('false');
     expect(outputs.get('validation_status')).toBe('failed');
     expect(outputs.get('validation_run_id')).toBe('123');
 

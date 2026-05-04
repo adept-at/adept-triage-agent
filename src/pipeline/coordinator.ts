@@ -406,7 +406,14 @@ export class PipelineCoordinator {
     if (skillStore && autoFixTargetRepo && errorData) {
       const validationStatus =
         autoFixResult?.validationResult?.status || autoFixResult?.validationStatus;
-      const fixSucceeded = !!(autoFixResult?.success && validationStatus === 'passed');
+      // Phase 0: split validation truth from publish truth. Pre-Phase-0 the
+      // single `fixSucceeded` flag was AND-ed with `autoFixResult.success`,
+      // so a passing local test followed by a push/PR failure was recorded
+      // as `validatedLocally: false` and `recordOutcome(skill, false)`,
+      // poisoning the skill store on every push failure. The fix here is to
+      // make validation the authoritative signal for skill correctness.
+      const validationPassed = validationStatus === 'passed';
+      const publishSucceeded = !!autoFixResult?.success;
       const fixAttempted = !!fixRecommendation;
       const shouldSaveSkill = shouldWriteSkillOutcome(autoFixResult);
       const validationPending = validationStatus === 'pending';
@@ -427,7 +434,7 @@ export class PipelineCoordinator {
         const firstChange = fixRecommendation!.proposedChanges?.[0];
         const rootCause = agentRootCause || inferRootCauseCategory(fixRecommendation!);
         const currentFindings = agentInvestigationFindings || '';
-        const failedFixEvidence = fixSucceeded
+        const failedFixEvidence = validationPassed
           ? undefined
           : buildFailedFixEvidence(errorData, autoFixResult);
 
@@ -446,8 +453,11 @@ export class PipelineCoordinator {
           },
           confidence: fixRecommendation!.confidence,
           iterations,
+          // skillPrUrl is only set in `iterativeFixValidateLoop` when
+          // `pushAndCreatePR` succeeded, so falling back to '' here is correct
+          // both for "no publish attempt" and "publish failed after pass".
           prUrl: skillPrUrl || '',
-          validatedLocally: fixSucceeded,
+          validatedLocally: validationPassed,
           priorSkillCount: skillStore.countForSpec(errorData.fileName || 'unknown'),
           investigationFindings: currentFindings,
           rootCauseChain: `${rootCause} → ${fixRecommendation!.summary?.slice(0, 80)}`,
@@ -472,7 +482,7 @@ export class PipelineCoordinator {
         // recordOutcome / recordClassificationOutcome never reject — they
         // log their own warnings on failure — so no .catch is needed here.
         if (saveSucceeded) {
-          if (fixSucceeded) {
+          if (validationPassed) {
             await skillStore.recordOutcome(skill.id, true);
             await skillStore.recordClassificationOutcome(skill.id, 'correct');
             core.info(`📝 Saved validated skill ${skill.id}`);
@@ -482,8 +492,8 @@ export class PipelineCoordinator {
           }
           core.info(
             `📊 learning-telemetry verdict=${classification.verdict} ` +
-              `savedSkillId=${skill.id} fixSucceeded=${fixSucceeded} ` +
-              `iterations=${iterations}`
+              `savedSkillId=${skill.id} validationPassed=${validationPassed} ` +
+              `publishSucceeded=${publishSucceeded} iterations=${iterations}`
           );
         }
       }

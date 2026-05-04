@@ -135,7 +135,7 @@ outputs:
   fix_confidence:
     description: 'Confidence score for the fix recommendation (0-100)'
   auto_fix_applied:
-    description: 'Whether auto-fix branch was created (true/false)'
+    description: 'Whether the auto-fix completed successfully end-to-end (true/false). True only when both the fix was applied (branch created and pushed) AND validation passed in the same run. False when only a branch was created but validation failed, when validation passed but publish/apply did not complete, or when auto-fix was not attempted. The authoritative validation signal is `validation_status`.'
   auto_fix_branch:
     description: 'Name of the created branch (if auto-fix applied)'
   auto_fix_commit:
@@ -145,7 +145,7 @@ outputs:
   validation_run_id:
     description: 'Workflow run ID of the validation workflow (legacy remote validation path only)'
   validation_status:
-    description: 'Validation status. Set on both local and remote validation paths. Possible values: passed (local test succeeded or remote workflow concluded success with verified test evidence), failed (validation ran and reported a real failure), inconclusive (validation produced mixed/ambiguous evidence), pending (remote validation dispatched but not yet complete), or skipped (validation did not run, e.g., baseline check passed or no spec was identified).'
+    description: 'Authoritative validation outcome. Set on both local and remote validation paths. "passed" means the fix was validated by the local or remote validation path independent of auto_fix_applied / push success — a "passed" status with auto_fix_applied=false indicates validation succeeded but publish/PR creation failed. Possible values: passed (local test succeeded or remote workflow concluded success with verified test evidence), failed (validation ran and reported a real failure), inconclusive (validation produced mixed/ambiguous evidence), pending (remote validation dispatched but not yet complete), or skipped (validation did not run, e.g., baseline check passed or no spec was identified).'
   validation_url:
     description: 'URL to the validation workflow run (legacy remote validation path only)'
   auto_fix_skipped:
@@ -153,7 +153,7 @@ outputs:
   auto_fix_skipped_reason:
     description: 'Human-readable reason when auto_fix_skipped is true (e.g., chronic flakiness message, recommendation for human follow-up).'
   repair_status:
-    description: 'Repair pipeline lifecycle: not_started, skipped, in_progress, no_fix_generated, review_rejected, timed_out, cancelled, no_approved_fix, approved, applied, validated'
+    description: 'Repair pipeline lifecycle: not_started, skipped, in_progress, no_fix_generated, review_rejected, timed_out, cancelled, no_approved_fix, approved, applied, validated, validated_publish_failed (validation passed but publish/PR creation failed afterward — the fix was real, only delivery failed), validated_not_published (validation passed without a completed apply/publish; reserved for future ApplyResult shapes).'
   repair_summary:
     description: 'Human-readable repair outcome for Slack (orthogonal to classifier verdict)'
   repair_details:
