@@ -2,7 +2,7 @@
 
 > Visual reference for how a triage run flows end-to-end.
 > For textual deep-dive, see [ARCHITECTURE.md](ARCHITECTURE.md).
-> **Current version:** v1.52.7
+> **Current version:** v1.52.9
 
 ---
 

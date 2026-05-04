@@ -4,7 +4,7 @@
 
 AI-powered GitHub Action that triages test failures, proposes fixes, validates them against the test, and opens a PR when they pass. Learns across runs via a DynamoDB-backed skill store and per-repo conventions files.
 
-**Current version**: v1.52.7
+**Current version**: v1.52.9
 
 ## Documentation
 
@@ -194,7 +194,7 @@ All outputs are strings (GitHub Actions convention). JSON blobs are stringified.
 
 | Output | Values |
 |---|---|
-| `auto_fix_applied` | `true` / `false` |
+| `auto_fix_applied` | `true` / `false`. **`true` only when both the fix was applied (branch created and pushed) AND validation passed in the same run** (v1.52.9+). `validation_status` is the authoritative validation signal — a `passed` validation paired with `auto_fix_applied=false` means validation succeeded but publish/PR creation failed. |
 | `auto_fix_branch` | Branch name. |
 | `auto_fix_commit` | Commit SHA. (Note: `auto_fix_commit`, NOT `auto_fix_commit_sha`.) |
 | `auto_fix_files` | Stringified JSON array of paths. |
@@ -215,7 +215,7 @@ Six new outputs surface the orchestrator's repair lifecycle orthogonally to `ver
 
 | Output | Values |
 |---|---|
-| `repair_status` | `not_started` \| `skipped` \| `in_progress` \| `no_fix_generated` \| `review_rejected` \| `timed_out` \| `cancelled` \| `no_approved_fix` \| `approved` \| `applied` \| `validated` |
+| `repair_status` | `not_started` \| `skipped` \| `in_progress` \| `no_fix_generated` \| `review_rejected` \| `timed_out` \| `cancelled` \| `no_approved_fix` \| `approved` \| `applied` \| `validated` \| `validated_publish_failed` (validation passed, publish/PR creation failed afterward — v1.52.9+) \| `validated_not_published` (reserved for future ApplyResult shapes; not emitted by current paths — v1.52.9+) |
 | `repair_summary` | Human-readable repair outcome (Slack-friendly). |
 | `repair_details` | Stringified JSON: iterations, lastStage, review issues, fix summary, timing. |
 | `repair_iterations` | Number of fix/review loop iterations completed. |
@@ -260,7 +260,7 @@ uses: adept-at/adept-triage-agent@v1   # recommended — backward-compatible upd
 Or pin to a specific version for full reproducibility:
 
 ```yaml
-uses: adept-at/adept-triage-agent@v1.52.7
+uses: adept-at/adept-triage-agent@v1.52.9
 ```
 
 The `v1` tag is automatically moved to each new `v1.x.y` release by `.github/workflows/release.yml`.
