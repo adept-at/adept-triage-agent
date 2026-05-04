@@ -58,7 +58,7 @@ export interface RepairContext {
     targetAppPrNumber?: string;
 }
 export type RepairStage = 'analysis' | 'code_reading' | 'investigation' | 'fix_generation' | 'review';
-export type RepairStatus = 'not_started' | 'skipped' | 'in_progress' | 'no_fix_generated' | 'review_rejected' | 'timed_out' | 'cancelled' | 'no_approved_fix' | 'approved' | 'applied' | 'validated';
+export type RepairStatus = 'not_started' | 'skipped' | 'in_progress' | 'no_fix_generated' | 'review_rejected' | 'timed_out' | 'cancelled' | 'no_approved_fix' | 'approved' | 'applied' | 'validated' | 'validated_publish_failed' | 'validated_not_published';
 export interface RepairTelemetry {
     status: RepairStatus;
     summary: string;

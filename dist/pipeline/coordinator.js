@@ -223,7 +223,8 @@ class PipelineCoordinator {
         const { fixRecommendation, autoFixResult, iterations, prUrl: skillPrUrl, agentRootCause, agentInvestigationFindings, autoFixSkipped: repairAutoFixSkipped, autoFixSkippedReason: repairAutoFixSkippedReason, repairTelemetry: repairTelemetryFromRun, } = await this.repair(classification, errorData, skillStore);
         if (skillStore && autoFixTargetRepo && errorData) {
             const validationStatus = autoFixResult?.validationResult?.status || autoFixResult?.validationStatus;
-            const fixSucceeded = !!(autoFixResult?.success && validationStatus === 'passed');
+            const validationPassed = validationStatus === 'passed';
+            const publishSucceeded = !!autoFixResult?.success;
             const fixAttempted = !!fixRecommendation;
             const shouldSaveSkill = shouldWriteSkillOutcome(autoFixResult);
             const validationPending = validationStatus === 'pending';
@@ -237,7 +238,7 @@ class PipelineCoordinator {
                 const firstChange = fixRecommendation.proposedChanges?.[0];
                 const rootCause = agentRootCause || inferRootCauseCategory(fixRecommendation);
                 const currentFindings = agentInvestigationFindings || '';
-                const failedFixEvidence = fixSucceeded
+                const failedFixEvidence = validationPassed
                     ? undefined
                     : buildFailedFixEvidence(errorData, autoFixResult);
                 const skill = (0, skill_store_1.buildSkill)({
@@ -256,7 +257,7 @@ class PipelineCoordinator {
                     confidence: fixRecommendation.confidence,
                     iterations,
                     prUrl: skillPrUrl || '',
-                    validatedLocally: fixSucceeded,
+                    validatedLocally: validationPassed,
                     priorSkillCount: skillStore.countForSpec(errorData.fileName || 'unknown'),
                     investigationFindings: currentFindings,
                     rootCauseChain: `${rootCause} → ${fixRecommendation.summary?.slice(0, 80)}`,
@@ -268,7 +269,7 @@ class PipelineCoordinator {
                     return false;
                 });
                 if (saveSucceeded) {
-                    if (fixSucceeded) {
+                    if (validationPassed) {
                         await skillStore.recordOutcome(skill.id, true);
                         await skillStore.recordClassificationOutcome(skill.id, 'correct');
                         core.info(`📝 Saved validated skill ${skill.id}`);
@@ -278,8 +279,8 @@ class PipelineCoordinator {
                         core.info(`📝 Saved failed skill trajectory ${skill.id}`);
                     }
                     core.info(`📊 learning-telemetry verdict=${classification.verdict} ` +
-                        `savedSkillId=${skill.id} fixSucceeded=${fixSucceeded} ` +
-                        `iterations=${iterations}`);
+                        `savedSkillId=${skill.id} validationPassed=${validationPassed} ` +
+                        `publishSucceeded=${publishSucceeded} iterations=${iterations}`);
                 }
             }
         }

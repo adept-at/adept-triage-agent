@@ -4989,7 +4989,8 @@ class PipelineCoordinator {
         const { fixRecommendation, autoFixResult, iterations, prUrl: skillPrUrl, agentRootCause, agentInvestigationFindings, autoFixSkipped: repairAutoFixSkipped, autoFixSkippedReason: repairAutoFixSkippedReason, repairTelemetry: repairTelemetryFromRun, } = await this.repair(classification, errorData, skillStore);
         if (skillStore && autoFixTargetRepo && errorData) {
             const validationStatus = autoFixResult?.validationResult?.status || autoFixResult?.validationStatus;
-            const fixSucceeded = !!(autoFixResult?.success && validationStatus === 'passed');
+            const validationPassed = validationStatus === 'passed';
+            const publishSucceeded = !!autoFixResult?.success;
             const fixAttempted = !!fixRecommendation;
             const shouldSaveSkill = shouldWriteSkillOutcome(autoFixResult);
             const validationPending = validationStatus === 'pending';
@@ -5003,7 +5004,7 @@ class PipelineCoordinator {
                 const firstChange = fixRecommendation.proposedChanges?.[0];
                 const rootCause = agentRootCause || inferRootCauseCategory(fixRecommendation);
                 const currentFindings = agentInvestigationFindings || '';
-                const failedFixEvidence = fixSucceeded
+                const failedFixEvidence = validationPassed
                     ? undefined
                     : buildFailedFixEvidence(errorData, autoFixResult);
                 const skill = (0, skill_store_1.buildSkill)({
@@ -5022,7 +5023,7 @@ class PipelineCoordinator {
                     confidence: fixRecommendation.confidence,
                     iterations,
                     prUrl: skillPrUrl || '',
-                    validatedLocally: fixSucceeded,
+                    validatedLocally: validationPassed,
                     priorSkillCount: skillStore.countForSpec(errorData.fileName || 'unknown'),
                     investigationFindings: currentFindings,
                     rootCauseChain: `${rootCause} → ${fixRecommendation.summary?.slice(0, 80)}`,
@@ -5034,7 +5035,7 @@ class PipelineCoordinator {
                     return false;
                 });
                 if (saveSucceeded) {
-                    if (fixSucceeded) {
+                    if (validationPassed) {
                         await skillStore.recordOutcome(skill.id, true);
                         await skillStore.recordClassificationOutcome(skill.id, 'correct');
                         core.info(`📝 Saved validated skill ${skill.id}`);
@@ -5044,8 +5045,8 @@ class PipelineCoordinator {
                         core.info(`📝 Saved failed skill trajectory ${skill.id}`);
                     }
                     core.info(`📊 learning-telemetry verdict=${classification.verdict} ` +
-                        `savedSkillId=${skill.id} fixSucceeded=${fixSucceeded} ` +
-                        `iterations=${iterations}`);
+                        `savedSkillId=${skill.id} validationPassed=${validationPassed} ` +
+                        `publishSucceeded=${publishSucceeded} iterations=${iterations}`);
                 }
             }
         }
@@ -5265,9 +5266,11 @@ function finalizeRepairTelemetry(base, fixRecommendation, autoFixResult) {
     }
     let status = base.status;
     let summary = base.summary;
-    if (autoFixResult?.success) {
-        const vs = autoFixResult.validationResult?.status || autoFixResult.validationStatus;
-        if (vs === 'passed') {
+    const vs = autoFixResult?.validationResult?.status || autoFixResult?.validationStatus;
+    const validationPassed = vs === 'passed';
+    const applySucceeded = !!autoFixResult?.success;
+    if (applySucceeded) {
+        if (validationPassed) {
             status = 'validated';
             summary = 'Auto-fix validated.';
         }
@@ -5282,6 +5285,21 @@ function finalizeRepairTelemetry(base, fixRecommendation, autoFixResult) {
         else {
             status = 'applied';
             summary = 'Auto-fix applied (branch created).';
+        }
+    }
+    else if (validationPassed && autoFixResult) {
+        const isPushFailureAfterPass = (typeof autoFixResult.error === 'string' &&
+            autoFixResult.error.startsWith('Push failed after successful test')) ||
+            autoFixResult.validationResult?.mode === 'local';
+        if (isPushFailureAfterPass) {
+            status = 'validated_publish_failed';
+            summary = autoFixResult.error
+                ? `Validation passed; publish failed: ${autoFixResult.error}`
+                : 'Validation passed; publish failed.';
+        }
+        else {
+            status = 'validated_not_published';
+            summary = 'Validation passed; publish/apply did not complete.';
         }
     }
     return { ...base, status, summary };
@@ -5351,6 +5369,12 @@ function setErrorOutput(reason) {
 function setSuccessOutput(result, errorData, autoFixResult, flakiness) {
     const repairBlock = result.repairTelemetry ??
         finalizeRepairTelemetry(undefined, result.fixRecommendation, autoFixResult);
+    const applySucceeded = !!autoFixResult?.success;
+    const validationStatus = autoFixResult?.validationResult?.status || autoFixResult?.validationStatus;
+    const validationPassed = validationStatus === 'passed';
+    const validationUrl = autoFixResult?.validationResult?.url || autoFixResult?.validationUrl;
+    const validationRunId = autoFixResult?.validationResult?.runId || autoFixResult?.validationRunId;
+    const fixFullyAccepted = applySucceeded && validationPassed;
     const triageJson = {
         verdict: result.verdict,
         confidence: result.confidence,
@@ -5363,10 +5387,10 @@ function setSuccessOutput(result, errorData, autoFixResult, flakiness) {
         ...(result.verdict === 'TEST_ISSUE' && result.fixRecommendation
             ? { fixRecommendation: result.fixRecommendation }
             : {}),
-        ...(autoFixResult?.success
+        ...(applySucceeded
             ? {
                 autoFix: {
-                    applied: true,
+                    applied: fixFullyAccepted,
                     branch: autoFixResult.branchName,
                     commit: autoFixResult.commitSha,
                     files: autoFixResult.modifiedFiles,
@@ -5406,7 +5430,7 @@ function setSuccessOutput(result, errorData, autoFixResult, flakiness) {
             hasScreenshots: (errorData.screenshots && errorData.screenshots.length > 0) || false,
             logSize: errorData.logs?.reduce((sum, l) => sum + l.length, 0) ?? 0,
             hasFixRecommendation: !!result.fixRecommendation,
-            autoFixApplied: autoFixResult?.success || false,
+            autoFixApplied: fixFullyAccepted,
             autoFixSkipped: !!result.autoFixSkipped,
         },
     };
@@ -5425,33 +5449,26 @@ function setSuccessOutput(result, errorData, autoFixResult, flakiness) {
     else {
         core.setOutput('has_fix_recommendation', 'false');
     }
-    if (autoFixResult?.success) {
-        core.setOutput('auto_fix_applied', 'true');
+    if (applySucceeded) {
         core.setOutput('auto_fix_branch', autoFixResult.branchName || '');
         core.setOutput('auto_fix_commit', autoFixResult.commitSha || '');
         core.setOutput('auto_fix_files', JSON.stringify(autoFixResult.modifiedFiles));
-        const validationStatus = autoFixResult.validationResult?.status || autoFixResult.validationStatus;
-        const validationUrl = autoFixResult.validationResult?.url || autoFixResult.validationUrl;
-        const validationRunId = autoFixResult.validationResult?.runId || autoFixResult.validationRunId;
-        if (validationRunId) {
-            core.setOutput('validation_run_id', validationRunId.toString());
-            core.setOutput('validation_status', validationStatus || 'pending');
-            core.setOutput('validation_url', validationUrl ||
-                `https://github.com/${github.context.repo.owner}/${github.context.repo.repo}/actions/runs/${validationRunId}`);
-        }
-        else if (validationStatus === 'pending') {
-            core.setOutput('validation_status', 'pending');
-            if (validationUrl) {
-                core.setOutput('validation_url', validationUrl);
-            }
-        }
-        else {
-            core.setOutput('validation_status', validationStatus || 'skipped');
+    }
+    core.setOutput('auto_fix_applied', fixFullyAccepted ? 'true' : 'false');
+    if (validationRunId) {
+        core.setOutput('validation_run_id', validationRunId.toString());
+        core.setOutput('validation_url', validationUrl ||
+            `https://github.com/${github.context.repo.owner}/${github.context.repo.repo}/actions/runs/${validationRunId}`);
+        core.setOutput('validation_status', validationStatus || 'pending');
+    }
+    else if (validationStatus === 'pending') {
+        core.setOutput('validation_status', 'pending');
+        if (validationUrl) {
+            core.setOutput('validation_url', validationUrl);
         }
     }
     else {
-        core.setOutput('auto_fix_applied', 'false');
-        core.setOutput('validation_status', autoFixResult?.validationStatus || 'skipped');
+        core.setOutput('validation_status', validationStatus || 'skipped');
     }
     core.setOutput('auto_fix_skipped', result.autoFixSkipped ? 'true' : 'false');
     if (result.autoFixSkippedReason) {
@@ -6116,8 +6133,31 @@ function getErrorMessage(error, context) {
 }
 class GitHubFixApplier {
     config;
+    validationWorkflowDispatchRefPromise;
     constructor(config) {
         this.config = config;
+    }
+    async getValidationWorkflowDispatchRef() {
+        if (this.config.validationWorkflowDispatchRef) {
+            return this.config.validationWorkflowDispatchRef;
+        }
+        if (!this.validationWorkflowDispatchRefPromise) {
+            this.validationWorkflowDispatchRefPromise = this.resolveDefaultBranch();
+        }
+        return this.validationWorkflowDispatchRefPromise;
+    }
+    async resolveDefaultBranch() {
+        const { octokit, owner, repo } = this.config;
+        try {
+            const { data } = await withRetry(() => octokit.repos.get({ owner, repo }), `resolving default branch for ${owner}/${repo}`);
+            return data.default_branch || 'main';
+        }
+        catch (error) {
+            core.warning(`Could not resolve default_branch for ${owner}/${repo} ` +
+                `(${error instanceof Error ? error.message : String(error)}); ` +
+                `falling back to 'main' for workflow_dispatch ref`);
+            return 'main';
+        }
     }
     canApply(recommendation) {
         if (recommendation.confidence < this.config.minConfidence) {
@@ -6248,16 +6288,18 @@ class GitHubFixApplier {
             core.warning(`Spec "${params.spec}" looks like a bare basename. Consumer validate-fix workflows must resolve it against the test root (e.g. \`find ./cypress -type f -name "$BASENAME"\`) or the runner will exit cleanly without running any tests. Prefer passing a repo-relative path in VALIDATION_SPEC.`);
         }
         try {
+            const dispatchRef = await this.getValidationWorkflowDispatchRef();
+            const triageRunId = params.triageRunId || '';
             await withRetry(() => octokit.actions.createWorkflowDispatch({
                 owner,
                 repo,
                 workflow_id: workflowFile,
-                ref: 'main',
+                ref: dispatchRef,
                 inputs: {
                     branch: params.branch,
                     spec: params.spec,
                     preview_url: params.previewUrl,
-                    triage_run_id: params.triageRunId || '',
+                    triage_run_id: triageRunId,
                     fix_branch_name: params.branch,
                     test_command: params.testCommand || '',
                 },
@@ -6273,12 +6315,29 @@ class GitHubFixApplier {
                     owner,
                     repo,
                     workflow_id: workflowFile,
+                    event: 'workflow_dispatch',
                     per_page: 10,
                 }), 'listing workflow runs');
-                const match = runs.data.workflow_runs.find((run) => {
-                    const createdAt = new Date(run.created_at);
-                    return createdAt >= new Date(dispatchedAt.getTime() - 30_000);
-                });
+                const candidates = runs.data.workflow_runs;
+                let match;
+                if (triageRunId) {
+                    match = candidates.find((run) => typeof run.display_title === 'string' &&
+                        run.display_title.includes(triageRunId));
+                }
+                if (!match) {
+                    const fallback = candidates.find((run) => {
+                        const createdAt = new Date(run.created_at);
+                        return createdAt >= new Date(dispatchedAt.getTime() - 30_000);
+                    });
+                    if (fallback && triageRunId) {
+                        core.warning(`Validation run correlation fell back to time window for ` +
+                            `triage_run_id=${triageRunId}. For reliable correlation under ` +
+                            `concurrency, set \`run-name\` in the consumer ` +
+                            `validate-fix.yml to include the triage_run_id ` +
+                            `(e.g. \`run-name: Triage validate \${{ inputs.triage_run_id }}\`).`);
+                    }
+                    match = fallback;
+                }
                 if (match) {
                     core.info(`Validation workflow run ID: ${match.id}`);
                     core.info(`Validation workflow URL: ${match.html_url}`);

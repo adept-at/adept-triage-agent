@@ -71,9 +71,11 @@ function finalizeRepairTelemetry(base, fixRecommendation, autoFixResult) {
     }
     let status = base.status;
     let summary = base.summary;
-    if (autoFixResult?.success) {
-        const vs = autoFixResult.validationResult?.status || autoFixResult.validationStatus;
-        if (vs === 'passed') {
+    const vs = autoFixResult?.validationResult?.status || autoFixResult?.validationStatus;
+    const validationPassed = vs === 'passed';
+    const applySucceeded = !!autoFixResult?.success;
+    if (applySucceeded) {
+        if (validationPassed) {
             status = 'validated';
             summary = 'Auto-fix validated.';
         }
@@ -88,6 +90,21 @@ function finalizeRepairTelemetry(base, fixRecommendation, autoFixResult) {
         else {
             status = 'applied';
             summary = 'Auto-fix applied (branch created).';
+        }
+    }
+    else if (validationPassed && autoFixResult) {
+        const isPushFailureAfterPass = (typeof autoFixResult.error === 'string' &&
+            autoFixResult.error.startsWith('Push failed after successful test')) ||
+            autoFixResult.validationResult?.mode === 'local';
+        if (isPushFailureAfterPass) {
+            status = 'validated_publish_failed';
+            summary = autoFixResult.error
+                ? `Validation passed; publish failed: ${autoFixResult.error}`
+                : 'Validation passed; publish failed.';
+        }
+        else {
+            status = 'validated_not_published';
+            summary = 'Validation passed; publish/apply did not complete.';
         }
     }
     return { ...base, status, summary };
@@ -157,6 +174,12 @@ function setErrorOutput(reason) {
 function setSuccessOutput(result, errorData, autoFixResult, flakiness) {
     const repairBlock = result.repairTelemetry ??
         finalizeRepairTelemetry(undefined, result.fixRecommendation, autoFixResult);
+    const applySucceeded = !!autoFixResult?.success;
+    const validationStatus = autoFixResult?.validationResult?.status || autoFixResult?.validationStatus;
+    const validationPassed = validationStatus === 'passed';
+    const validationUrl = autoFixResult?.validationResult?.url || autoFixResult?.validationUrl;
+    const validationRunId = autoFixResult?.validationResult?.runId || autoFixResult?.validationRunId;
+    const fixFullyAccepted = applySucceeded && validationPassed;
     const triageJson = {
         verdict: result.verdict,
         confidence: result.confidence,
@@ -169,10 +192,10 @@ function setSuccessOutput(result, errorData, autoFixResult, flakiness) {
         ...(result.verdict === 'TEST_ISSUE' && result.fixRecommendation
             ? { fixRecommendation: result.fixRecommendation }
             : {}),
-        ...(autoFixResult?.success
+        ...(applySucceeded
             ? {
                 autoFix: {
-                    applied: true,
+                    applied: fixFullyAccepted,
                     branch: autoFixResult.branchName,
                     commit: autoFixResult.commitSha,
                     files: autoFixResult.modifiedFiles,
@@ -212,7 +235,7 @@ function setSuccessOutput(result, errorData, autoFixResult, flakiness) {
             hasScreenshots: (errorData.screenshots && errorData.screenshots.length > 0) || false,
             logSize: errorData.logs?.reduce((sum, l) => sum + l.length, 0) ?? 0,
             hasFixRecommendation: !!result.fixRecommendation,
-            autoFixApplied: autoFixResult?.success || false,
+            autoFixApplied: fixFullyAccepted,
             autoFixSkipped: !!result.autoFixSkipped,
         },
     };
@@ -231,33 +254,26 @@ function setSuccessOutput(result, errorData, autoFixResult, flakiness) {
     else {
         core.setOutput('has_fix_recommendation', 'false');
     }
-    if (autoFixResult?.success) {
-        core.setOutput('auto_fix_applied', 'true');
+    if (applySucceeded) {
         core.setOutput('auto_fix_branch', autoFixResult.branchName || '');
         core.setOutput('auto_fix_commit', autoFixResult.commitSha || '');
         core.setOutput('auto_fix_files', JSON.stringify(autoFixResult.modifiedFiles));
-        const validationStatus = autoFixResult.validationResult?.status || autoFixResult.validationStatus;
-        const validationUrl = autoFixResult.validationResult?.url || autoFixResult.validationUrl;
-        const validationRunId = autoFixResult.validationResult?.runId || autoFixResult.validationRunId;
-        if (validationRunId) {
-            core.setOutput('validation_run_id', validationRunId.toString());
-            core.setOutput('validation_status', validationStatus || 'pending');
-            core.setOutput('validation_url', validationUrl ||
-                `https://github.com/${github.context.repo.owner}/${github.context.repo.repo}/actions/runs/${validationRunId}`);
-        }
-        else if (validationStatus === 'pending') {
-            core.setOutput('validation_status', 'pending');
-            if (validationUrl) {
-                core.setOutput('validation_url', validationUrl);
-            }
-        }
-        else {
-            core.setOutput('validation_status', validationStatus || 'skipped');
+    }
+    core.setOutput('auto_fix_applied', fixFullyAccepted ? 'true' : 'false');
+    if (validationRunId) {
+        core.setOutput('validation_run_id', validationRunId.toString());
+        core.setOutput('validation_url', validationUrl ||
+            `https://github.com/${github.context.repo.owner}/${github.context.repo.repo}/actions/runs/${validationRunId}`);
+        core.setOutput('validation_status', validationStatus || 'pending');
+    }
+    else if (validationStatus === 'pending') {
+        core.setOutput('validation_status', 'pending');
+        if (validationUrl) {
+            core.setOutput('validation_url', validationUrl);
         }
     }
     else {
-        core.setOutput('auto_fix_applied', 'false');
-        core.setOutput('validation_status', autoFixResult?.validationStatus || 'skipped');
+        core.setOutput('validation_status', validationStatus || 'skipped');
     }
     core.setOutput('auto_fix_skipped', result.autoFixSkipped ? 'true' : 'false');
     if (result.autoFixSkippedReason) {

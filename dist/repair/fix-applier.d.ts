@@ -20,6 +20,7 @@ export interface FixApplierConfig {
     enableValidation?: boolean;
     validationWorkflow?: string;
     validationTestCommand?: string;
+    validationWorkflowDispatchRef?: string;
 }
 export interface ValidationParams {
     branch: string;
@@ -49,7 +50,10 @@ export interface FixApplier {
 }
 export declare class GitHubFixApplier implements FixApplier {
     private config;
+    private validationWorkflowDispatchRefPromise?;
     constructor(config: FixApplierConfig);
+    private getValidationWorkflowDispatchRef;
+    private resolveDefaultBranch;
     canApply(recommendation: FixRecommendation): boolean;
     applyFix(recommendation: FixRecommendation): Promise<ApplyResult>;
     private cleanupBranch;

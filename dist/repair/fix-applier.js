@@ -101,8 +101,31 @@ function getErrorMessage(error, context) {
 }
 class GitHubFixApplier {
     config;
+    validationWorkflowDispatchRefPromise;
     constructor(config) {
         this.config = config;
+    }
+    async getValidationWorkflowDispatchRef() {
+        if (this.config.validationWorkflowDispatchRef) {
+            return this.config.validationWorkflowDispatchRef;
+        }
+        if (!this.validationWorkflowDispatchRefPromise) {
+            this.validationWorkflowDispatchRefPromise = this.resolveDefaultBranch();
+        }
+        return this.validationWorkflowDispatchRefPromise;
+    }
+    async resolveDefaultBranch() {
+        const { octokit, owner, repo } = this.config;
+        try {
+            const { data } = await withRetry(() => octokit.repos.get({ owner, repo }), `resolving default branch for ${owner}/${repo}`);
+            return data.default_branch || 'main';
+        }
+        catch (error) {
+            core.warning(`Could not resolve default_branch for ${owner}/${repo} ` +
+                `(${error instanceof Error ? error.message : String(error)}); ` +
+                `falling back to 'main' for workflow_dispatch ref`);
+            return 'main';
+        }
     }
     canApply(recommendation) {
         if (recommendation.confidence < this.config.minConfidence) {
@@ -233,16 +256,18 @@ class GitHubFixApplier {
             core.warning(`Spec "${params.spec}" looks like a bare basename. Consumer validate-fix workflows must resolve it against the test root (e.g. \`find ./cypress -type f -name "$BASENAME"\`) or the runner will exit cleanly without running any tests. Prefer passing a repo-relative path in VALIDATION_SPEC.`);
         }
         try {
+            const dispatchRef = await this.getValidationWorkflowDispatchRef();
+            const triageRunId = params.triageRunId || '';
             await withRetry(() => octokit.actions.createWorkflowDispatch({
                 owner,
                 repo,
                 workflow_id: workflowFile,
-                ref: 'main',
+                ref: dispatchRef,
                 inputs: {
                     branch: params.branch,
                     spec: params.spec,
                     preview_url: params.previewUrl,
-                    triage_run_id: params.triageRunId || '',
+                    triage_run_id: triageRunId,
                     fix_branch_name: params.branch,
                     test_command: params.testCommand || '',
                 },
@@ -258,12 +283,29 @@ class GitHubFixApplier {
                     owner,
                     repo,
                     workflow_id: workflowFile,
+                    event: 'workflow_dispatch',
                     per_page: 10,
                 }), 'listing workflow runs');
-                const match = runs.data.workflow_runs.find((run) => {
-                    const createdAt = new Date(run.created_at);
-                    return createdAt >= new Date(dispatchedAt.getTime() - 30_000);
-                });
+                const candidates = runs.data.workflow_runs;
+                let match;
+                if (triageRunId) {
+                    match = candidates.find((run) => typeof run.display_title === 'string' &&
+                        run.display_title.includes(triageRunId));
+                }
+                if (!match) {
+                    const fallback = candidates.find((run) => {
+                        const createdAt = new Date(run.created_at);
+                        return createdAt >= new Date(dispatchedAt.getTime() - 30_000);
+                    });
+                    if (fallback && triageRunId) {
+                        core.warning(`Validation run correlation fell back to time window for ` +
+                            `triage_run_id=${triageRunId}. For reliable correlation under ` +
+                            `concurrency, set \`run-name\` in the consumer ` +
+                            `validate-fix.yml to include the triage_run_id ` +
+                            `(e.g. \`run-name: Triage validate \${{ inputs.triage_run_id }}\`).`);
+                    }
+                    match = fallback;
+                }
                 if (match) {
                     core.info(`Validation workflow run ID: ${match.id}`);
                     core.info(`Validation workflow URL: ${match.html_url}`);
