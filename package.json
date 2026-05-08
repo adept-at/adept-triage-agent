@@ -1,6 +1,6 @@
 {
   "name": "adept-triage-agent",
-  "version": "1.52.9",
+  "version": "1.52.10",
   "description": "AI-powered test failure triage GitHub Action",
   "main": "dist/index.js",
   "scripts": {
