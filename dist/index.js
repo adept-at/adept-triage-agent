@@ -1515,7 +1515,7 @@ class CodeReadingAgent extends base_agent_1.BaseAgent {
         const ciRunnerMatch = rawPath.match(/\/(?:home\/runner\/work|github\/workspace)\/[^/]+\/[^/]+\/(.+)/);
         if (ciRunnerMatch)
             return ciRunnerMatch[1];
-        const projectDirMatch = rawPath.match(/.*\/((?:test|spec|tests|specs|cypress|src|lib|e2e)\/.+)/);
+        const projectDirMatch = rawPath.match(/^\/.+\/((?:test|spec|tests|specs|cypress|src|lib|e2e)\/.+)/);
         if (projectDirMatch)
             return projectDirMatch[1];
         return rawPath.replace(/:\d+(?::\d+)?$/, '');

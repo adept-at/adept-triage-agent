@@ -322,9 +322,16 @@ export class CodeReadingAgent extends BaseAgent<
     );
     if (ciRunnerMatch) return ciRunnerMatch[1];
 
-    // Handle any absolute path containing typical project dirs
+    // Handle any absolute path containing typical project dirs.
+    // The leading `^\/.+\/` is critical: it requires the path to be absolute
+    // AND have at least one segment before the project dir. Without that
+    // anchor, `.*\/(test|spec|...)\/.+` greedy-matches against project-
+    // relative paths like "test/specs/signup.ts" and silently strips the
+    // project root, producing "specs/signup.ts" — a path that doesn't
+    // exist in the repo. Relative paths must be left alone here; they're
+    // already project-rooted by definition.
     const projectDirMatch = rawPath.match(
-      /.*\/((?:test|spec|tests|specs|cypress|src|lib|e2e)\/.+)/
+      /^\/.+\/((?:test|spec|tests|specs|cypress|src|lib|e2e)\/.+)/
     );
     if (projectDirMatch) return projectDirMatch[1];
 
