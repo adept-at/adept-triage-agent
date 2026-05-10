@@ -288,6 +288,12 @@ export class CodeReadingAgent extends BaseAgent<
   private cleanFilePath(rawPath: string): string {
     if (!rawPath) return rawPath;
 
+    // Strip line:column suffixes (":35:28" or ":35") up front so every
+    // downstream branch returns a clean, fetchable path. Without this,
+    // paths that hit the webpack/file/ciRunner/projectDir branches kept
+    // their trailing line:col and 404'd on the GitHub API.
+    rawPath = rawPath.replace(/:\d+(?::\d+)?$/, '');
+
     // Reject HTTP(S) URLs, protocol-relative URLs, and Cypress runner
     // bundles. These commonly appear in stack traces from the browser
     // (Vercel previews, webpack output) and cannot be fetched from the
@@ -308,13 +314,25 @@ export class CodeReadingAgent extends BaseAgent<
       return '';
     }
 
-    // Handle webpack:// URLs
-    const webpackMatch = rawPath.match(/webpack:\/\/[^/]+\/\.\/(.+)/);
+    // Handle webpack:// URLs in all common forms:
+    //   webpack://app/./src/foo.ts   (named host + ./)
+    //   webpack:///./src/foo.ts      (empty host + ./, default when
+    //                                  output.devtoolNamespace is unset —
+    //                                  the form Cypress + Vercel preview
+    //                                  source maps emit)
+    //   webpack:///src/foo.ts        (empty host, no ./)
+    const webpackMatch = rawPath.match(
+      /webpack:\/\/(?:[^/]+)?\/(?:\.\/)?(.+)/
+    );
     if (webpackMatch) return webpackMatch[1];
 
-    // Handle file:// URLs
+    // Handle file:// URLs by extracting the absolute path and re-running
+    // it through the rest of the cleaner so the result gets re-rooted
+    // to a project-relative path. Without this we'd return e.g.
+    // "/Users/dev/proj/test/specs/foo.ts" which is unfetchable. Recursion
+    // is safe: the captured path no longer starts with file://.
     const fileMatch = rawPath.match(/file:\/\/(.+)/);
-    if (fileMatch) return fileMatch[1];
+    if (fileMatch) return this.cleanFilePath(fileMatch[1]);
 
     // Handle CI runner absolute paths
     const ciRunnerMatch = rawPath.match(
@@ -323,20 +341,22 @@ export class CodeReadingAgent extends BaseAgent<
     if (ciRunnerMatch) return ciRunnerMatch[1];
 
     // Handle any absolute path containing typical project dirs.
-    // The leading `^\/.+\/` is critical: it requires the path to be absolute
-    // AND have at least one segment before the project dir. Without that
-    // anchor, `.*\/(test|spec|...)\/.+` greedy-matches against project-
-    // relative paths like "test/specs/signup.ts" and silently strips the
-    // project root, producing "specs/signup.ts" — a path that doesn't
-    // exist in the repo. Relative paths must be left alone here; they're
-    // already project-rooted by definition.
+    // The `^\/.+?\/` prefix is critical:
+    //   - `^\/` requires the path to be absolute (so relative paths like
+    //     "test/specs/signup.ts" pass through unchanged — they're already
+    //     project-rooted)
+    //   - `.+?` is LAZY so paths whose project-dir keyword appears
+    //     multiple times re-root at the FIRST occurrence. Greedy `.+`
+    //     here silently mangled paths like "/Users/dev/test/test/foo.ts"
+    //     into "test/foo.ts" (dropping a leading "test/") and
+    //     "/some/cypress/test/specs/foo.ts" into "specs/foo.ts" (dropping
+    //     "cypress/test/"), which then 404'd on the GitHub API.
     const projectDirMatch = rawPath.match(
-      /^\/.+\/((?:test|spec|tests|specs|cypress|src|lib|e2e)\/.+)/
+      /^\/.+?\/((?:test|spec|tests|specs|cypress|src|lib|e2e)\/.+)/
     );
     if (projectDirMatch) return projectDirMatch[1];
 
-    // Strip line:column suffixes
-    return rawPath.replace(/:\d+(?::\d+)?$/, '');
+    return rawPath;
   }
 
   /**
