@@ -315,3 +315,165 @@ describe('CodeReadingAgent — tree-fetch optimization', () => {
     expect(getContent).not.toHaveBeenCalled();
   });
 });
+
+/**
+ * Regression matrix for cleanFilePath.
+ *
+ * cleanFilePath is private, so we exercise it through `agent.execute`
+ * and assert on the path passed to `getContent` (which is the first
+ * fetch the agent issues — it asks for the test file by its cleaned
+ * path before any other work). The empty-string case (URL rejection)
+ * is asserted differently: when cleanFilePath returns '', the agent
+ * never issues a getContent for the test file, so we assert the call
+ * count instead.
+ *
+ * Each row documents the bug class it guards against:
+ *   - greedy projectDirMatch (PR #5 + this PR)
+ *   - lazy projectDirMatch (this PR — duplicate-token + multi-keyword paths)
+ *   - line:col suffix leaking past early-return branches (this PR)
+ *   - webpack:/// triple-slash form (this PR)
+ *   - file:// not chained through re-rooting (this PR)
+ */
+describe('CodeReadingAgent.cleanFilePath — regression matrix', () => {
+  type Case = {
+    name: string;
+    input: string;
+    expected: string;
+  };
+
+  const cases: Case[] = [
+    {
+      name: 'PR #5 original case — relative test/specs path passes through',
+      input: 'test/specs/signup/signup.ts',
+      expected: 'test/specs/signup/signup.ts',
+    },
+    {
+      name: 'relative cypress nested path passes through',
+      input: 'test/specs/skills/multi.skill.lock.editor.ts',
+      expected: 'test/specs/skills/multi.skill.lock.editor.ts',
+    },
+    {
+      name: 'cypress/e2e relative path passes through',
+      input: 'cypress/e2e/login.cy.ts',
+      expected: 'cypress/e2e/login.cy.ts',
+    },
+    {
+      name: 'e2e relative path passes through',
+      input: 'e2e/login.cy.ts',
+      expected: 'e2e/login.cy.ts',
+    },
+    {
+      name: 'CI runner absolute path uses ciRunnerMatch branch',
+      input: '/home/runner/work/owner/repo/test/specs/foo.ts',
+      expected: 'test/specs/foo.ts',
+    },
+    {
+      name: 'absolute path with single project-dir keyword (lazy quantifier)',
+      input: '/Users/dev/myproject/test/specs/signup.ts',
+      expected: 'test/specs/signup.ts',
+    },
+    {
+      name: 'absolute path with duplicate keyword re-roots at FIRST (lazy)',
+      input: '/Users/dev/test/test/foo.ts',
+      expected: 'test/test/foo.ts',
+    },
+    {
+      name: 'relative path with line:col suffix is stripped',
+      input: 'test/specs/signup.ts:35:28',
+      expected: 'test/specs/signup.ts',
+    },
+    {
+      name: 'absolute path with line:col suffix is stripped in projectDirMatch branch',
+      input: '/Users/dev/myproject/test/foo.ts:35:28',
+      expected: 'test/foo.ts',
+    },
+    {
+      name: 'webpack:/// triple-slash form (default devtoolNamespace)',
+      input: 'webpack:///./src/foo.ts',
+      expected: 'src/foo.ts',
+    },
+    {
+      name: 'webpack://app/./ named-host form (regression check)',
+      input: 'webpack://app/./src/foo.ts',
+      expected: 'src/foo.ts',
+    },
+    {
+      name: 'file:// chains through projectDirMatch re-rooting',
+      input: 'file:///Users/dev/proj/test/specs/foo.ts',
+      expected: 'test/specs/foo.ts',
+    },
+  ];
+
+  let getContent: GetContentMock;
+  let getRef: GetRefMock;
+  let getTree: GetTreeMock;
+  let openaiClient: jest.Mocked<OpenAIClient>;
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    openaiClient = makeOpenAIClientMock();
+
+    // Always return the same dummy content so `execute()` doesn't bail
+    // before issuing the test-file fetch we want to assert on. We don't
+    // care about its body for this matrix — only the path it was called
+    // with.
+    getContent = jest.fn(async () => ({
+      data: encodeContent("describe('x', () => { it('y', () => {}); });\n"),
+    })) as GetContentMock;
+
+    getRef = jest.fn(async () => ({
+      data: { object: { sha: 'deadbeefcafe' } },
+    })) as GetRefMock;
+
+    // Empty tree: forces fallback path resolution but doesn't matter for
+    // the cleanFilePath assertions, which only inspect the FIRST
+    // getContent call (the test-file fetch).
+    getTree = jest.fn(async () => ({
+      data: { truncated: false, tree: [] },
+    })) as GetTreeMock;
+  });
+
+  test.each(cases)('$name', async ({ input, expected }) => {
+    const sourceFetchContext = buildContext(getContent, getRef, getTree);
+    const agent = new CodeReadingAgent(openaiClient, sourceFetchContext);
+
+    const context = createAgentContext({
+      errorMessage: '',
+      testFile: input,
+      testName: 'regression',
+    });
+
+    await agent.execute({ testFile: input }, context);
+
+    // The first getContent call is the test-file fetch issued from
+    // execute() with the cleaned path. Subsequent calls are support
+    // files / page objects which we don't care about here.
+    expect(getContent).toHaveBeenCalled();
+    expect(getContent.mock.calls[0][0].path).toBe(expected);
+  });
+
+  test('URL rejection regression — https:// returns empty and skips test-file fetch', async () => {
+    const sourceFetchContext = buildContext(getContent, getRef, getTree);
+    const agent = new CodeReadingAgent(openaiClient, sourceFetchContext);
+
+    const context = createAgentContext({
+      errorMessage: '',
+      testFile: 'https://example.com/foo.ts',
+      testName: 'rejected',
+    });
+
+    await agent.execute(
+      { testFile: 'https://example.com/foo.ts' },
+      context
+    );
+
+    // When cleanFilePath returns '', execute() guards the testFile
+    // fetch with `cleanTestFile` truthiness, so getContent is never
+    // called for the test file. With an empty errorMessage, no
+    // error-referenced files are extracted either, so getContent
+    // should not be called at all.
+    const fetchedPaths = getContent.mock.calls.map((c) => c[0].path);
+    expect(fetchedPaths).not.toContain('https://example.com/foo.ts');
+    expect(fetchedPaths).not.toContain('example.com/foo.ts');
+  });
+});

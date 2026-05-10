@@ -1498,6 +1498,7 @@ class CodeReadingAgent extends base_agent_1.BaseAgent {
     cleanFilePath(rawPath) {
         if (!rawPath)
             return rawPath;
+        rawPath = rawPath.replace(/:\d+(?::\d+)?$/, '');
         const lower = rawPath.toLowerCase();
         if (lower.startsWith('http://') ||
             lower.startsWith('https://') ||
@@ -1506,19 +1507,19 @@ class CodeReadingAgent extends base_agent_1.BaseAgent {
             lower.includes('/static/js/vendor.')) {
             return '';
         }
-        const webpackMatch = rawPath.match(/webpack:\/\/[^/]+\/\.\/(.+)/);
+        const webpackMatch = rawPath.match(/webpack:\/\/(?:[^/]+)?\/(?:\.\/)?(.+)/);
         if (webpackMatch)
             return webpackMatch[1];
         const fileMatch = rawPath.match(/file:\/\/(.+)/);
         if (fileMatch)
-            return fileMatch[1];
+            return this.cleanFilePath(fileMatch[1]);
         const ciRunnerMatch = rawPath.match(/\/(?:home\/runner\/work|github\/workspace)\/[^/]+\/[^/]+\/(.+)/);
         if (ciRunnerMatch)
             return ciRunnerMatch[1];
-        const projectDirMatch = rawPath.match(/^\/.+\/((?:test|spec|tests|specs|cypress|src|lib|e2e)\/.+)/);
+        const projectDirMatch = rawPath.match(/^\/.+?\/((?:test|spec|tests|specs|cypress|src|lib|e2e)\/.+)/);
         if (projectDirMatch)
             return projectDirMatch[1];
-        return rawPath.replace(/:\d+(?::\d+)?$/, '');
+        return rawPath;
     }
     extractFilePathsFromError(errorMessage) {
         if (!errorMessage)
