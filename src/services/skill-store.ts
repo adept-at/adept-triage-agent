@@ -84,6 +84,27 @@ export interface TriageSkill {
   failedFixEvidence?: FailedFixEvidence;
 
   /**
+   * Marks a failure pattern as not fixable by editing code in this repo.
+   * Set on seeds for tests that fail due to exhausted single-use test data
+   * (access codes, one-time tokens), rate-limited credentials, or other
+   * external state that requires admin / data action to remediate.
+   *
+   * When a seed with `nonFixable: true` matches the current failure
+   * (exact spec + sufficient error-pattern similarity), the coordinator
+   * short-circuits before `repair()` and emits an explicit
+   * "manual intervention required" output instead of generating a fix
+   * branch that has no chance of passing validation. The classifier
+   * prompt also receives the field as a hard directive so the LLM can
+   * surface the remediation steps to the user.
+   *
+   * The matching gate lives in `findNonFixableMatch()`; the field exists
+   * on the type so it round-trips through DynamoDB without truncation.
+   * Optional + undefined treated as false to keep all existing skills
+   * (and existing seeds without this field) behaving identically.
+   */
+  nonFixable?: boolean;
+
+  /**
    * Curated seed skill — inserted manually (via `scripts/seed-skill.ts`)
    * to bootstrap the learning loop with hand-picked canonical fix
    * exemplars per repo. Seed skills:
@@ -732,6 +753,52 @@ export class SkillStore {
   }
 
   /**
+   * Find a seed flagged `nonFixable: true` whose spec matches the current
+   * failure AND whose normalized errorPattern is sufficiently similar to
+   * the current error message. Used by the coordinator to short-circuit
+   * repair on failures that cannot be fixed by editing code in this repo
+   * (exhausted single-use test data, rate-limited credentials, admin-only
+   * remediation, etc.).
+   *
+   * Returns the matching seed or undefined. We deliberately gate on BOTH
+   * spec exact-match AND error similarity so an unrelated failure on the
+   * same spec (e.g., a real selector regression) does NOT inherit the
+   * "non-fixable" treatment and lose its chance at auto-fix.
+   *
+   * Threshold (0.3 Jaccard) is empirical: high enough to avoid matching
+   * generic error fragments shared across tests, low enough to tolerate
+   * log noise (timestamps, screenshot paths, retry indices).
+   */
+  findNonFixableMatch(opts: {
+    framework: string;
+    spec: string;
+    errorMessage: string;
+  }): TriageSkill | undefined {
+    const NON_FIXABLE_SIMILARITY_THRESHOLD = 0.3;
+    const normalized = normalizeFramework(opts.framework);
+    const querySpec = normalizeSpec(opts.spec);
+    const queryError = normalizeError(opts.errorMessage);
+
+    const candidates = this.skills.filter(
+      (s) =>
+        s.nonFixable === true &&
+        !s.retired &&
+        (s.framework === normalized || s.framework === 'unknown') &&
+        normalizeSpec(s.spec) === querySpec
+    );
+    if (candidates.length === 0) return undefined;
+
+    let best: { skill: TriageSkill; score: number } | undefined;
+    for (const skill of candidates) {
+      const score = errorSimilarity(skill.errorPattern, queryError);
+      if (score >= NON_FIXABLE_SIMILARITY_THRESHOLD && (!best || score > best.score)) {
+        best = { skill, score };
+      }
+    }
+    return best?.skill;
+  }
+
+  /**
    * Detect flakiness for a given spec based on skill history.
    *
    * Retired skills ARE counted here (v1.49.3 A3 revised). Retirement
@@ -898,6 +965,11 @@ export class SkillStore {
         if (s.isSeed) {
           lines.push('   source: curated seed skill (operator-provided guidance, not runtime outcome evidence)');
         }
+        if (s.nonFixable === true) {
+          lines.push(
+            '   nonFixable: true — this failure mode cannot be repaired by editing code in this repo (exhausted test data, admin-only remediation, or similar). When the current error matches this pattern, the coordinator skips repair and surfaces manual-intervention guidance. Treat the matching test failure as a TEST_ISSUE that needs human action, not a code fix.'
+          );
+        }
         // v1.49.3 A1: surface the prior classification outcome so the
         // classifier can actually learn from "was my last verdict
         // correct." Pre-v1.49.3 this field was written to skills but
@@ -1017,6 +1089,13 @@ export function buildSkill(params: {
    */
   failureModeTrace?: FailureModeTrace;
   failedFixEvidence?: FailedFixEvidence;
+  /**
+   * Mark this skill's failure pattern as non-fixable by code in this repo.
+   * Today only set by curated seeds via `scripts/seed-skill.ts`; runtime
+   * writers leave it undefined. Optional + defaulting to undefined keeps
+   * the change additive — existing skills round-trip unchanged.
+   */
+  nonFixable?: boolean;
 }): TriageSkill {
   return {
     id: crypto.randomUUID(),
@@ -1051,6 +1130,7 @@ export function buildSkill(params: {
     // (`skill.failureModeTrace` is truthy or not).
     ...(params.failureModeTrace ? { failureModeTrace: params.failureModeTrace } : {}),
     ...(params.failedFixEvidence ? { failedFixEvidence: params.failedFixEvidence } : {}),
+    ...(params.nonFixable === true ? { nonFixable: true } : {}),
   };
 }
 

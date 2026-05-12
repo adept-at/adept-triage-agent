@@ -200,6 +200,29 @@ class PipelineCoordinator {
             return;
         if (classification.verdict !== 'TEST_ISSUE')
             return;
+        const nonFixableMatch = skillStore?.findNonFixableMatch({
+            framework: errorData.framework || 'unknown',
+            spec: errorData.fileName || 'unknown',
+            errorMessage: errorData.message,
+        });
+        if (nonFixableMatch) {
+            const reason = `Non-fixable failure pattern matched (seed ${nonFixableMatch.id.slice(0, 8)}): ` +
+                `${nonFixableMatch.fix.summary} ` +
+                `Manual intervention required — no code change in this repo can fix this failure.`;
+            core.warning(`⏭️  ${reason}`);
+            (0, output_1.setSuccessOutput)({
+                ...classification,
+                autoFixSkipped: true,
+                autoFixSkippedReason: reason,
+                repairTelemetry: {
+                    status: 'skipped',
+                    summary: reason,
+                    iterations: 0,
+                    elapsedMs: 0,
+                },
+            }, errorData, null);
+            return;
+        }
         const chronicFlakinessSignal = skillStore
             ? skillStore.detectFlakiness(errorData.fileName || 'unknown')
             : undefined;

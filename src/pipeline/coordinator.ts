@@ -359,6 +359,49 @@ export class PipelineCoordinator {
     if (classification.confidence < this.inputs.confidenceThreshold) return;
     if (classification.verdict !== 'TEST_ISSUE') return;
 
+    // Non-fixable gate: when a curated seed for this spec is flagged
+    // nonFixable: true AND its error pattern is sufficiently similar to
+    // the current failure, repair has no chance of passing validation
+    // because the remediation is external (exhausted single-use test
+    // data, admin reset, credential rotation). Skip repair and surface
+    // the seed's manual-intervention guidance instead of burning a
+    // 3-iteration fix-validate loop and shipping a doomed PR.
+    //
+    // Runs BEFORE chronic flakiness because non-fixable is a stronger
+    // signal: chronic flakiness says "we've tried fixing this 3+ times
+    // and it keeps coming back"; non-fixable says "we already know
+    // from the start that no code fix applies." Either gate skipping
+    // is fine for skill-store outcomes (no fix is generated, no skill
+    // outcome to record).
+    const nonFixableMatch = skillStore?.findNonFixableMatch({
+      framework: errorData.framework || 'unknown',
+      spec: errorData.fileName || 'unknown',
+      errorMessage: errorData.message,
+    });
+    if (nonFixableMatch) {
+      const reason =
+        `Non-fixable failure pattern matched (seed ${nonFixableMatch.id.slice(0, 8)}): ` +
+        `${nonFixableMatch.fix.summary} ` +
+        `Manual intervention required — no code change in this repo can fix this failure.`;
+      core.warning(`⏭️  ${reason}`);
+      setSuccessOutput(
+        {
+          ...classification,
+          autoFixSkipped: true,
+          autoFixSkippedReason: reason,
+          repairTelemetry: {
+            status: 'skipped',
+            summary: reason,
+            iterations: 0,
+            elapsedMs: 0,
+          },
+        },
+        errorData,
+        null
+      );
+      return;
+    }
+
     // Chronic flakiness gate: when a spec has been auto-fixed repeatedly in
     // the recent window, another auto-fix is likely stacking fallbacks rather
     // than addressing the underlying synchronization/product issue. Skip the

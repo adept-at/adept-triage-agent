@@ -396,6 +396,26 @@ class SkillStore {
             this.usageStats.surfacedIds.add(s.id);
         return result;
     }
+    findNonFixableMatch(opts) {
+        const NON_FIXABLE_SIMILARITY_THRESHOLD = 0.3;
+        const normalized = normalizeFramework(opts.framework);
+        const querySpec = normalizeSpec(opts.spec);
+        const queryError = normalizeError(opts.errorMessage);
+        const candidates = this.skills.filter((s) => s.nonFixable === true &&
+            !s.retired &&
+            (s.framework === normalized || s.framework === 'unknown') &&
+            normalizeSpec(s.spec) === querySpec);
+        if (candidates.length === 0)
+            return undefined;
+        let best;
+        for (const skill of candidates) {
+            const score = errorSimilarity(skill.errorPattern, queryError);
+            if (score >= NON_FIXABLE_SIMILARITY_THRESHOLD && (!best || score > best.score)) {
+                best = { skill, score };
+            }
+        }
+        return best?.skill;
+    }
     detectFlakiness(spec) {
         const now = Date.now();
         const querySpec = normalizeSpec(spec);
@@ -459,6 +479,9 @@ class SkillStore {
             ];
             if (s.isSeed) {
                 lines.push('   source: curated seed skill (operator-provided guidance, not runtime outcome evidence)');
+            }
+            if (s.nonFixable === true) {
+                lines.push('   nonFixable: true — this failure mode cannot be repaired by editing code in this repo (exhausted test data, admin-only remediation, or similar). When the current error matches this pattern, the coordinator skips repair and surfaces manual-intervention guidance. Treat the matching test failure as a TEST_ISSUE that needs human action, not a code fix.');
             }
             if (!s.isSeed &&
                 (s.classificationOutcome === 'correct' ||
@@ -542,6 +565,7 @@ function buildSkill(params) {
         repoContext: params.repoContext ?? '',
         ...(params.failureModeTrace ? { failureModeTrace: params.failureModeTrace } : {}),
         ...(params.failedFixEvidence ? { failedFixEvidence: params.failedFixEvidence } : {}),
+        ...(params.nonFixable === true ? { nonFixable: true } : {}),
     };
 }
 function describeFixPattern(changes) {

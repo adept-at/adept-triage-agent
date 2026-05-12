@@ -29,6 +29,7 @@ export interface TriageSkill {
     repoContext?: string;
     failureModeTrace?: FailureModeTrace;
     failedFixEvidence?: FailedFixEvidence;
+    nonFixable?: boolean;
     isSeed?: boolean;
 }
 export interface FlakinessSignal {
@@ -67,6 +68,11 @@ export declare class SkillStore {
         spec?: string;
         errorMessage?: string;
     }): TriageSkill[];
+    findNonFixableMatch(opts: {
+        framework: string;
+        spec: string;
+        errorMessage: string;
+    }): TriageSkill | undefined;
     detectFlakiness(spec: string): FlakinessSignal;
     countForSpec(spec: string): number;
     getUsageStats(): {
@@ -111,6 +117,7 @@ export declare function buildSkill(params: {
     repoContext?: string;
     failureModeTrace?: FailureModeTrace;
     failedFixEvidence?: FailedFixEvidence;
+    nonFixable?: boolean;
 }): TriageSkill;
 export declare function describeFixPattern(changes: Array<{
     file: string;

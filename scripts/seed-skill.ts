@@ -79,6 +79,22 @@ interface SeedInput {
    * Use sparingly — repo-wide knowledge belongs in `.adept-triage/context.md`.
    */
   repoContext?: string;
+  /**
+   * Mark this seed's failure pattern as non-fixable by editing code in
+   * this repo. Use for tests that fail because of exhausted single-use
+   * test data (access codes, one-time tokens), rate-limited credentials,
+   * or other external state requiring admin / data action to remediate.
+   *
+   * When set, the coordinator's non-fixable gate short-circuits repair
+   * on matching failures (spec exact-match + sufficient error similarity)
+   * and emits an explicit "manual intervention required" output instead
+   * of generating a fix branch that has no chance of passing validation.
+   *
+   * The `fix.summary` and `fix.pattern` fields should describe the
+   * remediation action (rotate the test code, reverse via admin API,
+   * reset the database row) rather than a code change.
+   */
+  nonFixable?: boolean;
 }
 
 async function main() {
@@ -230,6 +246,7 @@ async function insertOne(
     rootCauseChain: seed.rootCauseChain ?? '',
     repoContext: seed.repoContext ?? '',
     isSeed: true,
+    ...(seed.nonFixable === true ? { nonFixable: true } : {}),
   };
 
   await client.send(new PutCommand({ TableName: TABLE, Item: item }));

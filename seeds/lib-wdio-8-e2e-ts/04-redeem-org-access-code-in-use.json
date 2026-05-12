@@ -1,0 +1,19 @@
+{
+  "repo": "adept-at/lib-wdio-8-e2e-ts",
+  "spec": "test/specs/access-codes/redeem.org.access.expire.access.menu.link.ts",
+  "testName": "Can activate a code with another orgs content from menu link",
+  "framework": "webdriverio",
+  "errorPattern": "ACCESS CODE IS CURRENTLY IN USE The access code is already redeemed and cannot be used again",
+  "rootCauseCategory": "DATA_DEPENDENCY",
+  "nonFixable": true,
+  "fix": {
+    "file": "test/specs/access-codes/redeem.org.access.expire.access.menu.link.ts",
+    "changeType": "MANUAL_REMEDIATION",
+    "summary": "DO NOT EDIT CODE. The test uses a hardcoded single-use access code (L4X1DK14OYNKP15Y) and self-throws when the code is already redeemed. Remediate by: (1) reversing the code via the admin endpoint POST https://accounts.api.adept.at/access-code/reverse/L4X1DK14OYNKP15Y with a privileged token, (2) asking a backend engineer to reset the code in the database, or (3) rotating to a fresh testCode constant in the spec. The test's before/after hooks already try (1) but silently swallow 400 responses, so any failure of that admin endpoint leaves the code in a redeemed state. No code change in this repo can repair an exhausted access code — escalate to a human.",
+    "pattern": "MANUAL_REMEDIATION: Do not generate a code fix. Surface the three remediation paths above to the operator. The access-code reversal endpoint is the canonical reset path; rotating the testCode constant is the fallback when reversal is unavailable. Whichever path is taken happens OUTSIDE this repo."
+  },
+  "confidence": 95,
+  "investigationFindings": "The spec hardcodes testCode = 'L4X1DK14OYNKP15Y' at the top of the file. The before() hook attempts to reverse the code via AxiosHelper.postRouteRedeem against https://accounts.api.adept.at/access-code/reverse/{code}, but catches and silently logs any failure (a 400 response is treated as 'already reversed (expected)'). When the reversal endpoint is down, rate-limited, or returns an unexpected status, the test proceeds against an already-redeemed code. The second 'it' block then detects the in-use error via $('//*[contains(text(), \"currently in use\")]') and throws a diagnostic Error whose message explicitly lists three non-code remediation steps. The triage agent should treat this self-thrown error as authoritative: any 'fix' the agent generates will touch waits, selectors, or assertion logic — none of which can repair the exhausted access code that is the actual blocker.",
+  "rootCauseChain": "DATA_DEPENDENCY -> hardcoded single-use access code (L4X1DK14OYNKP15Y) -> before-hook reversal endpoint failed silently -> test runs against already-redeemed code -> test self-throws with explicit non-code remediation guidance",
+  "repoContext": "lib-wdio-8-e2e-ts uses several hardcoded single-use credentials (access codes, redemption tokens). When you see a test self-throw with 'manually unredeem', 'reset in the database', 'ask a backend engineer', or 'use a different access code', it is NEVER fixable by editing test code in this repo. Surface the remediation steps to the operator and skip auto-fix."
+}
