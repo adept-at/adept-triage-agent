@@ -327,7 +327,7 @@ export class PipelineCoordinator {
         autoFixTargetRepo.repo
       );
       // load() never rejects — it logs its own warnings on failure and
-      // leaves the in-memory cache empty (loadSucceeded stays false).
+      // leaves the in-memory cache empty when DynamoDB is unreachable.
       await skillStore.load();
     }
 

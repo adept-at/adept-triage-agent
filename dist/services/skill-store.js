@@ -33,7 +33,7 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.SkillStore = exports.MAX_SKILLS = void 0;
+exports.SkillStore = void 0;
 exports.sanitizeForPrompt = sanitizeForPrompt;
 exports.normalizeFramework = normalizeFramework;
 exports.buildSkill = buildSkill;
@@ -43,15 +43,12 @@ exports.normalizeError = normalizeError;
 exports.formatSkillsForPrompt = formatSkillsForPrompt;
 const core = __importStar(require("@actions/core"));
 const crypto = __importStar(require("crypto"));
-exports.MAX_SKILLS = 100;
 const FLAKY_THRESHOLDS = {
     SHORT_WINDOW_DAYS: 3,
     SHORT_WINDOW_MAX: 1,
     LONG_WINDOW_DAYS: 7,
     LONG_WINDOW_MAX: 2,
 };
-const RETIRE_FAIL_RATE = 0.4;
-const RETIRE_MIN_FAILURES = 3;
 const SKILL_TELEMETRY_PREFIX = 'skill-telemetry';
 function logSkillTelemetry(role, skillIds) {
     if (skillIds.length === 0)
@@ -125,24 +122,9 @@ function compareSkillRecency(a, b) {
         return createdDiff;
     return a.id.localeCompare(b.id);
 }
-function compareOldestFirst(a, b) {
-    const createdDiff = parseSkillTimestamp(a.createdAt) - parseSkillTimestamp(b.createdAt);
-    if (createdDiff !== 0)
-        return createdDiff;
-    return a.id.localeCompare(b.id);
-}
-function selectSkillsToPrune(skills, keepSkillId) {
-    if (skills.length <= exports.MAX_SKILLS)
-        return [];
-    const overflowCount = skills.length - exports.MAX_SKILLS;
-    const eligible = [...skills].filter((skill) => skill.id !== keepSkillId && !skill.isSeed);
-    return eligible.sort(compareOldestFirst).slice(0, overflowCount);
-}
 class SkillStore {
     skills = [];
     loaded = false;
-    loadSucceeded = false;
-    loadFailureReason;
     region;
     tableName;
     owner;
@@ -193,12 +175,10 @@ class SkillStore {
                 .map(({ pk: _pk, sk: _sk, ...rest }) => rest)
                 .map(backfillDefaults);
             this.loaded = true;
-            this.loadSucceeded = true;
             this.usageStats.loaded = this.skills.length;
             core.info(`📝 Loaded ${this.skills.length} skill(s) from DynamoDB (${this.tableName}) for ${this.owner}/${this.repo}`);
         }
         catch (err) {
-            this.loadFailureReason = err instanceof Error ? `${err.name}: ${err.message}` : String(err);
             core.warning(`DynamoDB skill load failed for ${this.owner}/${this.repo} in ${this.tableName}: ${err}`);
             core.warning('Continuing with an empty in-memory skill cache for this run to avoid retry loops and preserve any new skills saved later in the run.');
             this.loaded = true;
@@ -209,7 +189,7 @@ class SkillStore {
         if (!this.loaded)
             await this.load();
         this.skills.push(skill);
-        const { DeleteCommand, PutCommand } = await import('@aws-sdk/lib-dynamodb');
+        const { PutCommand } = await import('@aws-sdk/lib-dynamodb');
         const client = await this.getDocClient();
         const pk = `REPO#${this.owner}/${this.repo}`;
         const sk = `SKILL#${skill.id}`;
@@ -224,34 +204,6 @@ class SkillStore {
             this.skills = this.skills.filter((s) => s.id !== skill.id);
             core.warning(`DynamoDB skill save failed for ${this.tableName}: ${err}`);
             return false;
-        }
-        if (!this.loadSucceeded) {
-            const reason = this.loadFailureReason
-                ? ` (load failed: ${this.loadFailureReason})`
-                : '';
-            core.info(`📝 Saved skill ${skill.id} to DynamoDB (${this.tableName}); skipping prune because load was degraded${reason}`);
-            return true;
-        }
-        const pruneCandidates = selectSkillsToPrune(this.skills, skill.id);
-        if (pruneCandidates.length > 0) {
-            const deletedSkillIds = new Set();
-            for (const candidate of pruneCandidates) {
-                try {
-                    await client.send(new DeleteCommand({
-                        TableName: this.tableName,
-                        Key: { pk, sk: `SKILL#${candidate.id}` },
-                        ConditionExpression: 'attribute_exists(pk) AND attribute_exists(sk)',
-                    }));
-                    deletedSkillIds.add(candidate.id);
-                }
-                catch (deleteErr) {
-                    core.warning(`Failed to prune DynamoDB skill ${candidate.id}: ${deleteErr}`);
-                }
-            }
-            if (deletedSkillIds.size > 0) {
-                this.skills = this.skills.filter((entry) => !deletedSkillIds.has(entry.id));
-                core.info(`🧹 Pruned ${deletedSkillIds.size} old skill(s) from DynamoDB to maintain the ${exports.MAX_SKILLS}-skill cap`);
-            }
         }
         core.info(`📝 Saved skill ${skill.id} to DynamoDB (${this.skills.length} total)`);
         return true;
@@ -285,22 +237,6 @@ class SkillStore {
             skill.failCount = attributes?.failCount ?? skill.failCount ?? 0;
             skill.lastUsedAt = attributes?.lastUsedAt ?? now;
             skill.retired = attributes?.retired ?? skill.retired ?? false;
-            const totalAttempts = (skill.successCount || 0) + (skill.failCount || 0);
-            const failRate = totalAttempts > 0 ? (skill.failCount || 0) / totalAttempts : 0;
-            const shouldRetire = failRate > RETIRE_FAIL_RATE && (skill.failCount || 0) >= RETIRE_MIN_FAILURES;
-            if (shouldRetire && !skill.retired) {
-                await client.send(new UpdateCommand({
-                    TableName: this.tableName,
-                    Key: { pk: `REPO#${this.owner}/${this.repo}`, sk: `SKILL#${skillId}` },
-                    UpdateExpression: 'SET retired = :r',
-                    ConditionExpression: 'attribute_exists(pk) AND attribute_exists(sk)',
-                    ExpressionAttributeValues: {
-                        ':r': true,
-                    },
-                }));
-                skill.retired = true;
-                core.warning(`⚠️ Skill ${skillId} retired — ${Math.round(failRate * 100)}% failure rate`);
-            }
         }
         catch (err) {
             core.warning(`DynamoDB recordOutcome failed: ${err}`);
@@ -695,7 +631,9 @@ function formatSkillsForPrompt(skills, role, flakiness) {
                 lines.push(`  - whyItFailed: ${sanitizeForPrompt(failed.reasonTheFixWasWrong, 200)}`);
             }
         }
-        const isValidated = s.validatedLocally === true || (s.successCount ?? 0) > 0;
+        const runtimeContradicts = total >= 3 && successes === 0;
+        const isValidated = !runtimeContradicts &&
+            (s.validatedLocally === true || successes > 0);
         if (includeTrace && s.failureModeTrace && isValidated) {
             const t = s.failureModeTrace;
             lines.push('- Prior causal trace (from a validated fix — use as reasoning template):', `  - originalState: ${renderTraceField(t.originalState)}`, `  - rootMechanism: ${renderTraceField(t.rootMechanism)}`, `  - newStateAfterFix: ${renderTraceField(t.newStateAfterFix)}`, `  - whyAssertionPassesNow: ${renderTraceField(t.whyAssertionPassesNow)}`);

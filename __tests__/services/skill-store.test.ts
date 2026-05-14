@@ -1737,7 +1737,7 @@ describe('SkillStore.load', () => {
     expect(mockSend).toHaveBeenCalledTimes(1);
   });
 
-  it('marks loaded=true and loadSucceeded=false on query failure', async () => {
+  it('leaves the cache empty and marks loaded=true on query failure', async () => {
     const store = makeStore();
     mockSend.mockRejectedValueOnce(
       Object.assign(new Error('boom'), { name: 'ResourceNotFoundException' })
@@ -1748,8 +1748,6 @@ describe('SkillStore.load', () => {
     expect(result).toEqual([]);
     expect(mockSend).toHaveBeenCalledTimes(1);
     expect((store as any).loaded).toBe(true);
-    expect((store as any).loadSucceeded).toBe(false);
-    expect((store as any).loadFailureReason).toContain('ResourceNotFoundException');
   });
 
   it('does not re-query after a failed load (loaded=true short-circuits retry thrash)', async () => {
@@ -1781,7 +1779,6 @@ describe('SkillStore.save', () => {
   it('sends PutCommand and returns true on success', async () => {
     const store = makeStore();
     (store as any).loaded = true;
-    (store as any).loadSucceeded = true;
     mockSend.mockResolvedValueOnce({});
 
     const skill = makeSkill({ id: 'new-1' });
@@ -1803,7 +1800,6 @@ describe('SkillStore.save', () => {
   it('returns false and rolls back in-memory on PutCommand failure', async () => {
     const store = makeStore();
     (store as any).loaded = true;
-    (store as any).loadSucceeded = true;
     mockSend.mockRejectedValueOnce(new Error('put failed'));
 
     const skill = makeSkill({ id: 'failing' });
@@ -1813,99 +1809,17 @@ describe('SkillStore.save', () => {
     expect(store.countForSpec(skill.spec)).toBe(0);
   });
 
-  it('skips pruning when loadSucceeded=false even if cap is exceeded', async () => {
+  it('does not delete any other skills after a successful save (no auto-prune)', async () => {
     const store = makeStore();
     (store as any).loaded = true;
-    (store as any).loadSucceeded = false;
-    (store as any).skills = Array.from({ length: 120 }, (_, i) =>
-      makeSkill({ id: `s-${i}`, spec: `s-${i}.ts` })
+    (store as any).skills = Array.from({ length: 150 }, (_, i) =>
+      makeSkill({
+        id: `s-${i}`,
+        spec: `s-${i}.ts`,
+        createdAt: new Date(2026, 0, i + 1).toISOString(),
+      })
     );
     mockSend.mockResolvedValueOnce({});
-
-    const result = await store.save(makeSkill({ id: 'new' }));
-
-    expect(result).toBe(true);
-    expect(mockSend).toHaveBeenCalledTimes(1);
-    expect(commandType(mockSend.mock.calls[0])).toBe('PutCommand');
-  });
-
-  it('prunes oldest skills when over MAX_SKILLS after a successful load', async () => {
-    const store = makeStore();
-    (store as any).loaded = true;
-    (store as any).loadSucceeded = true;
-    const existing = Array.from({ length: 100 }, (_, i) =>
-      makeSkill({
-        id: `s-${i}`,
-        spec: `s-${i}.ts`,
-        createdAt: new Date(2026, 0, i + 1).toISOString(),
-      })
-    );
-    (store as any).skills = existing;
-
-    mockSend.mockResolvedValue({});
-
-    const newSkill = makeSkill({
-      id: 'newest',
-      createdAt: new Date(2026, 5, 1).toISOString(),
-    });
-    await store.save(newSkill);
-
-    const commandNames = mockSend.mock.calls.map(commandType);
-    expect(commandNames[0]).toBe('PutCommand');
-    const deletes = commandNames.filter((n) => n === 'DeleteCommand');
-    expect(deletes).toHaveLength(1);
-
-    const deleteInput = commandInput<{ Key: { sk: string } }>(
-      mockSend.mock.calls.find((c) => commandType(c) === 'DeleteCommand')!
-    );
-    expect(deleteInput.Key.sk).toBe('SKILL#s-0');
-  });
-
-  it('prunes multiple oldest skills when overflow is greater than 1', async () => {
-    const store = makeStore();
-    (store as any).loaded = true;
-    (store as any).loadSucceeded = true;
-    const existing = Array.from({ length: 102 }, (_, i) =>
-      makeSkill({
-        id: `s-${i}`,
-        spec: `s-${i}.ts`,
-        createdAt: new Date(2026, 0, i + 1).toISOString(),
-      })
-    );
-    (store as any).skills = existing;
-    mockSend.mockResolvedValue({});
-
-    const newSkill = makeSkill({
-      id: 'newest',
-      createdAt: new Date(2026, 5, 1).toISOString(),
-    });
-    await store.save(newSkill);
-
-    const deletedSks = mockSend.mock.calls
-      .filter((c) => commandType(c) === 'DeleteCommand')
-      .map((c) => commandInput<{ Key: { sk: string } }>(c).Key.sk);
-    // With 102 existing + 1 new = 103, we need to delete 3 to reach MAX_SKILLS (100).
-    expect(deletedSks).toHaveLength(3);
-    expect(deletedSks).toEqual(['SKILL#s-0', 'SKILL#s-1', 'SKILL#s-2']);
-  });
-
-  it('continues pruning when an individual DeleteCommand fails', async () => {
-    const store = makeStore();
-    (store as any).loaded = true;
-    (store as any).loadSucceeded = true;
-    const existing = Array.from({ length: 101 }, (_, i) =>
-      makeSkill({
-        id: `s-${i}`,
-        spec: `s-${i}.ts`,
-        createdAt: new Date(2026, 0, i + 1).toISOString(),
-      })
-    );
-    (store as any).skills = existing;
-
-    // PutCommand succeeds; first DeleteCommand rejects.
-    mockSend
-      .mockResolvedValueOnce({})
-      .mockRejectedValueOnce(new Error('conditional check failed'));
 
     const newSkill = makeSkill({
       id: 'newest',
@@ -1913,62 +1827,13 @@ describe('SkillStore.save', () => {
     });
     const result = await store.save(newSkill);
 
-    // save() itself should still return true; prune errors don't roll back.
     expect(result).toBe(true);
-  });
-
-  it('never includes the just-saved skill in prune candidates', async () => {
-    const store = makeStore();
-    (store as any).loaded = true;
-    (store as any).loadSucceeded = true;
-    (store as any).skills = Array.from({ length: 100 }, (_, i) =>
-      makeSkill({
-        id: `old-${i}`,
-        spec: `s-${i}.ts`,
-        createdAt: new Date(2026, 0, i + 1).toISOString(),
-      })
+    expect(mockSend).toHaveBeenCalledTimes(1);
+    expect(commandType(mockSend.mock.calls[0])).toBe('PutCommand');
+    const deletes = mockSend.mock.calls.filter(
+      (c) => commandType(c) === 'DeleteCommand'
     );
-    mockSend.mockResolvedValue({});
-
-    const newest = makeSkill({
-      id: 'newest',
-      createdAt: new Date(2026, 5, 1).toISOString(),
-    });
-    await store.save(newest);
-
-    const deletedSks = mockSend.mock.calls
-      .filter((c) => commandType(c) === 'DeleteCommand')
-      .map((c) => commandInput<{ Key: { sk: string } }>(c).Key.sk);
-    expect(deletedSks).not.toContain('SKILL#newest');
-  });
-
-  it('protects the just-saved skill even when it is the oldest by createdAt', async () => {
-    // Defense-in-depth: exercises the keepSkillId filter in selectSkillsToPrune
-    // against a saved skill that pre-dates all cached skills (e.g. replay,
-    // clock skew, backfill).
-    const store = makeStore();
-    (store as any).loaded = true;
-    (store as any).loadSucceeded = true;
-    (store as any).skills = Array.from({ length: 100 }, (_, i) =>
-      makeSkill({
-        id: `recent-${i}`,
-        spec: `s-${i}.ts`,
-        createdAt: new Date(2026, 5, i + 1).toISOString(),
-      })
-    );
-    mockSend.mockResolvedValue({});
-
-    const ancient = makeSkill({
-      id: 'ancient',
-      createdAt: '2020-01-01T00:00:00.000Z',
-    });
-    await store.save(ancient);
-
-    const deletedSks = mockSend.mock.calls
-      .filter((c) => commandType(c) === 'DeleteCommand')
-      .map((c) => commandInput<{ Key: { sk: string } }>(c).Key.sk);
-    expect(deletedSks).toHaveLength(1);
-    expect(deletedSks).not.toContain('SKILL#ancient');
+    expect(deletes).toHaveLength(0);
   });
 });
 
@@ -1991,30 +1856,29 @@ describe('SkillStore.recordOutcome', () => {
     expect(skill.successCount).toBe(1);
   });
 
-  it('increments failCount and retires when fail rate exceeds threshold', async () => {
+  it('increments failCount via UpdateCommand on failure (no auto-retire)', async () => {
     const store = makeStore();
     const skill = makeSkill({
-      id: 'rec-retire',
+      id: 'rec-fail',
       successCount: 1,
-      failCount: 2,
+      failCount: 5,
     });
     (store as any).loaded = true;
     (store as any).skills = [skill];
 
-    mockSend
-      .mockResolvedValueOnce({
-        Attributes: { ...skill, successCount: 1, failCount: 3, lastUsedAt: 'now' },
-      })
-      .mockResolvedValueOnce({});
+    mockSend.mockResolvedValueOnce({
+      Attributes: { ...skill, successCount: 1, failCount: 6, lastUsedAt: 'now' },
+    });
 
-    await store.recordOutcome('rec-retire', false);
+    await store.recordOutcome('rec-fail', false);
 
-    expect(mockSend).toHaveBeenCalledTimes(2);
+    // Only ONE UpdateCommand — the counter increment. No second
+    // retire-flipping UpdateCommand fires regardless of fail rate.
+    expect(mockSend).toHaveBeenCalledTimes(1);
     const firstUpdate = commandInput<{ UpdateExpression: string }>(mockSend.mock.calls[0]);
     expect(firstUpdate.UpdateExpression).toContain('ADD failCount');
-    const secondUpdate = commandInput<{ UpdateExpression: string }>(mockSend.mock.calls[1]);
-    expect(secondUpdate.UpdateExpression).toContain('SET retired');
-    expect(skill.retired).toBe(true);
+    expect(firstUpdate.UpdateExpression).not.toContain('retired');
+    expect(skill.retired).toBe(false);
   });
 
   it('skips UpdateCommand when skill is not in the in-memory cache', async () => {
@@ -2025,41 +1889,6 @@ describe('SkillStore.recordOutcome', () => {
     await store.recordOutcome('missing-id', true);
 
     expect(mockSend).not.toHaveBeenCalled();
-  });
-
-  it('does not retire when failCount is below minimum', async () => {
-    const store = makeStore();
-    const skill = makeSkill({ id: 'low-fail', successCount: 0, failCount: 1 });
-    (store as any).loaded = true;
-    (store as any).skills = [skill];
-    mockSend.mockResolvedValueOnce({
-      Attributes: { ...skill, failCount: 2, lastUsedAt: 'now' },
-    });
-
-    await store.recordOutcome('low-fail', false);
-
-    expect(mockSend).toHaveBeenCalledTimes(1);
-    expect(skill.retired).toBe(false);
-  });
-
-  it('does not re-retire a skill that is already retired (idempotency guard)', async () => {
-    const store = makeStore();
-    const skill = makeSkill({
-      id: 'already-retired',
-      retired: true,
-      successCount: 1,
-      failCount: 5,
-    });
-    (store as any).loaded = true;
-    (store as any).skills = [skill];
-    mockSend.mockResolvedValueOnce({
-      Attributes: { ...skill, failCount: 6, lastUsedAt: 'now', retired: true },
-    });
-
-    await store.recordOutcome('already-retired', false);
-
-    // Only the counter-increment UpdateCommand — no second retire update.
-    expect(mockSend).toHaveBeenCalledTimes(1);
   });
 
   it('never rejects when the DynamoDB send call throws', async () => {

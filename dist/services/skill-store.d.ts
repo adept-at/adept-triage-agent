@@ -38,13 +38,10 @@ export interface FlakinessSignal {
     windowDays: number;
     message: string;
 }
-export declare const MAX_SKILLS = 100;
 export declare function sanitizeForPrompt(input: unknown, maxLength?: number): string;
 export declare class SkillStore {
     private skills;
     private loaded;
-    private loadSucceeded;
-    private loadFailureReason?;
     private region;
     private tableName;
     private owner;

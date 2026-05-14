@@ -277,15 +277,10 @@ flowchart TB
 
     subgraph ON_SAVE["After fix attempt (if skillStore + targetRepo)"]
         BUILD["buildSkill({<br/>  spec: normalizeSpec(...),<br/>  errorPattern: normalizeError(...),<br/>  rootCauseCategory, fix, confidence,<br/>  prUrl, validatedLocally,<br/>  failureModeTrace,<br/>  investigationFindings<br/>})"]
-        SAVE["SkillStore.save(skill)<br/>→ PutCommand"]
-        PRUNE{"partition over<br/>MAX_SKILLS=100?"}
-        SAVE --> PRUNE
-        PRUNE -- yes --> SELECT["selectSkillsToPrune<br/>exclude isSeed ✔<br/>sort oldest-first<br/>delete overflow"]
-        PRUNE -- no --> DONE
-        SELECT --> DONE
-        DONE --> RECORD{"fix succeeded?"}
-        RECORD -- yes --> OUTCOME_OK["recordOutcome(skill.id, true)<br/>+ recordClassificationOutcome(<br/>  skill.id, 'correct')"]
-        RECORD -- no --> OUTCOME_FAIL["recordOutcome(skill.id, false)<br/>→ auto-retire check:<br/>failRate &gt; 0.4 AND failCount &gt;= 3"]
+        SAVE["SkillStore.save(skill)<br/>→ PutCommand<br/>(no auto-prune)"]
+        SAVE --> RECORD{"fix succeeded?"}
+        RECORD -- yes --> OUTCOME_OK["recordOutcome(skill.id, true)<br/>+ recordClassificationOutcome(<br/>  skill.id, 'correct')<br/>→ counter UpdateCommand only"]
+        RECORD -- no --> OUTCOME_FAIL["recordOutcome(skill.id, false)<br/>→ counter UpdateCommand only<br/>(no auto-retire)"]
     end
 
     OUTCOME_OK --> SUMMARY["logRunSummary()<br/>📊 loaded=N surfaced=M saved=K"]
@@ -301,11 +296,11 @@ flowchart LR
     SEED --> DYNAMO["DynamoDB<br/>triage-skills-v1-live"]
 
     DYNAMO --> RETRIEVAL["findRelevant<br/>findForClassifier<br/>(scored like any other skill)"]
-    DYNAMO --> PRUNE["selectSkillsToPrune<br/>SKIPS seeds ✔<br/>(cap can never evict)"]
     DYNAMO --> AUDIT["scripts/audit-skills.ts<br/>SKIPS seeds ✔<br/>(per-skill + dedup checks)"]
+    DYNAMO --> REMOVAL["scripts/seed-skill.ts --remove<br/>operator-only seed retirement"]
 
-    style PRUNE fill:#d4edda,color:#000
     style AUDIT fill:#d4edda,color:#000
+    style REMOVAL fill:#d4edda,color:#000
 ```
 
 ---

@@ -9,14 +9,22 @@
  *
  * They are stored alongside auto-saved skills in DynamoDB but flagged
  * `isSeed: true` so:
- *   - `selectSkillsToPrune` will not evict them when the partition
- *     reaches the 100-skill cap
- *   - `audit-skills.ts` skips per-skill maintenance flags for them
+ *   - `audit-skills.ts` skips every per-skill maintenance rule for
+ *     them (empty/generic summary, stale, high-fail-rate, duplicate,
+ *     etc.) — seeds are curated artifacts and should never be flagged
+ *     for automated cleanup
+ *   - Prompt renderers label them as "curated seed skill" so the LLM
+ *     understands they're operator guidance, not runtime evidence
  *   - Operators can identify them in `inspect-skills.ts` output
+ *
+ * As of the manual-skill-lifecycle refactor, the agent does not
+ * auto-prune or auto-retire any skill. Seeds and runtime skills both
+ * live in the store until an operator removes them.
  *
  * Seeds participate in normal retrieval (`findRelevant`,
  * `findForClassifier`) by spec + error similarity, like any other
- * skill. The flag only changes pruning + audit semantics.
+ * skill. The flag only changes audit-script exemption and
+ * prompt-framing semantics.
  *
  * Usage:
  *   npx tsx scripts/seed-skill.ts <seed-file.json>           # add one

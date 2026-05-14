@@ -393,14 +393,14 @@ Fields (`src/services/skill-store.ts`) and what they mean:
 | `prUrl` | Coordinator (when PR created) | Trust signal for fix-gen/review; empty when local-only. |
 | `validatedLocally` | Coordinator (local path) | Gates classifier retrieval + trace rendering. |
 | `priorSkillCount` | `countForSpec` at save | Analytics only (retired-excluded, v1.49.3). |
-| `successCount` / `failCount` | `recordOutcome` (atomic `ADD`) | Track record + auto-retire trigger. |
-| `retired` | Auto-set on threshold | Excludes from retrieval. |
+| `successCount` / `failCount` | `recordOutcome` (atomic `ADD`) | Track record for the `X/Y successful` prompt line + runtime-contradiction gate on causal traces. |
+| `retired` | Operator-set via `scripts/audit-skills.ts --retire-flagged` | Excludes from retrieval. Never auto-set by the agent. |
 | `classificationOutcome` | `recordClassificationOutcome` | `'correct'` or `'incorrect'`; only `'correct'` written today. |
 | `rootCauseChain` | Callers | Short human chain string. |
 | `investigationFindings` | `summarizeInvestigationForRetry` | Rendered by `formatForInvestigation`. |
 | `repoContext?` | Callers (seeds optional) | Per-skill note; distinct from the global `.adept-triage/context.md`. |
 | `failureModeTrace?` | Fix-gen | The 4-field causal trace (v1.48.1/v1.49.1). |
-| **`isSeed?`** | Seed CLI only | Pruning + audit exemption (v1.52.0). |
+| **`isSeed?`** | Seed CLI only | Audit-script exemption (skipped by every per-skill maintenance rule) + prompt-framing label (v1.52.0). |
 
 ### DynamoDB layout
 
@@ -408,7 +408,7 @@ Fields (`src/services/skill-store.ts`) and what they mean:
 - **Partition key** `pk` = `REPO#<owner>/<repo>`.
 - **Sort key** `sk` = `SKILL#<id>`.
 - **Auth**: AWS SDK default provider chain — the action does NOT wire OIDC or reference a role ARN in code. Consumer workflows typically use `aws-actions/configure-aws-credentials@v4` with OIDC before this action runs.
-- **`MAX_SKILLS = 100`** per partition. Enforced on `save()`.
+- **No partition cap**. Partitions grow unbounded; manual cleanup via `scripts/audit-skills.ts` is the operator path for trimming the long tail.
 
 ### Never-reject contracts
 
@@ -417,21 +417,21 @@ Fields (`src/services/skill-store.ts`) and what they mean:
 - Errors are caught, logged (warning level), and translated to sentinel states (empty cache, in-memory rollback, skipped update).
 - The coordinator awaits these without `.catch(...)` and relies on this — a DynamoDB outage must not take down triage.
 
-### Pruning — `selectSkillsToPrune`
+### Manual skill lifecycle (no auto-prune, no auto-retire)
 
-When `save()` pushes the partition over `MAX_SKILLS`:
+As of the manual-skill-lifecycle refactor, the agent does NOT auto-prune or auto-retire any skill. Both behaviors were removed because they were extra DynamoDB round-trips that operators preferred to control directly.
 
-- Eligible = all skills except (a) the just-saved skill id and (b) any skill with `isSeed === true`.
-- Sort oldest-first by `createdAt`, then by `id` for tie-break.
-- Delete the N oldest from the eligible set (where N = overflow).
+The operator-facing surface is `scripts/audit-skills.ts`, which:
 
-Seeds are a hard floor — they can never be evicted by a flood of auto-saved skills. That's the whole point of the `isSeed` flag.
+- Flags high-fail-rate skills (`>40%` failure with `≥3` attempts) as `WARN` with `action: 'retire'`. The thresholds match the old auto-retire heuristic so the manual surface matches what the agent used to do automatically. Operators run `--retire-flagged` to silence them.
+- Flags worse offenders (empty/stub fix summaries, obvious junk) as `DELETE`. Operators run `--delete-flagged` to remove them.
+- Skips seeds entirely (`isSeed === true` skips every per-skill rule).
 
-Pruning is **skipped entirely** if `loadSucceeded === false` (the in-memory view isn't trustworthy).
+Retirement still has runtime effect: retrieval helpers (`findRelevant`, `findForClassifier`, `findNonFixableMatch`, `countForSpec`) exclude retired skills, so a manual `--retire-flagged` is enough to stop a skill from reaching LLM prompts. `detectFlakiness` intentionally still counts retired skills so the chronic-flakiness gate stays integral on specs whose patterns have all been silenced.
 
-### Auto-retirement
+### Trace-rendering safety net
 
-In `recordOutcome()`: after a failure counter bump, if `failRate > RETIRE_FAIL_RATE (0.4)` AND `failCount >= RETIRE_MIN_FAILURES (3)`, a second `UpdateCommand` sets `retired = true`. Retired skills stop being surfaced but stay in the store (flakiness signal counts them).
+With auto-retire gone, a skill saved with `validatedLocally: true` will continue to surface even after its runtime track record contradicts its at-save validation. To prevent the prompt from rendering `"Prior causal trace (from a validated fix — use as reasoning template)"` on a skill whose track-record line says `"0/N successful"`, `formatSkillsForPrompt` adds a runtime-contradiction override: when `failCount + successCount >= 3` AND `successCount === 0`, the trace block is suppressed for that skill. All other signals on the skill (track record, error pattern, fix summary) continue to render — only the misleading "use as reasoning template" framing is hidden.
 
 ### Retrieval
 
@@ -495,9 +495,8 @@ These defaults make seeds immediately eligible for `findForClassifier` (which re
 | INFO | Empty `investigationFindings` | — |
 | WARN | Empty or very short fix summary | — |
 | INFO | Stale (>30d no activity) | — |
-| DELETE | High fail rate (`>40%` with `>=3` attempts) not retired | `--delete-flagged` |
+| WARN | High fail rate (`>40%` with `>=3` attempts) — retire candidate (replaces the agent's old auto-retire mechanism) | `--retire-flagged` |
 | WARN | Duplicate spec+test (newer than one active skill) | `--retire-flagged` |
-| WARN | Partition over `MAX_SKILLS` | — |
 
 **Seeds are skipped** for all per-skill checks and for the duplicate-group check (seeds legitimately cover multiple failure modes of the same test).
 
@@ -597,8 +596,6 @@ Every grep-stable log line, what it means, and when to care.
 | `📊 learning-telemetry validation=<passed or failed> iteration=N ...` | Local validation test outcome by iteration. |
 | `📊 learning-telemetry verdict=<verdict> savedSkillId=<id> fixSucceeded=<bool> iterations=N` | Connects a saved skill to the verdict and validation outcome that produced it. |
 | `📝 Saved validated skill <id>` / `📝 Saved failed skill trajectory <id>` | Skill persisted after a fix attempt. |
-| `🧹 Pruned N old skill(s) from DynamoDB` | `MAX_SKILLS` cap enforcement. Seeds are never pruned. |
-| `⚠️ Skill <id> retired — X% failure rate` | Auto-retirement threshold hit. |
 | `[<AgentName>] Token usage: N` / `🧮 <model> analysis token usage: N` | OpenAI Responses API usage metadata when the API returns token counts. |
 
 ### Repo context
@@ -651,8 +648,7 @@ Every numeric / string default operators might want to know.
 | `BaseAgent.DEFAULT_AGENT_CONFIG.maxTokens` | `OPENAI.MAX_COMPLETION_TOKENS` | `src/agents/base-agent.ts` |
 | `AGENT_CONFIG.REVIEW_REQUIRED_CONFIDENCE` | `70` | `src/config/constants.ts` |
 | `AGENT_CONFIG.INVESTIGATION_CHAIN_CONFIDENCE` | `80` | `src/config/constants.ts` |
-| `MAX_SKILLS` (per repo partition) | `100` | `src/services/skill-store.ts` |
-| Skill auto-retire threshold | `failRate > 0.4` AND `failCount >= 3` | `src/services/skill-store.ts` |
+| Skill retire-candidate threshold (operator-facing, audit-skills.ts rule 7) | `failRate > 0.4` AND `failCount >= 3` | `scripts/audit-skills.ts` |
 | `REPO_CONTEXT_MAX_CHARS` | `6500` | `src/services/repo-context-fetcher.ts` |
 | `OPENAI.LEGACY_MODEL` | `gpt-5.5` (currently identical to `UPGRADED_MODEL`; the split is a structural rollback affordance) | `src/config/constants.ts` |
 | `OPENAI.UPGRADED_MODEL` | `gpt-5.5` (same as `LEGACY_MODEL` today; flipping fix-gen / review back is a one-line edit per the constants comment) | `src/config/constants.ts` |
@@ -680,7 +676,8 @@ Things that are load-bearing across the codebase. If you break one of these, som
 - **Bundled-context map keys must be lowercase**. Enforced by a test. `getBundledRepoContext` lowercases its lookup input.
 - **Bundled context takes precedence over in-repo context**. For repos in `BUNDLED_REPO_CONTEXTS`, the in-repo `.adept-triage/context.md` is never fetched. This is intentional — adding a repo to the bundle map is an explicit "keep it here" signal.
 - **`normalizeSpec` must be applied on both sides of equality**. Seeds write relative paths; runtime writes absolute paths. Without normalization on the read side, seeds are inert.
-- **Seeds are never pruned**. `selectSkillsToPrune` filters `!isSeed` before picking prune candidates.
+- **No agent-driven skill mutation beyond save + counter updates**. The agent does not prune, retire, or delete skills. All cleanup is operator-driven via `scripts/audit-skills.ts`.
+- **Seeds are exempted from every per-skill audit rule**. The `isSeed` guard at the top of `audit-skills.ts` skips the entire per-skill check loop — operators must use `scripts/seed-skill.ts --remove` to retire a seed.
 - **`validatedLocally: true` on seeds, but no synthetic success counter**. Without `validatedLocally`, seeds would never surface through `findForClassifier`; without the seed prompt label, they would look like runtime-proven memory.
 - **Local fix paths must be resolved inside the clone workdir**. `LocalFixValidator` uses `path.resolve(workDir, cleanPath)` and requires the resolved path to start with `${workDir}${path.sep}` so sibling-prefix paths cannot escape.
 - **Model confidence values are clamped at parse time**. Gates assume `0–100`; malformed model output must not bypass thresholds.

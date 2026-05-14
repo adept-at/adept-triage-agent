@@ -45,9 +45,9 @@ export interface TriageSkill {
    * alter agent behavior. Useful for "which specs are accumulating the
    * most skills" queries without requiring a full-store aggregation.
    *
-   * Because `countForSpec` excludes retired skills (v1.49.3 A3), this
-   * value is the count of non-retired same-spec skills at save time.
-   * Retired skills remain in the store for historical flakiness signal
+   * `countForSpec` excludes manually-retired skills, so this value is
+   * the count of non-retired same-spec skills at save time. Manually
+   * retired skills remain in the store for historical flakiness signal
    * but don't inflate this counter for future skills.
    */
   priorSkillCount: number;
@@ -108,18 +108,19 @@ export interface TriageSkill {
    * Curated seed skill — inserted manually (via `scripts/seed-skill.ts`)
    * to bootstrap the learning loop with hand-picked canonical fix
    * exemplars per repo. Seed skills:
-   *   - Are excluded from `selectSkillsToPrune`, so the 100-skill
-   *     retention cap can never evict them. This is critical because
-   *     a seed represents human-curated knowledge that the agent can't
-   *     re-derive on its own — losing it to a flood of noisy
-   *     auto-saved skills would silently degrade the prompt context.
-   *   - Are NOT excluded from any other skill-store mechanism: they
-   *     score, retire, and surface through `findRelevant` /
-   *     `findForClassifier` exactly like any other skill. The flag
-   *     only affects pruning.
-   *   - Should still be retired (not deleted) when their pattern
-   *     stops working — operators can reset them via the seed-skill
-   *     CLI rather than letting them rot in the prompt.
+   *   - Score, surface through `findRelevant` / `findForClassifier`,
+   *     and contribute to flakiness counts exactly like auto-saved skills.
+   *   - Get a "curated seed" framing in prompt renderers so the LLM
+   *     understands they're operator-provided guidance, not runtime
+   *     outcome evidence.
+   *   - Are exempted from the per-skill maintenance checks in
+   *     `scripts/audit-skills.ts` (no auto-flag for generic summaries,
+   *     no auto-retire suggestion). Operators can still manually
+   *     remove a stale seed via `scripts/seed-skill.ts --remove`.
+   *
+   * As of the manual-skill-lifecycle refactor, the agent does not
+   * auto-prune or auto-retire ANY skill — seed or learned. This flag
+   * is now purely an audit-script and prompt-framing distinction.
    */
   isSeed?: boolean;
 }
@@ -131,17 +132,12 @@ export interface FlakinessSignal {
   message: string;
 }
 
-export const MAX_SKILLS = 100;
-
 const FLAKY_THRESHOLDS = {
   SHORT_WINDOW_DAYS: 3,
   SHORT_WINDOW_MAX: 1,
   LONG_WINDOW_DAYS: 7,
   LONG_WINDOW_MAX: 2,
 } as const;
-
-const RETIRE_FAIL_RATE = 0.4;
-const RETIRE_MIN_FAILURES = 3;
 
 /**
  * Grep-stable prefix for the skill-usage telemetry log line
@@ -317,31 +313,6 @@ function compareSkillRecency(a: TriageSkill, b: TriageSkill): number {
   return a.id.localeCompare(b.id);
 }
 
-function compareOldestFirst(a: TriageSkill, b: TriageSkill): number {
-  const createdDiff =
-    parseSkillTimestamp(a.createdAt) - parseSkillTimestamp(b.createdAt);
-  if (createdDiff !== 0) return createdDiff;
-  return a.id.localeCompare(b.id);
-}
-
-function selectSkillsToPrune(
-  skills: TriageSkill[],
-  keepSkillId?: string
-): TriageSkill[] {
-  // Pruning math considers ALL skills (including seeds) when deciding
-  // whether we're over cap, so the cap remains a true upper bound on
-  // partition size. But only NON-seed skills are eligible to be pruned.
-  // Without this gate, a flood of auto-saved skills could push the
-  // partition over MAX_SKILLS and silently evict human-curated seeds —
-  // the prompt context would degrade with no signal to operators.
-  if (skills.length <= MAX_SKILLS) return [];
-  const overflowCount = skills.length - MAX_SKILLS;
-  const eligible = [...skills].filter(
-    (skill) => skill.id !== keepSkillId && !skill.isSeed
-  );
-  return eligible.sort(compareOldestFirst).slice(0, overflowCount);
-}
-
 /**
  * DynamoDB-backed skill store with in-memory query methods.
  *
@@ -358,8 +329,6 @@ function selectSkillsToPrune(
 export class SkillStore {
   private skills: TriageSkill[] = [];
   private loaded = false;
-  private loadSucceeded = false;
-  private loadFailureReason?: string;
   private region: string;
   private tableName: string;
   private owner: string;
@@ -414,8 +383,9 @@ export class SkillStore {
    *
    * @invariant This method must never reject. All failures are caught,
    * logged, and leave the store in a usable state: `loaded` is set to `true`
-   * to prevent retry thrash, `loadSucceeded` stays `false`, and
-   * `loadFailureReason` captures the error for downstream log correlation.
+   * even on failure to prevent retry thrash within a single run. On failure
+   * the in-memory cache stays empty and the agent simply has no prior skills
+   * to surface for that run — saves later in the run still work.
    * The coordinator relies on this contract and awaits without a `.catch`.
    */
   async load(): Promise<TriageSkill[]> {
@@ -447,17 +417,13 @@ export class SkillStore {
         .map(({ pk: _pk, sk: _sk, ...rest }: Record<string, unknown>) => rest as unknown as TriageSkill)
         .map(backfillDefaults);
       this.loaded = true;
-      this.loadSucceeded = true;
       this.usageStats.loaded = this.skills.length;
       core.info(`📝 Loaded ${this.skills.length} skill(s) from DynamoDB (${this.tableName}) for ${this.owner}/${this.repo}`);
     } catch (err) {
-      this.loadFailureReason = err instanceof Error ? `${err.name}: ${err.message}` : String(err);
       core.warning(`DynamoDB skill load failed for ${this.owner}/${this.repo} in ${this.tableName}: ${err}`);
       core.warning(
         'Continuing with an empty in-memory skill cache for this run to avoid retry loops and preserve any new skills saved later in the run.'
       );
-      // Mark loaded to prevent retry thrash; loadSucceeded stays false so
-      // save() knows not to prune against an incomplete view of the table.
       this.loaded = true;
     }
 
@@ -478,7 +444,7 @@ export class SkillStore {
 
     this.skills.push(skill);
 
-    const { DeleteCommand, PutCommand } = await import('@aws-sdk/lib-dynamodb');
+    const { PutCommand } = await import('@aws-sdk/lib-dynamodb');
     const client = await this.getDocClient();
     const pk = `REPO#${this.owner}/${this.repo}`;
     const sk = `SKILL#${skill.id}`;
@@ -497,52 +463,20 @@ export class SkillStore {
       return false;
     }
 
-    // Skip pruning when load() did not complete — the in-memory list is not
-    // a trustworthy view of the table, so we cannot safely pick oldest skills
-    // to remove.
-    if (!this.loadSucceeded) {
-      const reason = this.loadFailureReason
-        ? ` (load failed: ${this.loadFailureReason})`
-        : '';
-      core.info(
-        `📝 Saved skill ${skill.id} to DynamoDB (${this.tableName}); skipping prune because load was degraded${reason}`
-      );
-      return true;
-    }
-
-    const pruneCandidates = selectSkillsToPrune(this.skills, skill.id);
-    if (pruneCandidates.length > 0) {
-      const deletedSkillIds = new Set<string>();
-      for (const candidate of pruneCandidates) {
-        try {
-          await client.send(
-            new DeleteCommand({
-              TableName: this.tableName,
-              Key: { pk, sk: `SKILL#${candidate.id}` },
-              ConditionExpression: 'attribute_exists(pk) AND attribute_exists(sk)',
-            })
-          );
-          deletedSkillIds.add(candidate.id);
-        } catch (deleteErr) {
-          core.warning(`Failed to prune DynamoDB skill ${candidate.id}: ${deleteErr}`);
-        }
-      }
-
-      if (deletedSkillIds.size > 0) {
-        this.skills = this.skills.filter((entry) => !deletedSkillIds.has(entry.id));
-        core.info(
-          `🧹 Pruned ${deletedSkillIds.size} old skill(s) from DynamoDB to maintain the ${MAX_SKILLS}-skill cap`
-        );
-      }
-    }
-
     core.info(`📝 Saved skill ${skill.id} to DynamoDB (${this.skills.length} total)`);
     return true;
   }
 
   /**
-   * Record a success/failure outcome for a previously-saved skill. On enough
-   * failures, auto-retires the skill via a second UpdateCommand.
+   * Record a success/failure outcome for a previously-saved skill.
+   * Increments the corresponding counter and refreshes `lastUsedAt` so the
+   * "X/Y successful" track-record line in prompts and recency scoring
+   * in retrieval stay current.
+   *
+   * Retirement is now a manual-only operation (set via
+   * `scripts/audit-skills.ts --retire-flagged`). The agent never
+   * auto-retires based on failure rate — operators decide when a skill's
+   * track record warrants silencing.
    *
    * @invariant This method must never reject. All DynamoDB errors are caught
    * and logged. Missing-skill cases short-circuit with a warning. The
@@ -584,30 +518,6 @@ export class SkillStore {
       skill.failCount = attributes?.failCount ?? skill.failCount ?? 0;
       skill.lastUsedAt = attributes?.lastUsedAt ?? now;
       skill.retired = attributes?.retired ?? skill.retired ?? false;
-
-      const totalAttempts = (skill.successCount || 0) + (skill.failCount || 0);
-      const failRate =
-        totalAttempts > 0 ? (skill.failCount || 0) / totalAttempts : 0;
-      const shouldRetire =
-        failRate > RETIRE_FAIL_RATE && (skill.failCount || 0) >= RETIRE_MIN_FAILURES;
-
-      if (shouldRetire && !skill.retired) {
-        await client.send(
-          new UpdateCommand({
-            TableName: this.tableName,
-            Key: { pk: `REPO#${this.owner}/${this.repo}`, sk: `SKILL#${skillId}` },
-            UpdateExpression: 'SET retired = :r',
-            ConditionExpression: 'attribute_exists(pk) AND attribute_exists(sk)',
-            ExpressionAttributeValues: {
-              ':r': true,
-            },
-          })
-        );
-        skill.retired = true;
-        core.warning(
-          `⚠️ Skill ${skillId} retired — ${Math.round(failRate * 100)}% failure rate`
-        );
-      }
     } catch (err) {
       core.warning(`DynamoDB recordOutcome failed: ${err}`);
     }
@@ -802,15 +712,16 @@ export class SkillStore {
    * Detect flakiness for a given spec based on skill history.
    *
    * Retired skills ARE counted here (v1.49.3 A3 revised). Retirement
-   * and flakiness measure different things: retirement means "this
-   * specific pattern was tried enough and failed enough that we stop
-   * *recommending* it"; flakiness means "this spec has received N
-   * distinct fix attempts in a time window and is likely chronically
-   * unstable." A spec whose prior 3 patterns all retired IS chronic
-   * flakiness — 3 distinct fix attempts within the window, all
-   * unsuccessful. Excluding retired from this count would let the
-   * chronic-flakiness gate be silently bypassed on exactly the specs
-   * it exists to catch. Retrieval helpers (findRelevant,
+   * and flakiness measure different things: retirement means an
+   * operator (or the audit-skills.ts maintenance script) has flagged
+   * a specific pattern as no longer worth surfacing to the LLM;
+   * flakiness means "this spec has received N distinct fix attempts in
+   * a time window and is likely chronically unstable." A spec whose
+   * prior 3 patterns are all retired IS chronic flakiness — 3 distinct
+   * fix attempts within the window, all unsuccessful enough that an
+   * operator silenced them. Excluding retired from this count would
+   * let the chronic-flakiness gate be silently bypassed on exactly the
+   * specs it exists to catch. Retrieval helpers (findRelevant,
    * findForClassifier) correctly exclude retired because they drive
    * "what guidance to surface"; this helper drives "should we stop
    * auto-fixing altogether," which is the opposite polarity.
@@ -1385,22 +1296,44 @@ export function formatSkillsForPrompt(
       }
     }
 
-    // Validation gate (v1.49.2): only surface the causal trace when the
-    // skill represents a *validated* (successful) fix. Unvalidated skills
-    // — including failed trajectories saved for learning — still render
-    // all the other context (error pattern, change type, track record)
-    // because that's useful as "what was tried." But the trace is framed
-    // as "how the successful fix reasoned" and feeding a failed-attempt
-    // trace under that wording is actively misleading: downstream agents
-    // anchor on reasoning that didn't work.
+    // Validation gate (v1.49.2, tightened in manual-skill-lifecycle):
+    // only surface the causal trace when the skill represents a
+    // *validated* (successful) fix. Unvalidated skills — including failed
+    // trajectories saved for learning — still render all the other
+    // context (error pattern, change type, track record) because that's
+    // useful as "what was tried." But the trace is framed as "how the
+    // successful fix reasoned" and feeding a failed-attempt trace under
+    // that wording is actively misleading: downstream agents anchor on
+    // reasoning that didn't work.
     //
     // Validation is considered established when either the skill was
     // validated at save time (validatedLocally === true) OR the track
     // record shows at least one recorded success (successCount > 0).
     // The latter covers edge cases where outcomes are recorded after
     // save (e.g., the agentic success path records +1 after save).
+    //
+    // Runtime contradiction override (manual-skill-lifecycle): with
+    // auto-retire removed, the agent no longer culls skills whose
+    // runtime record contradicts their at-save validation, so a skill
+    // can stay surfaced indefinitely even after multiple recorded
+    // failures and zero successes. In that state the trace's
+    // "from a validated fix — use as reasoning template" framing would
+    // directly contradict the same skill's "0/N successful"
+    // track-record line in the same prompt entry. Hide the trace once
+    // runtime evidence has empirically falsified the at-save
+    // validation. Threshold (3 attempts, 0 successes) matches the old
+    // RETIRE_MIN_FAILURES heuristic — operators can still manually
+    // retire the skill via scripts/audit-skills.ts to silence the rest
+    // of the entry; this override silences only the misleading trace
+    // block while preserving the skill's other signals.
+    //
+    // Reuses `successes` / `total` declared above for the track-record
+    // line, so the two signals in the same prompt entry can never
+    // diverge.
+    const runtimeContradicts = total >= 3 && successes === 0;
     const isValidated =
-      s.validatedLocally === true || (s.successCount ?? 0) > 0;
+      !runtimeContradicts &&
+      (s.validatedLocally === true || successes > 0);
 
     if (includeTrace && s.failureModeTrace && isValidated) {
       const t = s.failureModeTrace;

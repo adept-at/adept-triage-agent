@@ -15,7 +15,15 @@
  *   - Missing investigation findings
  *   - Classification marked incorrect
  *   - Stale skills (no activity in 30+ days)
- *   - Repo partitions still above the runtime retention cap
+ *   - High fail-rate skills (this replaces the agent's old auto-retire
+ *     mechanism: ratio > 40% with >= 3 attempts now surfaces here as
+ *     a WARN with action='retire' for `--retire-flagged` to action)
+ *
+ * As of the manual-skill-lifecycle refactor, the agent does not
+ * auto-prune or auto-retire any skill. This script is the canonical
+ * operator path for cleanup: `--retire-flagged` silences a skill
+ * without deleting it; `--delete-flagged` removes severity=DELETE
+ * skills entirely.
  */
 
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
@@ -25,7 +33,7 @@ import {
   DeleteCommand,
   UpdateCommand,
 } from '@aws-sdk/lib-dynamodb';
-import { MAX_SKILLS } from '../src/services/skill-store.js';
+import { normalizeSpec } from '../src/services/skill-store.js';
 
 const TABLE = process.env.TRIAGE_DYNAMO_TABLE || 'triage-skills-v1-live';
 const REGION = process.env.AWS_REGION || 'us-east-1';
@@ -88,8 +96,7 @@ async function main() {
     // Seeds are curated, validated-on-insert artifacts. They legitimately
     // start with no runtime track record, may have generic-feeling fix
     // summaries, and should never be retired/cleared/deleted by audit
-    // automation. Skip the per-skill checks for them; they still count
-    // toward the partition total but don't trip individual flags.
+    // automation. Skip the per-skill checks for them.
     if (s.isSeed) continue;
 
     // 1. Failed trajectory that should be retired
@@ -108,6 +115,20 @@ async function main() {
         skillId: s.id, repo: s.repo, spec: specName,
         severity: 'INFO',
         reason: 'rootCauseCategory is "OTHER" — should be specific (SELECTOR_MISMATCH, TIMING_ISSUE, etc.)',
+      });
+    }
+
+    if (
+      s.rootCauseCategory === 'OTHER' &&
+      !s.investigationFindings &&
+      (!s.fix?.changeType || s.fix.changeType === 'OTHER') &&
+      !s.retired
+    ) {
+      flags.push({
+        skillId: s.id, repo: s.repo, spec: specName,
+        severity: 'WARN',
+        reason: 'Generic-only legacy: rootCauseCategory=OTHER, no findings, fix.changeType=OTHER. Consider retiring.',
+        action: 'retire',
       });
     }
 
@@ -159,23 +180,38 @@ async function main() {
       });
     }
 
-    // 7. High fail rate but not retired
+    // 7. High fail rate retire-candidate.
+    //
+    // This rule replaces the agent's old auto-retire mechanism
+    // (RETIRE_FAIL_RATE = 0.4, RETIRE_MIN_FAILURES = 3) which lived in
+    // SkillStore.recordOutcome and was removed in the
+    // manual-skill-lifecycle refactor. The thresholds are intentionally
+    // identical so the operator-facing surface matches what the agent
+    // used to do automatically.
+    //
+    // Severity is WARN with action='retire' (NOT 'DELETE') because the
+    // pre-refactor behavior only flipped `retired = true` — it did not
+    // delete the skill. The skill stays in the store as historical
+    // flakiness signal (detectFlakiness still counts retired skills);
+    // it just stops being surfaced to LLM prompts. An operator who
+    // wants to remove the skill entirely can re-flag it manually.
     const total = (s.successCount || 0) + (s.failCount || 0);
     if (total >= 3 && s.failCount / total > 0.4 && !s.retired) {
       flags.push({
         skillId: s.id, repo: s.repo, spec: specName,
-        severity: 'DELETE',
-        reason: `High fail rate (${s.failCount}/${total} = ${Math.round(s.failCount / total * 100)}%) but not retired`,
+        severity: 'WARN',
+        reason: `High fail rate (${s.failCount}/${total} = ${Math.round(s.failCount / total * 100)}%) — retire candidate.`,
+        action: 'retire',
       });
     }
   }
 
-  // 8. Duplicate skills — same spec + same testName, only counting
-  //    active (non-retired) skills. Different tests within one spec are
-  //    NOT duplicates; retired skills don't surface so they don't need
-  //    deduping. Grouping by spec + testName catches the real case:
-  //    multiple back-to-back runs against the same test that each saved
-  //    a near-identical skill.
+  // 8. Duplicate skills — same normalized spec + same inner test name,
+  //    only counting active (non-retired) skills. Different tests within
+  //    one spec are NOT duplicates; retired skills don't surface so they
+  //    don't need deduping. Grouping by normalized spec + inner test name
+  //    catches the real case: multiple back-to-back runs against the same
+  //    test that each saved a near-identical skill.
   //
   //    Seeds are also excluded: a seed set can intentionally encode
   //    multiple canonical failure modes for the same spec+test (e.g.
@@ -187,7 +223,8 @@ async function main() {
   const testGroups = new Map<string, Skill[]>();
   for (const s of skills) {
     if (s.retired || s.isSeed) continue;
-    const key = `${s.repo}::${s.spec}::${s.testName || ''}`;
+    const innerTestName = (s.testName || '').split('.').pop()?.trim() || '';
+    const key = `${s.repo}::${normalizeSpec(s.spec)}::${innerTestName}`;
     const group = testGroups.get(key) || [];
     group.push(s);
     testGroups.set(key, group);
@@ -221,18 +258,6 @@ async function main() {
     const list = byRepo.get(s.repo) || [];
     list.push(s);
     byRepo.set(s.repo, list);
-  }
-
-  for (const [repo, repoSkills] of byRepo) {
-    if (repoSkills.length > MAX_SKILLS) {
-      flags.push({
-        skillId: repoSkills[0].id,
-        repo,
-        spec: 'repo-wide',
-        severity: 'WARN',
-        reason: `Repo partition has ${repoSkills.length} skills, above the ${MAX_SKILLS}-skill retention cap. This suggests legacy overflow or failed prune deletes.`,
-      });
-    }
   }
 
   for (const [repo, repoSkills] of byRepo) {

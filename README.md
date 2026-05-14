@@ -33,8 +33,8 @@ When a test fails in your CI, this action can:
   - `gpt-5.5` with `xhigh` reasoning — fix-generation agent and review agent.
   - Code-reading agent is deterministic and does not call an LLM.
 - **Multimodal context** — screenshots, job logs, test-repo PR/commit diffs, and recent commits in the product repo (`adept-at/learn-webapp` by default).
-- **Skill memory** — per-repo DynamoDB partition of canonical fix patterns. Retrieved by spec-match and error-similarity scoring. Auto-retired when failure rate exceeds 40% after at least 3 recorded failures.
-- **Seed skills** (v1.52.0+) — hand-curated canonical fix exemplars, protected from pruning via `isSeed` and labeled as curated guidance rather than runtime-proven memory. Bootstrap the learning loop before it's seen real failures.
+- **Skill memory** — per-repo DynamoDB partition of canonical fix patterns. Retrieved by spec-match and error-similarity scoring. Skills live in the store indefinitely; operators retire or delete underperforming patterns manually via `scripts/audit-skills.ts` (`--retire-flagged` silences, `--delete-flagged` removes).
+- **Seed skills** (v1.52.0+) — hand-curated canonical fix exemplars, flagged `isSeed: true` so the audit script's per-skill maintenance rules skip them and prompt renderers label them as curated guidance rather than runtime-proven memory. Bootstrap the learning loop before it's seen real failures.
 - **Repo conventions** (v1.52.0) — opt-in `.adept-triage/context.md` file in the consumer repo (or bundled in the agent for high-traffic repos) that describes selector strategy, wait rules, auth flow. Prepended to every agent's system prompt.
 - **Causal trace** (v1.48.1+) — fix-gen must emit a 4-field `failureModeTrace` (`originalState`, `rootMechanism`, `newStateAfterFix`, `whyAssertionPassesNow`). Review audits it as a quality CRITICAL.
 - **Blast-radius confidence scaling** (v1.48.1+) — changes to shared code (`pageobjects/`, `helpers/`) automatically require higher confidence before auto-fix.
