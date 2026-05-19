@@ -45,6 +45,15 @@ export interface FixApplier {
         runId?: number;
         url?: string;
     } | null>;
+    openDraftPullRequest(params: {
+        branchName: string;
+        commitSha: string;
+        fix: FixRecommendation;
+        triageRunId: string;
+    }): Promise<{
+        url: string;
+        number: number;
+    } | null>;
     waitForValidation(runId: number): Promise<ValidationOutcome>;
     getValidationFailureLogs(runId: number): Promise<string>;
 }
@@ -57,6 +66,16 @@ export declare class GitHubFixApplier implements FixApplier {
     canApply(recommendation: FixRecommendation): boolean;
     applyFix(recommendation: FixRecommendation): Promise<ApplyResult>;
     private cleanupBranch;
+    private findRecentDuplicateBranch;
+    openDraftPullRequest(params: {
+        branchName: string;
+        commitSha: string;
+        fix: FixRecommendation;
+        triageRunId: string;
+    }): Promise<{
+        url: string;
+        number: number;
+    } | null>;
     triggerValidation(params: ValidationParams): Promise<{
         runId?: number;
         url?: string;

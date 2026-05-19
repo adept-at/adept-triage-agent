@@ -381,6 +381,17 @@ class SkillStore {
             message: '',
         };
     }
+    countRecentFailedTrajectories(spec, windowMs) {
+        const now = Date.now();
+        const querySpec = normalizeSpec(spec);
+        if (!querySpec)
+            return 0;
+        return this.skills.filter((s) => !s.isSeed &&
+            !s.retired &&
+            s.validatedLocally === false &&
+            normalizeSpec(s.spec) === querySpec &&
+            now - parseSkillTimestamp(s.createdAt) < windowMs).length;
+    }
     countForSpec(spec) {
         const querySpec = normalizeSpec(spec);
         return this.skills.filter((s) => normalizeSpec(s.spec) === querySpec && !s.retired).length;

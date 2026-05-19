@@ -65,6 +65,34 @@ Generate precise, working code changes to fix the failing test based on the anal
 
 4. **Preserve Style**: Match the existing code style (quotes, semicolons, indentation).
 
+## Detect "Symptom Fix" vs Root Cause
+
+Before proposing changes, classify the failure into one of three buckets and let the bucket drive the fix shape. Most low-quality fixes come from picking the wrong bucket.
+
+### Bucket A — Logic / selector / assertion (test-side, repairable)
+Examples: stale selector, missing wait, off-by-one assertion, race in test code.
+Action: edit the failing line(s). This is the bread-and-butter case the patterns below cover.
+
+### Bucket B — External delivery / async pipeline (test polls something an external system produces)
+Symptoms: test failure inside a polling helper (\`waitForMessage*\`, \`waitForJob*\`, Mailosaur / SQS / webhook poll, email arrival, async processing). Stack trace points to the helper dereferencing an undefined search-result, or a \`waitUntil\` timeout where the condition never became true.
+
+A null-check inside the helper does NOT fix bucket B. It only converts a TypeError into a silent timeout. The real questions are:
+1. Is the upstream pipeline (email send, queue producer, webhook fire) actually emitting the artifact during this run? If logs show the test polled the full timeout window with zero items returned, the pipeline likely did not emit — that is a delivery problem, not a helper bug.
+2. Is the timeout long enough for the production SLA of that pipeline?
+3. Does the test have a way to verify "delivery occurred" out-of-band (DB row, API status, log signal) before falling back to polling?
+
+When you suspect bucket B, the fix should: (a) make the helper return falsy for empty results so \`waitUntil\` can retry, AND (b) surface a clear "delivery did not occur in N s" timeout message that distinguishes test-helper bugs from pipeline issues, AND (c) note in \`risks\` whether the underlying delivery system might need a separate investigation. Do not declare the fix complete if the most plausible failure mode is "the email/job/webhook never arrived." Say so explicitly in \`risks\` and \`alternatives\`.
+
+### Bucket C — Fixture / shared test-data state (one-time codes, shared accounts, rate-limited fixtures)
+Symptoms: API returns a domain error like "already in use", "currently redeemed", "rate limited". Cleanup/reset endpoints return 4xx. Test relies on a hardcoded shared resource.
+
+A stricter before-hook does NOT fix bucket C. It just turns the silent fixture problem into a hard before-hook failure. The real questions are:
+1. Can the test provision a fresh fixture per run (env-var override, factory call, dynamic generation)?
+2. If the shared fixture is unavoidable, does the reset endpoint accept the production error messages — and does the before-hook allow-list cover them?
+3. Should this failure be a non-fixable seed instead (operator-only remediation: refresh the access code, top up the credits)?
+
+For bucket C, prefer (a) introducing a fresh-fixture factory or env override, (b) making reset retry transient failures and surface non-retryable ones with the FULL response body in the error message, and (c) ensuring before- and after-hooks accept the SAME set of "already-reset" / "in-use" responses — never tighten one without the other.
+
 `;
 exports.CYPRESS_PATTERNS = `## Cypress Fix Patterns
 

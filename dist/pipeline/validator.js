@@ -155,7 +155,10 @@ async function iterativeFixValidateLoop(inputs, repoDetails, autoFixTargetRepo, 
                 core.info(`Iteration ${iteration + 1}: fix rejected — no changes proposed`);
                 break;
             }
-            const { required: iterRequired, reasons: iterReasons } = requiredConfidence(fixRecommendation, minConfidence);
+            const recentFailedTrajectories = skillStore
+                ? skillStore.countRecentFailedTrajectories(errorData.fileName || 'unknown', constants_1.BLAST_RADIUS.RECENT_FAILED_WINDOW_MS)
+                : 0;
+            const { required: iterRequired, reasons: iterReasons } = requiredConfidence(fixRecommendation, minConfidence, { recentFailedTrajectories });
             if (fixRecommendation.confidence < iterRequired) {
                 const suffix = iterReasons.length
                     ? ` (blast-radius scaling: ${iterReasons.join('; ')})`
@@ -303,7 +306,7 @@ async function iterativeFixValidateLoop(inputs, repoDetails, autoFixTargetRepo, 
 function normalizeFileForPatternMatch(path) {
     return ('/' + path.replace(/^\.\//, '').replace(/\\/g, '/')).toLowerCase();
 }
-function requiredConfidence(fix, baseMinConfidence) {
+function requiredConfidence(fix, baseMinConfidence, options = {}) {
     const reasons = [];
     let required = baseMinConfidence;
     const files = new Set(fix.proposedChanges.map((c) => c.file));
@@ -318,6 +321,35 @@ function requiredConfidence(fix, baseMinConfidence) {
     if (files.size >= 2) {
         required += constants_1.BLAST_RADIUS.MULTI_FILE_BOOST;
         reasons.push(`spans ${files.size} files — +${constants_1.BLAST_RADIUS.MULTI_FILE_BOOST}`);
+    }
+    const globalTimeoutRegex = new RegExp(constants_1.BLAST_RADIUS.GLOBAL_TIMEOUT_PATTERN, 'i');
+    const introducesGlobalTimeout = fix.proposedChanges.some((c) => {
+        const newMatches = globalTimeoutRegex.test(c.newCode || '');
+        if (!newMatches)
+            return false;
+        const oldMatches = globalTimeoutRegex.test(c.oldCode || '');
+        return !oldMatches;
+    });
+    if (introducesGlobalTimeout) {
+        required += constants_1.BLAST_RADIUS.GLOBAL_TIMEOUT_BOOST;
+        reasons.push(`introduces global timeout >=30s — +${constants_1.BLAST_RADIUS.GLOBAL_TIMEOUT_BOOST}`);
+    }
+    const helperContractChange = sharedMatches.length > 0 &&
+        fix.proposedChanges.some((c) => {
+            const oldHasThrow = /(^|\s|;)throw\b/.test(c.oldCode || '');
+            const newHasThrow = /(^|\s|;)throw\b/.test(c.newCode || '');
+            return !oldHasThrow && newHasThrow;
+        });
+    if (helperContractChange) {
+        required += constants_1.BLAST_RADIUS.HELPER_CONTRACT_CHANGE_BOOST;
+        reasons.push(`helper contract change (now rethrows) — +${constants_1.BLAST_RADIUS.HELPER_CONTRACT_CHANGE_BOOST}`);
+    }
+    const recentFailures = options.recentFailedTrajectories ?? 0;
+    if (recentFailures > 0) {
+        const rawBoost = recentFailures * constants_1.BLAST_RADIUS.RECENT_FAILED_TRAJECTORY_BOOST;
+        const capped = Math.min(rawBoost, constants_1.BLAST_RADIUS.RECENT_FAILED_MAX_BOOST);
+        required += capped;
+        reasons.push(`${recentFailures} recent failed trajector${recentFailures === 1 ? 'y' : 'ies'} on this spec — +${capped}`);
     }
     const effectiveMax = Math.max(baseMinConfidence, constants_1.BLAST_RADIUS.MAX_REQUIRED_CONFIDENCE);
     if (required > effectiveMax) {
@@ -341,10 +373,13 @@ function buildNextPreviousAttempt(nextIteration, previousFix, fixResult, validat
         priorAgentInvestigationFindings: fixResult.agentInvestigationFindings,
     };
 }
-async function attemptAutoFix(inputs, fixRecommendation, octokit, repoDetails, errorData) {
+async function attemptAutoFix(inputs, fixRecommendation, octokit, repoDetails, errorData, skillStore) {
     core.info('\n🤖 Auto-fix is enabled, attempting to apply fix...');
     const baseMin = inputs.autoFixMinConfidence ?? constants_1.AUTO_FIX.DEFAULT_MIN_CONFIDENCE;
-    const { required, reasons } = requiredConfidence(fixRecommendation, baseMin);
+    const recentFailedTrajectories = skillStore
+        ? skillStore.countRecentFailedTrajectories(errorData?.fileName || 'unknown', constants_1.BLAST_RADIUS.RECENT_FAILED_WINDOW_MS)
+        : 0;
+    const { required, reasons } = requiredConfidence(fixRecommendation, baseMin, { recentFailedTrajectories });
     if (fixRecommendation.confidence < required) {
         const suffix = reasons.length
             ? ` (blast-radius scaling: ${reasons.join('; ')})`
@@ -377,6 +412,14 @@ async function attemptAutoFix(inputs, fixRecommendation, octokit, repoDetails, e
             core.info(`   Branch: ${result.branchName}`);
             core.info(`   Commit: ${result.commitSha}`);
             core.info(`   Files: ${result.modifiedFiles.join(', ')}`);
+            if (result.branchName && result.commitSha) {
+                await fixApplier.openDraftPullRequest({
+                    branchName: result.branchName,
+                    commitSha: result.commitSha,
+                    fix: fixRecommendation,
+                    triageRunId: github.context.runId.toString(),
+                });
+            }
             if (inputs.enableValidation && result.branchName) {
                 core.info('\n🧪 Triggering validation workflow...');
                 const spec = inputs.validationSpec ||

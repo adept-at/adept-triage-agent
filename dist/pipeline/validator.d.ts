@@ -45,7 +45,9 @@ export declare function iterativeFixValidateLoop(inputs: ActionInputs, repoDetai
     autoFixSkippedReason?: string;
     repairTelemetry?: RepairTelemetry;
 }>;
-export declare function requiredConfidence(fix: FixRecommendation, baseMinConfidence: number): {
+export declare function requiredConfidence(fix: FixRecommendation, baseMinConfidence: number, options?: {
+    recentFailedTrajectories?: number;
+}): {
     required: number;
     reasons: string[];
 };
@@ -70,5 +72,5 @@ export declare function attemptAutoFix(inputs: ActionInputs, fixRecommendation: 
     repo: string;
 }, errorData?: {
     fileName?: string;
-}): Promise<AttemptAutoFixOutcome>;
+}, skillStore?: SkillStore): Promise<AttemptAutoFixOutcome>;
 //# sourceMappingURL=validator.d.ts.map

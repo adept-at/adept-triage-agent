@@ -7,7 +7,7 @@
 import * as core from '@actions/core';
 import { Octokit } from '@octokit/rest';
 import { FixRecommendation, ValidationResult, ValidationStatus } from '../types';
-import { AUTO_FIX } from '../config/constants';
+import { AUTO_FIX, SHORT_SHA_LENGTH } from '../config/constants';
 import { verifyTestEvidence } from '../services/test-evidence';
 import { ANSI_ESCAPE_REGEX } from '../utils/text-utils';
 
@@ -131,6 +131,18 @@ export interface FixApplier {
   triggerValidation(
     params: ValidationParams
   ): Promise<{ runId?: number; url?: string } | null>;
+
+  /**
+   * Open a draft PR for the applied fix on the remote-validation path so
+   * orphan branches are discoverable in the GitHub PR list. Best-effort:
+   * returns null on failure rather than throwing.
+   */
+  openDraftPullRequest(params: {
+    branchName: string;
+    commitSha: string;
+    fix: FixRecommendation;
+    triageRunId: string;
+  }): Promise<{ url: string; number: number } | null>;
 
   /**
    * Wait for a validation workflow run to complete and return the outcome.
@@ -343,6 +355,30 @@ export class GitHubFixApplier implements FixApplier {
 
       // Get the test file from the first proposed change
       const testFile = recommendation.proposedChanges[0].file;
+
+      // Branch dedupe within window (P1 #7 from audit-last-5-runs).
+      // If a `fix/triage-agent/<sanitized-test-file>-*` branch was created
+      // within `BRANCH_DEDUPE_WINDOW_MS`, refuse to push another. Two
+      // duplicate fix branches for the same spec within minutes (audit
+      // runs `25751919179` and `25752503143`, ~10 minutes apart) confused
+      // engineers and produced two failed-trajectory writes. Detection is
+      // cheap: list branches by the prefix and parse the embedded date.
+      const dedupeMatch = await this.findRecentDuplicateBranch(testFile);
+      if (dedupeMatch) {
+        core.warning(
+          `⏭️  Branch dedupe: refusing to push — existing branch '${dedupeMatch.name}' was created ${Math.round(
+            dedupeMatch.ageMs / 60_000
+          )} minutes ago for the same spec. To re-fix, delete the existing branch first.`
+        );
+        return {
+          success: false,
+          modifiedFiles: [],
+          error: `Branch dedupe: '${dedupeMatch.name}' already exists for this spec (created ${Math.round(
+            dedupeMatch.ageMs / 60_000
+          )}m ago).`,
+        };
+      }
+
       branchName = generateFixBranchName(testFile);
 
       core.info(`Creating fix branch: ${branchName}`);
@@ -467,6 +503,169 @@ export class GitHubFixApplier implements FixApplier {
           ? cleanupError.message
           : String(cleanupError);
       core.debug(`Failed to clean up branch ${branchName}: ${errorMsg}`);
+    }
+  }
+
+  /**
+   * Find an existing fix branch for the same spec that was created within
+   * the dedupe window. Used to refuse a duplicate push when the agent runs
+   * twice on the same failing spec in quick succession.
+   *
+   * Branch name shape (see `generateFixBranchName`):
+   *   `fix/triage-agent/<sanitized-test-file>-<YYYYMMDD>-<suffix>`
+   *
+   * The sanitized prefix is deterministic for a given test file path, so we
+   * can list branches by `git/matching-refs/heads/<prefix>-<sanitized>` and
+   * filter by the embedded date stamp + branch creation timestamp.
+   *
+   * Returns the most-recent matching branch when one falls inside the
+   * window, or `null` when the path is clear to push a fresh branch.
+   */
+  private async findRecentDuplicateBranch(
+    testFile: string
+  ): Promise<{ name: string; ageMs: number } | null> {
+    const sanitized = testFile
+      .replace(/[^a-zA-Z0-9]/g, '-')
+      .replace(/-+/g, '-')
+      .replace(/^-|-$/g, '')
+      .slice(0, 40);
+    const prefix = `${AUTO_FIX.BRANCH_PREFIX}${sanitized}-`;
+    const refPattern = `heads/${prefix}`;
+
+    const { octokit, owner, repo } = this.config;
+    let refs: Array<{ ref: string; object: { sha: string } }> = [];
+    try {
+      const response = await octokit.git.listMatchingRefs({
+        owner,
+        repo,
+        ref: refPattern,
+        per_page: 50,
+      });
+      refs = response.data;
+    } catch (err) {
+      // Listing refs is best-effort — failing here should not block
+      // applying the fix. Surface as debug, not warning, since it's
+      // expected on repos with restricted permissions.
+      core.debug(
+        `Branch dedupe lookup failed for ${prefix}: ${err instanceof Error ? err.message : String(err)}`
+      );
+      return null;
+    }
+
+    if (refs.length === 0) return null;
+
+    const now = Date.now();
+    let best: { name: string; ageMs: number } | null = null;
+    for (const r of refs) {
+      const branchName = r.ref.replace(/^refs\/heads\//, '');
+      // The branch name carries the original creation date as YYYYMMDD;
+      // we cross-check by reading the head commit's author date for
+      // millisecond precision. If either lookup fails we conservatively
+      // skip — better to allow a duplicate than to wedge a legitimate
+      // fix attempt.
+      let ageMs: number | null = null;
+      try {
+        const commit = await octokit.git.getCommit({
+          owner,
+          repo,
+          commit_sha: r.object.sha,
+        });
+        const authoredAt = Date.parse(commit.data.author?.date || '');
+        if (Number.isFinite(authoredAt)) {
+          ageMs = now - authoredAt;
+        }
+      } catch (err) {
+        core.debug(
+          `Branch dedupe: could not read commit ${r.object.sha.slice(0, SHORT_SHA_LENGTH)} for ${branchName}: ${err instanceof Error ? err.message : String(err)}`
+        );
+      }
+      if (ageMs === null) continue;
+      if (ageMs >= AUTO_FIX.BRANCH_DEDUPE_WINDOW_MS) continue;
+      if (!best || ageMs < best.ageMs) {
+        best = { name: branchName, ageMs };
+      }
+    }
+    return best;
+  }
+
+  /**
+   * Open a draft PR for an applied fix on the remote-validation path.
+   *
+   * Pre-audit (P0 #1 from `audit-last-5-runs`), only the local-validation
+   * path created PRs (via `LocalFixValidator.pushAndCreatePR`), so every
+   * remote-validation run produced an orphan branch that engineers had to
+   * locate manually. This helper closes that gap by creating a draft PR
+   * post-commit; the consumer can mark it ready for review once validation
+   * passes (the validation workflow is the natural place to flip draft →
+   * ready, but that's out of scope here).
+   *
+   * Failures are surfaced as warnings, never thrown — a missing PR is
+   * recoverable by the operator, but a thrown error here would fail the
+   * triage run after the branch already shipped.
+   */
+  async openDraftPullRequest(params: {
+    branchName: string;
+    commitSha: string;
+    fix: FixRecommendation;
+    triageRunId: string;
+  }): Promise<{ url: string; number: number } | null> {
+    const { octokit, owner, repo, baseBranch } = this.config;
+
+    const fileList = params.fix.proposedChanges
+      .map((c) => `- \`${c.file}\``)
+      .join('\n');
+    const filesShort = params.fix.proposedChanges
+      .map((c) => c.file.split('/').pop())
+      .filter(Boolean)
+      .slice(0, 3)
+      .join(', ');
+    const titleSummary = (params.fix.summary || filesShort || 'test fix').slice(
+      0,
+      90
+    );
+
+    const body = [
+      '## Auto-generated fix from adept-triage-agent',
+      '',
+      '> ⚠️ **Draft PR — remote validation pending or failed.** This PR is opened automatically so engineers can review the proposed fix in context. Status will be updated once the validation workflow concludes.',
+      '',
+      `**Triage run:** ${params.triageRunId}`,
+      `**Branch:** \`${params.branchName}\``,
+      `**Commit:** \`${params.commitSha.slice(0, SHORT_SHA_LENGTH)}\``,
+      `**Confidence:** ${params.fix.confidence}%`,
+      '',
+      '### Summary',
+      params.fix.summary || '_(no summary provided)_',
+      '',
+      '### Files changed',
+      fileList || '_(no files)_',
+      '',
+      '### Reasoning',
+      params.fix.reasoning || '_(no reasoning provided)_',
+      '',
+      '---',
+      '_Opened by adept-triage-agent. Review the diff against the failing test and the validation result before merging._',
+    ].join('\n');
+
+    try {
+      const response = await octokit.pulls.create({
+        owner,
+        repo,
+        head: params.branchName,
+        base: baseBranch,
+        title: `[triage-agent] ${titleSummary}`,
+        body,
+        draft: true,
+      });
+      core.info(
+        `📬 Draft PR opened: ${response.data.html_url} (#${response.data.number})`
+      );
+      return { url: response.data.html_url, number: response.data.number };
+    } catch (err) {
+      core.warning(
+        `Failed to open draft PR for ${params.branchName}: ${err instanceof Error ? err.message : String(err)}`
+      );
+      return null;
     }
   }
 

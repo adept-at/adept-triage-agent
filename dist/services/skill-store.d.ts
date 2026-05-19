@@ -71,6 +71,7 @@ export declare class SkillStore {
         errorMessage: string;
     }): TriageSkill | undefined;
     detectFlakiness(spec: string): FlakinessSignal;
+    countRecentFailedTrajectories(spec: string, windowMs: number): number;
     countForSpec(spec: string): number;
     getUsageStats(): {
         loaded: number;

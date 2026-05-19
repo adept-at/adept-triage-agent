@@ -55,5 +55,10 @@ export declare class PipelineCoordinator {
     private handleNoErrorData;
 }
 export declare function shouldWriteSkillOutcome(autoFixResult: ApplyResult | null | undefined): boolean;
+export declare function detectInfrastructureFailure(errorData: ErrorData): {
+    reasoning: string;
+    summary: string;
+    indicators: string[];
+} | null;
 export {};
 //# sourceMappingURL=coordinator.d.ts.map

@@ -122,6 +122,16 @@ export class PipelineCoordinator {
       : undefined;
     if (flakinessSignal?.isFlaky) {
       core.warning(`⚠️ FLAKINESS DETECTED: ${flakinessSignal.message}`);
+    } else if (flakinessSignal && flakinessSignal.fixCount >= 2) {
+      // Pre-chronic warning level: 2 prior fix attempts in the long window.
+      // The chronic-flakiness gate trips at `CHRONIC_FLAKINESS_THRESHOLD`
+      // (3); emit a softer signal one step earlier so operators can spot
+      // a spec trending toward chronic instability without the gate
+      // already blocking auto-fix. Visible as a `core.warning` so it
+      // surfaces in the Action's annotations and in Slack.
+      core.warning(
+        `⚠️ FLAKINESS WATCH: This spec has ${flakinessSignal.fixCount} prior auto-fix attempts in ${flakinessSignal.windowDays} days — one more failure will trip the chronic-flakiness gate (threshold ${CHRONIC_FLAKINESS_THRESHOLD}).`
+      );
     }
 
     // v1.50.0 A1-writer: split `findForClassifier` from the prompt
@@ -277,7 +287,8 @@ export class PipelineCoordinator {
           fixRecommendation,
           this.octokit,
           autoFixTargetRepo,
-          errorData
+          errorData,
+          skillStore
         );
         autoFixResult = outcome.applied;
         if (outcome.skipReason) {
@@ -354,6 +365,28 @@ export class PipelineCoordinator {
     skillStore: SkillStore | undefined,
     autoFixTargetRepo: { owner: string; repo: string } | null
   ): Promise<void> {
+    // Infrastructure fast-path: when the failure is unambiguously a
+    // remote-WebDriver / Sauce session-creation timeout, skip the LLM
+    // classifier and emit INCONCLUSIVE directly. Saves an LLM round-trip
+    // (~30s + tokens) on a class of failures the classifier already
+    // resolves to INCONCLUSIVE 95% of the time (see audit run
+    // `25823303735`). Match is intentionally narrow — only the literal
+    // signatures we've seen produce these classifications. Anything else
+    // continues through the normal classify path.
+    const infraVerdict = detectInfrastructureFailure(errorData);
+    if (infraVerdict) {
+      core.info(`⏭️  Infrastructure fast-path: ${infraVerdict.summary}`);
+      const infraResult: AnalysisResult = {
+        verdict: 'INCONCLUSIVE',
+        confidence: 95,
+        reasoning: infraVerdict.reasoning,
+        summary: infraVerdict.summary,
+        indicators: infraVerdict.indicators,
+      };
+      setInconclusiveOutput(infraResult, this.inputs, errorData);
+      return;
+    }
+
     const classification = await this.classify(errorData, skillStore);
 
     if (classification.confidence < this.inputs.confidenceThreshold) return;
@@ -729,4 +762,69 @@ export function shouldWriteSkillOutcome(
       validationStatus === 'failed' ||
       validationStatus === 'inconclusive')
   );
+}
+
+/**
+ * Recognize unambiguous infrastructure failures (remote-WebDriver session
+ * creation timeouts, Sauce provisioning errors) so the coordinator can
+ * short-circuit to INCONCLUSIVE without spending an LLM classification
+ * round-trip. Returns a pre-built classification payload, or `null` to
+ * indicate "this is not an infra failure — fall through to LLM classify."
+ *
+ * Match is intentionally narrow:
+ *   - `Failed to create a session` (WebdriverIO startup error)
+ *   - `ondemand.*saucelabs.com.*session` POST timeout (the Sauce endpoint)
+ *   - `startWebDriverSession`/`Runner._initSession` stack frames combined
+ *     with a timeout/abort phrase
+ *
+ * The triage agent has zero leverage on these — no test code ran, no
+ * product code ran, no fix is applicable. Skipping the LLM saves ~30s
+ * per occurrence and removes a class of skill-store noise.
+ */
+export function detectInfrastructureFailure(errorData: ErrorData): {
+  reasoning: string;
+  summary: string;
+  indicators: string[];
+} | null {
+  const haystack = `${errorData.message || ''}\n${errorData.stackTrace || ''}`;
+  if (!haystack.trim()) return null;
+
+  const sessionCreationFailed = /Failed to create a session/i.test(haystack);
+  const saucePostTimeout =
+    /ondemand[^\s]*saucelabs\.com[^\s]*\/session/i.test(haystack) &&
+    /(timeout|aborted|operation was aborted)/i.test(haystack);
+  const wdioStartupStack =
+    /startWebDriverSession|_(start|init)Session/i.test(haystack) &&
+    /(timeout|aborted)/i.test(haystack);
+
+  if (!sessionCreationFailed && !saucePostTimeout && !wdioStartupStack) {
+    return null;
+  }
+
+  const indicators: string[] = [];
+  if (sessionCreationFailed) {
+    indicators.push('Framework failure at session creation: `Failed to create a session`');
+  }
+  if (saucePostTimeout) {
+    indicators.push(
+      'Direct timeout against Sauce Labs WebDriver endpoint (POST /session)'
+    );
+  }
+  if (wdioStartupStack) {
+    indicators.push(
+      'Stack trace is in WebDriver/WebdriverIO startup, not test code or product code'
+    );
+  }
+  indicators.push(
+    'No browser session was created — no application code ran',
+    'Best treated as a remote WebDriver provider or network/session provisioning failure'
+  );
+
+  return {
+    summary:
+      'Inconclusive: failure occurred during remote-WebDriver session creation, before any test or application code ran. Likely a Sauce Labs / network provisioning issue — retry or investigate at the infrastructure level.',
+    reasoning:
+      'The causal failure is not an application assertion, selector timeout, or product error. The remote WebDriver session could not be created (Sauce Labs / WebDriver startup), so no test code or browser interaction occurred and no fix is applicable. This is an infrastructure-layer failure — escalate to the test runner / Sauce Labs / network team rather than the test or product teams.',
+    indicators,
+  };
 }

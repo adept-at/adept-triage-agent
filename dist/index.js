@@ -1952,6 +1952,34 @@ Generate precise, working code changes to fix the failing test based on the anal
 
 4. **Preserve Style**: Match the existing code style (quotes, semicolons, indentation).
 
+## Detect "Symptom Fix" vs Root Cause
+
+Before proposing changes, classify the failure into one of three buckets and let the bucket drive the fix shape. Most low-quality fixes come from picking the wrong bucket.
+
+### Bucket A — Logic / selector / assertion (test-side, repairable)
+Examples: stale selector, missing wait, off-by-one assertion, race in test code.
+Action: edit the failing line(s). This is the bread-and-butter case the patterns below cover.
+
+### Bucket B — External delivery / async pipeline (test polls something an external system produces)
+Symptoms: test failure inside a polling helper (\`waitForMessage*\`, \`waitForJob*\`, Mailosaur / SQS / webhook poll, email arrival, async processing). Stack trace points to the helper dereferencing an undefined search-result, or a \`waitUntil\` timeout where the condition never became true.
+
+A null-check inside the helper does NOT fix bucket B. It only converts a TypeError into a silent timeout. The real questions are:
+1. Is the upstream pipeline (email send, queue producer, webhook fire) actually emitting the artifact during this run? If logs show the test polled the full timeout window with zero items returned, the pipeline likely did not emit — that is a delivery problem, not a helper bug.
+2. Is the timeout long enough for the production SLA of that pipeline?
+3. Does the test have a way to verify "delivery occurred" out-of-band (DB row, API status, log signal) before falling back to polling?
+
+When you suspect bucket B, the fix should: (a) make the helper return falsy for empty results so \`waitUntil\` can retry, AND (b) surface a clear "delivery did not occur in N s" timeout message that distinguishes test-helper bugs from pipeline issues, AND (c) note in \`risks\` whether the underlying delivery system might need a separate investigation. Do not declare the fix complete if the most plausible failure mode is "the email/job/webhook never arrived." Say so explicitly in \`risks\` and \`alternatives\`.
+
+### Bucket C — Fixture / shared test-data state (one-time codes, shared accounts, rate-limited fixtures)
+Symptoms: API returns a domain error like "already in use", "currently redeemed", "rate limited". Cleanup/reset endpoints return 4xx. Test relies on a hardcoded shared resource.
+
+A stricter before-hook does NOT fix bucket C. It just turns the silent fixture problem into a hard before-hook failure. The real questions are:
+1. Can the test provision a fresh fixture per run (env-var override, factory call, dynamic generation)?
+2. If the shared fixture is unavoidable, does the reset endpoint accept the production error messages — and does the before-hook allow-list cover them?
+3. Should this failure be a non-fixable seed instead (operator-only remediation: refresh the access code, top up the credits)?
+
+For bucket C, prefer (a) introducing a fresh-fixture factory or env override, (b) making reset retry transient failures and surface non-retryable ones with the FULL response body in the error message, and (c) ensuring before- and after-hooks accept the SAME set of "already-reset" / "in-use" responses — never tighten one without the other.
+
 `;
 exports.CYPRESS_PATTERNS = `## Cypress Fix Patterns
 
@@ -2798,6 +2826,11 @@ Review code changes proposed to fix failing tests. Your job is to:
 - **Mixed selector strategies** (WebdriverIO): combining an attribute selector with partial-text matching on the SAME element, e.g. \`$("[role='dialog']*=Success")\`. WDIO's documented behavior for this form is ambiguous. Suggest chained form (\`$("[role='dialog']").$("*=Success")\`) or XPath.
 - **Ambiguous \`cy.contains()\`** (Cypress): unscoped \`cy.contains('text')\` returns the deepest matching element; prefer \`cy.get('[role="dialog"]').contains('text')\` or a scoped selector.
 - **Stacking fallbacks on chronically flaky specs**: if the agent memory context shows this spec has been auto-fixed multiple times recently, flag when the proposed fix adds yet another fallback selector/timeout rather than removing a fixed \`browser.pause()\` or consolidating success surfaces. Layering defenses is a smell.
+- **Hook-strictness asymmetry** (CRITICAL when present): if the fix introduces or tightens a setup/before-hook error classifier, allow-list, or "rethrow on unknown" branch, verify the matching teardown/after-hook accepts the SAME set of error states — and that the strict before-hook does not now reject error states the prior loose hook silently swallowed. Examples:
+  - Fix adds \`isCodeAlreadyReusableError\` substring matching to a before hook but ships a list that does not include the production API's actual non-fatal message (e.g. "Unable to reverse Access Code in current state"). The new strict hook converts a benign API state into a hard failure that the original hook tolerated.
+  - Fix makes \`postRouteRedeem\` rethrow but does not audit every caller — the after-hook may now also throw on legitimate "already-reset" responses that previously returned \`undefined\` and were swallowed.
+  - Fix adds a mandatory reset/preflight in \`before\` but the corresponding \`after\` cleanup still uses the old loose semantics. Reject as CRITICAL unless the proposed change keeps the two hooks symmetric, OR explicitly justifies why asymmetric strictness is correct here.
+  Practical rule: if the fix changes ANY hook-level error handling, the proposed allow-list / classifier MUST cover at least the message strings the LOG shows the production API actually returns, AND the matching cleanup hook MUST accept the same states.
 
 ### SUGGESTION Issues (Nice to Have)
 - Code style inconsistencies
@@ -3939,6 +3972,7 @@ exports.TEST_ISSUE_CATEGORIES = {
 exports.AUTO_FIX = {
     DEFAULT_MIN_CONFIDENCE: 70,
     BRANCH_PREFIX: 'fix/triage-agent/',
+    BRANCH_DEDUPE_WINDOW_MS: 6 * 60 * 60 * 1000,
 };
 exports.DEFAULT_PRODUCT_REPO = 'adept-at/learn-webapp';
 exports.DEFAULT_PRODUCT_URL = 'https://learn.adept.at';
@@ -3970,6 +4004,12 @@ exports.BLAST_RADIUS = {
     ],
     SHARED_CODE_BOOST: 10,
     MULTI_FILE_BOOST: 5,
+    GLOBAL_TIMEOUT_PATTERN: 'timeout\\s*[:=]\\s*([3-9]\\d{4}|[1-9]\\d{5,})|setTimeout\\s*\\(\\s*[^,]+,\\s*([3-9]\\d{4}|[1-9]\\d{5,})',
+    GLOBAL_TIMEOUT_BOOST: 5,
+    RECENT_FAILED_TRAJECTORY_BOOST: 8,
+    RECENT_FAILED_WINDOW_MS: 24 * 60 * 60 * 1000,
+    RECENT_FAILED_MAX_BOOST: 16,
+    HELPER_CONTRACT_CHANGE_BOOST: 5,
     MAX_REQUIRED_CONFIDENCE: 95,
 };
 //# sourceMappingURL=constants.js.map
@@ -4802,6 +4842,7 @@ var __importStar = (this && this.__importStar) || (function () {
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.PipelineCoordinator = void 0;
 exports.shouldWriteSkillOutcome = shouldWriteSkillOutcome;
+exports.detectInfrastructureFailure = detectInfrastructureFailure;
 const core = __importStar(__nccwpck_require__(37484));
 const github = __importStar(__nccwpck_require__(93228));
 const simplified_analyzer_1 = __nccwpck_require__(20078);
@@ -4831,6 +4872,9 @@ class PipelineCoordinator {
             : undefined;
         if (flakinessSignal?.isFlaky) {
             core.warning(`⚠️ FLAKINESS DETECTED: ${flakinessSignal.message}`);
+        }
+        else if (flakinessSignal && flakinessSignal.fixCount >= 2) {
+            core.warning(`⚠️ FLAKINESS WATCH: This spec has ${flakinessSignal.fixCount} prior auto-fix attempts in ${flakinessSignal.windowDays} days — one more failure will trip the chronic-flakiness gate (threshold ${constants_1.CHRONIC_FLAKINESS_THRESHOLD}).`);
         }
         const classifierSkills = skillStore
             ? skillStore.findForClassifier({
@@ -4919,7 +4963,7 @@ class PipelineCoordinator {
             agentInvestigationFindings = singleResult.agentInvestigationFindings;
             repairTelemetry = singleResult.repairTelemetry;
             if (fixRecommendation && this.inputs.enableAutoFix && autoFixTargetRepo) {
-                const outcome = await (0, validator_1.attemptAutoFix)(this.inputs, fixRecommendation, this.octokit, autoFixTargetRepo, errorData);
+                const outcome = await (0, validator_1.attemptAutoFix)(this.inputs, fixRecommendation, this.octokit, autoFixTargetRepo, errorData, skillStore);
                 autoFixResult = outcome.applied;
                 if (outcome.skipReason) {
                     autoFixSkipped = true;
@@ -4962,6 +5006,19 @@ class PipelineCoordinator {
         }
     }
     async runClassifyAndRepair(errorData, skillStore, autoFixTargetRepo) {
+        const infraVerdict = detectInfrastructureFailure(errorData);
+        if (infraVerdict) {
+            core.info(`⏭️  Infrastructure fast-path: ${infraVerdict.summary}`);
+            const infraResult = {
+                verdict: 'INCONCLUSIVE',
+                confidence: 95,
+                reasoning: infraVerdict.reasoning,
+                summary: infraVerdict.summary,
+                indicators: infraVerdict.indicators,
+            };
+            (0, output_1.setInconclusiveOutput)(infraResult, this.inputs, errorData);
+            return;
+        }
         const classification = await this.classify(errorData, skillStore);
         if (classification.confidence < this.inputs.confidenceThreshold)
             return;
@@ -5208,6 +5265,35 @@ function shouldWriteSkillOutcome(autoFixResult) {
         (validationStatus === 'passed' ||
             validationStatus === 'failed' ||
             validationStatus === 'inconclusive'));
+}
+function detectInfrastructureFailure(errorData) {
+    const haystack = `${errorData.message || ''}\n${errorData.stackTrace || ''}`;
+    if (!haystack.trim())
+        return null;
+    const sessionCreationFailed = /Failed to create a session/i.test(haystack);
+    const saucePostTimeout = /ondemand[^\s]*saucelabs\.com[^\s]*\/session/i.test(haystack) &&
+        /(timeout|aborted|operation was aborted)/i.test(haystack);
+    const wdioStartupStack = /startWebDriverSession|_(start|init)Session/i.test(haystack) &&
+        /(timeout|aborted)/i.test(haystack);
+    if (!sessionCreationFailed && !saucePostTimeout && !wdioStartupStack) {
+        return null;
+    }
+    const indicators = [];
+    if (sessionCreationFailed) {
+        indicators.push('Framework failure at session creation: `Failed to create a session`');
+    }
+    if (saucePostTimeout) {
+        indicators.push('Direct timeout against Sauce Labs WebDriver endpoint (POST /session)');
+    }
+    if (wdioStartupStack) {
+        indicators.push('Stack trace is in WebDriver/WebdriverIO startup, not test code or product code');
+    }
+    indicators.push('No browser session was created — no application code ran', 'Best treated as a remote WebDriver provider or network/session provisioning failure');
+    return {
+        summary: 'Inconclusive: failure occurred during remote-WebDriver session creation, before any test or application code ran. Likely a Sauce Labs / network provisioning issue — retry or investigate at the infrastructure level.',
+        reasoning: 'The causal failure is not an application assertion, selector timeout, or product error. The remote WebDriver session could not be created (Sauce Labs / WebDriver startup), so no test code or browser interaction occurred and no fix is applicable. This is an infrastructure-layer failure — escalate to the test runner / Sauce Labs / network team rather than the test or product teams.',
+        indicators,
+    };
 }
 //# sourceMappingURL=coordinator.js.map
 
@@ -5718,7 +5804,10 @@ async function iterativeFixValidateLoop(inputs, repoDetails, autoFixTargetRepo, 
                 core.info(`Iteration ${iteration + 1}: fix rejected — no changes proposed`);
                 break;
             }
-            const { required: iterRequired, reasons: iterReasons } = requiredConfidence(fixRecommendation, minConfidence);
+            const recentFailedTrajectories = skillStore
+                ? skillStore.countRecentFailedTrajectories(errorData.fileName || 'unknown', constants_1.BLAST_RADIUS.RECENT_FAILED_WINDOW_MS)
+                : 0;
+            const { required: iterRequired, reasons: iterReasons } = requiredConfidence(fixRecommendation, minConfidence, { recentFailedTrajectories });
             if (fixRecommendation.confidence < iterRequired) {
                 const suffix = iterReasons.length
                     ? ` (blast-radius scaling: ${iterReasons.join('; ')})`
@@ -5866,7 +5955,7 @@ async function iterativeFixValidateLoop(inputs, repoDetails, autoFixTargetRepo, 
 function normalizeFileForPatternMatch(path) {
     return ('/' + path.replace(/^\.\//, '').replace(/\\/g, '/')).toLowerCase();
 }
-function requiredConfidence(fix, baseMinConfidence) {
+function requiredConfidence(fix, baseMinConfidence, options = {}) {
     const reasons = [];
     let required = baseMinConfidence;
     const files = new Set(fix.proposedChanges.map((c) => c.file));
@@ -5881,6 +5970,35 @@ function requiredConfidence(fix, baseMinConfidence) {
     if (files.size >= 2) {
         required += constants_1.BLAST_RADIUS.MULTI_FILE_BOOST;
         reasons.push(`spans ${files.size} files — +${constants_1.BLAST_RADIUS.MULTI_FILE_BOOST}`);
+    }
+    const globalTimeoutRegex = new RegExp(constants_1.BLAST_RADIUS.GLOBAL_TIMEOUT_PATTERN, 'i');
+    const introducesGlobalTimeout = fix.proposedChanges.some((c) => {
+        const newMatches = globalTimeoutRegex.test(c.newCode || '');
+        if (!newMatches)
+            return false;
+        const oldMatches = globalTimeoutRegex.test(c.oldCode || '');
+        return !oldMatches;
+    });
+    if (introducesGlobalTimeout) {
+        required += constants_1.BLAST_RADIUS.GLOBAL_TIMEOUT_BOOST;
+        reasons.push(`introduces global timeout >=30s — +${constants_1.BLAST_RADIUS.GLOBAL_TIMEOUT_BOOST}`);
+    }
+    const helperContractChange = sharedMatches.length > 0 &&
+        fix.proposedChanges.some((c) => {
+            const oldHasThrow = /(^|\s|;)throw\b/.test(c.oldCode || '');
+            const newHasThrow = /(^|\s|;)throw\b/.test(c.newCode || '');
+            return !oldHasThrow && newHasThrow;
+        });
+    if (helperContractChange) {
+        required += constants_1.BLAST_RADIUS.HELPER_CONTRACT_CHANGE_BOOST;
+        reasons.push(`helper contract change (now rethrows) — +${constants_1.BLAST_RADIUS.HELPER_CONTRACT_CHANGE_BOOST}`);
+    }
+    const recentFailures = options.recentFailedTrajectories ?? 0;
+    if (recentFailures > 0) {
+        const rawBoost = recentFailures * constants_1.BLAST_RADIUS.RECENT_FAILED_TRAJECTORY_BOOST;
+        const capped = Math.min(rawBoost, constants_1.BLAST_RADIUS.RECENT_FAILED_MAX_BOOST);
+        required += capped;
+        reasons.push(`${recentFailures} recent failed trajector${recentFailures === 1 ? 'y' : 'ies'} on this spec — +${capped}`);
     }
     const effectiveMax = Math.max(baseMinConfidence, constants_1.BLAST_RADIUS.MAX_REQUIRED_CONFIDENCE);
     if (required > effectiveMax) {
@@ -5904,10 +6022,13 @@ function buildNextPreviousAttempt(nextIteration, previousFix, fixResult, validat
         priorAgentInvestigationFindings: fixResult.agentInvestigationFindings,
     };
 }
-async function attemptAutoFix(inputs, fixRecommendation, octokit, repoDetails, errorData) {
+async function attemptAutoFix(inputs, fixRecommendation, octokit, repoDetails, errorData, skillStore) {
     core.info('\n🤖 Auto-fix is enabled, attempting to apply fix...');
     const baseMin = inputs.autoFixMinConfidence ?? constants_1.AUTO_FIX.DEFAULT_MIN_CONFIDENCE;
-    const { required, reasons } = requiredConfidence(fixRecommendation, baseMin);
+    const recentFailedTrajectories = skillStore
+        ? skillStore.countRecentFailedTrajectories(errorData?.fileName || 'unknown', constants_1.BLAST_RADIUS.RECENT_FAILED_WINDOW_MS)
+        : 0;
+    const { required, reasons } = requiredConfidence(fixRecommendation, baseMin, { recentFailedTrajectories });
     if (fixRecommendation.confidence < required) {
         const suffix = reasons.length
             ? ` (blast-radius scaling: ${reasons.join('; ')})`
@@ -5940,6 +6061,14 @@ async function attemptAutoFix(inputs, fixRecommendation, octokit, repoDetails, e
             core.info(`   Branch: ${result.branchName}`);
             core.info(`   Commit: ${result.commitSha}`);
             core.info(`   Files: ${result.modifiedFiles.join(', ')}`);
+            if (result.branchName && result.commitSha) {
+                await fixApplier.openDraftPullRequest({
+                    branchName: result.branchName,
+                    commitSha: result.commitSha,
+                    fix: fixRecommendation,
+                    triageRunId: github.context.runId.toString(),
+                });
+            }
             if (inputs.enableValidation && result.branchName) {
                 core.info('\n🧪 Triggering validation workflow...');
                 const spec = inputs.validationSpec ||
@@ -6210,6 +6339,15 @@ class GitHubFixApplier {
                 };
             }
             const testFile = recommendation.proposedChanges[0].file;
+            const dedupeMatch = await this.findRecentDuplicateBranch(testFile);
+            if (dedupeMatch) {
+                core.warning(`⏭️  Branch dedupe: refusing to push — existing branch '${dedupeMatch.name}' was created ${Math.round(dedupeMatch.ageMs / 60_000)} minutes ago for the same spec. To re-fix, delete the existing branch first.`);
+                return {
+                    success: false,
+                    modifiedFiles: [],
+                    error: `Branch dedupe: '${dedupeMatch.name}' already exists for this spec (created ${Math.round(dedupeMatch.ageMs / 60_000)}m ago).`,
+                };
+            }
             branchName = generateFixBranchName(testFile);
             core.info(`Creating fix branch: ${branchName}`);
             let baseSha;
@@ -6295,6 +6433,111 @@ class GitHubFixApplier {
                 ? cleanupError.message
                 : String(cleanupError);
             core.debug(`Failed to clean up branch ${branchName}: ${errorMsg}`);
+        }
+    }
+    async findRecentDuplicateBranch(testFile) {
+        const sanitized = testFile
+            .replace(/[^a-zA-Z0-9]/g, '-')
+            .replace(/-+/g, '-')
+            .replace(/^-|-$/g, '')
+            .slice(0, 40);
+        const prefix = `${constants_1.AUTO_FIX.BRANCH_PREFIX}${sanitized}-`;
+        const refPattern = `heads/${prefix}`;
+        const { octokit, owner, repo } = this.config;
+        let refs = [];
+        try {
+            const response = await octokit.git.listMatchingRefs({
+                owner,
+                repo,
+                ref: refPattern,
+                per_page: 50,
+            });
+            refs = response.data;
+        }
+        catch (err) {
+            core.debug(`Branch dedupe lookup failed for ${prefix}: ${err instanceof Error ? err.message : String(err)}`);
+            return null;
+        }
+        if (refs.length === 0)
+            return null;
+        const now = Date.now();
+        let best = null;
+        for (const r of refs) {
+            const branchName = r.ref.replace(/^refs\/heads\//, '');
+            let ageMs = null;
+            try {
+                const commit = await octokit.git.getCommit({
+                    owner,
+                    repo,
+                    commit_sha: r.object.sha,
+                });
+                const authoredAt = Date.parse(commit.data.author?.date || '');
+                if (Number.isFinite(authoredAt)) {
+                    ageMs = now - authoredAt;
+                }
+            }
+            catch (err) {
+                core.debug(`Branch dedupe: could not read commit ${r.object.sha.slice(0, constants_1.SHORT_SHA_LENGTH)} for ${branchName}: ${err instanceof Error ? err.message : String(err)}`);
+            }
+            if (ageMs === null)
+                continue;
+            if (ageMs >= constants_1.AUTO_FIX.BRANCH_DEDUPE_WINDOW_MS)
+                continue;
+            if (!best || ageMs < best.ageMs) {
+                best = { name: branchName, ageMs };
+            }
+        }
+        return best;
+    }
+    async openDraftPullRequest(params) {
+        const { octokit, owner, repo, baseBranch } = this.config;
+        const fileList = params.fix.proposedChanges
+            .map((c) => `- \`${c.file}\``)
+            .join('\n');
+        const filesShort = params.fix.proposedChanges
+            .map((c) => c.file.split('/').pop())
+            .filter(Boolean)
+            .slice(0, 3)
+            .join(', ');
+        const titleSummary = (params.fix.summary || filesShort || 'test fix').slice(0, 90);
+        const body = [
+            '## Auto-generated fix from adept-triage-agent',
+            '',
+            '> ⚠️ **Draft PR — remote validation pending or failed.** This PR is opened automatically so engineers can review the proposed fix in context. Status will be updated once the validation workflow concludes.',
+            '',
+            `**Triage run:** ${params.triageRunId}`,
+            `**Branch:** \`${params.branchName}\``,
+            `**Commit:** \`${params.commitSha.slice(0, constants_1.SHORT_SHA_LENGTH)}\``,
+            `**Confidence:** ${params.fix.confidence}%`,
+            '',
+            '### Summary',
+            params.fix.summary || '_(no summary provided)_',
+            '',
+            '### Files changed',
+            fileList || '_(no files)_',
+            '',
+            '### Reasoning',
+            params.fix.reasoning || '_(no reasoning provided)_',
+            '',
+            '---',
+            '_Opened by adept-triage-agent. Review the diff against the failing test and the validation result before merging._',
+        ].join('\n');
+        try {
+            const response = await octokit.pulls.create({
+                owner,
+                repo,
+                head: params.branchName,
+                base: baseBranch,
+                title: `[triage-agent] ${titleSummary}`,
+                body,
+                draft: true,
+            });
+            core.info(`📬 Draft PR opened: ${response.data.html_url} (#${response.data.number})`);
+            return { url: response.data.html_url, number: response.data.number };
+        }
+        catch (err) {
+            core.warning(`Failed to open draft PR for ${params.branchName}: ${err instanceof Error ? err.message : String(err)}`);
+            return null;
         }
     }
     async triggerValidation(params) {
@@ -8731,6 +8974,17 @@ class SkillStore {
             windowDays: FLAKY_THRESHOLDS.LONG_WINDOW_DAYS,
             message: '',
         };
+    }
+    countRecentFailedTrajectories(spec, windowMs) {
+        const now = Date.now();
+        const querySpec = normalizeSpec(spec);
+        if (!querySpec)
+            return 0;
+        return this.skills.filter((s) => !s.isSeed &&
+            !s.retired &&
+            s.validatedLocally === false &&
+            normalizeSpec(s.spec) === querySpec &&
+            now - parseSkillTimestamp(s.createdAt) < windowMs).length;
     }
     countForSpec(spec) {
         const querySpec = normalizeSpec(spec);

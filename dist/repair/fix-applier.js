@@ -154,6 +154,15 @@ class GitHubFixApplier {
                 };
             }
             const testFile = recommendation.proposedChanges[0].file;
+            const dedupeMatch = await this.findRecentDuplicateBranch(testFile);
+            if (dedupeMatch) {
+                core.warning(`⏭️  Branch dedupe: refusing to push — existing branch '${dedupeMatch.name}' was created ${Math.round(dedupeMatch.ageMs / 60_000)} minutes ago for the same spec. To re-fix, delete the existing branch first.`);
+                return {
+                    success: false,
+                    modifiedFiles: [],
+                    error: `Branch dedupe: '${dedupeMatch.name}' already exists for this spec (created ${Math.round(dedupeMatch.ageMs / 60_000)}m ago).`,
+                };
+            }
             branchName = generateFixBranchName(testFile);
             core.info(`Creating fix branch: ${branchName}`);
             let baseSha;
@@ -239,6 +248,111 @@ class GitHubFixApplier {
                 ? cleanupError.message
                 : String(cleanupError);
             core.debug(`Failed to clean up branch ${branchName}: ${errorMsg}`);
+        }
+    }
+    async findRecentDuplicateBranch(testFile) {
+        const sanitized = testFile
+            .replace(/[^a-zA-Z0-9]/g, '-')
+            .replace(/-+/g, '-')
+            .replace(/^-|-$/g, '')
+            .slice(0, 40);
+        const prefix = `${constants_1.AUTO_FIX.BRANCH_PREFIX}${sanitized}-`;
+        const refPattern = `heads/${prefix}`;
+        const { octokit, owner, repo } = this.config;
+        let refs = [];
+        try {
+            const response = await octokit.git.listMatchingRefs({
+                owner,
+                repo,
+                ref: refPattern,
+                per_page: 50,
+            });
+            refs = response.data;
+        }
+        catch (err) {
+            core.debug(`Branch dedupe lookup failed for ${prefix}: ${err instanceof Error ? err.message : String(err)}`);
+            return null;
+        }
+        if (refs.length === 0)
+            return null;
+        const now = Date.now();
+        let best = null;
+        for (const r of refs) {
+            const branchName = r.ref.replace(/^refs\/heads\//, '');
+            let ageMs = null;
+            try {
+                const commit = await octokit.git.getCommit({
+                    owner,
+                    repo,
+                    commit_sha: r.object.sha,
+                });
+                const authoredAt = Date.parse(commit.data.author?.date || '');
+                if (Number.isFinite(authoredAt)) {
+                    ageMs = now - authoredAt;
+                }
+            }
+            catch (err) {
+                core.debug(`Branch dedupe: could not read commit ${r.object.sha.slice(0, constants_1.SHORT_SHA_LENGTH)} for ${branchName}: ${err instanceof Error ? err.message : String(err)}`);
+            }
+            if (ageMs === null)
+                continue;
+            if (ageMs >= constants_1.AUTO_FIX.BRANCH_DEDUPE_WINDOW_MS)
+                continue;
+            if (!best || ageMs < best.ageMs) {
+                best = { name: branchName, ageMs };
+            }
+        }
+        return best;
+    }
+    async openDraftPullRequest(params) {
+        const { octokit, owner, repo, baseBranch } = this.config;
+        const fileList = params.fix.proposedChanges
+            .map((c) => `- \`${c.file}\``)
+            .join('\n');
+        const filesShort = params.fix.proposedChanges
+            .map((c) => c.file.split('/').pop())
+            .filter(Boolean)
+            .slice(0, 3)
+            .join(', ');
+        const titleSummary = (params.fix.summary || filesShort || 'test fix').slice(0, 90);
+        const body = [
+            '## Auto-generated fix from adept-triage-agent',
+            '',
+            '> ⚠️ **Draft PR — remote validation pending or failed.** This PR is opened automatically so engineers can review the proposed fix in context. Status will be updated once the validation workflow concludes.',
+            '',
+            `**Triage run:** ${params.triageRunId}`,
+            `**Branch:** \`${params.branchName}\``,
+            `**Commit:** \`${params.commitSha.slice(0, constants_1.SHORT_SHA_LENGTH)}\``,
+            `**Confidence:** ${params.fix.confidence}%`,
+            '',
+            '### Summary',
+            params.fix.summary || '_(no summary provided)_',
+            '',
+            '### Files changed',
+            fileList || '_(no files)_',
+            '',
+            '### Reasoning',
+            params.fix.reasoning || '_(no reasoning provided)_',
+            '',
+            '---',
+            '_Opened by adept-triage-agent. Review the diff against the failing test and the validation result before merging._',
+        ].join('\n');
+        try {
+            const response = await octokit.pulls.create({
+                owner,
+                repo,
+                head: params.branchName,
+                base: baseBranch,
+                title: `[triage-agent] ${titleSummary}`,
+                body,
+                draft: true,
+            });
+            core.info(`📬 Draft PR opened: ${response.data.html_url} (#${response.data.number})`);
+            return { url: response.data.html_url, number: response.data.number };
+        }
+        catch (err) {
+            core.warning(`Failed to open draft PR for ${params.branchName}: ${err instanceof Error ? err.message : String(err)}`);
+            return null;
         }
     }
     async triggerValidation(params) {

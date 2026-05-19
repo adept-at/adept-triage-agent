@@ -75,6 +75,7 @@ export type TestIssueCategory = (typeof TEST_ISSUE_CATEGORIES)[keyof typeof TEST
 export declare const AUTO_FIX: {
     readonly DEFAULT_MIN_CONFIDENCE: 70;
     readonly BRANCH_PREFIX: "fix/triage-agent/";
+    readonly BRANCH_DEDUPE_WINDOW_MS: number;
 };
 export declare const DEFAULT_PRODUCT_REPO = "adept-at/learn-webapp";
 export declare const DEFAULT_PRODUCT_URL = "https://learn.adept.at";
@@ -93,6 +94,12 @@ export declare const BLAST_RADIUS: {
     readonly SHARED_CODE_PATTERNS: readonly string[];
     readonly SHARED_CODE_BOOST: 10;
     readonly MULTI_FILE_BOOST: 5;
+    readonly GLOBAL_TIMEOUT_PATTERN: "timeout\\s*[:=]\\s*([3-9]\\d{4}|[1-9]\\d{5,})|setTimeout\\s*\\(\\s*[^,]+,\\s*([3-9]\\d{4}|[1-9]\\d{5,})";
+    readonly GLOBAL_TIMEOUT_BOOST: 5;
+    readonly RECENT_FAILED_TRAJECTORY_BOOST: 8;
+    readonly RECENT_FAILED_WINDOW_MS: number;
+    readonly RECENT_FAILED_MAX_BOOST: 16;
+    readonly HELPER_CONTRACT_CHANGE_BOOST: 5;
     readonly MAX_REQUIRED_CONFIDENCE: 95;
 };
 //# sourceMappingURL=constants.d.ts.map

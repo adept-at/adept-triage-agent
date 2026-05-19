@@ -772,6 +772,36 @@ export class SkillStore {
   }
 
   /**
+   * Count recently-saved failed-trajectory skills for the given spec.
+   *
+   * A "failed trajectory" is a skill saved with `validatedLocally=false`
+   * — i.e. a fix the agent generated for this spec, applied to a branch,
+   * and saw fail remote validation. The auto-apply gate uses this count
+   * to raise required confidence: shipping another fix on the same spec
+   * within hours of a known failure is unlikely to succeed without a
+   * material change in approach.
+   *
+   * Spec normalization mirrors `findRelevant` / `detectFlakiness` so
+   * absolute-path runtime queries match relative-path stored skills.
+   * Seed skills are excluded — seeds are operator-curated guidance, not
+   * runtime trajectories, and counting them would lock out fix attempts
+   * on specs that happen to have curated seeds.
+   */
+  countRecentFailedTrajectories(spec: string, windowMs: number): number {
+    const now = Date.now();
+    const querySpec = normalizeSpec(spec);
+    if (!querySpec) return 0;
+    return this.skills.filter(
+      (s) =>
+        !s.isSeed &&
+        !s.retired &&
+        s.validatedLocally === false &&
+        normalizeSpec(s.spec) === querySpec &&
+        now - parseSkillTimestamp(s.createdAt) < windowMs
+    ).length;
+  }
+
+  /**
    * Count active (non-retired) skills for the given spec.
    *
    * v1.49.3 A3: aligned with `findRelevant` / `findForClassifier` —

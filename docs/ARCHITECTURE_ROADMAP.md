@@ -16,14 +16,16 @@ The highest-leverage redesign is **not** introducing new storage technology. It 
 
 These are not speculative. Each is grounded in current source.
 
-| # | Bug | Effect | Source |
-|---|-----|--------|--------|
+
+| #      | Bug                                                                                                                                                                                                                                                                                                                                        | Effect                                                                                                                                                                                                                                                         | Source                                                                                                            |
+| ------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
 | **B1** | A passing local test followed by a `pushAndCreatePR` failure produces `ApplyResult { success: false, validationStatus: 'passed' }`. Coordinator sets `fixSucceeded = autoFixResult.success && validationStatus === 'passed'`, so a real validation success is recorded as `validatedLocally: false` **and** `recordOutcome(skill, false)`. | Skill store learns publish failures **as if they were fix failures**. `findForClassifier` then **excludes** the skill (it filters on `validatedLocally === true`). Repeated push failures (PAT scope, branch protection, etc.) silently retire valid patterns. | `src/pipeline/validator.ts:355-367`, `src/pipeline/coordinator.ts:407-481`, `src/services/skill-store.ts:693-698` |
-| **B2** | Each iteration of `iterativeFixValidateLoop` calls `generateFixRecommendation` with `previousResponseId: undefined`, so every retry re-runs the **full** five-stage orchestrator (analysis → code reading → investigation → fix-gen → review) with no OpenAI Responses API conversation chaining. | Up to **9 LLM calls** per iteration × `MAX_ITERATIONS = 3` and orchestrator wall budget of **15 min**. Wasted spend dominates micro-optimizations. | `src/pipeline/validator.ts:208-219`, `src/agents/agent-orchestrator.ts:50-56`, `src/config/constants.ts:155-181` |
-| **B3** | `detectFlakiness(spec)` counts **all** same-spec skills, including `isSeed` rows and retired rows. `coordinator.ts` chronic-flakiness gate fires when `isFlaky && fixCount >= CHRONIC_FLAKINESS_THRESHOLD` (default `3`). Three seed rows on the same spec satisfy this. | Repos that bootstrap with curated seeds can hit the gate **without ever auto-fixing**, silently disabling repair. | `src/services/skill-store.ts:758-768`, `src/pipeline/coordinator.ts:366-372`, `src/config/constants.ts:191` |
-| **B4** | Log caps drift across the prompt path. `openai-client` uses `LOG_LIMITS.PROMPT_MAX_LOG_SIZE` (200 KB), but `analysis-agent.buildUserPrompt` slices logs at **3000 chars** independently. Other agents apply their own caps. | Classifier and analysis see materially different evidence on the same run. Drift between agents is a real source of disagreement that looks like model error. | `src/openai-client.ts` (`buildPrompt`/`capLogsForPrompt`), `src/agents/analysis-agent.ts:225` |
-| **B5** | `triggerValidation` dispatches `workflow_dispatch` with `ref: 'main'` hardcoded. Consumers whose default branch is not `main` (e.g. `master`, `develop`) get a 422 or run against the wrong ref. | Remote validation path is unreliable for non-main repos. Independent reason to constrain remote (Phase 5). | `src/repair/fix-applier.ts:469` |
-| **B6** | `analysis-agent.buildUserPrompt` (and peers) interpolate `context.errorMessage` raw inside a triple-backtick code fence; `sanitizeForPrompt` is not applied at this site. `sanitizeForPrompt` is used in skill formatters and the retry block, but **not uniformly** across the agent prompt path. | Prompt-injection patterns in test logs (e.g. `## SYSTEM:`, stray triple-backticks) reach the model verbatim. Today's risk is bounded by the test-evidence verifier, but the new memory kinds (Phase 2) widen the surface unless this is closed. | `src/agents/analysis-agent.ts:208-211`, `src/services/skill-store.ts:180-211` |
+| **B2** | Each iteration of `iterativeFixValidateLoop` calls `generateFixRecommendation` with `previousResponseId: undefined`, so every retry re-runs the **full** five-stage orchestrator (analysis → code reading → investigation → fix-gen → review) with no OpenAI Responses API conversation chaining.                                          | Up to **9 LLM calls** per iteration × `MAX_ITERATIONS = 3` and orchestrator wall budget of **15 min**. Wasted spend dominates micro-optimizations.                                                                                                             | `src/pipeline/validator.ts:208-219`, `src/agents/agent-orchestrator.ts:50-56`, `src/config/constants.ts:155-181`  |
+| **B3** | `detectFlakiness(spec)` counts **all** same-spec skills, including `isSeed` rows and retired rows. `coordinator.ts` chronic-flakiness gate fires when `isFlaky && fixCount >= CHRONIC_FLAKINESS_THRESHOLD` (default `3`). Three seed rows on the same spec satisfy this.                                                                   | Repos that bootstrap with curated seeds can hit the gate **without ever auto-fixing**, silently disabling repair.                                                                                                                                              | `src/services/skill-store.ts:758-768`, `src/pipeline/coordinator.ts:366-372`, `src/config/constants.ts:191`       |
+| **B4** | Log caps drift across the prompt path. `openai-client` uses `LOG_LIMITS.PROMPT_MAX_LOG_SIZE` (200 KB), but `analysis-agent.buildUserPrompt` slices logs at **3000 chars** independently. Other agents apply their own caps.                                                                                                                | Classifier and analysis see materially different evidence on the same run. Drift between agents is a real source of disagreement that looks like model error.                                                                                                  | `src/openai-client.ts` (`buildPrompt`/`capLogsForPrompt`), `src/agents/analysis-agent.ts:225`                     |
+| **B5** | `triggerValidation` dispatches `workflow_dispatch` with `ref: 'main'` hardcoded. Consumers whose default branch is not `main` (e.g. `master`, `develop`) get a 422 or run against the wrong ref.                                                                                                                                           | Remote validation path is unreliable for non-main repos. Independent reason to constrain remote (Phase 5).                                                                                                                                                     | `src/repair/fix-applier.ts:469`                                                                                   |
+| **B6** | `analysis-agent.buildUserPrompt` (and peers) interpolate `context.errorMessage` raw inside a triple-backtick code fence; `sanitizeForPrompt` is not applied at this site. `sanitizeForPrompt` is used in skill formatters and the retry block, but **not uniformly** across the agent prompt path.                                         | Prompt-injection patterns in test logs (e.g. `## SYSTEM:`, stray triple-backticks) reach the model verbatim. Today's risk is bounded by the test-evidence verifier, but the new memory kinds (Phase 2) widen the surface unless this is closed.                | `src/agents/analysis-agent.ts:208-211`, `src/services/skill-store.ts:180-211`                                     |
+
 
 ---
 
@@ -69,6 +71,8 @@ flowchart TD
   B --> O[finally: logRunSummary]
 ```
 
+
+
 **Ordering (as of today):** in `iterativeFixValidateLoop`, the first iteration calls `generateFixRecommendation` **before** `validator.setup()` / `baselineCheck()` (the validator is lazily initialized inside the loop on first need). Baseline requires **3 consecutive passes** (`BASELINE_PASS_COUNT = 3`) and short-circuits on the first failing pass.
 
 ### Skill store
@@ -83,14 +87,16 @@ flowchart TD
 
 ## Roadmap Overview (accuracy-ordered)
 
-| Phase | Theme | Bugs closed | Accuracy lift |
-|------:|--------|-------------|----------------|
-| **0** | Decouple validation outcome from publish outcome | B1 | **High** — stops poisoning the skill store on every push failure |
-| **1** | Conversation chaining across iteration loop | B2 | **Medium accuracy / high cost saving** — same prompt context, cheaper |
-| **2** | Typed skill memory + role-gated retrieval + formatter branches | B3 (with seed exclusion) | **High** — better fix-gen prompts, honest negative evidence |
-| **3** | Baseline before LLM repair (local path) | — (efficiency) | **Low accuracy / high cost saving** |
-| **4** | Structured case file with single cap source | B4, B6 | **Medium** — agents agree on what evidence they saw; closes injection drift |
-| **5** | Harden or deprecate remote validation | B5 | **Operational** — single supported validation story |
+
+| Phase | Theme                                                          | Bugs closed              | Accuracy lift                                                               |
+| ----- | -------------------------------------------------------------- | ------------------------ | --------------------------------------------------------------------------- |
+| **0** | Decouple validation outcome from publish outcome               | B1                       | **High** — stops poisoning the skill store on every push failure            |
+| **1** | Conversation chaining across iteration loop                    | B2                       | **Medium accuracy / high cost saving** — same prompt context, cheaper       |
+| **2** | Typed skill memory + role-gated retrieval + formatter branches | B3 (with seed exclusion) | **High** — better fix-gen prompts, honest negative evidence                 |
+| **3** | Baseline before LLM repair (local path)                        | — (efficiency)           | **Low accuracy / high cost saving**                                         |
+| **4** | Structured case file with single cap source                    | B4, B6                   | **Medium** — agents agree on what evidence they saw; closes injection drift |
+| **5** | Harden or deprecate remote validation                          | B5                       | **Operational** — single supported validation story                         |
+
 
 Each phase below is independent; nothing forces sequencing except this priority recommendation.
 
@@ -109,29 +115,26 @@ A successful **validation** is the source of truth for `validatedLocally` and sk
 ### Implementation sketch
 
 1. In `coordinator.ts:runClassifyAndRepair`, derive a new authoritative flag:
-
-   ```typescript
+  ```typescript
    const validationPassed =
      (autoFixResult?.validationResult?.status ?? autoFixResult?.validationStatus) === 'passed';
    const publishSucceeded = !!autoFixResult?.success;
-   ```
-
+  ```
 2. Use `validationPassed` to drive `validatedLocally` and `recordOutcome`. Use `publishSucceeded` to drive `prUrl` / `auto_fix_applied`.
-
 3. Update `output.ts` so `auto_fix_applied`, `validation_status`, and `repair_status` agree on the matrix:
 
-   | Validation | Publish | `validation_status` | `auto_fix_applied` | `repair_status` |
-   |-----------|---------|---------------------|--------------------|-----------------|
-   | passed    | success | `passed` | `true`  | `validated` |
-   | passed    | failed  | `passed` | `false` | `validated_publish_failed` (new) |
-   | passed    | n/a (no autofix branch) | `passed` | `false` | `validated_not_published` (new) |
-   | failed    | n/a     | `failed` | `false` | `review_rejected` / `no_approved_fix` (existing) |
-   | pending (remote) | n/a | `pending` | `false` | `applied` |
-   | skipped (baseline / no spec) | n/a | `skipped` | `false` | `skipped` |
+  | Validation                   | Publish                 | `validation_status` | `auto_fix_applied` | `repair_status`                                  |
+  | ---------------------------- | ----------------------- | ------------------- | ------------------ | ------------------------------------------------ |
+  | passed                       | success                 | `passed`            | `true`             | `validated`                                      |
+  | passed                       | failed                  | `passed`            | `false`            | `validated_publish_failed` (new)                 |
+  | passed                       | n/a (no autofix branch) | `passed`            | `false`            | `validated_not_published` (new)                  |
+  | failed                       | n/a                     | `failed`            | `false`            | `review_rejected` / `no_approved_fix` (existing) |
+  | pending (remote)             | n/a                     | `pending`           | `false`            | `applied`                                        |
+  | skipped (baseline / no spec) | n/a                     | `skipped`           | `false`            | `skipped`                                        |
 
 4. **Update `RepairStatus`** to introduce the publish dimension explicitly. Either:
-   - **Option A (preferred):** add `validated_publish_failed` and `validated_not_published` and **stop** using `applied` ambiguously. Backward-compatible because consumers reading the old terminal `validated` still get it on the happy path.
-   - **Option B:** ship `RepairLifecycle` (Phase 3 of original roadmap) as additional outputs while preserving `repair_status` semantics.
+  - **Option A (preferred):** add `validated_publish_failed` and `validated_not_published` and **stop** using `applied` ambiguously. Backward-compatible because consumers reading the old terminal `validated` still get it on the happy path.
+  - **Option B:** ship `RepairLifecycle` (Phase 3 of original roadmap) as additional outputs while preserving `repair_status` semantics.
 
 ### Acceptance
 
@@ -194,31 +197,35 @@ Today, `findRelevant` surfaces successful and failed skills together. The fix-ge
 
 ### Memory kinds
 
-| Kind | Purpose | Storage today | Storage after |
-|------|---------|---------------|---------------|
-| `seed_pattern` | Curated bootstrap (`isSeed`) | `SKILL#<id>` row with `isSeed: true` | unchanged |
-| `learned_pattern` | Successful auto-learned template | `SKILL#<id>` row with `validatedLocally: true` | unchanged (most common case) |
-| `failed_attempt` | Generated fix that reached terminal validation and did not pass | `SKILL#<id>` row with `failedFixEvidence` | optionally migrate to `FAILED#<runId>#<attempt>` rows; keep legacy reads |
-| `usage_event` | Per-run skill attribution for analytics | not persisted | new `USAGE#<runId>#<role>` rows, store-flushed in coordinator finally |
-| `flakiness_event` | Snapshot when chronic-flakiness gate fires | not persisted | optional `FLAKY#<runId>` rows |
+
+| Kind              | Purpose                                                         | Storage today                                  | Storage after                                                            |
+| ----------------- | --------------------------------------------------------------- | ---------------------------------------------- | ------------------------------------------------------------------------ |
+| `seed_pattern`    | Curated bootstrap (`isSeed`)                                    | `SKILL#<id>` row with `isSeed: true`           | unchanged                                                                |
+| `learned_pattern` | Successful auto-learned template                                | `SKILL#<id>` row with `validatedLocally: true` | unchanged (most common case)                                             |
+| `failed_attempt`  | Generated fix that reached terminal validation and did not pass | `SKILL#<id>` row with `failedFixEvidence`      | optionally migrate to `FAILED#<runId>#<attempt>` rows; keep legacy reads |
+| `usage_event`     | Per-run skill attribution for analytics                         | not persisted                                  | new `USAGE#<runId>#<role>` rows, store-flushed in coordinator finally    |
+| `flakiness_event` | Snapshot when chronic-flakiness gate fires                      | not persisted                                  | optional `FLAKY#<runId>` rows                                            |
+
 
 ### Formatter and retrieval changes (the work that actually moves the model)
 
 `formatSkillsForPrompt` (`src/services/skill-store.ts:1149+`) must branch on kind. Concrete edits:
 
-1. **`learned_pattern` and `seed_pattern`**: render today's full template (Pattern, Root cause, Trace if validated). Seeds keep their existing "curated seed" framing.
-2. **`failed_attempt`**: render only as a one-line negative signature — `attempted: <changeType> in <file> → did not validate (<originalFailureSignature> → <validationFailureSignature>)`. **Do not** render `fix.pattern`, `fix.summary`, or `failureModeTrace` for failed attempts.
+1. `**learned_pattern` and `seed_pattern`**: render today's full template (Pattern, Root cause, Trace if validated). Seeds keep their existing "curated seed" framing.
+2. `**failed_attempt**`: render only as a one-line negative signature — `attempted: <changeType> in <file> → did not validate (<originalFailureSignature> → <validationFailureSignature>)`. **Do not** render `fix.pattern`, `fix.summary`, or `failureModeTrace` for failed attempts.
 3. **Investigation role**: do not surface failed attempts at all — fresh evidence, no anchoring.
 4. **Fix-gen and review roles**: surface failed attempts in a separate "negative evidence — do not reuse" section, capped at 1 entry by default.
 
 `findRelevant` must accept a `kindFilter` and `limit` per role. Suggested defaults:
 
-| Role | learned + seed | failed_attempt |
-|------|----------------|----------------|
-| classifier | ≤3 (current) | 0 |
-| investigation | ≤3 | 0 |
-| fix-generation | ≤2 | ≤1 |
-| review | ≤2 | ≤1 |
+
+| Role           | learned + seed | failed_attempt |
+| -------------- | -------------- | -------------- |
+| classifier     | ≤3 (current)   | 0              |
+| investigation  | ≤3             | 0              |
+| fix-generation | ≤2             | ≤1             |
+| review         | ≤2             | ≤1             |
+
 
 ### Seed exclusion for chronic flakiness
 
@@ -265,16 +272,14 @@ For local-validation runs, perform `validator.setup()` + `baselineCheck()` **onc
 ### Implementation sketch
 
 1. In `iterativeFixValidateLoop`, hoist the `validatorReady` block **above** the iteration loop:
-
-   ```typescript
+  ```typescript
    await validator.setup();
    const baseline = await validator.baselineCheck();
    if (baseline.passed) {
      return { /* skipped, transient flake */ };
    }
    for (let iteration = 0; iteration < maxIterations; iteration++) { /* unchanged */ }
-   ```
-
+  ```
 2. Keep early-return shape and `repairTelemetry.status === 'skipped'`.
 3. Maintain "one clone per run" invariant.
 
@@ -313,6 +318,7 @@ interface TriageCaseFile {
 ```
 
 Constructor invariants:
+
 - All `messageSanitized` / `*Sanitized` fields run through `sanitizeForPrompt` with explicit per-field caps.
 - All log slicing uses `LOG_LIMITS` constants. No agent slices independently.
 - `redactionFlags.stripped` records what was removed (URLs, tokens, etc.) so reviewers can audit.
@@ -333,14 +339,16 @@ Bug B5: `triggerValidation` hardcodes `ref: 'main'`. Plus the wider remote-path 
 
 ### Failure matrix today
 
-| Failure mode | Current handling | Source |
-|--------------|------------------|--------|
-| `dispatched-run-not-found` after 10 polls | Returns `{ status: 'pending', conclusion: 'dispatched-run-not-found' }` | `validator.ts:688-697`, `fix-applier.ts:484-518` |
-| Workflow concludes `success` but no test evidence | Verifier flips to `failed` with `success-without-test-evidence` | `fix-applier.ts:591-628` |
-| Bare-basename spec | Warns, may log "no spec files were found" and exit 0 (now caught by evidence verifier) | `fix-applier.ts:446-458` |
-| `waitForValidation` 15-min timeout | Returns `{ status: 'pending', conclusion: 'timeout' }` | `fix-applier.ts:671-682` |
-| Run-list time-window matching (`createdAt >= dispatchedAt - 30s`) | Could attach to a concurrent run on busy repos | `fix-applier.ts:503-512` |
-| `ref: 'main'` hardcoded | Wrong for non-main default branches; 422 from GitHub | `fix-applier.ts:469` |
+
+| Failure mode                                                      | Current handling                                                                       | Source                                           |
+| ----------------------------------------------------------------- | -------------------------------------------------------------------------------------- | ------------------------------------------------ |
+| `dispatched-run-not-found` after 10 polls                         | Returns `{ status: 'pending', conclusion: 'dispatched-run-not-found' }`                | `validator.ts:688-697`, `fix-applier.ts:484-518` |
+| Workflow concludes `success` but no test evidence                 | Verifier flips to `failed` with `success-without-test-evidence`                        | `fix-applier.ts:591-628`                         |
+| Bare-basename spec                                                | Warns, may log "no spec files were found" and exit 0 (now caught by evidence verifier) | `fix-applier.ts:446-458`                         |
+| `waitForValidation` 15-min timeout                                | Returns `{ status: 'pending', conclusion: 'timeout' }`                                 | `fix-applier.ts:671-682`                         |
+| Run-list time-window matching (`createdAt >= dispatchedAt - 30s`) | Could attach to a concurrent run on busy repos                                         | `fix-applier.ts:503-512`                         |
+| `ref: 'main'` hardcoded                                           | Wrong for non-main default branches; 422 from GitHub                                   | `fix-applier.ts:469`                             |
+
 
 ### Direction
 
@@ -365,13 +373,15 @@ Bug B5: `triggerValidation` hardcodes `ref: 'main'`. Plus the wider remote-path 
 
 ### Proposed sort-key prefixes (same table / partition)
 
-| Sort key prefix | Purpose |
-|-----------------|---------|
-| `SKILL#...` | Existing `TriageSkill` JSON. Reads continue to use `begins_with(sk, 'SKILL#')`. |
-| `USAGE#<githubRunId>#<role>` | Per-run skill attribution. Append-only. |
-| `FAILED#<githubRunId>#<attempt>` | Optional negative-evidence row separate from `SKILL#`. |
-| `FLAKY#<githubRunId>` | Optional materialized flakiness-gate event. |
-| `CASE#<fingerprint>` | Optional dedup case-file cache (later phase). |
+
+| Sort key prefix                  | Purpose                                                                         |
+| -------------------------------- | ------------------------------------------------------------------------------- |
+| `SKILL#...`                      | Existing `TriageSkill` JSON. Reads continue to use `begins_with(sk, 'SKILL#')`. |
+| `USAGE#<githubRunId>#<role>`     | Per-run skill attribution. Append-only.                                         |
+| `FAILED#<githubRunId>#<attempt>` | Optional negative-evidence row separate from `SKILL#`.                          |
+| `FLAKY#<githubRunId>`            | Optional materialized flakiness-gate event.                                     |
+| `CASE#<fingerprint>`             | Optional dedup case-file cache (later phase).                                   |
+
 
 Non-`TriageSkill` shapes must **not** live under the `SKILL#` prefix because existing `load()` casts those rows to `TriageSkill`.
 
@@ -467,14 +477,16 @@ type RepairLifecycle = {
 
 ## Acceptance Criteria
 
-| Phase | Criteria |
-|-------|----------|
+
+| Phase | Criteria                                                                                                                                                                                                                                   |
+| ----- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | **0** | `recordOutcome(true)` and `validatedLocally: true` when validation passed, regardless of publish outcome. New `repair_status` values documented. Output matrix consistent across `auto_fix_applied`, `validation_status`, `repair_status`. |
-| **1** | Demonstrable LLM-call reduction on iteration 2/3 retries via `previous_response_id` chaining; no regression in fix correctness rate. |
-| **2** | Chronic-flakiness gate does not fire on seed-only repos when flag enabled. Fix-gen prompts cap negative evidence at 1 entry rendered as signature-only. A1 writer behind flag with compensating "correct" writer. |
-| **3** | Zero orchestrator LLM calls when baseline early-exits on local path. |
-| **4** | Only `TriageCaseFile` constructor calls `LOG_LIMITS.*` slicing. Classifier and analysis render identical log excerpts on the same run. All untrusted strings in agent code fences are `sanitizeForPrompt`-wrapped. |
-| **5** | Non-main default branch repos work with remote validation. Concurrent triage runs do not cross-attach via run-list. Remote documented as legacy. |
+| **1** | Demonstrable LLM-call reduction on iteration 2/3 retries via `previous_response_id` chaining; no regression in fix correctness rate.                                                                                                       |
+| **2** | Chronic-flakiness gate does not fire on seed-only repos when flag enabled. Fix-gen prompts cap negative evidence at 1 entry rendered as signature-only. A1 writer behind flag with compensating "correct" writer.                          |
+| **3** | Zero orchestrator LLM calls when baseline early-exits on local path.                                                                                                                                                                       |
+| **4** | Only `TriageCaseFile` constructor calls `LOG_LIMITS.`* slicing. Classifier and analysis render identical log excerpts on the same run. All untrusted strings in agent code fences are `sanitizeForPrompt`-wrapped.                         |
+| **5** | Non-main default branch repos work with remote validation. Concurrent triage runs do not cross-attach via run-list. Remote documented as legacy.                                                                                           |
+
 
 **Tests:** follow repo norms (`npm test`, `npm run verify-dist` when shipping). No new tests added unless explicitly requested.
 
@@ -483,8 +495,8 @@ type RepairLifecycle = {
 ## Open Questions
 
 1. **Usage retention:** TTL attribute (e.g. `expiresAt` 30 days) on `USAGE#` items vs manual prune?
-2. **`failed_attempt` dual-write:** ship under separate `FAILED#` prefix, or keep nested in `SKILL#`?
-3. **`RepairStatus` evolution:** Phase 0 option A (add two values) vs option B (introduce `RepairLifecycle` output)? Downstream Slack templates preference?
+2. `**failed_attempt` dual-write:** ship under separate `FAILED#` prefix, or keep nested in `SKILL#`?
+3. `**RepairStatus` evolution:** Phase 0 option A (add two values) vs option B (introduce `RepairLifecycle` output)? Downstream Slack templates preference?
 4. **Remote deprecation timeline:** who signs off on default-flip for `ALLOW_REMOTE_VALIDATION`?
 5. **Classifier-feedback default:** ship A1 writer disabled and require explicit opt-in, or enable with a monitor and disable on regression?
 
@@ -492,17 +504,20 @@ type RepairLifecycle = {
 
 ## Appendix: File reference map
 
-| Concern | File |
-|---------|------|
-| Run orchestration | `src/pipeline/coordinator.ts` |
-| Local vs remote repair branching | `src/pipeline/validator.ts` |
-| Action outputs | `src/pipeline/output.ts`, `action.yml` |
-| Agent pipeline | `src/agents/agent-orchestrator.ts` |
-| Per-agent prompts | `src/agents/analysis-agent.ts`, `investigation-agent.ts`, `fix-generation-agent.ts`, `review-agent.ts`, `code-reading-agent.ts` |
-| Repair agent façade | `src/repair/simplified-repair-agent.ts` |
-| Skills CRUD + retrieval + formatters | `src/services/skill-store.ts` |
-| Clone / test / baseline | `src/services/local-fix-validator.ts` |
-| Remote apply + dispatch | `src/repair/fix-applier.ts`, `attemptAutoFix` in `validator.ts` |
-| Log ingestion | `src/services/log-processor.ts` |
-| LLM transport (caps, retries, chaining) | `src/openai-client.ts` |
-| Caps / loops / models | `src/config/constants.ts` |
+
+| Concern                                 | File                                                                                                                            |
+| --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| Run orchestration                       | `src/pipeline/coordinator.ts`                                                                                                   |
+| Local vs remote repair branching        | `src/pipeline/validator.ts`                                                                                                     |
+| Action outputs                          | `src/pipeline/output.ts`, `action.yml`                                                                                          |
+| Agent pipeline                          | `src/agents/agent-orchestrator.ts`                                                                                              |
+| Per-agent prompts                       | `src/agents/analysis-agent.ts`, `investigation-agent.ts`, `fix-generation-agent.ts`, `review-agent.ts`, `code-reading-agent.ts` |
+| Repair agent façade                     | `src/repair/simplified-repair-agent.ts`                                                                                         |
+| Skills CRUD + retrieval + formatters    | `src/services/skill-store.ts`                                                                                                   |
+| Clone / test / baseline                 | `src/services/local-fix-validator.ts`                                                                                           |
+| Remote apply + dispatch                 | `src/repair/fix-applier.ts`, `attemptAutoFix` in `validator.ts`                                                                 |
+| Log ingestion                           | `src/services/log-processor.ts`                                                                                                 |
+| LLM transport (caps, retries, chaining) | `src/openai-client.ts`                                                                                                          |
+| Caps / loops / models                   | `src/config/constants.ts`                                                                                                       |
+
+

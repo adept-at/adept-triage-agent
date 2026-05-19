@@ -143,6 +143,15 @@ export const AUTO_FIX = {
   DEFAULT_MIN_CONFIDENCE: 70,
   /** Branch prefix for auto-fix branches */
   BRANCH_PREFIX: 'fix/triage-agent/',
+  /**
+   * Window during which an existing fix branch for the same spec causes
+   * a new fix attempt to be refused. Audit runs `25751919179` and
+   * `25752503143` produced overlapping branches for the same spec within
+   * 12 minutes. 6 hours is generous enough to cover flaky-test retries
+   * within a workday but short enough that an operator who deleted the
+   * stale branch can rerun the agent without waiting.
+   */
+  BRANCH_DEDUPE_WINDOW_MS: 6 * 60 * 60 * 1000,
 } as const;
 
 /** Agentic repair system configuration */
@@ -228,6 +237,67 @@ export const BLAST_RADIUS = {
   SHARED_CODE_BOOST: 10,
   /** Added to minConfidence when the fix spans 2+ distinct files. */
   MULTI_FILE_BOOST: 5,
+  /**
+   * Semantic blast-radius factors — beyond file paths and file count, a fix
+   * can have wide impact via the *kind* of change it makes. These factors
+   * detect specific patterns in the proposed `newCode` and add a confidence
+   * boost when present.
+   *
+   * Rationale: a 1-line null check in a shared helper has narrow blast (the
+   * helper's existing callers are already paying the null-check tax). A
+   * global timeout multiplier in the same helper has wide blast — every
+   * test that uses the helper now waits longer, which can extend total
+   * suite duration, mask other regressions, or cascade into Sauce minute
+   * budgets. Path-only blast-radius scoring cannot distinguish these two.
+   */
+  /**
+   * Regex (case-insensitive, source string) matched against each
+   * proposedChange.newCode. If at least one change introduces a global wait
+   * / timeout multiplier (e.g. `timeout: 300000`, `setTimeout(..., 60000)`),
+   * the confidence threshold is bumped because the change affects every
+   * test that flows through that code path, not just the failing one.
+   *
+   * Conservative pattern: only match when the timeout value is large
+   * (≥30s as a literal millisecond number). Smaller waits are routine
+   * and shouldn't trigger the gate.
+   */
+  GLOBAL_TIMEOUT_PATTERN:
+    'timeout\\s*[:=]\\s*([3-9]\\d{4}|[1-9]\\d{5,})|setTimeout\\s*\\(\\s*[^,]+,\\s*([3-9]\\d{4}|[1-9]\\d{5,})',
+  /** Added when a change introduces or extends a large global timeout (>=30s). */
+  GLOBAL_TIMEOUT_BOOST: 5,
+  /**
+   * Recent same-spec failed-trajectory penalty.
+   *
+   * When the skill store contains a `validatedLocally=false` skill for the
+   * same spec saved within `RECENT_FAILED_WINDOW_MS`, that skill represents
+   * a fix the agent already shipped that already failed validation. Trying
+   * again on the same spec without strong new signal is unlikely to
+   * succeed; the gate raises the required confidence by this amount per
+   * recent failure (capped by `MAX_REQUIRED_CONFIDENCE`).
+   *
+   * The signal already exists in DynamoDB (failed trajectories are saved
+   * with `validatedLocally=false` per v1.52.5 / v1.52.9). Pre this change,
+   * retrieval surfaced those skills into agent prompts but did not change
+   * the auto-apply gate — so a duplicate fix attempt could still ship
+   * minutes later. See audit run `25752503143` (run B), which retrieved
+   * run A's failed trajectory `da37c077` from 12 minutes earlier and
+   * still auto-applied at 90% confidence.
+   */
+  RECENT_FAILED_TRAJECTORY_BOOST: 8,
+  /** Window (ms) within which a saved failed trajectory still counts as "recent." 24h. */
+  RECENT_FAILED_WINDOW_MS: 24 * 60 * 60 * 1000,
+  /** Cap on the per-trajectory boost — at most this many points from prior failures. */
+  RECENT_FAILED_MAX_BOOST: 16,
+  /**
+   * Heuristic: if a fix in a shared file (helper / page-object / utils)
+   * also changes the EXPORTED FUNCTION SIGNATURE or rethrows where the
+   * old code returned, every existing caller is now affected. Detected
+   * by the fix touching a shared file AND a `newCode` block introducing
+   * `throw` where `oldCode` did not — i.e. the helper's contract changed
+   * from "swallow on error" to "rethrow." This is the pattern that
+   * caused run B's strict-before-hook validation failure in the audit.
+   */
+  HELPER_CONTRACT_CHANGE_BOOST: 5,
   /**
    * Cap for the *scaling* portion of requiredConfidence — we never push the
    * threshold beyond this via blast-radius boosts, because the model rarely

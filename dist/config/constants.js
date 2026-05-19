@@ -78,6 +78,7 @@ exports.TEST_ISSUE_CATEGORIES = {
 exports.AUTO_FIX = {
     DEFAULT_MIN_CONFIDENCE: 70,
     BRANCH_PREFIX: 'fix/triage-agent/',
+    BRANCH_DEDUPE_WINDOW_MS: 6 * 60 * 60 * 1000,
 };
 exports.DEFAULT_PRODUCT_REPO = 'adept-at/learn-webapp';
 exports.DEFAULT_PRODUCT_URL = 'https://learn.adept.at';
@@ -109,6 +110,12 @@ exports.BLAST_RADIUS = {
     ],
     SHARED_CODE_BOOST: 10,
     MULTI_FILE_BOOST: 5,
+    GLOBAL_TIMEOUT_PATTERN: 'timeout\\s*[:=]\\s*([3-9]\\d{4}|[1-9]\\d{5,})|setTimeout\\s*\\(\\s*[^,]+,\\s*([3-9]\\d{4}|[1-9]\\d{5,})',
+    GLOBAL_TIMEOUT_BOOST: 5,
+    RECENT_FAILED_TRAJECTORY_BOOST: 8,
+    RECENT_FAILED_WINDOW_MS: 24 * 60 * 60 * 1000,
+    RECENT_FAILED_MAX_BOOST: 16,
+    HELPER_CONTRACT_CHANGE_BOOST: 5,
     MAX_REQUIRED_CONFIDENCE: 95,
 };
 //# sourceMappingURL=constants.js.map

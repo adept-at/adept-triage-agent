@@ -235,9 +235,16 @@ export async function iterativeFixValidateLoop(
         break;
       }
 
+      const recentFailedTrajectories = skillStore
+        ? skillStore.countRecentFailedTrajectories(
+            errorData.fileName || 'unknown',
+            BLAST_RADIUS.RECENT_FAILED_WINDOW_MS
+          )
+        : 0;
       const { required: iterRequired, reasons: iterReasons } = requiredConfidence(
         fixRecommendation,
-        minConfidence
+        minConfidence,
+        { recentFailedTrajectories }
       );
       if (fixRecommendation.confidence < iterRequired) {
         const suffix = iterReasons.length
@@ -449,7 +456,8 @@ function normalizeFileForPatternMatch(path: string): string {
  */
 export function requiredConfidence(
   fix: FixRecommendation,
-  baseMinConfidence: number
+  baseMinConfidence: number,
+  options: { recentFailedTrajectories?: number } = {}
 ): { required: number; reasons: string[] } {
   const reasons: string[] = [];
   let required = baseMinConfidence;
@@ -471,6 +479,62 @@ export function requiredConfidence(
     required += BLAST_RADIUS.MULTI_FILE_BOOST;
     reasons.push(
       `spans ${files.size} files — +${BLAST_RADIUS.MULTI_FILE_BOOST}`
+    );
+  }
+
+  // Semantic blast-radius factor #1: large global timeout multiplier.
+  // Detects newCode blocks that introduce or extend a >=30s timeout, which
+  // affects every test that flows through the touched code path, not just
+  // the failing one.
+  const globalTimeoutRegex = new RegExp(BLAST_RADIUS.GLOBAL_TIMEOUT_PATTERN, 'i');
+  const introducesGlobalTimeout = fix.proposedChanges.some((c) => {
+    const newMatches = globalTimeoutRegex.test(c.newCode || '');
+    if (!newMatches) return false;
+    // Require the timeout to be NEW or larger in newCode vs oldCode so we
+    // don't penalize fixes that just refactor an existing wait. Cheapest
+    // possible check: oldCode must not also match the same pattern.
+    const oldMatches = globalTimeoutRegex.test(c.oldCode || '');
+    return !oldMatches;
+  });
+  if (introducesGlobalTimeout) {
+    required += BLAST_RADIUS.GLOBAL_TIMEOUT_BOOST;
+    reasons.push(
+      `introduces global timeout >=30s — +${BLAST_RADIUS.GLOBAL_TIMEOUT_BOOST}`
+    );
+  }
+
+  // Semantic blast-radius factor #2: helper contract change.
+  // When a fix touches shared code AND changes a helper from "swallow error"
+  // to "rethrow" (newCode adds `throw` where oldCode did not), every existing
+  // caller of that helper is now affected. This is the pattern that caused
+  // run B's strict-before-hook validation failure in the audit.
+  const helperContractChange =
+    sharedMatches.length > 0 &&
+    fix.proposedChanges.some((c) => {
+      const oldHasThrow = /(^|\s|;)throw\b/.test(c.oldCode || '');
+      const newHasThrow = /(^|\s|;)throw\b/.test(c.newCode || '');
+      return !oldHasThrow && newHasThrow;
+    });
+  if (helperContractChange) {
+    required += BLAST_RADIUS.HELPER_CONTRACT_CHANGE_BOOST;
+    reasons.push(
+      `helper contract change (now rethrows) — +${BLAST_RADIUS.HELPER_CONTRACT_CHANGE_BOOST}`
+    );
+  }
+
+  // Recent failed-trajectory penalty (P1 #4 from audit-last-5-runs).
+  // When the same spec has saved `validatedLocally=false` skills within the
+  // recent window, raise the bar: re-shipping a fix that already failed is
+  // worse than just generating one. Capped to avoid permanently locking
+  // out a spec that simply has multiple flaky failures.
+  const recentFailures = options.recentFailedTrajectories ?? 0;
+  if (recentFailures > 0) {
+    const rawBoost =
+      recentFailures * BLAST_RADIUS.RECENT_FAILED_TRAJECTORY_BOOST;
+    const capped = Math.min(rawBoost, BLAST_RADIUS.RECENT_FAILED_MAX_BOOST);
+    required += capped;
+    reasons.push(
+      `${recentFailures} recent failed trajector${recentFailures === 1 ? 'y' : 'ies'} on this spec — +${capped}`
     );
   }
 
@@ -569,15 +633,23 @@ export async function attemptAutoFix(
   fixRecommendation: FixRecommendation,
   octokit: Octokit,
   repoDetails: { owner: string; repo: string },
-  errorData?: { fileName?: string }
+  errorData?: { fileName?: string },
+  skillStore?: SkillStore
 ): Promise<AttemptAutoFixOutcome> {
   core.info('\n🤖 Auto-fix is enabled, attempting to apply fix...');
 
   const baseMin =
     inputs.autoFixMinConfidence ?? AUTO_FIX.DEFAULT_MIN_CONFIDENCE;
+  const recentFailedTrajectories = skillStore
+    ? skillStore.countRecentFailedTrajectories(
+        errorData?.fileName || 'unknown',
+        BLAST_RADIUS.RECENT_FAILED_WINDOW_MS
+      )
+    : 0;
   const { required, reasons } = requiredConfidence(
     fixRecommendation,
-    baseMin
+    baseMin,
+    { recentFailedTrajectories }
   );
   if (fixRecommendation.confidence < required) {
     const suffix = reasons.length
@@ -622,6 +694,21 @@ export async function attemptAutoFix(
       core.info(`   Branch: ${result.branchName}`);
       core.info(`   Commit: ${result.commitSha}`);
       core.info(`   Files: ${result.modifiedFiles.join(', ')}`);
+
+      // P0 #1 from audit-last-5-runs: open a draft PR on the
+      // remote-validation path. Pre this change, only the local-validation
+      // path created PRs (via `LocalFixValidator.pushAndCreatePR`), so
+      // every remote-validation run produced an orphan branch that
+      // engineers had to find manually. Best-effort — failures here log a
+      // warning but do not abort the fix lifecycle.
+      if (result.branchName && result.commitSha) {
+        await fixApplier.openDraftPullRequest({
+          branchName: result.branchName,
+          commitSha: result.commitSha,
+          fix: fixRecommendation,
+          triageRunId: github.context.runId.toString(),
+        });
+      }
 
       if (inputs.enableValidation && result.branchName) {
         core.info('\n🧪 Triggering validation workflow...');
