@@ -852,8 +852,19 @@ function autoCorrectOldCode(changes, sourceFiles, _context) {
             if (overlap.length > 0 && overlap.length >= keywordsInOld.length * 0.5) {
                 const secondIdx = rawSource.indexOf(region, rawSource.indexOf(region) + 1);
                 if (secondIdx === -1) {
-                    core.info(`   ✅ Corrected via line-range extraction (lines ${startLine + 1}-${endLine})`);
+                    const leadingPadCount = Math.max(0, change.line - startLine);
+                    const trailingPadCount = Math.max(0, endLine - (change.line + oldCodeLineCount));
+                    const leadingPadLines = regionLines.slice(0, leadingPadCount);
+                    const trailingPadLines = regionLines.slice(regionLines.length - trailingPadCount);
+                    const leadingPad = leadingPadLines.length
+                        ? leadingPadLines.join('\n') + '\n'
+                        : '';
+                    const trailingPad = trailingPadLines.length
+                        ? '\n' + trailingPadLines.join('\n')
+                        : '';
+                    core.info(`   ✅ Corrected via line-range extraction (lines ${startLine + 1}-${endLine}); padded newCode with ${leadingPadLines.length} leading + ${trailingPadLines.length} trailing context line(s)`);
                     change.oldCode = region;
+                    change.newCode = leadingPad + change.newCode + trailingPad;
                     validChanges.push(change);
                     correctedCount++;
                     continue;

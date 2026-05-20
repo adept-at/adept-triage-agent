@@ -86,5 +86,6 @@ export declare class GitHubFixApplier implements FixApplier {
     private commitChanges;
 }
 export declare function createFixApplier(config: FixApplierConfig): FixApplier;
+export declare function decodeLogPayload(data: unknown): string;
 export declare function generateFixBranchName(testFile: string, timestamp?: Date, forceUnique?: boolean): string;
 //# sourceMappingURL=fix-applier.d.ts.map

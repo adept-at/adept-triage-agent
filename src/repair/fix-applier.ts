@@ -1004,10 +1004,7 @@ export class GitHubFixApplier implements FixApplier {
               }),
             `downloading logs for validation job ${job.id}`
           );
-          const rawLogs =
-            typeof logsResponse.data === 'string'
-              ? logsResponse.data
-              : String(logsResponse.data);
+          const rawLogs = decodeLogPayload(logsResponse.data);
           logChunks.push(`--- job ${job.name || job.id} (${job.conclusion || 'unknown'}) ---\n${rawLogs}`);
         } catch (jobLogError) {
           core.warning(`Failed to fetch logs for validation job ${job.id}: ${jobLogError}`);
@@ -1328,6 +1325,42 @@ Confidence: ${recommendation.confidence}%`;
  */
 export function createFixApplier(config: FixApplierConfig): FixApplier {
   return new GitHubFixApplier(config);
+}
+
+/**
+ * Decode a workflow-job log payload returned by Octokit into a UTF-8 string.
+ *
+ * Octokit's `actions.downloadJobLogsForWorkflowRun` returns binary data —
+ * typically a `Buffer` in Node, an `ArrayBuffer` in some configurations,
+ * a `Uint8Array` in others. Pre this helper, the call site coerced via
+ * `String(data)`, which for `ArrayBuffer` produces the literal string
+ * `"[object ArrayBuffer]"` — silently blinding the agent to validation
+ * failure logs (code_review_may_2026 finding #3).
+ *
+ * Order of checks matters: `Buffer` and `Uint8Array` both extend `Object`,
+ * so the `instanceof` chain is fastest to hit the common case (Buffer)
+ * first, then ArrayBuffer, then Uint8Array (covers TypedArray subclasses
+ * via the `.buffer`/`.byteOffset`/`.byteLength` triplet through
+ * `Buffer.from`).
+ *
+ * Returns the decoded UTF-8 string, or — when the input is genuinely
+ * something the function does not know how to decode — a stringified
+ * placeholder so downstream code does not crash and the operator can see
+ * the type in logs. The placeholder is structured to never look like real
+ * test output, so `verifyTestEvidence` cannot accidentally treat it as a
+ * concrete pass/fail signal.
+ */
+export function decodeLogPayload(data: unknown): string {
+  if (typeof data === 'string') return data;
+  if (Buffer.isBuffer(data)) return data.toString('utf-8');
+  if (data instanceof ArrayBuffer) return Buffer.from(data).toString('utf-8');
+  if (data instanceof Uint8Array) return Buffer.from(data).toString('utf-8');
+  // Defensive fallback — log the actual type so the operator can extend
+  // this helper if Octokit changes its return shape on a future version.
+  const typeLabel = data === null ? 'null' : typeof data === 'object'
+    ? (data as object).constructor?.name || 'object'
+    : typeof data;
+  return `[triage-agent: unable to decode log payload of type "${typeLabel}"]`;
 }
 
 /**

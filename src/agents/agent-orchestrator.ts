@@ -1173,8 +1173,40 @@ function autoCorrectOldCode(
       if (overlap.length > 0 && overlap.length >= keywordsInOld.length * 0.5) {
         const secondIdx = rawSource.indexOf(region, rawSource.indexOf(region) + 1);
         if (secondIdx === -1) {
-          core.info(`   ✅ Corrected via line-range extraction (lines ${startLine + 1}-${endLine})`);
+          // CRITICAL: the region includes up to 3 preceding + 2 succeeding
+          // context lines around the LLM's reported `change.line`. Expanding
+          // `change.oldCode` to that padded region without ALSO padding
+          // `change.newCode` would cause the downstream string-replace in
+          // applyFix to silently delete the surrounding context lines from
+          // the test file (see code_review_may_2026.md, finding #1).
+          //
+          // Compute the actual leading / trailing pad lengths from
+          // startLine / endLine (these are the same values used to build
+          // `region`, so the indexing is consistent regardless of whether
+          // the LLM emitted 0- or 1-based `change.line`). Guard against
+          // negative counts that could occur if `change.line` falls
+          // outside the [startLine, endLine] range, which shouldn't
+          // happen by construction but is defended for safety.
+          const leadingPadCount = Math.max(0, change.line - startLine);
+          const trailingPadCount = Math.max(
+            0,
+            endLine - (change.line + oldCodeLineCount)
+          );
+          const leadingPadLines = regionLines.slice(0, leadingPadCount);
+          const trailingPadLines = regionLines.slice(
+            regionLines.length - trailingPadCount
+          );
+          const leadingPad = leadingPadLines.length
+            ? leadingPadLines.join('\n') + '\n'
+            : '';
+          const trailingPad = trailingPadLines.length
+            ? '\n' + trailingPadLines.join('\n')
+            : '';
+          core.info(
+            `   ✅ Corrected via line-range extraction (lines ${startLine + 1}-${endLine}); padded newCode with ${leadingPadLines.length} leading + ${trailingPadLines.length} trailing context line(s)`
+          );
           change.oldCode = region;
+          change.newCode = leadingPad + change.newCode + trailingPad;
           validChanges.push(change);
           correctedCount++;
           continue;

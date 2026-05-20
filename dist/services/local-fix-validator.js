@@ -52,6 +52,15 @@ const SECRET_ENV_KEYS = new Set([
     'INPUT_CURSOR_API_KEY',
     'INPUT_NPM_TOKEN',
     'INPUT_CROSS_REPO_PAT',
+    'AWS_ACCESS_KEY_ID',
+    'AWS_SECRET_ACCESS_KEY',
+    'AWS_SESSION_TOKEN',
+    'AWS_DEFAULT_REGION',
+    'AWS_REGION',
+    'ACTIONS_ID_TOKEN_REQUEST_TOKEN',
+    'ACTIONS_ID_TOKEN_REQUEST_URL',
+    'SLACK_WEBHOOK_URL',
+    'INPUT_SLACK_WEBHOOK_URL',
 ]);
 function filterEnv(npmToken) {
     const env = {};
@@ -322,6 +331,20 @@ class LocalFixValidator {
     async runTest() {
         if (!this.config.testCommand) {
             throw new Error('No testCommand configured — cannot run validation');
+        }
+        const SAFE_SPEC_REGEX = /^[a-zA-Z0-9_\-./]+$/;
+        if (this.config.spec) {
+            if (!SAFE_SPEC_REGEX.test(this.config.spec) ||
+                this.config.spec.includes('..')) {
+                throw new Error(`Refusing to run test: spec path "${this.config.spec}" contains characters outside the safe pathspec set [a-zA-Z0-9_\\-./] or contains ".." traversal. This is a hard-coded shell-injection defense; configure VALIDATION_SPEC explicitly with a clean repo-relative path.`);
+            }
+            const resolved = path.resolve(this._workDir, this.config.spec);
+            if (!resolved.startsWith(path.resolve(this._workDir) + path.sep)) {
+                throw new Error(`Refusing to run test: spec path "${this.config.spec}" resolves outside the cloned repo root.`);
+            }
+            if (!fs.existsSync(resolved)) {
+                throw new Error(`Refusing to run test: spec file "${this.config.spec}" does not exist in ${this._workDir}. Pass an existing repo-relative path via VALIDATION_SPEC.`);
+            }
         }
         let cmd = this.config.testCommand;
         if (this.config.spec) {

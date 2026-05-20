@@ -859,8 +859,19 @@ function autoCorrectOldCode(changes, sourceFiles, _context) {
             if (overlap.length > 0 && overlap.length >= keywordsInOld.length * 0.5) {
                 const secondIdx = rawSource.indexOf(region, rawSource.indexOf(region) + 1);
                 if (secondIdx === -1) {
-                    core.info(`   ✅ Corrected via line-range extraction (lines ${startLine + 1}-${endLine})`);
+                    const leadingPadCount = Math.max(0, change.line - startLine);
+                    const trailingPadCount = Math.max(0, endLine - (change.line + oldCodeLineCount));
+                    const leadingPadLines = regionLines.slice(0, leadingPadCount);
+                    const trailingPadLines = regionLines.slice(regionLines.length - trailingPadCount);
+                    const leadingPad = leadingPadLines.length
+                        ? leadingPadLines.join('\n') + '\n'
+                        : '';
+                    const trailingPad = trailingPadLines.length
+                        ? '\n' + trailingPadLines.join('\n')
+                        : '';
+                    core.info(`   ✅ Corrected via line-range extraction (lines ${startLine + 1}-${endLine}); padded newCode with ${leadingPadLines.length} leading + ${trailingPadLines.length} trailing context line(s)`);
                     change.oldCode = region;
+                    change.newCode = leadingPad + change.newCode + trailingPad;
                     validChanges.push(change);
                     correctedCount++;
                     continue;
@@ -6220,6 +6231,7 @@ var __importStar = (this && this.__importStar) || (function () {
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.GitHubFixApplier = void 0;
 exports.createFixApplier = createFixApplier;
+exports.decodeLogPayload = decodeLogPayload;
 exports.generateFixBranchName = generateFixBranchName;
 const core = __importStar(__nccwpck_require__(37484));
 const constants_1 = __nccwpck_require__(58361);
@@ -6760,9 +6772,7 @@ class GitHubFixApplier {
                         repo,
                         job_id: job.id,
                     }), `downloading logs for validation job ${job.id}`);
-                    const rawLogs = typeof logsResponse.data === 'string'
-                        ? logsResponse.data
-                        : String(logsResponse.data);
+                    const rawLogs = decodeLogPayload(logsResponse.data);
                     logChunks.push(`--- job ${job.name || job.id} (${job.conclusion || 'unknown'}) ---\n${rawLogs}`);
                 }
                 catch (jobLogError) {
@@ -6985,6 +6995,20 @@ Confidence: ${recommendation.confidence}%`;
 exports.GitHubFixApplier = GitHubFixApplier;
 function createFixApplier(config) {
     return new GitHubFixApplier(config);
+}
+function decodeLogPayload(data) {
+    if (typeof data === 'string')
+        return data;
+    if (Buffer.isBuffer(data))
+        return data.toString('utf-8');
+    if (data instanceof ArrayBuffer)
+        return Buffer.from(data).toString('utf-8');
+    if (data instanceof Uint8Array)
+        return Buffer.from(data).toString('utf-8');
+    const typeLabel = data === null ? 'null' : typeof data === 'object'
+        ? data.constructor?.name || 'object'
+        : typeof data;
+    return `[triage-agent: unable to decode log payload of type "${typeLabel}"]`;
 }
 function generateFixBranchName(testFile, timestamp = new Date(), forceUnique = false) {
     const sanitizedFile = testFile
@@ -7626,6 +7650,15 @@ const SECRET_ENV_KEYS = new Set([
     'INPUT_CURSOR_API_KEY',
     'INPUT_NPM_TOKEN',
     'INPUT_CROSS_REPO_PAT',
+    'AWS_ACCESS_KEY_ID',
+    'AWS_SECRET_ACCESS_KEY',
+    'AWS_SESSION_TOKEN',
+    'AWS_DEFAULT_REGION',
+    'AWS_REGION',
+    'ACTIONS_ID_TOKEN_REQUEST_TOKEN',
+    'ACTIONS_ID_TOKEN_REQUEST_URL',
+    'SLACK_WEBHOOK_URL',
+    'INPUT_SLACK_WEBHOOK_URL',
 ]);
 function filterEnv(npmToken) {
     const env = {};
@@ -7896,6 +7929,20 @@ class LocalFixValidator {
     async runTest() {
         if (!this.config.testCommand) {
             throw new Error('No testCommand configured — cannot run validation');
+        }
+        const SAFE_SPEC_REGEX = /^[a-zA-Z0-9_\-./]+$/;
+        if (this.config.spec) {
+            if (!SAFE_SPEC_REGEX.test(this.config.spec) ||
+                this.config.spec.includes('..')) {
+                throw new Error(`Refusing to run test: spec path "${this.config.spec}" contains characters outside the safe pathspec set [a-zA-Z0-9_\\-./] or contains ".." traversal. This is a hard-coded shell-injection defense; configure VALIDATION_SPEC explicitly with a clean repo-relative path.`);
+            }
+            const resolved = path.resolve(this._workDir, this.config.spec);
+            if (!resolved.startsWith(path.resolve(this._workDir) + path.sep)) {
+                throw new Error(`Refusing to run test: spec path "${this.config.spec}" resolves outside the cloned repo root.`);
+            }
+            if (!fs.existsSync(resolved)) {
+                throw new Error(`Refusing to run test: spec file "${this.config.spec}" does not exist in ${this._workDir}. Pass an existing repo-relative path via VALIDATION_SPEC.`);
+            }
         }
         let cmd = this.config.testCommand;
         if (this.config.spec) {

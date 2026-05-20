@@ -35,6 +35,7 @@ var __importStar = (this && this.__importStar) || (function () {
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.GitHubFixApplier = void 0;
 exports.createFixApplier = createFixApplier;
+exports.decodeLogPayload = decodeLogPayload;
 exports.generateFixBranchName = generateFixBranchName;
 const core = __importStar(require("@actions/core"));
 const constants_1 = require("../config/constants");
@@ -575,9 +576,7 @@ class GitHubFixApplier {
                         repo,
                         job_id: job.id,
                     }), `downloading logs for validation job ${job.id}`);
-                    const rawLogs = typeof logsResponse.data === 'string'
-                        ? logsResponse.data
-                        : String(logsResponse.data);
+                    const rawLogs = decodeLogPayload(logsResponse.data);
                     logChunks.push(`--- job ${job.name || job.id} (${job.conclusion || 'unknown'}) ---\n${rawLogs}`);
                 }
                 catch (jobLogError) {
@@ -800,6 +799,20 @@ Confidence: ${recommendation.confidence}%`;
 exports.GitHubFixApplier = GitHubFixApplier;
 function createFixApplier(config) {
     return new GitHubFixApplier(config);
+}
+function decodeLogPayload(data) {
+    if (typeof data === 'string')
+        return data;
+    if (Buffer.isBuffer(data))
+        return data.toString('utf-8');
+    if (data instanceof ArrayBuffer)
+        return Buffer.from(data).toString('utf-8');
+    if (data instanceof Uint8Array)
+        return Buffer.from(data).toString('utf-8');
+    const typeLabel = data === null ? 'null' : typeof data === 'object'
+        ? data.constructor?.name || 'object'
+        : typeof data;
+    return `[triage-agent: unable to decode log payload of type "${typeLabel}"]`;
 }
 function generateFixBranchName(testFile, timestamp = new Date(), forceUnique = false) {
     const sanitizedFile = testFile
