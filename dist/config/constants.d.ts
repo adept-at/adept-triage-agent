@@ -79,6 +79,7 @@ export declare const AUTO_FIX: {
 };
 export declare const DEFAULT_PRODUCT_REPO = "adept-at/learn-webapp";
 export declare const DEFAULT_PRODUCT_URL = "https://learn.adept.at";
+export declare const VERDICT_OVERRIDE_CONFIDENCE_THRESHOLD = 70;
 export declare const AGENT_CONFIG: {
     readonly MAX_AGENT_ITERATIONS: 3;
     readonly AGENT_TIMEOUT_MS: 900000;

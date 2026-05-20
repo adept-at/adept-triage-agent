@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.BLAST_RADIUS = exports.CHRONIC_FLAKINESS_THRESHOLD = exports.FIX_VALIDATE_LOOP = exports.AGENT_CONFIG = exports.DEFAULT_PRODUCT_URL = exports.DEFAULT_PRODUCT_REPO = exports.AUTO_FIX = exports.TEST_ISSUE_CATEGORIES = exports.ERROR_TYPES = exports.FORMATTING = exports.ARTIFACTS = exports.SHORT_SHA_LENGTH = exports.REASONING_EFFORT = exports.AGENT_MODEL = exports.OPENAI = exports.CONFIDENCE = exports.LOG_LIMITS = void 0;
+exports.BLAST_RADIUS = exports.CHRONIC_FLAKINESS_THRESHOLD = exports.FIX_VALIDATE_LOOP = exports.AGENT_CONFIG = exports.VERDICT_OVERRIDE_CONFIDENCE_THRESHOLD = exports.DEFAULT_PRODUCT_URL = exports.DEFAULT_PRODUCT_REPO = exports.AUTO_FIX = exports.TEST_ISSUE_CATEGORIES = exports.ERROR_TYPES = exports.FORMATTING = exports.ARTIFACTS = exports.SHORT_SHA_LENGTH = exports.REASONING_EFFORT = exports.AGENT_MODEL = exports.OPENAI = exports.CONFIDENCE = exports.LOG_LIMITS = void 0;
 exports.supportsReasoningEffort = supportsReasoningEffort;
 exports.LOG_LIMITS = {
     GITHUB_MAX_SIZE: 50_000,
@@ -82,6 +82,7 @@ exports.AUTO_FIX = {
 };
 exports.DEFAULT_PRODUCT_REPO = 'adept-at/learn-webapp';
 exports.DEFAULT_PRODUCT_URL = 'https://learn.adept.at';
+exports.VERDICT_OVERRIDE_CONFIDENCE_THRESHOLD = 70;
 exports.AGENT_CONFIG = {
     MAX_AGENT_ITERATIONS: 3,
     AGENT_TIMEOUT_MS: 900_000,

@@ -24,7 +24,7 @@ import {
   RepairTelemetry,
 } from '../types';
 import { TriageSkill, FlakinessSignal, formatSkillsForPrompt } from '../services/skill-store';
-import { AGENT_CONFIG } from '../config/constants';
+import { AGENT_CONFIG, VERDICT_OVERRIDE_CONFIDENCE_THRESHOLD } from '../config/constants';
 
 /**
  * Configuration for the orchestrator
@@ -450,12 +450,24 @@ export class AgentOrchestrator {
     core.info(`   Test code fixable: ${investigation.isTestCodeFixable}`);
     core.info(`   Recommended approach: ${investigation.recommendedApproach}`);
 
-    // Verdict override: if investigation contradicts the initial classification,
-    // compare confidence levels directly instead of re-running the analysis agent.
+    // Verdict override: if investigation contradicts the initial classification
+    // and is sufficiently confident the failure is product-side, abort repair
+    // rather than ship a test-side fix that could paper over a real regression.
+    //
+    // Pre code_review_may_2026 finding #4 this site compared the override
+    // confidence against `analysis.confidence`, but those two confidences
+    // measure different things — analysis is certainty in a *root-cause
+    // category*, override is certainty in a *defect location*. Comparing
+    // them directly produced an apples-to-oranges gate that rejected
+    // legitimate overrides whenever AnalysisAgent happened to be very
+    // sure of its (different) categorization. Replacing with an absolute
+    // threshold (`VERDICT_OVERRIDE_CONFIDENCE_THRESHOLD`, currently 70%)
+    // makes the gate's semantics match its intent: a confident
+    // product-side override fires on its own merits.
     if (investigation.verdictOverride &&
         investigation.verdictOverride.suggestedLocation === 'APP_CODE' &&
-        investigation.verdictOverride.confidence >= analysis.confidence) {
-      core.warning(`🛑 Investigation override: APP_CODE (${investigation.verdictOverride.confidence}% confidence) > Analysis (${analysis.confidence}%). Aborting repair.`);
+        investigation.verdictOverride.confidence >= VERDICT_OVERRIDE_CONFIDENCE_THRESHOLD) {
+      core.warning(`🛑 Investigation override: APP_CODE (${investigation.verdictOverride.confidence}% confidence ≥ ${VERDICT_OVERRIDE_CONFIDENCE_THRESHOLD}% threshold; analysis was ${analysis.confidence}% on a different axis). Aborting repair.`);
       core.info(`   Evidence: ${investigation.verdictOverride.evidence.join('; ')}`);
       trace.iterations = iterations;
       return {
@@ -1237,21 +1249,64 @@ function extractMatchingRegion(rawSource: string, approxOldCode: string): string
   const oldLines = approxOldCode.split('\n').map((l) => normalizeWhitespace(l)).filter(Boolean);
   if (oldLines.length === 0) return null;
 
+  // code_review_may_2026 finding #2:
+  //
+  // Pre this fix, the inner loop walked source lines via the static
+  // `i + j` offset where `j` advanced over the FILTERED-non-empty
+  // `oldLines`. If the source contained a legitimate blank line in the
+  // matched region, `sourceLines[i + j]` was that blank string, which
+  // would never match `oldLines[j]` (the next non-empty source token).
+  // The inner loop returned `matched = false` even when the textual
+  // content actually matched, disabling Strategy 2 fuzzy matching for
+  // any multi-line block containing blanks. The slice
+  // `sourceLines.slice(i, i + oldLines.length)` was also too short by
+  // exactly the count of skipped blanks.
+  //
+  // Fix: walk the source side dynamically, skipping empty source lines
+  // until we find a non-empty candidate to match against the next
+  // `oldLines[j]`. Track the actual end index so the returned region
+  // covers the true source span.
+  //
+  // Subtle constraint to preserve correctness when this region is later
+  // assigned to `change.oldCode` for string-replace by the caller: if
+  // the matched span is LONGER than `oldLines` (i.e., we crossed blank
+  // source lines), refuse to return. Replacing the padded region with
+  // the LLM's `change.newCode` (which lacks those blanks) would silently
+  // delete them — structurally the same hazard as code_review_may_2026
+  // finding #1. Strategy 3 in the caller has the proper context-padding
+  // logic and will handle the blank-line case safely on the fall-through.
   for (let i = 0; i < sourceLines.length; i++) {
-    if (normalizeWhitespace(sourceLines[i]).includes(oldLines[0])) {
-      let matched = true;
-      for (let j = 1; j < oldLines.length && i + j < sourceLines.length; j++) {
-        if (!normalizeWhitespace(sourceLines[i + j]).includes(oldLines[j])) {
-          matched = false;
-          break;
-        }
+    if (!normalizeWhitespace(sourceLines[i]).includes(oldLines[0])) continue;
+
+    let sourceIdx = i + 1;
+    let matched = true;
+    for (let j = 1; j < oldLines.length; j++) {
+      while (
+        sourceIdx < sourceLines.length &&
+        normalizeWhitespace(sourceLines[sourceIdx]) === ''
+      ) {
+        sourceIdx++;
       }
-      if (matched) {
-        const region = sourceLines.slice(i, i + oldLines.length).join('\n');
-        if (rawSource.indexOf(region) !== -1) {
-          return region;
-        }
+      if (sourceIdx >= sourceLines.length) {
+        matched = false;
+        break;
       }
+      if (!normalizeWhitespace(sourceLines[sourceIdx]).includes(oldLines[j])) {
+        matched = false;
+        break;
+      }
+      sourceIdx++;
+    }
+    if (!matched) continue;
+
+    const sourceSpanLength = sourceIdx - i;
+    if (sourceSpanLength > oldLines.length) {
+      // Span includes blank source lines; let Strategy 3 handle padding.
+      continue;
+    }
+    const region = sourceLines.slice(i, sourceIdx).join('\n');
+    if (rawSource.indexOf(region) !== -1) {
+      return region;
     }
   }
   return null;

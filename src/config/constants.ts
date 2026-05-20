@@ -161,6 +161,32 @@ export const DEFAULT_PRODUCT_REPO = 'adept-at/learn-webapp';
 /** Production URL for learn-webapp. Used as the default preview URL for validation. */
 export const DEFAULT_PRODUCT_URL = 'https://learn.adept.at';
 
+/**
+ * Absolute confidence threshold for accepting an InvestigationAgent
+ * `verdictOverride` that flags the failure as `APP_CODE` (product-side).
+ *
+ * Pre this constant the orchestrator compared `verdictOverride.confidence`
+ * to `analysis.confidence` directly, but the two scales mean different
+ * things: analysis confidence measures certainty in a *root-cause
+ * category* (e.g. "selector mismatch vs timing"), while the override
+ * confidence measures certainty in a *defect location* (test code vs
+ * product code). When AnalysisAgent was 95% confident the symptom was a
+ * selector mismatch but InvestigationAgent was 90% confident the bug was
+ * actually product-side, the override gate `90 >= 95` evaluated false
+ * and the agent shipped a test-side fix that papered over a real product
+ * regression. (See `code_review_may_2026.md` finding #4.)
+ *
+ * Replacing the comparison with an absolute threshold eliminates the
+ * scale mismatch: a confident product-side override fires regardless of
+ * how confident analysis was in its (different) categorization. 70% is
+ * conservative enough to avoid spurious overrides — InvestigationAgent
+ * has the full code-reading context and more evidence than analysis when
+ * it produces an override at all — and it matches the
+ * `AGENT_CONFIG.REVIEW_REQUIRED_CONFIDENCE` floor used elsewhere as
+ * "this is a non-trivial signal."
+ */
+export const VERDICT_OVERRIDE_CONFIDENCE_THRESHOLD = 70;
+
 export const AGENT_CONFIG = {
   /** Maximum iterations for the fix generation/review loop */
   MAX_AGENT_ITERATIONS: 3,

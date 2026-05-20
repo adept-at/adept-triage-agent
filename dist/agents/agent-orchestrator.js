@@ -288,8 +288,8 @@ class AgentOrchestrator {
         core.info(`   Recommended approach: ${investigation.recommendedApproach}`);
         if (investigation.verdictOverride &&
             investigation.verdictOverride.suggestedLocation === 'APP_CODE' &&
-            investigation.verdictOverride.confidence >= analysis.confidence) {
-            core.warning(`🛑 Investigation override: APP_CODE (${investigation.verdictOverride.confidence}% confidence) > Analysis (${analysis.confidence}%). Aborting repair.`);
+            investigation.verdictOverride.confidence >= constants_1.VERDICT_OVERRIDE_CONFIDENCE_THRESHOLD) {
+            core.warning(`🛑 Investigation override: APP_CODE (${investigation.verdictOverride.confidence}% confidence ≥ ${constants_1.VERDICT_OVERRIDE_CONFIDENCE_THRESHOLD}% threshold; analysis was ${analysis.confidence}% on a different axis). Aborting repair.`);
             core.info(`   Evidence: ${investigation.verdictOverride.evidence.join('; ')}`);
             trace.iterations = iterations;
             return {
@@ -885,20 +885,34 @@ function extractMatchingRegion(rawSource, approxOldCode) {
     if (oldLines.length === 0)
         return null;
     for (let i = 0; i < sourceLines.length; i++) {
-        if (normalizeWhitespace(sourceLines[i]).includes(oldLines[0])) {
-            let matched = true;
-            for (let j = 1; j < oldLines.length && i + j < sourceLines.length; j++) {
-                if (!normalizeWhitespace(sourceLines[i + j]).includes(oldLines[j])) {
-                    matched = false;
-                    break;
-                }
+        if (!normalizeWhitespace(sourceLines[i]).includes(oldLines[0]))
+            continue;
+        let sourceIdx = i + 1;
+        let matched = true;
+        for (let j = 1; j < oldLines.length; j++) {
+            while (sourceIdx < sourceLines.length &&
+                normalizeWhitespace(sourceLines[sourceIdx]) === '') {
+                sourceIdx++;
             }
-            if (matched) {
-                const region = sourceLines.slice(i, i + oldLines.length).join('\n');
-                if (rawSource.indexOf(region) !== -1) {
-                    return region;
-                }
+            if (sourceIdx >= sourceLines.length) {
+                matched = false;
+                break;
             }
+            if (!normalizeWhitespace(sourceLines[sourceIdx]).includes(oldLines[j])) {
+                matched = false;
+                break;
+            }
+            sourceIdx++;
+        }
+        if (!matched)
+            continue;
+        const sourceSpanLength = sourceIdx - i;
+        if (sourceSpanLength > oldLines.length) {
+            continue;
+        }
+        const region = sourceLines.slice(i, sourceIdx).join('\n');
+        if (rawSource.indexOf(region) !== -1) {
+            return region;
         }
     }
     return null;

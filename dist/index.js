@@ -295,8 +295,8 @@ class AgentOrchestrator {
         core.info(`   Recommended approach: ${investigation.recommendedApproach}`);
         if (investigation.verdictOverride &&
             investigation.verdictOverride.suggestedLocation === 'APP_CODE' &&
-            investigation.verdictOverride.confidence >= analysis.confidence) {
-            core.warning(`🛑 Investigation override: APP_CODE (${investigation.verdictOverride.confidence}% confidence) > Analysis (${analysis.confidence}%). Aborting repair.`);
+            investigation.verdictOverride.confidence >= constants_1.VERDICT_OVERRIDE_CONFIDENCE_THRESHOLD) {
+            core.warning(`🛑 Investigation override: APP_CODE (${investigation.verdictOverride.confidence}% confidence ≥ ${constants_1.VERDICT_OVERRIDE_CONFIDENCE_THRESHOLD}% threshold; analysis was ${analysis.confidence}% on a different axis). Aborting repair.`);
             core.info(`   Evidence: ${investigation.verdictOverride.evidence.join('; ')}`);
             trace.iterations = iterations;
             return {
@@ -892,20 +892,34 @@ function extractMatchingRegion(rawSource, approxOldCode) {
     if (oldLines.length === 0)
         return null;
     for (let i = 0; i < sourceLines.length; i++) {
-        if (normalizeWhitespace(sourceLines[i]).includes(oldLines[0])) {
-            let matched = true;
-            for (let j = 1; j < oldLines.length && i + j < sourceLines.length; j++) {
-                if (!normalizeWhitespace(sourceLines[i + j]).includes(oldLines[j])) {
-                    matched = false;
-                    break;
-                }
+        if (!normalizeWhitespace(sourceLines[i]).includes(oldLines[0]))
+            continue;
+        let sourceIdx = i + 1;
+        let matched = true;
+        for (let j = 1; j < oldLines.length; j++) {
+            while (sourceIdx < sourceLines.length &&
+                normalizeWhitespace(sourceLines[sourceIdx]) === '') {
+                sourceIdx++;
             }
-            if (matched) {
-                const region = sourceLines.slice(i, i + oldLines.length).join('\n');
-                if (rawSource.indexOf(region) !== -1) {
-                    return region;
-                }
+            if (sourceIdx >= sourceLines.length) {
+                matched = false;
+                break;
             }
+            if (!normalizeWhitespace(sourceLines[sourceIdx]).includes(oldLines[j])) {
+                matched = false;
+                break;
+            }
+            sourceIdx++;
+        }
+        if (!matched)
+            continue;
+        const sourceSpanLength = sourceIdx - i;
+        if (sourceSpanLength > oldLines.length) {
+            continue;
+        }
+        const region = sourceLines.slice(i, sourceIdx).join('\n');
+        if (rawSource.indexOf(region) !== -1) {
+            return region;
         }
     }
     return null;
@@ -3905,7 +3919,7 @@ exports.ArtifactFetcher = ArtifactFetcher;
 "use strict";
 
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.BLAST_RADIUS = exports.CHRONIC_FLAKINESS_THRESHOLD = exports.FIX_VALIDATE_LOOP = exports.AGENT_CONFIG = exports.DEFAULT_PRODUCT_URL = exports.DEFAULT_PRODUCT_REPO = exports.AUTO_FIX = exports.TEST_ISSUE_CATEGORIES = exports.ERROR_TYPES = exports.FORMATTING = exports.ARTIFACTS = exports.SHORT_SHA_LENGTH = exports.REASONING_EFFORT = exports.AGENT_MODEL = exports.OPENAI = exports.CONFIDENCE = exports.LOG_LIMITS = void 0;
+exports.BLAST_RADIUS = exports.CHRONIC_FLAKINESS_THRESHOLD = exports.FIX_VALIDATE_LOOP = exports.AGENT_CONFIG = exports.VERDICT_OVERRIDE_CONFIDENCE_THRESHOLD = exports.DEFAULT_PRODUCT_URL = exports.DEFAULT_PRODUCT_REPO = exports.AUTO_FIX = exports.TEST_ISSUE_CATEGORIES = exports.ERROR_TYPES = exports.FORMATTING = exports.ARTIFACTS = exports.SHORT_SHA_LENGTH = exports.REASONING_EFFORT = exports.AGENT_MODEL = exports.OPENAI = exports.CONFIDENCE = exports.LOG_LIMITS = void 0;
 exports.supportsReasoningEffort = supportsReasoningEffort;
 exports.LOG_LIMITS = {
     GITHUB_MAX_SIZE: 50_000,
@@ -3987,6 +4001,7 @@ exports.AUTO_FIX = {
 };
 exports.DEFAULT_PRODUCT_REPO = 'adept-at/learn-webapp';
 exports.DEFAULT_PRODUCT_URL = 'https://learn.adept.at';
+exports.VERDICT_OVERRIDE_CONFIDENCE_THRESHOLD = 70;
 exports.AGENT_CONFIG = {
     MAX_AGENT_ITERATIONS: 3,
     AGENT_TIMEOUT_MS: 900_000,
@@ -4749,6 +4764,33 @@ Changed Product Files:
         }
         if (!resp.indicators || !Array.isArray(resp.indicators)) {
             resp.indicators = [];
+        }
+        if (resp.suggestedSourceLocations === undefined || resp.suggestedSourceLocations === null) {
+        }
+        else if (!Array.isArray(resp.suggestedSourceLocations)) {
+            core.warning(`LLM emitted non-array suggestedSourceLocations (${typeof resp.suggestedSourceLocations}); dropping to [] to keep the renderer safe.`);
+            resp.suggestedSourceLocations = [];
+        }
+        else {
+            const cleaned = [];
+            for (const entry of resp.suggestedSourceLocations) {
+                if (entry &&
+                    typeof entry === 'object' &&
+                    typeof entry.file === 'string' &&
+                    typeof entry.lines === 'string' &&
+                    typeof entry.reason === 'string') {
+                    const e = entry;
+                    cleaned.push({
+                        file: e.file,
+                        lines: e.lines,
+                        reason: e.reason,
+                    });
+                }
+                else {
+                    core.warning(`Dropping malformed suggestedSourceLocations entry (expected {file, lines, reason} of strings): ${JSON.stringify(entry)?.slice(0, 200)}`);
+                }
+            }
+            resp.suggestedSourceLocations = cleaned;
         }
     }
     ensureJsonMention(content) {

@@ -580,6 +580,33 @@ Changed Product Files:
         if (!resp.indicators || !Array.isArray(resp.indicators)) {
             resp.indicators = [];
         }
+        if (resp.suggestedSourceLocations === undefined || resp.suggestedSourceLocations === null) {
+        }
+        else if (!Array.isArray(resp.suggestedSourceLocations)) {
+            core.warning(`LLM emitted non-array suggestedSourceLocations (${typeof resp.suggestedSourceLocations}); dropping to [] to keep the renderer safe.`);
+            resp.suggestedSourceLocations = [];
+        }
+        else {
+            const cleaned = [];
+            for (const entry of resp.suggestedSourceLocations) {
+                if (entry &&
+                    typeof entry === 'object' &&
+                    typeof entry.file === 'string' &&
+                    typeof entry.lines === 'string' &&
+                    typeof entry.reason === 'string') {
+                    const e = entry;
+                    cleaned.push({
+                        file: e.file,
+                        lines: e.lines,
+                        reason: e.reason,
+                    });
+                }
+                else {
+                    core.warning(`Dropping malformed suggestedSourceLocations entry (expected {file, lines, reason} of strings): ${JSON.stringify(entry)?.slice(0, 200)}`);
+                }
+            }
+            resp.suggestedSourceLocations = cleaned;
+        }
     }
     ensureJsonMention(content) {
         const hasJson = (text) => /json/i.test(text);

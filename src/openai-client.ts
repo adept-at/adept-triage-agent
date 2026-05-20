@@ -665,6 +665,55 @@ Changed Product Files:
     if (!resp.indicators || !Array.isArray(resp.indicators)) {
       resp.indicators = [];
     }
+
+    // Defensive shape coercion for `suggestedSourceLocations`
+    // (code_review_may_2026 finding #5).
+    //
+    // The downstream renderer in `pipeline/output.ts` calls
+    // `result.suggestedSourceLocations.forEach(...)`. If the LLM emits
+    // a non-array shape — an object, a string, `null`, or `undefined`
+    // when the prompt requested an array — the unguarded `.forEach`
+    // throws `TypeError: ...forEach is not a function`, which
+    // currently crashes the action with an unactionable stack trace.
+    //
+    // Strategy: if the field is missing or not an array, drop it
+    // (force `[]`-equivalent absence). If it IS an array, filter to
+    // only the entries whose individual shape matches `{file, lines,
+    // reason}` with all three as strings — anything else is dropped
+    // with a `core.warning` so an operator can spot prompt drift, and
+    // the rest of the array is preserved.
+    if (resp.suggestedSourceLocations === undefined || resp.suggestedSourceLocations === null) {
+      // Already absent — fine. The renderer's `&& result.suggestedSourceLocations`
+      // check handles missing safely; nothing to do.
+    } else if (!Array.isArray(resp.suggestedSourceLocations)) {
+      core.warning(
+        `LLM emitted non-array suggestedSourceLocations (${typeof resp.suggestedSourceLocations}); dropping to [] to keep the renderer safe.`
+      );
+      resp.suggestedSourceLocations = [];
+    } else {
+      const cleaned: Array<{ file: string; lines: string; reason: string }> = [];
+      for (const entry of resp.suggestedSourceLocations) {
+        if (
+          entry &&
+          typeof entry === 'object' &&
+          typeof (entry as Record<string, unknown>).file === 'string' &&
+          typeof (entry as Record<string, unknown>).lines === 'string' &&
+          typeof (entry as Record<string, unknown>).reason === 'string'
+        ) {
+          const e = entry as Record<string, unknown>;
+          cleaned.push({
+            file: e.file as string,
+            lines: e.lines as string,
+            reason: e.reason as string,
+          });
+        } else {
+          core.warning(
+            `Dropping malformed suggestedSourceLocations entry (expected {file, lines, reason} of strings): ${JSON.stringify(entry)?.slice(0, 200)}`
+          );
+        }
+      }
+      resp.suggestedSourceLocations = cleaned;
+    }
   }
 
   /**
