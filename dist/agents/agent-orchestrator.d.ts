@@ -3,7 +3,7 @@ import { AgentContext, AgentResult } from './base-agent';
 import { AnalysisOutput } from './analysis-agent';
 import { CodeReadingOutput } from './code-reading-agent';
 import { InvestigationOutput } from './investigation-agent';
-import { FixGenerationOutput } from './fix-generation-agent';
+import { FixGenerationOutput, CodeChange } from './fix-generation-agent';
 import { ReviewOutput, ReviewIssue } from './review-agent';
 import { FixRecommendation, ErrorData, SourceFetchContext, RepairTelemetry } from '../types';
 import { TriageSkill, FlakinessSignal } from '../services/skill-store';
@@ -52,5 +52,13 @@ export declare class AgentOrchestrator {
     private convertToFixRecommendation;
 }
 export declare function isBlockingCriticalIssue(issue: ReviewIssue): boolean;
+interface AutoCorrectResult {
+    changes: CodeChange[];
+    correctedCount: number;
+    droppedCount: number;
+}
+export declare function autoCorrectOldCode(changes: CodeChange[], sourceFiles: Map<string, string>, _context: AgentContext): AutoCorrectResult;
+export declare function extractMatchingRegion(rawSource: string, approxOldCode: string): string | null;
 export declare function createOrchestrator(openaiClient: OpenAIClient, config?: Partial<OrchestratorConfig>, sourceFetchContext?: SourceFetchContext): AgentOrchestrator;
+export {};
 //# sourceMappingURL=agent-orchestrator.d.ts.map

@@ -8,6 +8,7 @@ import * as core from '@actions/core';
 import { Octokit } from '@octokit/rest';
 import { FixRecommendation, ValidationResult, ValidationStatus } from '../types';
 import { AUTO_FIX, SHORT_SHA_LENGTH } from '../config/constants';
+import { recordGate } from '../pipeline/run-telemetry';
 import { verifyTestEvidence } from '../services/test-evidence';
 import { ANSI_ESCAPE_REGEX } from '../utils/text-utils';
 
@@ -370,6 +371,7 @@ export class GitHubFixApplier implements FixApplier {
             dedupeMatch.ageMs / 60_000
           )} minutes ago for the same spec. To re-fix, delete the existing branch first.`
         );
+        recordGate('branchDedupeHits');
         return {
           success: false,
           modifiedFiles: [],

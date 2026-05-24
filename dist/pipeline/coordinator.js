@@ -44,6 +44,7 @@ const skill_store_1 = require("../services/skill-store");
 const repo_context_fetcher_1 = require("../services/repo-context-fetcher");
 const root_cause_category_1 = require("../repair/root-cause-category");
 const constants_1 = require("../config/constants");
+const run_telemetry_1 = require("./run-telemetry");
 const output_1 = require("./output");
 const validator_1 = require("./validator");
 class PipelineCoordinator {
@@ -68,6 +69,7 @@ class PipelineCoordinator {
         }
         else if (flakinessSignal && flakinessSignal.fixCount >= 2) {
             core.warning(`⚠️ FLAKINESS WATCH: This spec has ${flakinessSignal.fixCount} prior auto-fix attempts in ${flakinessSignal.windowDays} days — one more failure will trip the chronic-flakiness gate (threshold ${constants_1.CHRONIC_FLAKINESS_THRESHOLD}).`);
+            (0, run_telemetry_1.recordGate)('flakinessWatchEmits');
         }
         const classifierSkills = skillStore
             ? skillStore.findForClassifier({
@@ -196,12 +198,14 @@ class PipelineCoordinator {
         }
         finally {
             skillStore?.logRunSummary();
+            (0, run_telemetry_1.logRunGateSummary)();
         }
     }
     async runClassifyAndRepair(errorData, skillStore, autoFixTargetRepo) {
         const infraVerdict = detectInfrastructureFailure(errorData);
         if (infraVerdict) {
             core.info(`⏭️  Infrastructure fast-path: ${infraVerdict.summary}`);
+            (0, run_telemetry_1.recordGate)('infraFastPathHits');
             const infraResult = {
                 verdict: 'INCONCLUSIVE',
                 confidence: 95,
@@ -227,6 +231,7 @@ class PipelineCoordinator {
                 `${nonFixableMatch.fix.summary} ` +
                 `Manual intervention required — no code change in this repo can fix this failure.`;
             core.warning(`⏭️  ${reason}`);
+            (0, run_telemetry_1.recordGate)('nonFixableSeedSkips');
             (0, output_1.setSuccessOutput)({
                 ...classification,
                 autoFixSkipped: true,
@@ -270,9 +275,11 @@ class PipelineCoordinator {
             const validationPending = validationStatus === 'pending';
             if (fixAttempted && validationPending) {
                 core.info('📝 Skipping skill outcome write while remote validation is pending');
+                (0, run_telemetry_1.recordGate)('skillWriteSkips');
             }
             if (fixAttempted && !shouldSaveSkill && !validationPending) {
                 core.info('📝 Skipping skill outcome write because no validation attempt produced a terminal result');
+                (0, run_telemetry_1.recordGate)('skillWriteSkips');
             }
             if (fixAttempted && shouldSaveSkill) {
                 const firstChange = fixRecommendation.proposedChanges?.[0];

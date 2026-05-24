@@ -35,6 +35,8 @@ var __importStar = (this && this.__importStar) || (function () {
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.AgentOrchestrator = exports.MIN_REVIEW_BUDGET_MS = exports.MIN_FIX_GEN_BUDGET_MS = exports.DEFAULT_ORCHESTRATOR_CONFIG = void 0;
 exports.isBlockingCriticalIssue = isBlockingCriticalIssue;
+exports.autoCorrectOldCode = autoCorrectOldCode;
+exports.extractMatchingRegion = extractMatchingRegion;
 exports.createOrchestrator = createOrchestrator;
 const core = __importStar(require("@actions/core"));
 const analysis_agent_1 = require("./analysis-agent");
@@ -44,6 +46,7 @@ const fix_generation_agent_1 = require("./fix-generation-agent");
 const review_agent_1 = require("./review-agent");
 const skill_store_1 = require("../services/skill-store");
 const constants_1 = require("../config/constants");
+const run_telemetry_1 = require("../pipeline/run-telemetry");
 exports.DEFAULT_ORCHESTRATOR_CONFIG = {
     maxIterations: 3,
     totalTimeoutMs: 900_000,
@@ -290,6 +293,7 @@ class AgentOrchestrator {
             investigation.verdictOverride.suggestedLocation === 'APP_CODE' &&
             investigation.verdictOverride.confidence >= constants_1.VERDICT_OVERRIDE_CONFIDENCE_THRESHOLD) {
             core.warning(`🛑 Investigation override: APP_CODE (${investigation.verdictOverride.confidence}% confidence ≥ ${constants_1.VERDICT_OVERRIDE_CONFIDENCE_THRESHOLD}% threshold; analysis was ${analysis.confidence}% on a different axis). Aborting repair.`);
+            (0, run_telemetry_1.recordGate)('verdictOverrideAborts');
             core.info(`   Evidence: ${investigation.verdictOverride.evidence.join('; ')}`);
             trace.iterations = iterations;
             return {

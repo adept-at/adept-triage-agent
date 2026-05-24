@@ -901,6 +901,105 @@ describe('SkillStore.detectFlakiness', () => {
     expect(result.isFlaky).toBe(false);
   });
 
+  // ---- countRecentFailedTrajectories (v1.52.14) ----
+  //
+  // Added to support the `requiredConfidence` recent-failed-trajectory
+  // penalty. Counts non-retired, non-seed, validatedLocally=false skills
+  // for a given spec within a window. The semantics differ from
+  // detectFlakiness: that one counts ALL same-spec attempts (validated
+  // and not), this one counts only DEMONSTRATED FAILURES.
+  describe('countRecentFailedTrajectories (v1.52.14)', () => {
+    const dayMs = 86_400_000;
+
+    it('returns 0 when no skills match the spec', () => {
+      const store = storeWith([]);
+      expect(store.countRecentFailedTrajectories('test.ts', 24 * 60 * 60 * 1000)).toBe(0);
+    });
+
+    it('counts only validatedLocally=false skills (failed trajectories)', () => {
+      const store = storeWith([
+        makeSkill({
+          id: '1',
+          spec: 'test.ts',
+          validatedLocally: false,
+          createdAt: new Date(Date.now() - dayMs / 2).toISOString(),
+        }),
+        makeSkill({
+          id: '2',
+          spec: 'test.ts',
+          validatedLocally: true,  // not a failed trajectory
+          createdAt: new Date(Date.now() - dayMs / 2).toISOString(),
+        }),
+      ]);
+      expect(store.countRecentFailedTrajectories('test.ts', 24 * 60 * 60 * 1000)).toBe(1);
+    });
+
+    it('ignores trajectories outside the window', () => {
+      const store = storeWith([
+        makeSkill({
+          id: '1',
+          spec: 'test.ts',
+          validatedLocally: false,
+          createdAt: new Date(Date.now() - 5 * dayMs).toISOString(),
+        }),
+      ]);
+      // 24h window — 5-day-old failure should not count.
+      expect(store.countRecentFailedTrajectories('test.ts', 24 * 60 * 60 * 1000)).toBe(0);
+    });
+
+    it('ignores seeds', () => {
+      const store = storeWith([
+        makeSkill({
+          id: '1',
+          spec: 'test.ts',
+          validatedLocally: false,
+          isSeed: true,
+          createdAt: new Date().toISOString(),
+        }),
+      ]);
+      expect(store.countRecentFailedTrajectories('test.ts', 24 * 60 * 60 * 1000)).toBe(0);
+    });
+
+    it('ignores retired skills', () => {
+      const store = storeWith([
+        makeSkill({
+          id: '1',
+          spec: 'test.ts',
+          validatedLocally: false,
+          retired: true,
+          createdAt: new Date().toISOString(),
+        }),
+      ]);
+      expect(store.countRecentFailedTrajectories('test.ts', 24 * 60 * 60 * 1000)).toBe(0);
+    });
+
+    it('returns 0 for empty spec query (defensive)', () => {
+      const store = storeWith([
+        makeSkill({ spec: 'test.ts', validatedLocally: false }),
+      ]);
+      expect(store.countRecentFailedTrajectories('', 24 * 60 * 60 * 1000)).toBe(0);
+    });
+
+    it('matches normalized spec paths (absolute vs relative)', () => {
+      const store = storeWith([
+        makeSkill({
+          id: '1',
+          spec: 'test/specs/foo.ts',
+          validatedLocally: false,
+          createdAt: new Date().toISOString(),
+        }),
+      ]);
+      // Query with an absolute runtime path that should normalize to
+      // the same spec key.
+      expect(
+        store.countRecentFailedTrajectories(
+          '/home/runner/work/repo/repo/test/specs/foo.ts',
+          24 * 60 * 60 * 1000
+        )
+      ).toBe(1);
+    });
+  });
+
   // ---- Retirement consistency (v1.49.3 A3) ----
   //
   // Architecture scan surfaced an inconsistency: `findRelevant` and

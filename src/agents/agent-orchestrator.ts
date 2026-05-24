@@ -25,6 +25,7 @@ import {
 } from '../types';
 import { TriageSkill, FlakinessSignal, formatSkillsForPrompt } from '../services/skill-store';
 import { AGENT_CONFIG, VERDICT_OVERRIDE_CONFIDENCE_THRESHOLD } from '../config/constants';
+import { recordGate } from '../pipeline/run-telemetry';
 
 /**
  * Configuration for the orchestrator
@@ -468,6 +469,7 @@ export class AgentOrchestrator {
         investigation.verdictOverride.suggestedLocation === 'APP_CODE' &&
         investigation.verdictOverride.confidence >= VERDICT_OVERRIDE_CONFIDENCE_THRESHOLD) {
       core.warning(`🛑 Investigation override: APP_CODE (${investigation.verdictOverride.confidence}% confidence ≥ ${VERDICT_OVERRIDE_CONFIDENCE_THRESHOLD}% threshold; analysis was ${analysis.confidence}% on a different axis). Aborting repair.`);
+      recordGate('verdictOverrideAborts');
       core.info(`   Evidence: ${investigation.verdictOverride.evidence.join('; ')}`);
       trace.iterations = iterations;
       return {
@@ -1056,7 +1058,7 @@ interface AutoCorrectResult {
  * Validate each change's oldCode against the source files (test file + related files).
  * If oldCode doesn't match, attempt to find the correct code at the given line number.
  */
-function autoCorrectOldCode(
+export function autoCorrectOldCode(
   changes: CodeChange[],
   sourceFiles: Map<string, string>,
   _context: AgentContext
@@ -1244,7 +1246,7 @@ function normalizeWhitespace(s: string): string {
  * Given raw source and an approximate oldCode, find the actual matching region
  * by matching line-by-line with normalized whitespace.
  */
-function extractMatchingRegion(rawSource: string, approxOldCode: string): string | null {
+export function extractMatchingRegion(rawSource: string, approxOldCode: string): string | null {
   const sourceLines = rawSource.split('\n');
   const oldLines = approxOldCode.split('\n').map((l) => normalizeWhitespace(l)).filter(Boolean);
   if (oldLines.length === 0) return null;

@@ -19,6 +19,7 @@ import { SkillStore, buildSkill, describeFixPattern } from '../services/skill-st
 import { RepoContextFetcher } from '../services/repo-context-fetcher';
 import { inferRootCauseCategoryFromText } from '../repair/root-cause-category';
 import { CHRONIC_FLAKINESS_THRESHOLD } from '../config/constants';
+import { recordGate, logRunGateSummary } from './run-telemetry';
 import {
   resolveAutoFixTargetRepo,
   setSuccessOutput,
@@ -132,6 +133,7 @@ export class PipelineCoordinator {
       core.warning(
         `⚠️ FLAKINESS WATCH: This spec has ${flakinessSignal.fixCount} prior auto-fix attempts in ${flakinessSignal.windowDays} days — one more failure will trip the chronic-flakiness gate (threshold ${CHRONIC_FLAKINESS_THRESHOLD}).`
       );
+      recordGate('flakinessWatchEmits');
     }
 
     // v1.50.0 A1-writer: split `findForClassifier` from the prompt
@@ -351,6 +353,11 @@ export class PipelineCoordinator {
       await this.runClassifyAndRepair(errorData, skillStore, autoFixTargetRepo);
     } finally {
       skillStore?.logRunSummary();
+      // Always emit the gate-telemetry summary, even when no skill
+      // store is configured. The whole point of the per-run gate
+      // counters is "did our safety/correctness gates fire this
+      // round?" — that question is independent of skill-store state.
+      logRunGateSummary();
     }
   }
 
@@ -376,6 +383,7 @@ export class PipelineCoordinator {
     const infraVerdict = detectInfrastructureFailure(errorData);
     if (infraVerdict) {
       core.info(`⏭️  Infrastructure fast-path: ${infraVerdict.summary}`);
+      recordGate('infraFastPathHits');
       const infraResult: AnalysisResult = {
         verdict: 'INCONCLUSIVE',
         confidence: 95,
@@ -417,6 +425,7 @@ export class PipelineCoordinator {
         `${nonFixableMatch.fix.summary} ` +
         `Manual intervention required — no code change in this repo can fix this failure.`;
       core.warning(`⏭️  ${reason}`);
+      recordGate('nonFixableSeedSkips');
       setSuccessOutput(
         {
           ...classification,
@@ -498,12 +507,14 @@ export class PipelineCoordinator {
         core.info(
           '📝 Skipping skill outcome write while remote validation is pending'
         );
+        recordGate('skillWriteSkips');
       }
 
       if (fixAttempted && !shouldSaveSkill && !validationPending) {
         core.info(
           '📝 Skipping skill outcome write because no validation attempt produced a terminal result'
         );
+        recordGate('skillWriteSkips');
       }
 
       if (fixAttempted && shouldSaveSkill) {

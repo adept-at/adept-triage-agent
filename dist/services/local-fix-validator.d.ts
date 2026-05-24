@@ -22,6 +22,7 @@ export interface PushResult {
     prUrl?: string;
     prNumber?: number;
 }
+export declare function shouldDropEnvVar(key: string): boolean;
 export declare class LocalFixValidator {
     private config;
     private octokit;

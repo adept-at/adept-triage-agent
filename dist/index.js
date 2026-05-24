@@ -42,6 +42,8 @@ var __importStar = (this && this.__importStar) || (function () {
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.AgentOrchestrator = exports.MIN_REVIEW_BUDGET_MS = exports.MIN_FIX_GEN_BUDGET_MS = exports.DEFAULT_ORCHESTRATOR_CONFIG = void 0;
 exports.isBlockingCriticalIssue = isBlockingCriticalIssue;
+exports.autoCorrectOldCode = autoCorrectOldCode;
+exports.extractMatchingRegion = extractMatchingRegion;
 exports.createOrchestrator = createOrchestrator;
 const core = __importStar(__nccwpck_require__(37484));
 const analysis_agent_1 = __nccwpck_require__(27216);
@@ -51,6 +53,7 @@ const fix_generation_agent_1 = __nccwpck_require__(39302);
 const review_agent_1 = __nccwpck_require__(61218);
 const skill_store_1 = __nccwpck_require__(60215);
 const constants_1 = __nccwpck_require__(58361);
+const run_telemetry_1 = __nccwpck_require__(93971);
 exports.DEFAULT_ORCHESTRATOR_CONFIG = {
     maxIterations: 3,
     totalTimeoutMs: 900_000,
@@ -297,6 +300,7 @@ class AgentOrchestrator {
             investigation.verdictOverride.suggestedLocation === 'APP_CODE' &&
             investigation.verdictOverride.confidence >= constants_1.VERDICT_OVERRIDE_CONFIDENCE_THRESHOLD) {
             core.warning(`🛑 Investigation override: APP_CODE (${investigation.verdictOverride.confidence}% confidence ≥ ${constants_1.VERDICT_OVERRIDE_CONFIDENCE_THRESHOLD}% threshold; analysis was ${analysis.confidence}% on a different axis). Aborting repair.`);
+            (0, run_telemetry_1.recordGate)('verdictOverrideAborts');
             core.info(`   Evidence: ${investigation.verdictOverride.evidence.join('; ')}`);
             trace.iterations = iterations;
             return {
@@ -4904,6 +4908,7 @@ const skill_store_1 = __nccwpck_require__(60215);
 const repo_context_fetcher_1 = __nccwpck_require__(3844);
 const root_cause_category_1 = __nccwpck_require__(21406);
 const constants_1 = __nccwpck_require__(58361);
+const run_telemetry_1 = __nccwpck_require__(93971);
 const output_1 = __nccwpck_require__(12639);
 const validator_1 = __nccwpck_require__(34670);
 class PipelineCoordinator {
@@ -4928,6 +4933,7 @@ class PipelineCoordinator {
         }
         else if (flakinessSignal && flakinessSignal.fixCount >= 2) {
             core.warning(`⚠️ FLAKINESS WATCH: This spec has ${flakinessSignal.fixCount} prior auto-fix attempts in ${flakinessSignal.windowDays} days — one more failure will trip the chronic-flakiness gate (threshold ${constants_1.CHRONIC_FLAKINESS_THRESHOLD}).`);
+            (0, run_telemetry_1.recordGate)('flakinessWatchEmits');
         }
         const classifierSkills = skillStore
             ? skillStore.findForClassifier({
@@ -5056,12 +5062,14 @@ class PipelineCoordinator {
         }
         finally {
             skillStore?.logRunSummary();
+            (0, run_telemetry_1.logRunGateSummary)();
         }
     }
     async runClassifyAndRepair(errorData, skillStore, autoFixTargetRepo) {
         const infraVerdict = detectInfrastructureFailure(errorData);
         if (infraVerdict) {
             core.info(`⏭️  Infrastructure fast-path: ${infraVerdict.summary}`);
+            (0, run_telemetry_1.recordGate)('infraFastPathHits');
             const infraResult = {
                 verdict: 'INCONCLUSIVE',
                 confidence: 95,
@@ -5087,6 +5095,7 @@ class PipelineCoordinator {
                 `${nonFixableMatch.fix.summary} ` +
                 `Manual intervention required — no code change in this repo can fix this failure.`;
             core.warning(`⏭️  ${reason}`);
+            (0, run_telemetry_1.recordGate)('nonFixableSeedSkips');
             (0, output_1.setSuccessOutput)({
                 ...classification,
                 autoFixSkipped: true,
@@ -5130,9 +5139,11 @@ class PipelineCoordinator {
             const validationPending = validationStatus === 'pending';
             if (fixAttempted && validationPending) {
                 core.info('📝 Skipping skill outcome write while remote validation is pending');
+                (0, run_telemetry_1.recordGate)('skillWriteSkips');
             }
             if (fixAttempted && !shouldSaveSkill && !validationPending) {
                 core.info('📝 Skipping skill outcome write because no validation attempt produced a terminal result');
+                (0, run_telemetry_1.recordGate)('skillWriteSkips');
             }
             if (fixAttempted && shouldSaveSkill) {
                 const firstChange = fixRecommendation.proposedChanges?.[0];
@@ -5696,6 +5707,92 @@ function mergeValidationResult(autoFixResult) {
 
 /***/ }),
 
+/***/ 93971:
+/***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
+
+"use strict";
+
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.recordGate = recordGate;
+exports.getGateCounters = getGateCounters;
+exports._resetGateCounters = _resetGateCounters;
+exports.logRunGateSummary = logRunGateSummary;
+const core = __importStar(__nccwpck_require__(37484));
+const counters = createEmpty();
+function createEmpty() {
+    return {
+        blastRadiusBlocks: 0,
+        branchDedupeHits: 0,
+        infraFastPathHits: 0,
+        verdictOverrideAborts: 0,
+        priorFailedTrajectoryBoosts: 0,
+        skillWriteSkips: 0,
+        flakinessWatchEmits: 0,
+        nonFixableSeedSkips: 0,
+    };
+}
+function recordGate(kind) {
+    counters[kind]++;
+}
+function getGateCounters() {
+    return { ...counters };
+}
+function _resetGateCounters() {
+    Object.assign(counters, createEmpty());
+}
+function logRunGateSummary() {
+    try {
+        const c = counters;
+        core.info(`📊 gate-telemetry-summary ` +
+            `blast-radius=${c.blastRadiusBlocks} ` +
+            `branch-dedupe=${c.branchDedupeHits} ` +
+            `infra-fast-path=${c.infraFastPathHits} ` +
+            `verdict-override=${c.verdictOverrideAborts} ` +
+            `prior-failed-boost=${c.priorFailedTrajectoryBoosts} ` +
+            `skill-write-skip=${c.skillWriteSkips} ` +
+            `flakiness-watch=${c.flakinessWatchEmits} ` +
+            `non-fixable-seed=${c.nonFixableSeedSkips}`);
+    }
+    catch {
+    }
+}
+//# sourceMappingURL=run-telemetry.js.map
+
+/***/ }),
+
 /***/ 34670:
 /***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
 
@@ -5749,6 +5846,7 @@ const fix_applier_1 = __nccwpck_require__(72134);
 const local_fix_validator_1 = __nccwpck_require__(55168);
 const constants_1 = __nccwpck_require__(58361);
 const repo_utils_1 = __nccwpck_require__(74843);
+const run_telemetry_1 = __nccwpck_require__(93971);
 async function generateFixRecommendation(inputs, repoDetails, errorData, openaiClient, octokit, previousAttempt, previousResponseId, skillStore, priorInvestigationContext, repoContext) {
     try {
         const iterLabel = previousAttempt
@@ -5870,6 +5968,10 @@ async function iterativeFixValidateLoop(inputs, repoDetails, autoFixTargetRepo, 
                 if (iterReasons.length > 0) {
                     autoFixSkipped = true;
                     autoFixSkippedReason = reason;
+                    (0, run_telemetry_1.recordGate)('blastRadiusBlocks');
+                    if (iterReasons.some((r) => r.includes('recent failed'))) {
+                        (0, run_telemetry_1.recordGate)('priorFailedTrajectoryBoosts');
+                    }
                 }
                 break;
             }
@@ -6088,6 +6190,12 @@ async function attemptAutoFix(inputs, fixRecommendation, octokit, repoDetails, e
             : '';
         const skipMessage = `confidence ${fixRecommendation.confidence}% below required ${required}%${suffix}`;
         core.info(`⏭️ Auto-fix skipped: ${skipMessage}`);
+        if (reasons.length > 0) {
+            (0, run_telemetry_1.recordGate)('blastRadiusBlocks');
+            if (reasons.some((r) => r.includes('recent failed'))) {
+                (0, run_telemetry_1.recordGate)('priorFailedTrajectoryBoosts');
+            }
+        }
         return {
             applied: null,
             skipReason: reasons.length > 0 ? `Blast-radius gate: ${skipMessage}` : undefined,
@@ -6277,6 +6385,7 @@ exports.decodeLogPayload = decodeLogPayload;
 exports.generateFixBranchName = generateFixBranchName;
 const core = __importStar(__nccwpck_require__(37484));
 const constants_1 = __nccwpck_require__(58361);
+const run_telemetry_1 = __nccwpck_require__(93971);
 const test_evidence_1 = __nccwpck_require__(92356);
 const text_utils_1 = __nccwpck_require__(11744);
 const RETRY_CONFIG = {
@@ -6396,6 +6505,7 @@ class GitHubFixApplier {
             const dedupeMatch = await this.findRecentDuplicateBranch(testFile);
             if (dedupeMatch) {
                 core.warning(`⏭️  Branch dedupe: refusing to push — existing branch '${dedupeMatch.name}' was created ${Math.round(dedupeMatch.ageMs / 60_000)} minutes ago for the same spec. To re-fix, delete the existing branch first.`);
+                (0, run_telemetry_1.recordGate)('branchDedupeHits');
                 return {
                     success: false,
                     modifiedFiles: [],
@@ -7674,6 +7784,7 @@ var __importStar = (this && this.__importStar) || (function () {
 })();
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.LocalFixValidator = void 0;
+exports.shouldDropEnvVar = shouldDropEnvVar;
 const core = __importStar(__nccwpck_require__(37484));
 const crypto = __importStar(__nccwpck_require__(76982));
 const fs = __importStar(__nccwpck_require__(79896));
@@ -7681,7 +7792,7 @@ const os = __importStar(__nccwpck_require__(70857));
 const path = __importStar(__nccwpck_require__(16928));
 const child_process_1 = __nccwpck_require__(35317);
 const test_evidence_1 = __nccwpck_require__(92356);
-const SECRET_ENV_KEYS = new Set([
+const EXPLICITLY_DENIED = new Set([
     'GITHUB_TOKEN',
     'OPENAI_API_KEY',
     'CURSOR_API_KEY',
@@ -7702,10 +7813,26 @@ const SECRET_ENV_KEYS = new Set([
     'SLACK_WEBHOOK_URL',
     'INPUT_SLACK_WEBHOOK_URL',
 ]);
+const CREDENTIAL_PATTERN = /(?:TOKEN|SECRET|PASSWORD|PASSPHRASE|CREDENTIALS?|PRIVATE_KEY|APIKEY)|(?:^|[_-])(?:KEY|KEYS|PAT)(?:[_-]|$)/i;
+const PATTERN_ALLOW_OVERRIDES = new Set([
+    'SAUCE_USERNAME',
+    'SAUCE_ACCESS_KEY',
+    'MAILOSAUR_API_KEY',
+    'CYPRESS_RECORD_KEY',
+    'BROWSERSTACK_USERNAME',
+    'BROWSERSTACK_ACCESS_KEY',
+]);
+function shouldDropEnvVar(key) {
+    if (EXPLICITLY_DENIED.has(key))
+        return true;
+    if (PATTERN_ALLOW_OVERRIDES.has(key))
+        return false;
+    return CREDENTIAL_PATTERN.test(key);
+}
 function filterEnv(npmToken) {
     const env = {};
     for (const [key, value] of Object.entries(process.env)) {
-        if (value !== undefined && !SECRET_ENV_KEYS.has(key)) {
+        if (value !== undefined && !shouldDropEnvVar(key)) {
             env[key] = value;
         }
     }

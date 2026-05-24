@@ -47,6 +47,7 @@ const fix_applier_1 = require("../repair/fix-applier");
 const local_fix_validator_1 = require("../services/local-fix-validator");
 const constants_1 = require("../config/constants");
 const repo_utils_1 = require("../utils/repo-utils");
+const run_telemetry_1 = require("./run-telemetry");
 async function generateFixRecommendation(inputs, repoDetails, errorData, openaiClient, octokit, previousAttempt, previousResponseId, skillStore, priorInvestigationContext, repoContext) {
     try {
         const iterLabel = previousAttempt
@@ -168,6 +169,10 @@ async function iterativeFixValidateLoop(inputs, repoDetails, autoFixTargetRepo, 
                 if (iterReasons.length > 0) {
                     autoFixSkipped = true;
                     autoFixSkippedReason = reason;
+                    (0, run_telemetry_1.recordGate)('blastRadiusBlocks');
+                    if (iterReasons.some((r) => r.includes('recent failed'))) {
+                        (0, run_telemetry_1.recordGate)('priorFailedTrajectoryBoosts');
+                    }
                 }
                 break;
             }
@@ -386,6 +391,12 @@ async function attemptAutoFix(inputs, fixRecommendation, octokit, repoDetails, e
             : '';
         const skipMessage = `confidence ${fixRecommendation.confidence}% below required ${required}%${suffix}`;
         core.info(`⏭️ Auto-fix skipped: ${skipMessage}`);
+        if (reasons.length > 0) {
+            (0, run_telemetry_1.recordGate)('blastRadiusBlocks');
+            if (reasons.some((r) => r.includes('recent failed'))) {
+                (0, run_telemetry_1.recordGate)('priorFailedTrajectoryBoosts');
+            }
+        }
         return {
             applied: null,
             skipReason: reasons.length > 0 ? `Blast-radius gate: ${skipMessage}` : undefined,

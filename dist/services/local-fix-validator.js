@@ -34,6 +34,7 @@ var __importStar = (this && this.__importStar) || (function () {
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.LocalFixValidator = void 0;
+exports.shouldDropEnvVar = shouldDropEnvVar;
 const core = __importStar(require("@actions/core"));
 const crypto = __importStar(require("crypto"));
 const fs = __importStar(require("fs"));
@@ -41,7 +42,7 @@ const os = __importStar(require("os"));
 const path = __importStar(require("path"));
 const child_process_1 = require("child_process");
 const test_evidence_1 = require("./test-evidence");
-const SECRET_ENV_KEYS = new Set([
+const EXPLICITLY_DENIED = new Set([
     'GITHUB_TOKEN',
     'OPENAI_API_KEY',
     'CURSOR_API_KEY',
@@ -62,10 +63,26 @@ const SECRET_ENV_KEYS = new Set([
     'SLACK_WEBHOOK_URL',
     'INPUT_SLACK_WEBHOOK_URL',
 ]);
+const CREDENTIAL_PATTERN = /(?:TOKEN|SECRET|PASSWORD|PASSPHRASE|CREDENTIALS?|PRIVATE_KEY|APIKEY)|(?:^|[_-])(?:KEY|KEYS|PAT)(?:[_-]|$)/i;
+const PATTERN_ALLOW_OVERRIDES = new Set([
+    'SAUCE_USERNAME',
+    'SAUCE_ACCESS_KEY',
+    'MAILOSAUR_API_KEY',
+    'CYPRESS_RECORD_KEY',
+    'BROWSERSTACK_USERNAME',
+    'BROWSERSTACK_ACCESS_KEY',
+]);
+function shouldDropEnvVar(key) {
+    if (EXPLICITLY_DENIED.has(key))
+        return true;
+    if (PATTERN_ALLOW_OVERRIDES.has(key))
+        return false;
+    return CREDENTIAL_PATTERN.test(key);
+}
 function filterEnv(npmToken) {
     const env = {};
     for (const [key, value] of Object.entries(process.env)) {
-        if (value !== undefined && !SECRET_ENV_KEYS.has(key)) {
+        if (value !== undefined && !shouldDropEnvVar(key)) {
             env[key] = value;
         }
     }

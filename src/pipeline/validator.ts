@@ -10,6 +10,7 @@ import { LocalFixValidator } from '../services/local-fix-validator';
 import { AUTO_FIX, BLAST_RADIUS, FIX_VALIDATE_LOOP, DEFAULT_PRODUCT_URL } from '../config/constants';
 import { SkillStore } from '../services/skill-store';
 import { parseRepoString } from '../utils/repo-utils';
+import { recordGate } from './run-telemetry';
 
 export async function generateFixRecommendation(
   inputs: ActionInputs,
@@ -261,6 +262,10 @@ export async function iterativeFixValidateLoop(
         if (iterReasons.length > 0) {
           autoFixSkipped = true;
           autoFixSkippedReason = reason;
+          recordGate('blastRadiusBlocks');
+          if (iterReasons.some((r) => r.includes('recent failed'))) {
+            recordGate('priorFailedTrajectoryBoosts');
+          }
         }
         break;
       }
@@ -660,6 +665,12 @@ export async function attemptAutoFix(
     // Only tag this as a policy-withheld skip when blast-radius actually
     // raised the bar. A plain "confidence below user threshold" skip is
     // "no viable fix", not a safety hold-back.
+    if (reasons.length > 0) {
+      recordGate('blastRadiusBlocks');
+      if (reasons.some((r) => r.includes('recent failed'))) {
+        recordGate('priorFailedTrajectoryBoosts');
+      }
+    }
     return {
       applied: null,
       skipReason: reasons.length > 0 ? `Blast-radius gate: ${skipMessage}` : undefined,

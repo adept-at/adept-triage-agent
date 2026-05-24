@@ -325,6 +325,58 @@ describe('OpenAIClient', () => {
       expect(result.verdict).toBe('PRODUCT_ISSUE');
       expect(result.suggestedSourceLocations).toEqual([]);
     });
+
+    // -----------------------------------------------------------------
+    // v1.52.16 — validateResponse() defensive shape coercion for
+    // suggestedSourceLocations. Pre-fix, a malformed shape from the
+    // model would crash the action with `TypeError: ...forEach is not
+    // a function`. Post-fix, malformed shapes are coerced to []
+    // (with a core.warning) and malformed entries are dropped per-entry.
+    // (See code_review_may_2026.md finding #5.)
+    // -----------------------------------------------------------------
+    it('coerces non-array suggestedSourceLocations to [] with a warning', async () => {
+      const mockResponse = {
+        output_text: JSON.stringify({
+          verdict: 'PRODUCT_ISSUE',
+          reasoning: 'Malformed shape from model',
+          indicators: ['500 error'],
+          suggestedSourceLocations: { unexpected: 'object' },
+        }),
+      };
+      mockCreate.mockResolvedValueOnce(mockResponse);
+      const result = await client.analyze(mockErrorData, mockExamples);
+      // Output should be a coerced empty array, not the malformed object.
+      // The wrapper at openai-client.analyze() may map [] → undefined,
+      // so accept either as long as we are NOT carrying the bad shape.
+      expect(result.suggestedSourceLocations === undefined || Array.isArray(result.suggestedSourceLocations)).toBe(true);
+      if (Array.isArray(result.suggestedSourceLocations)) {
+        expect(result.suggestedSourceLocations).toEqual([]);
+      }
+    });
+
+    it('filters out entries with the wrong shape and keeps valid ones', async () => {
+      const mockResponse = {
+        output_text: JSON.stringify({
+          verdict: 'PRODUCT_ISSUE',
+          reasoning: 'Mixed valid + malformed entries',
+          indicators: ['500 error'],
+          suggestedSourceLocations: [
+            { file: 'good.ts', lines: '10-12', reason: 'real cause' },
+            { file: 'oops', lines: 42, reason: 'wrong type for lines' },
+            'not an object at all',
+            null,
+            { file: 'partial.ts', lines: '5' /* missing reason */ },
+            { file: 'good2.ts', lines: '20', reason: 'second valid' },
+          ],
+        }),
+      };
+      mockCreate.mockResolvedValueOnce(mockResponse);
+      const result = await client.analyze(mockErrorData, mockExamples);
+      expect(result.suggestedSourceLocations).toBeDefined();
+      expect(result.suggestedSourceLocations).toHaveLength(2);
+      expect(result.suggestedSourceLocations![0].file).toBe('good.ts');
+      expect(result.suggestedSourceLocations![1].file).toBe('good2.ts');
+    });
   });
 
   describe('generateWithCustomPrompt', () => {

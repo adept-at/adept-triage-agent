@@ -39,6 +39,7 @@ exports.decodeLogPayload = decodeLogPayload;
 exports.generateFixBranchName = generateFixBranchName;
 const core = __importStar(require("@actions/core"));
 const constants_1 = require("../config/constants");
+const run_telemetry_1 = require("../pipeline/run-telemetry");
 const test_evidence_1 = require("../services/test-evidence");
 const text_utils_1 = require("../utils/text-utils");
 const RETRY_CONFIG = {
@@ -158,6 +159,7 @@ class GitHubFixApplier {
             const dedupeMatch = await this.findRecentDuplicateBranch(testFile);
             if (dedupeMatch) {
                 core.warning(`⏭️  Branch dedupe: refusing to push — existing branch '${dedupeMatch.name}' was created ${Math.round(dedupeMatch.ageMs / 60_000)} minutes ago for the same spec. To re-fix, delete the existing branch first.`);
+                (0, run_telemetry_1.recordGate)('branchDedupeHits');
                 return {
                     success: false,
                     modifiedFiles: [],

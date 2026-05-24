@@ -34,44 +34,104 @@ export interface PushResult {
 }
 
 
-const SECRET_ENV_KEYS = new Set([
+/**
+ * Env-var filtering for test subprocesses — defense in depth.
+ *
+ * History:
+ *   - Pre v1.52.15: small fixed deny-list (10 keys).
+ *   - v1.52.15: added 8 more keys (AWS, OIDC, Slack) reactively after
+ *     code_review_may_2026 Security #2 found AWS creds leaking.
+ *   - v1.52.17 (this design): hybrid pattern-based deny with explicit
+ *     overrides for test-needed credentials.
+ *
+ * Why not a pure allow-list? Tests we don't fully control legitimately
+ * need a wide variety of env vars (locale, PATH, npm config, browser
+ * config, framework-specific). Enumerating them precisely is fragile and
+ * forces every consumer to coordinate with this file. A pure deny-list
+ * is fragile in the other direction: every new credential added to the
+ * runner (org secret, new GHA env, future SDK) leaks until manually
+ * deny-listed.
+ *
+ * The hybrid here:
+ *   1. EXPLICITLY_DENIED — known triage-agent credentials that must
+ *      never reach a test subprocess (GITHUB_TOKEN, AWS_*, etc.).
+ *      Same shape as the pre-v1.52.17 deny-list.
+ *   2. CREDENTIAL_PATTERN — substring/token regex catching anything
+ *      whose name looks credential-ish (TOKEN, SECRET, KEY, PAT, etc.).
+ *      Defends against future credentials without requiring code changes
+ *      here. Tested below for false-positive shape.
+ *   3. PATTERN_ALLOW_OVERRIDES — small audited set of test-suite
+ *      credentials that match the pattern but are legitimately needed
+ *      to run the test (Sauce, Mailosaur, Cypress Cloud). Operators
+ *      extend this list as new test stacks are onboarded.
+ *
+ * Each function call is cheap (Set lookups + one regex test); the env
+ * is iterated once per test run.
+ */
+const EXPLICITLY_DENIED = new Set<string>([
+  // Triage-agent credentials — never leave the parent action env.
   'GITHUB_TOKEN',
   'OPENAI_API_KEY',
   'CURSOR_API_KEY',
   'NPM_TOKEN',
   'CROSS_REPO_PAT',
+  // Action-input mirrors (GHA exposes inputs.* as INPUT_* env vars).
   'INPUT_GITHUB_TOKEN',
   'INPUT_OPENAI_API_KEY',
   'INPUT_CURSOR_API_KEY',
   'INPUT_NPM_TOKEN',
   'INPUT_CROSS_REPO_PAT',
-  // AWS credentials — added per code_review_may_2026 Security #2.
-  // When the agent uses OIDC to assume a role for DynamoDB skill-store
-  // access, these env vars are populated on the runner and would
-  // otherwise pass through to the test subprocess. LLM-generated fixes
-  // or compromised dependencies executed inside the test could read and
-  // exfiltrate them. Deny-listing here is independent of the OIDC
-  // session lifetime — the parent action keeps its own env intact and
-  // can still reach DynamoDB; only the subprocess is starved.
+  // AWS / OIDC — code_review_may_2026 Security #2.
   'AWS_ACCESS_KEY_ID',
   'AWS_SECRET_ACCESS_KEY',
   'AWS_SESSION_TOKEN',
   'AWS_DEFAULT_REGION',
   'AWS_REGION',
-  // OIDC-related vars that, while not credentials, can be used to
-  // request fresh tokens for additional roles via STS — same risk class.
   'ACTIONS_ID_TOKEN_REQUEST_TOKEN',
   'ACTIONS_ID_TOKEN_REQUEST_URL',
-  // Slack webhook URL (used elsewhere in the org) — preempt accidental
-  // forwarding when consumer workflows expose it as an action env.
+  // Slack webhook URL.
   'SLACK_WEBHOOK_URL',
   'INPUT_SLACK_WEBHOOK_URL',
 ]);
 
+/**
+ * Categorical credential patterns. Matched case-insensitively against the
+ * env var name. Designed to catch credential-shaped names without false-
+ * positively blocking general system / framework env vars (PATH, NODE_*,
+ * NPM_CONFIG_*, CYPRESS_BASE_URL, etc.).
+ *
+ * KEY / KEYS / PAT use lookarounds for `_` / `-` / start / end boundaries
+ * so that `PATH`, `KEYBOARD`, `PATTERN`, etc. do NOT match.
+ */
+const CREDENTIAL_PATTERN =
+  /(?:TOKEN|SECRET|PASSWORD|PASSPHRASE|CREDENTIALS?|PRIVATE_KEY|APIKEY)|(?:^|[_-])(?:KEY|KEYS|PAT)(?:[_-]|$)/i;
+
+/**
+ * Test-credential overrides — env var names that match
+ * `CREDENTIAL_PATTERN` but are required by typical E2E test stacks. Add
+ * sparingly and review periodically. Each entry is a deliberate accepted
+ * risk: if test code or its dependencies are compromised, these
+ * credentials can be exfiltrated by the test process itself.
+ */
+const PATTERN_ALLOW_OVERRIDES = new Set<string>([
+  'SAUCE_USERNAME', // Sauce Labs auth — needed by Sauce-driven WDIO/Cypress runs.
+  'SAUCE_ACCESS_KEY',
+  'MAILOSAUR_API_KEY', // Mailosaur SDK — needed by invite/email tests.
+  'CYPRESS_RECORD_KEY', // Cypress Cloud — needed if `cypress run --record`.
+  'BROWSERSTACK_USERNAME',
+  'BROWSERSTACK_ACCESS_KEY',
+]);
+
+export function shouldDropEnvVar(key: string): boolean {
+  if (EXPLICITLY_DENIED.has(key)) return true;
+  if (PATTERN_ALLOW_OVERRIDES.has(key)) return false;
+  return CREDENTIAL_PATTERN.test(key);
+}
+
 function filterEnv(npmToken?: string): Record<string, string> {
   const env: Record<string, string> = {};
   for (const [key, value] of Object.entries(process.env)) {
-    if (value !== undefined && !SECRET_ENV_KEYS.has(key)) {
+    if (value !== undefined && !shouldDropEnvVar(key)) {
       env[key] = value;
     }
   }
