@@ -56,6 +56,35 @@ function toBuffer(data) {
     }
     return Buffer.from(data);
 }
+function scoreArtifactMatch(artifactName, searchToken) {
+    const a = artifactName.toLowerCase();
+    const s = searchToken.toLowerCase();
+    if (!s || !a.includes(s))
+        return -Infinity;
+    const idx = a.indexOf(s);
+    const before = idx === 0 ? '' : a[idx - 1];
+    const isBoundary = idx === 0 || /[-_/]/.test(before);
+    let score = isBoundary ? 100 : -50;
+    score -= a.length / 1000;
+    return score;
+}
+function pickBestArtifactMatch(artifacts, searchToken) {
+    let best = null;
+    for (const artifact of artifacts) {
+        const score = scoreArtifactMatch(artifact.name, searchToken);
+        if (score > 0 && (!best || score > best.score)) {
+            best = { artifact, score };
+        }
+    }
+    return best ? best.artifact : null;
+}
+function filterArtifactsByMatch(artifacts, searchToken) {
+    const scored = artifacts
+        .map((artifact) => ({ artifact, score: scoreArtifactMatch(artifact.name, searchToken) }))
+        .filter((entry) => entry.score > 0)
+        .sort((a, b) => b.score - a.score);
+    return scored.map((entry) => entry.artifact);
+}
 class ArtifactFetcher {
     octokit;
     constructor(octokit) {
@@ -84,8 +113,7 @@ class ArtifactFetcher {
                 const matrixMatch = jobName.match(/\((.*?)\)/);
                 const searchName = matrixMatch ? matrixMatch[1] : jobName;
                 const jobLower = jobName.toLowerCase();
-                const searchLower = searchName.toLowerCase();
-                let jobSpecificArtifacts = screenshotArtifacts.filter(artifact => artifact.name.toLowerCase().includes(searchLower));
+                let jobSpecificArtifacts = filterArtifactsByMatch(screenshotArtifacts, searchName);
                 if (jobSpecificArtifacts.length === 0) {
                     const jobTokens = jobLower
                         .split(/[^a-z0-9]+/)
@@ -216,7 +244,7 @@ class ArtifactFetcher {
             if (jobName) {
                 const matrixMatch = jobName.match(/\((.*?)\)/);
                 const searchName = matrixMatch ? matrixMatch[1] : jobName;
-                const specificArtifact = logArtifacts.find(artifact => artifact.name.toLowerCase().includes(searchName.toLowerCase()));
+                const specificArtifact = pickBestArtifactMatch(logArtifacts, searchName);
                 if (specificArtifact) {
                     core.info(`Found specific artifact for job ${jobName}: ${specificArtifact.name}`);
                     return await this.processArtifactForLogs(specificArtifact, { owner, repo });

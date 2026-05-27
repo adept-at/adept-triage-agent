@@ -39,6 +39,79 @@ interface GitHubArtifact {
   expires_at?: string | null;
 }
 
+/**
+ * Score how well an artifact name matches a search token. A higher score
+ * means a better match. Returns -Infinity if there is no substring match.
+ *
+ * Why: artifact names commonly look like `cy-logs-<spec>-<runId>`. With
+ * matrix jobs that share spec roots (desktop spec `adept.dashboard.links`
+ * vs mobile spec `mobile.adept.dashboard.links`), a naive `.includes()`
+ * match returns BOTH artifacts when searching for the desktop spec —
+ * because the desktop name is a strict suffix of the mobile name. The
+ * triage agent then analyzed mobile screenshots/logs while reporting on
+ * the desktop spec (real incident, learn-webapp run 26478965727).
+ *
+ * Scoring rules:
+ *  - Match must occur at start-of-string or after a separator
+ *    (`-`, `_`, `/`) to score positively. `.adept...` (preceded by `.`
+ *    inside a compound token like `mobile.adept`) scores negative.
+ *  - Among positive matches, the shortest artifact name wins as a
+ *    tiebreaker because it has the least surrounding noise.
+ */
+function scoreArtifactMatch(artifactName: string, searchToken: string): number {
+  const a = artifactName.toLowerCase();
+  const s = searchToken.toLowerCase();
+  if (!s || !a.includes(s)) return -Infinity;
+
+  const idx = a.indexOf(s);
+  const before = idx === 0 ? '' : a[idx - 1];
+  // Boundary chars that conventionally separate fields in artifact names.
+  const isBoundary = idx === 0 || /[-_/]/.test(before);
+
+  let score = isBoundary ? 100 : -50;
+  // Tiebreaker: prefer shorter artifact name (e.g. desktop variant beats
+  // mobile-prefixed variant when both contain the searched token).
+  score -= a.length / 1000;
+  return score;
+}
+
+/**
+ * Pick the artifact that best matches `searchToken`. Returns null if no
+ * artifact has a positive score (i.e. no separator-bounded match). The
+ * caller may then choose to fall back to a different strategy (token
+ * overlap, all artifacts, etc.).
+ */
+function pickBestArtifactMatch<T extends { name: string }>(
+  artifacts: T[],
+  searchToken: string
+): T | null {
+  let best: { artifact: T; score: number } | null = null;
+  for (const artifact of artifacts) {
+    const score = scoreArtifactMatch(artifact.name, searchToken);
+    if (score > 0 && (!best || score > best.score)) {
+      best = { artifact, score };
+    }
+  }
+  return best ? best.artifact : null;
+}
+
+/**
+ * Filter to artifacts whose name has a positive `scoreArtifactMatch`
+ * score (i.e. separator-bounded match). Returns the artifacts in
+ * descending score order. Used by `fetchScreenshots` where multiple
+ * artifacts per job are legitimate (logs + screenshots + videos).
+ */
+function filterArtifactsByMatch<T extends { name: string }>(
+  artifacts: T[],
+  searchToken: string
+): T[] {
+  const scored = artifacts
+    .map((artifact) => ({ artifact, score: scoreArtifactMatch(artifact.name, searchToken) }))
+    .filter((entry) => entry.score > 0)
+    .sort((a, b) => b.score - a.score);
+  return scored.map((entry) => entry.artifact);
+}
+
 export class ArtifactFetcher {
   constructor(private octokit: Octokit) {}
 
@@ -78,10 +151,13 @@ export class ArtifactFetcher {
         const matrixMatch = jobName.match(/\((.*?)\)/);
         const searchName = matrixMatch ? matrixMatch[1] : jobName;
         const jobLower = jobName.toLowerCase();
-        const searchLower = searchName.toLowerCase();
 
-        let jobSpecificArtifacts = screenshotArtifacts.filter(artifact =>
-          artifact.name.toLowerCase().includes(searchLower)
+        // Use separator-bounded matching (see `scoreArtifactMatch`) so
+        // that a desktop spec doesn't mistakenly include sibling
+        // `mobile.<spec>` artifacts as primary matches.
+        let jobSpecificArtifacts = filterArtifactsByMatch(
+          screenshotArtifacts,
+          searchName
         );
 
         if (jobSpecificArtifacts.length === 0) {
@@ -256,10 +332,14 @@ export class ArtifactFetcher {
         // Extract matrix name from job name format: "previewUrlTest (matrix-name.js)"
         const matrixMatch = jobName.match(/\((.*?)\)/);
         const searchName = matrixMatch ? matrixMatch[1] : jobName;
-        
-        const specificArtifact = logArtifacts.find(artifact => 
-          artifact.name.toLowerCase().includes(searchName.toLowerCase())
-        );
+
+        // Prefer separator-bounded matches over plain substring matches.
+        // Plain `.includes()` returns false positives when the desktop
+        // spec name is a suffix of the mobile spec name (e.g. searching
+        // `adept.dashboard.links.load.js` would also match
+        // `cy-logs-mobile.adept.dashboard.links.load.js`). See
+        // `scoreArtifactMatch` for the full rationale.
+        const specificArtifact = pickBestArtifactMatch(logArtifacts, searchName);
         if (specificArtifact) {
           core.info(`Found specific artifact for job ${jobName}: ${specificArtifact.name}`);
           return await this.processArtifactForLogs(specificArtifact, { owner, repo });

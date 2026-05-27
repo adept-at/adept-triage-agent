@@ -3,6 +3,7 @@ import * as github from '@actions/github';
 import { ActionInputs, FixRecommendation, RepairStatus, RepairTelemetry } from '../types';
 import { ApplyResult } from '../repair/fix-applier';
 import { parseRepoString } from '../utils/repo-utils';
+import { sanitizeActionOutput } from '../utils/output-sanitize';
 
 export function resolveAutoFixTargetRepo(inputs: ActionInputs): {
   owner: string;
@@ -103,7 +104,7 @@ export function finalizeRepairTelemetry(
 
 export function emitRepairOutputs(repair: RepairTelemetry): void {
   core.setOutput('repair_status', repair.status);
-  core.setOutput('repair_summary', repair.summary);
+  core.setOutput('repair_summary', sanitizeActionOutput(repair.summary));
   core.setOutput(
     'repair_details',
     JSON.stringify({
@@ -147,7 +148,7 @@ export function setInconclusiveOutput(
   };
   core.setOutput('verdict', 'INCONCLUSIVE');
   core.setOutput('confidence', result.confidence.toString());
-  core.setOutput('reasoning', `Low confidence: ${result.reasoning}`);
+  core.setOutput('reasoning', sanitizeActionOutput(`Low confidence: ${result.reasoning}`));
   core.setOutput('summary', 'Analysis inconclusive due to low confidence');
   core.setOutput('triage_json', JSON.stringify(inconclusiveTriageJson));
   emitRepairOutputs(NOT_STARTED_REPAIR);
@@ -156,8 +157,8 @@ export function setInconclusiveOutput(
 export function setErrorOutput(reason: string): void {
   core.setOutput('verdict', 'ERROR');
   core.setOutput('confidence', '0');
-  core.setOutput('reasoning', reason);
-  core.setOutput('summary', `Triage failed: ${reason}`);
+  core.setOutput('reasoning', sanitizeActionOutput(reason));
+  core.setOutput('summary', sanitizeActionOutput(`Triage failed: ${reason}`));
   const errorRepair: RepairTelemetry = {
     status: 'not_started',
     summary: `Repair did not run (triage error: ${reason}).`,
@@ -290,8 +291,8 @@ export function setSuccessOutput(
 
   core.setOutput('verdict', result.verdict);
   core.setOutput('confidence', result.confidence.toString());
-  core.setOutput('reasoning', result.reasoning);
-  core.setOutput('summary', result.summary || '');
+  core.setOutput('reasoning', sanitizeActionOutput(result.reasoning));
+  core.setOutput('summary', sanitizeActionOutput(result.summary || ''));
   core.setOutput('triage_json', JSON.stringify(triageJson));
   emitRepairOutputs(repairBlock);
 
@@ -301,7 +302,7 @@ export function setSuccessOutput(
       'fix_recommendation',
       JSON.stringify(result.fixRecommendation)
     );
-    core.setOutput('fix_summary', result.fixRecommendation.summary);
+    core.setOutput('fix_summary', sanitizeActionOutput(result.fixRecommendation.summary));
     core.setOutput(
       'fix_confidence',
       result.fixRecommendation.confidence.toString()
@@ -349,7 +350,7 @@ export function setSuccessOutput(
   // was intentionally withheld for human review".
   core.setOutput('auto_fix_skipped', result.autoFixSkipped ? 'true' : 'false');
   if (result.autoFixSkippedReason) {
-    core.setOutput('auto_fix_skipped_reason', result.autoFixSkippedReason);
+    core.setOutput('auto_fix_skipped_reason', sanitizeActionOutput(result.autoFixSkippedReason));
   }
 
   core.info(`Verdict: ${result.verdict}`);

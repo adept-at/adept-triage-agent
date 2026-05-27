@@ -135,6 +135,26 @@ export interface RepairTelemetry {
   /** Orchestrator wall-clock budget (ms) when repair ran under AgentOrchestrator */
   timeoutMs?: number;
   elapsedMs: number;
+  /**
+   * Set when the InvestigationAgent flagged the failure as product-side
+   * (`APP_CODE`) with confidence at or above
+   * `VERDICT_OVERRIDE_CONFIDENCE_THRESHOLD`. The orchestrator already
+   * uses this signal to abort repair, but historically the data was
+   * thrown away after that — the action's exported `verdict` stayed at
+   * the original classifier value (`TEST_ISSUE`), so consumers received
+   * a contradictory pair of signals: a product-side override warning in
+   * logs but a test-side verdict in outputs.
+   *
+   * Surfacing the override here lets the coordinator authoritatively
+   * swap the exported verdict to `PRODUCT_ISSUE` and embed the
+   * investigation evidence in the reasoning, instead of relying on
+   * downstream consumers to reconcile two different signals.
+   */
+  investigationVerdictOverride?: {
+    suggestedLocation: 'APP_CODE' | 'TEST_CODE' | 'BOTH';
+    confidence: number;
+    evidence: string[];
+  };
 }
 
 export interface AnalysisResult {

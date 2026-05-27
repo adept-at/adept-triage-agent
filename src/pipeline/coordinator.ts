@@ -18,7 +18,7 @@ import { processWorkflowLogs } from '../services/log-processor';
 import { SkillStore, buildSkill, describeFixPattern } from '../services/skill-store';
 import { RepoContextFetcher } from '../services/repo-context-fetcher';
 import { inferRootCauseCategoryFromText } from '../repair/root-cause-category';
-import { CHRONIC_FLAKINESS_THRESHOLD } from '../config/constants';
+import { CHRONIC_FLAKINESS_THRESHOLD, VERDICT_OVERRIDE_CONFIDENCE_THRESHOLD } from '../config/constants';
 import { recordGate, logRunGateSummary } from './run-telemetry';
 import {
   resolveAutoFixTargetRepo,
@@ -603,6 +603,24 @@ export class PipelineCoordinator {
       autoFixResult
     );
 
+    // Verdict-override swap: when the InvestigationAgent flagged the
+    // failure as APP_CODE with high confidence, the orchestrator already
+    // aborted repair (gate `verdictOverrideAborts`). Pre-this-block the
+    // exported verdict still came from the classifier — so the action's
+    // outputs said `TEST_ISSUE` while its own logs said
+    // `Investigation override: APP_CODE`. Concrete incident:
+    // learn-webapp run 26479009022 (mobile axe failure, 2026-05-26)
+    // exported `TEST_ISSUE 95%` despite an internal
+    // `Investigation override: APP_CODE (92%)` warning, contradicting
+    // the desktop variant that exported `PRODUCT_ISSUE 95%` for the
+    // same incident.
+    //
+    // Now: when the override fired, swap the exported verdict to
+    // `PRODUCT_ISSUE`, preserve the original classifier reasoning, and
+    // prepend the investigation evidence so consumers can see why the
+    // verdict was reassigned.
+    applyInvestigationVerdictOverride(result);
+
     const flakinessSignal = skillStore
       ? skillStore.detectFlakiness(errorData.fileName || 'unknown')
       : undefined;
@@ -713,6 +731,66 @@ export class PipelineCoordinator {
     }
 
     setErrorOutput('No error data found to analyze');
+  }
+}
+
+/**
+ * If the orchestrator's InvestigationAgent flagged the failure as
+ * product-side (`APP_CODE`) with confidence at or above
+ * `VERDICT_OVERRIDE_CONFIDENCE_THRESHOLD`, swap the exported verdict
+ * from `TEST_ISSUE` to `PRODUCT_ISSUE` and embed the investigation
+ * evidence in the reasoning. Mutates `result` in place.
+ *
+ * Pre-this-helper the override aborted repair (gate
+ * `verdictOverrideAborts`) but never affected the action's exported
+ * verdict — so consumers received `TEST_ISSUE` action outputs while
+ * the action's own logs warned `Investigation override: APP_CODE`.
+ * Concrete incident: learn-webapp run 26479009022 (mobile axe
+ * failure, 2026-05-26).
+ *
+ * Override semantics:
+ *   - Only `APP_CODE` swaps. `TEST_CODE` already aligns with the
+ *     existing `TEST_ISSUE` classification (no swap needed).
+ *   - `BOTH` is intentionally ignored — the investigation is
+ *     inconclusive about which side owns the defect, so the original
+ *     classifier verdict is preserved.
+ *   - Confidence floor matches the orchestrator's abort gate so the
+ *     two sites stay consistent. If the orchestrator aborted, this
+ *     swap fires; if not, it doesn't.
+ *   - The fix-recommendation block is left as-is on the result. The
+ *     orchestrator already aborted before generating a fix, so the
+ *     downstream `setSuccessOutput` code paths that gate on
+ *     `result.verdict === 'TEST_ISSUE'` for fix outputs naturally
+ *     stop emitting them now that the verdict is `PRODUCT_ISSUE`.
+ */
+function applyInvestigationVerdictOverride(result: AnalysisResult): void {
+  const override = result.repairTelemetry?.investigationVerdictOverride;
+  if (!override) return;
+  if (override.suggestedLocation !== 'APP_CODE') return;
+  if (override.confidence < VERDICT_OVERRIDE_CONFIDENCE_THRESHOLD) return;
+  if (result.verdict !== 'TEST_ISSUE') return;
+
+  const evidenceLine = override.evidence.length > 0
+    ? `Evidence: ${override.evidence.join('; ')}`
+    : 'No specific evidence recorded';
+
+  core.warning(
+    `🔁 Verdict swapped: TEST_ISSUE → PRODUCT_ISSUE based on investigation override ` +
+      `(APP_CODE ${override.confidence}% ≥ ${VERDICT_OVERRIDE_CONFIDENCE_THRESHOLD}%).`
+  );
+  core.info(`   ${evidenceLine}`);
+
+  const overrideHeader =
+    `[Verdict reassigned to PRODUCT_ISSUE by InvestigationAgent ` +
+    `(APP_CODE, ${override.confidence}% confidence).] ${evidenceLine}\n\n`;
+
+  result.verdict = 'PRODUCT_ISSUE';
+  result.confidence = override.confidence;
+  result.reasoning = overrideHeader + result.reasoning;
+  if (result.summary) {
+    result.summary = `🐛 Product Issue (investigation override): ${result.summary}`;
+  } else {
+    result.summary = `🐛 Product Issue (investigation override): ${evidenceLine}`;
   }
 }
 

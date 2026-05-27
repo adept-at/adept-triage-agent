@@ -77,6 +77,7 @@ function buildRepairTelemetry(params) {
         lastFixConfidence: params.lastFixConfidence,
         timeoutMs: params.timeoutMs,
         elapsedMs: Date.now() - params.startedAtMs,
+        investigationVerdictOverride: params.investigationVerdictOverride,
     };
 }
 class AgentOrchestrator {
@@ -314,6 +315,11 @@ class AgentOrchestrator {
                     lastStage: 'investigation',
                     startedAtMs,
                     timeoutMs: this.config.totalTimeoutMs,
+                    investigationVerdictOverride: {
+                        suggestedLocation: investigation.verdictOverride.suggestedLocation,
+                        confidence: investigation.verdictOverride.confidence,
+                        evidence: investigation.verdictOverride.evidence,
+                    },
                 }),
             };
         }
@@ -3368,6 +3374,35 @@ function toBuffer(data) {
     }
     return Buffer.from(data);
 }
+function scoreArtifactMatch(artifactName, searchToken) {
+    const a = artifactName.toLowerCase();
+    const s = searchToken.toLowerCase();
+    if (!s || !a.includes(s))
+        return -Infinity;
+    const idx = a.indexOf(s);
+    const before = idx === 0 ? '' : a[idx - 1];
+    const isBoundary = idx === 0 || /[-_/]/.test(before);
+    let score = isBoundary ? 100 : -50;
+    score -= a.length / 1000;
+    return score;
+}
+function pickBestArtifactMatch(artifacts, searchToken) {
+    let best = null;
+    for (const artifact of artifacts) {
+        const score = scoreArtifactMatch(artifact.name, searchToken);
+        if (score > 0 && (!best || score > best.score)) {
+            best = { artifact, score };
+        }
+    }
+    return best ? best.artifact : null;
+}
+function filterArtifactsByMatch(artifacts, searchToken) {
+    const scored = artifacts
+        .map((artifact) => ({ artifact, score: scoreArtifactMatch(artifact.name, searchToken) }))
+        .filter((entry) => entry.score > 0)
+        .sort((a, b) => b.score - a.score);
+    return scored.map((entry) => entry.artifact);
+}
 class ArtifactFetcher {
     octokit;
     constructor(octokit) {
@@ -3396,8 +3431,7 @@ class ArtifactFetcher {
                 const matrixMatch = jobName.match(/\((.*?)\)/);
                 const searchName = matrixMatch ? matrixMatch[1] : jobName;
                 const jobLower = jobName.toLowerCase();
-                const searchLower = searchName.toLowerCase();
-                let jobSpecificArtifacts = screenshotArtifacts.filter(artifact => artifact.name.toLowerCase().includes(searchLower));
+                let jobSpecificArtifacts = filterArtifactsByMatch(screenshotArtifacts, searchName);
                 if (jobSpecificArtifacts.length === 0) {
                     const jobTokens = jobLower
                         .split(/[^a-z0-9]+/)
@@ -3528,7 +3562,7 @@ class ArtifactFetcher {
             if (jobName) {
                 const matrixMatch = jobName.match(/\((.*?)\)/);
                 const searchName = matrixMatch ? matrixMatch[1] : jobName;
-                const specificArtifact = logArtifacts.find(artifact => artifact.name.toLowerCase().includes(searchName.toLowerCase()));
+                const specificArtifact = pickBestArtifactMatch(logArtifacts, searchName);
                 if (specificArtifact) {
                     core.info(`Found specific artifact for job ${jobName}: ${specificArtifact.name}`);
                     return await this.processArtifactForLogs(specificArtifact, { owner, repo });
@@ -5206,6 +5240,7 @@ class PipelineCoordinator {
             }
         }
         result.repairTelemetry = (0, output_1.finalizeRepairTelemetry)(repairTelemetryFromRun, fixRecommendation, autoFixResult);
+        applyInvestigationVerdictOverride(result);
         const flakinessSignal = skillStore
             ? skillStore.detectFlakiness(errorData.fileName || 'unknown')
             : undefined;
@@ -5289,6 +5324,34 @@ class PipelineCoordinator {
     }
 }
 exports.PipelineCoordinator = PipelineCoordinator;
+function applyInvestigationVerdictOverride(result) {
+    const override = result.repairTelemetry?.investigationVerdictOverride;
+    if (!override)
+        return;
+    if (override.suggestedLocation !== 'APP_CODE')
+        return;
+    if (override.confidence < constants_1.VERDICT_OVERRIDE_CONFIDENCE_THRESHOLD)
+        return;
+    if (result.verdict !== 'TEST_ISSUE')
+        return;
+    const evidenceLine = override.evidence.length > 0
+        ? `Evidence: ${override.evidence.join('; ')}`
+        : 'No specific evidence recorded';
+    core.warning(`🔁 Verdict swapped: TEST_ISSUE → PRODUCT_ISSUE based on investigation override ` +
+        `(APP_CODE ${override.confidence}% ≥ ${constants_1.VERDICT_OVERRIDE_CONFIDENCE_THRESHOLD}%).`);
+    core.info(`   ${evidenceLine}`);
+    const overrideHeader = `[Verdict reassigned to PRODUCT_ISSUE by InvestigationAgent ` +
+        `(APP_CODE, ${override.confidence}% confidence).] ${evidenceLine}\n\n`;
+    result.verdict = 'PRODUCT_ISSUE';
+    result.confidence = override.confidence;
+    result.reasoning = overrideHeader + result.reasoning;
+    if (result.summary) {
+        result.summary = `🐛 Product Issue (investigation override): ${result.summary}`;
+    }
+    else {
+        result.summary = `🐛 Product Issue (investigation override): ${evidenceLine}`;
+    }
+}
 function inferRootCauseCategory(fix) {
     return (0, root_cause_category_1.inferRootCauseCategoryFromText)([
         fix.summary,
@@ -5412,6 +5475,7 @@ exports.setSuccessOutput = setSuccessOutput;
 const core = __importStar(__nccwpck_require__(37484));
 const github = __importStar(__nccwpck_require__(93228));
 const repo_utils_1 = __nccwpck_require__(74843);
+const output_sanitize_1 = __nccwpck_require__(5436);
 function resolveAutoFixTargetRepo(inputs) {
     return (0, repo_utils_1.parseRepoString)(inputs.autoFixTargetRepo, 'AUTO_FIX_TARGET_REPO');
 }
@@ -5480,7 +5544,7 @@ function finalizeRepairTelemetry(base, fixRecommendation, autoFixResult) {
 }
 function emitRepairOutputs(repair) {
     core.setOutput('repair_status', repair.status);
-    core.setOutput('repair_summary', repair.summary);
+    core.setOutput('repair_summary', (0, output_sanitize_1.sanitizeActionOutput)(repair.summary));
     core.setOutput('repair_details', JSON.stringify({
         iterations: repair.iterations,
         lastStage: repair.lastStage,
@@ -5512,7 +5576,7 @@ function setInconclusiveOutput(result, inputs, errorData) {
     };
     core.setOutput('verdict', 'INCONCLUSIVE');
     core.setOutput('confidence', result.confidence.toString());
-    core.setOutput('reasoning', `Low confidence: ${result.reasoning}`);
+    core.setOutput('reasoning', (0, output_sanitize_1.sanitizeActionOutput)(`Low confidence: ${result.reasoning}`));
     core.setOutput('summary', 'Analysis inconclusive due to low confidence');
     core.setOutput('triage_json', JSON.stringify(inconclusiveTriageJson));
     emitRepairOutputs(exports.NOT_STARTED_REPAIR);
@@ -5520,8 +5584,8 @@ function setInconclusiveOutput(result, inputs, errorData) {
 function setErrorOutput(reason) {
     core.setOutput('verdict', 'ERROR');
     core.setOutput('confidence', '0');
-    core.setOutput('reasoning', reason);
-    core.setOutput('summary', `Triage failed: ${reason}`);
+    core.setOutput('reasoning', (0, output_sanitize_1.sanitizeActionOutput)(reason));
+    core.setOutput('summary', (0, output_sanitize_1.sanitizeActionOutput)(`Triage failed: ${reason}`));
     const errorRepair = {
         status: 'not_started',
         summary: `Repair did not run (triage error: ${reason}).`,
@@ -5610,14 +5674,14 @@ function setSuccessOutput(result, errorData, autoFixResult, flakiness) {
     };
     core.setOutput('verdict', result.verdict);
     core.setOutput('confidence', result.confidence.toString());
-    core.setOutput('reasoning', result.reasoning);
-    core.setOutput('summary', result.summary || '');
+    core.setOutput('reasoning', (0, output_sanitize_1.sanitizeActionOutput)(result.reasoning));
+    core.setOutput('summary', (0, output_sanitize_1.sanitizeActionOutput)(result.summary || ''));
     core.setOutput('triage_json', JSON.stringify(triageJson));
     emitRepairOutputs(repairBlock);
     if (result.fixRecommendation) {
         core.setOutput('has_fix_recommendation', 'true');
         core.setOutput('fix_recommendation', JSON.stringify(result.fixRecommendation));
-        core.setOutput('fix_summary', result.fixRecommendation.summary);
+        core.setOutput('fix_summary', (0, output_sanitize_1.sanitizeActionOutput)(result.fixRecommendation.summary));
         core.setOutput('fix_confidence', result.fixRecommendation.confidence.toString());
     }
     else {
@@ -5646,7 +5710,7 @@ function setSuccessOutput(result, errorData, autoFixResult, flakiness) {
     }
     core.setOutput('auto_fix_skipped', result.autoFixSkipped ? 'true' : 'false');
     if (result.autoFixSkippedReason) {
-        core.setOutput('auto_fix_skipped_reason', result.autoFixSkippedReason);
+        core.setOutput('auto_fix_skipped_reason', (0, output_sanitize_1.sanitizeActionOutput)(result.autoFixSkippedReason));
     }
     core.info(`Verdict: ${result.verdict}`);
     core.info(`Confidence: ${result.confidence}%`);
@@ -9933,6 +9997,37 @@ function clampConfidence(value, fallback = 50) {
     return Math.max(0, Math.min(100, numeric));
 }
 //# sourceMappingURL=number-utils.js.map
+
+/***/ }),
+
+/***/ 5436:
+/***/ ((__unused_webpack_module, exports) => {
+
+"use strict";
+
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.sanitizeActionOutput = sanitizeActionOutput;
+const DEFAULT_MAX_LEN = 5000;
+const TRUNCATION_MARKER = '… [truncated]';
+const CONTROL_CHARS = /[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g;
+function sanitizeActionOutput(text, opts = {}) {
+    if (!text)
+        return '';
+    const { maxLen = DEFAULT_MAX_LEN, singleLine = false } = opts;
+    let cleaned = text.replace(CONTROL_CHARS, '');
+    if (singleLine) {
+        cleaned = cleaned.replace(/\r\n|\r|\n/g, ' · ').replace(/[ \t]{2,}/g, ' ').trim();
+    }
+    else {
+        cleaned = cleaned.replace(/\r\n|\r/g, '\n');
+    }
+    if (cleaned.length > maxLen) {
+        const cutoff = Math.max(0, maxLen - TRUNCATION_MARKER.length);
+        cleaned = cleaned.substring(0, cutoff) + TRUNCATION_MARKER;
+    }
+    return cleaned;
+}
+//# sourceMappingURL=output-sanitize.js.map
 
 /***/ }),
 

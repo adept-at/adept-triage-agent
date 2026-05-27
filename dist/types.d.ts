@@ -70,6 +70,11 @@ export interface RepairTelemetry {
     lastFixConfidence?: number;
     timeoutMs?: number;
     elapsedMs: number;
+    investigationVerdictOverride?: {
+        suggestedLocation: 'APP_CODE' | 'TEST_CODE' | 'BOTH';
+        confidence: number;
+        evidence: string[];
+    };
 }
 export interface AnalysisResult {
     verdict: Verdict;

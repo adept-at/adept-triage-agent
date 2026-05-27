@@ -342,6 +342,7 @@ class PipelineCoordinator {
             }
         }
         result.repairTelemetry = (0, output_1.finalizeRepairTelemetry)(repairTelemetryFromRun, fixRecommendation, autoFixResult);
+        applyInvestigationVerdictOverride(result);
         const flakinessSignal = skillStore
             ? skillStore.detectFlakiness(errorData.fileName || 'unknown')
             : undefined;
@@ -425,6 +426,34 @@ class PipelineCoordinator {
     }
 }
 exports.PipelineCoordinator = PipelineCoordinator;
+function applyInvestigationVerdictOverride(result) {
+    const override = result.repairTelemetry?.investigationVerdictOverride;
+    if (!override)
+        return;
+    if (override.suggestedLocation !== 'APP_CODE')
+        return;
+    if (override.confidence < constants_1.VERDICT_OVERRIDE_CONFIDENCE_THRESHOLD)
+        return;
+    if (result.verdict !== 'TEST_ISSUE')
+        return;
+    const evidenceLine = override.evidence.length > 0
+        ? `Evidence: ${override.evidence.join('; ')}`
+        : 'No specific evidence recorded';
+    core.warning(`🔁 Verdict swapped: TEST_ISSUE → PRODUCT_ISSUE based on investigation override ` +
+        `(APP_CODE ${override.confidence}% ≥ ${constants_1.VERDICT_OVERRIDE_CONFIDENCE_THRESHOLD}%).`);
+    core.info(`   ${evidenceLine}`);
+    const overrideHeader = `[Verdict reassigned to PRODUCT_ISSUE by InvestigationAgent ` +
+        `(APP_CODE, ${override.confidence}% confidence).] ${evidenceLine}\n\n`;
+    result.verdict = 'PRODUCT_ISSUE';
+    result.confidence = override.confidence;
+    result.reasoning = overrideHeader + result.reasoning;
+    if (result.summary) {
+        result.summary = `🐛 Product Issue (investigation override): ${result.summary}`;
+    }
+    else {
+        result.summary = `🐛 Product Issue (investigation override): ${evidenceLine}`;
+    }
+}
 function inferRootCauseCategory(fix) {
     return (0, root_cause_category_1.inferRootCauseCategoryFromText)([
         fix.summary,
