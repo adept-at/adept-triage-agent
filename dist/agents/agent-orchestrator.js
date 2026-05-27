@@ -312,6 +312,14 @@ class AgentOrchestrator {
                         suggestedLocation: investigation.verdictOverride.suggestedLocation,
                         confidence: investigation.verdictOverride.confidence,
                         evidence: investigation.verdictOverride.evidence,
+                        suggestedSourceLocations: investigation.findings
+                            .filter((f) => f.location?.file)
+                            .slice(0, 5)
+                            .map((f) => ({
+                            file: f.location.file,
+                            lines: f.location.line ? String(f.location.line) : '?',
+                            reason: f.relationToError || f.description,
+                        })),
                     },
                 }),
             };

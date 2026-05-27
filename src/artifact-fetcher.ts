@@ -51,13 +51,30 @@ interface GitHubArtifact {
  * triage agent then analyzed mobile screenshots/logs while reporting on
  * the desktop spec (real incident, learn-webapp run 26478965727).
  *
- * Scoring rules:
- *  - Match must occur at start-of-string or after a separator
- *    (`-`, `_`, `/`) to score positively. `.adept...` (preceded by `.`
- *    inside a compound token like `mobile.adept`) scores negative.
- *  - Among positive matches, the shortest artifact name wins as a
- *    tiebreaker because it has the least surrounding noise.
+ * Tiered scoring so a "process all artifacts" fallback isn't needed
+ * whenever the only candidates are non-bounded substring matches (the
+ * pre-tiering version returned null in that case, which made
+ * `fetchTestArtifactLogs` process every log artifact in the run —
+ * strictly worse than the old single-substring-match behavior for runs
+ * with unconventional artifact naming).
+ *
+ * Tiers:
+ *  - SEPARATOR_BOUNDED (+100): match starts at index 0 or after `-_/`.
+ *    Targets `cy-logs-adept.dashboard...` searched with `adept.dashboard`.
+ *  - WORD_INTERNAL_PUNCT (+50): preceded by `.`. Common in adept matrix
+ *    naming (mobile.adept, desktop.adept) where `.` is the field
+ *    separator. Worse than SEPARATOR_BOUNDED but still a meaningful
+ *    match — picks SOMETHING when no separator-bounded match exists.
+ *  - ARBITRARY_INTERNAL (+25): preceded by any word character (letter
+ *    or digit). The token is embedded inside a longer compound name —
+ *    weakest signal but better than discarding the candidate entirely.
+ *
+ *  - Tiebreaker: shorter artifact name wins (less surrounding noise).
  */
+const SCORE_SEPARATOR_BOUNDED = 100;
+const SCORE_WORD_INTERNAL_PUNCT = 50;
+const SCORE_ARBITRARY_INTERNAL = 25;
+
 function scoreArtifactMatch(artifactName: string, searchToken: string): number {
   const a = artifactName.toLowerCase();
   const s = searchToken.toLowerCase();
@@ -65,21 +82,27 @@ function scoreArtifactMatch(artifactName: string, searchToken: string): number {
 
   const idx = a.indexOf(s);
   const before = idx === 0 ? '' : a[idx - 1];
-  // Boundary chars that conventionally separate fields in artifact names.
-  const isBoundary = idx === 0 || /[-_/]/.test(before);
 
-  let score = isBoundary ? 100 : -50;
+  let baseScore: number;
+  if (idx === 0 || /[-_/]/.test(before)) {
+    baseScore = SCORE_SEPARATOR_BOUNDED;
+  } else if (before === '.') {
+    baseScore = SCORE_WORD_INTERNAL_PUNCT;
+  } else {
+    baseScore = SCORE_ARBITRARY_INTERNAL;
+  }
+
   // Tiebreaker: prefer shorter artifact name (e.g. desktop variant beats
   // mobile-prefixed variant when both contain the searched token).
-  score -= a.length / 1000;
-  return score;
+  return baseScore - a.length / 1000;
 }
 
 /**
- * Pick the artifact that best matches `searchToken`. Returns null if no
- * artifact has a positive score (i.e. no separator-bounded match). The
- * caller may then choose to fall back to a different strategy (token
- * overlap, all artifacts, etc.).
+ * Pick the artifact that best matches `searchToken`. Returns null only
+ * when there is no substring match anywhere — i.e. genuinely no
+ * candidate. With tiered scoring, callers no longer need to choose
+ * between "the boundary-perfect match" and "process all artifacts" — if
+ * any candidate contains the token, the highest-scoring one wins.
  */
 function pickBestArtifactMatch<T extends { name: string }>(
   artifacts: T[],
@@ -88,7 +111,8 @@ function pickBestArtifactMatch<T extends { name: string }>(
   let best: { artifact: T; score: number } | null = null;
   for (const artifact of artifacts) {
     const score = scoreArtifactMatch(artifact.name, searchToken);
-    if (score > 0 && (!best || score > best.score)) {
+    if (score === -Infinity) continue;
+    if (!best || score > best.score) {
       best = { artifact, score };
     }
   }
@@ -96,10 +120,14 @@ function pickBestArtifactMatch<T extends { name: string }>(
 }
 
 /**
- * Filter to artifacts whose name has a positive `scoreArtifactMatch`
- * score (i.e. separator-bounded match). Returns the artifacts in
- * descending score order. Used by `fetchScreenshots` where multiple
+ * Filter to artifacts that have a positive `scoreArtifactMatch` score,
+ * sorted by descending score. Used by `fetchScreenshots` where multiple
  * artifacts per job are legitimate (logs + screenshots + videos).
+ *
+ * Drops the lowest tier (`ARBITRARY_INTERNAL`) since the fetchScreenshots
+ * call site already has a token-overlap fallback for poor matches —
+ * surfacing arbitrary-internal candidates here would risk fetching
+ * sibling-job artifacts and contaminating the screenshot set.
  */
 function filterArtifactsByMatch<T extends { name: string }>(
   artifacts: T[],
@@ -107,7 +135,7 @@ function filterArtifactsByMatch<T extends { name: string }>(
 ): T[] {
   const scored = artifacts
     .map((artifact) => ({ artifact, score: scoreArtifactMatch(artifact.name, searchToken) }))
-    .filter((entry) => entry.score > 0)
+    .filter((entry) => entry.score >= SCORE_WORD_INTERNAL_PUNCT)
     .sort((a, b) => b.score - a.score);
   return scored.map((entry) => entry.artifact);
 }

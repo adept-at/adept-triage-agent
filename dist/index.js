@@ -319,6 +319,14 @@ class AgentOrchestrator {
                         suggestedLocation: investigation.verdictOverride.suggestedLocation,
                         confidence: investigation.verdictOverride.confidence,
                         evidence: investigation.verdictOverride.evidence,
+                        suggestedSourceLocations: investigation.findings
+                            .filter((f) => f.location?.file)
+                            .slice(0, 5)
+                            .map((f) => ({
+                            file: f.location.file,
+                            lines: f.location.line ? String(f.location.line) : '?',
+                            reason: f.relationToError || f.description,
+                        })),
                     },
                 }),
             };
@@ -2655,7 +2663,7 @@ You MUST respond with a JSON object matching this schema:
     }
   ],
   "confidence": <0-100>,
-  "verdictOverride": <optional object — ONLY include if your investigation reveals the failure is NOT fixable in test code. Include { "suggestedLocation": "APP_CODE"|"TEST_CODE"|"BOTH", "confidence": <0-100>, "evidence": ["reason1", "reason2"] }>
+  "verdictOverride": <optional object — ONLY include when you have CONCRETE EVIDENCE the defect is on the side you name. Setting suggestedLocation="APP_CODE" now flips the action's user-facing verdict from TEST_ISSUE to PRODUCT_ISSUE and pages product engineers, so the bar is high. For "APP_CODE" specifically, require AT LEAST ONE of: (a) a specific bug visible in product code (null-pointer access, broken null-check, accidental deletion, regression introduced by the product diff), (b) the product behavior contradicts its own diff in a way that looks unintentional, or (c) a backend/API response that violates the documented contract. DO NOT emit "APP_CODE" merely because the test is hard to repair in test code — that is grounds for isTestCodeFixable=false, not a product verdict. "TEST_CODE" and "BOTH" do not flip the user-facing verdict, so the bar is lower (any clear test-side defect or genuine ambiguity). Include { "suggestedLocation": "APP_CODE"|"TEST_CODE"|"BOTH", "confidence": <0-100>, "evidence": ["specific defect 1", "specific defect 2"] }>
 }`;
     }
     buildUserPrompt(input, context) {
@@ -3374,6 +3382,9 @@ function toBuffer(data) {
     }
     return Buffer.from(data);
 }
+const SCORE_SEPARATOR_BOUNDED = 100;
+const SCORE_WORD_INTERNAL_PUNCT = 50;
+const SCORE_ARBITRARY_INTERNAL = 25;
 function scoreArtifactMatch(artifactName, searchToken) {
     const a = artifactName.toLowerCase();
     const s = searchToken.toLowerCase();
@@ -3381,16 +3392,25 @@ function scoreArtifactMatch(artifactName, searchToken) {
         return -Infinity;
     const idx = a.indexOf(s);
     const before = idx === 0 ? '' : a[idx - 1];
-    const isBoundary = idx === 0 || /[-_/]/.test(before);
-    let score = isBoundary ? 100 : -50;
-    score -= a.length / 1000;
-    return score;
+    let baseScore;
+    if (idx === 0 || /[-_/]/.test(before)) {
+        baseScore = SCORE_SEPARATOR_BOUNDED;
+    }
+    else if (before === '.') {
+        baseScore = SCORE_WORD_INTERNAL_PUNCT;
+    }
+    else {
+        baseScore = SCORE_ARBITRARY_INTERNAL;
+    }
+    return baseScore - a.length / 1000;
 }
 function pickBestArtifactMatch(artifacts, searchToken) {
     let best = null;
     for (const artifact of artifacts) {
         const score = scoreArtifactMatch(artifact.name, searchToken);
-        if (score > 0 && (!best || score > best.score)) {
+        if (score === -Infinity)
+            continue;
+        if (!best || score > best.score) {
             best = { artifact, score };
         }
     }
@@ -3399,7 +3419,7 @@ function pickBestArtifactMatch(artifacts, searchToken) {
 function filterArtifactsByMatch(artifacts, searchToken) {
     const scored = artifacts
         .map((artifact) => ({ artifact, score: scoreArtifactMatch(artifact.name, searchToken) }))
-        .filter((entry) => entry.score > 0)
+        .filter((entry) => entry.score >= SCORE_WORD_INTERNAL_PUNCT)
         .sort((a, b) => b.score - a.score);
     return scored.map((entry) => entry.artifact);
 }
@@ -5324,6 +5344,9 @@ class PipelineCoordinator {
     }
 }
 exports.PipelineCoordinator = PipelineCoordinator;
+function stripClassifierVerdictPrefix(summary) {
+    return summary.replace(/^[^\w\s]+\s*(?:Test Issue|Product Issue|Inconclusive|Pending|Error|No Failure)\s*:\s*/u, '');
+}
 function applyInvestigationVerdictOverride(result) {
     const override = result.repairTelemetry?.investigationVerdictOverride;
     if (!override)
@@ -5340,16 +5363,25 @@ function applyInvestigationVerdictOverride(result) {
     core.warning(`🔁 Verdict swapped: TEST_ISSUE → PRODUCT_ISSUE based on investigation override ` +
         `(APP_CODE ${override.confidence}% ≥ ${constants_1.VERDICT_OVERRIDE_CONFIDENCE_THRESHOLD}%).`);
     core.info(`   ${evidenceLine}`);
-    const overrideHeader = `[Verdict reassigned to PRODUCT_ISSUE by InvestigationAgent ` +
-        `(APP_CODE, ${override.confidence}% confidence).] ${evidenceLine}\n\n`;
+    (0, run_telemetry_1.recordGate)('verdictOverrideSwaps');
+    const overrideHeader = `Verdict reassigned to PRODUCT_ISSUE by InvestigationAgent ` +
+        `(suggestedLocation=APP_CODE, confidence=${override.confidence}%).\n` +
+        `${evidenceLine}\n\n` +
+        `--- Original classifier reasoning (now SUPERSEDED by the override above) ---\n`;
+    if (result.repairTelemetry) {
+        result.repairTelemetry.priorClassifierConfidence = result.confidence;
+    }
     result.verdict = 'PRODUCT_ISSUE';
     result.confidence = override.confidence;
     result.reasoning = overrideHeader + result.reasoning;
-    if (result.summary) {
-        result.summary = `🐛 Product Issue (investigation override): ${result.summary}`;
-    }
-    else {
-        result.summary = `🐛 Product Issue (investigation override): ${evidenceLine}`;
+    const strippedPriorSummary = result.summary
+        ? stripClassifierVerdictPrefix(result.summary)
+        : '';
+    result.summary = strippedPriorSummary
+        ? `🐛 Product Issue (investigation override): ${strippedPriorSummary}`
+        : `🐛 Product Issue (investigation override): ${evidenceLine}`;
+    if (override.suggestedSourceLocations && override.suggestedSourceLocations.length > 0) {
+        result.suggestedSourceLocations = override.suggestedSourceLocations;
     }
 }
 function inferRootCauseCategory(fix) {
@@ -5544,7 +5576,7 @@ function finalizeRepairTelemetry(base, fixRecommendation, autoFixResult) {
 }
 function emitRepairOutputs(repair) {
     core.setOutput('repair_status', repair.status);
-    core.setOutput('repair_summary', (0, output_sanitize_1.sanitizeActionOutput)(repair.summary));
+    core.setOutput('repair_summary', (0, output_sanitize_1.sanitizeActionOutput)(repair.summary, { singleLine: true }));
     core.setOutput('repair_details', JSON.stringify({
         iterations: repair.iterations,
         lastStage: repair.lastStage,
@@ -5585,7 +5617,7 @@ function setErrorOutput(reason) {
     core.setOutput('verdict', 'ERROR');
     core.setOutput('confidence', '0');
     core.setOutput('reasoning', (0, output_sanitize_1.sanitizeActionOutput)(reason));
-    core.setOutput('summary', (0, output_sanitize_1.sanitizeActionOutput)(`Triage failed: ${reason}`));
+    core.setOutput('summary', (0, output_sanitize_1.sanitizeActionOutput)(`Triage failed: ${reason}`, { singleLine: true }));
     const errorRepair = {
         status: 'not_started',
         summary: `Repair did not run (triage error: ${reason}).`,
@@ -5675,13 +5707,13 @@ function setSuccessOutput(result, errorData, autoFixResult, flakiness) {
     core.setOutput('verdict', result.verdict);
     core.setOutput('confidence', result.confidence.toString());
     core.setOutput('reasoning', (0, output_sanitize_1.sanitizeActionOutput)(result.reasoning));
-    core.setOutput('summary', (0, output_sanitize_1.sanitizeActionOutput)(result.summary || ''));
+    core.setOutput('summary', (0, output_sanitize_1.sanitizeActionOutput)(result.summary || '', { singleLine: true }));
     core.setOutput('triage_json', JSON.stringify(triageJson));
     emitRepairOutputs(repairBlock);
     if (result.fixRecommendation) {
         core.setOutput('has_fix_recommendation', 'true');
         core.setOutput('fix_recommendation', JSON.stringify(result.fixRecommendation));
-        core.setOutput('fix_summary', (0, output_sanitize_1.sanitizeActionOutput)(result.fixRecommendation.summary));
+        core.setOutput('fix_summary', (0, output_sanitize_1.sanitizeActionOutput)(result.fixRecommendation.summary, { singleLine: true }));
         core.setOutput('fix_confidence', result.fixRecommendation.confidence.toString());
     }
     else {
@@ -5710,7 +5742,7 @@ function setSuccessOutput(result, errorData, autoFixResult, flakiness) {
     }
     core.setOutput('auto_fix_skipped', result.autoFixSkipped ? 'true' : 'false');
     if (result.autoFixSkippedReason) {
-        core.setOutput('auto_fix_skipped_reason', (0, output_sanitize_1.sanitizeActionOutput)(result.autoFixSkippedReason));
+        core.setOutput('auto_fix_skipped_reason', (0, output_sanitize_1.sanitizeActionOutput)(result.autoFixSkippedReason, { singleLine: true }));
     }
     core.info(`Verdict: ${result.verdict}`);
     core.info(`Confidence: ${result.confidence}%`);
@@ -5822,6 +5854,7 @@ function createEmpty() {
         branchDedupeHits: 0,
         infraFastPathHits: 0,
         verdictOverrideAborts: 0,
+        verdictOverrideSwaps: 0,
         priorFailedTrajectoryBoosts: 0,
         skillWriteSkips: 0,
         flakinessWatchEmits: 0,
@@ -5845,6 +5878,7 @@ function logRunGateSummary() {
             `branch-dedupe=${c.branchDedupeHits} ` +
             `infra-fast-path=${c.infraFastPathHits} ` +
             `verdict-override=${c.verdictOverrideAborts} ` +
+            `verdict-override-swap=${c.verdictOverrideSwaps} ` +
             `prior-failed-boost=${c.priorFailedTrajectoryBoosts} ` +
             `skill-write-skip=${c.skillWriteSkips} ` +
             `flakiness-watch=${c.flakinessWatchEmits} ` +
@@ -10022,8 +10056,13 @@ function sanitizeActionOutput(text, opts = {}) {
         cleaned = cleaned.replace(/\r\n|\r/g, '\n');
     }
     if (cleaned.length > maxLen) {
-        const cutoff = Math.max(0, maxLen - TRUNCATION_MARKER.length);
-        cleaned = cleaned.substring(0, cutoff) + TRUNCATION_MARKER;
+        if (maxLen <= TRUNCATION_MARKER.length) {
+            cleaned = cleaned.substring(0, maxLen);
+        }
+        else {
+            const cutoff = maxLen - TRUNCATION_MARKER.length;
+            cleaned = cleaned.substring(0, cutoff) + TRUNCATION_MARKER;
+        }
     }
     return cleaned;
 }

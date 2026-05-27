@@ -3,6 +3,7 @@ interface GateCounters {
     branchDedupeHits: number;
     infraFastPathHits: number;
     verdictOverrideAborts: number;
+    verdictOverrideSwaps: number;
     priorFailedTrajectoryBoosts: number;
     skillWriteSkips: number;
     flakinessWatchEmits: number;

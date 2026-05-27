@@ -494,10 +494,25 @@ export class AgentOrchestrator {
           // learn-webapp run 26479009022 (2026-05-26) where mobile
           // axe failure was logged as `APP_CODE 92%` but exported as
           // `TEST_ISSUE 95%`.
+          //
+          // Also project investigation findings' locations into
+          // `suggestedSourceLocations` shape so the swapped PRODUCT_ISSUE
+          // verdict has the same `triage_json.suggestedSourceLocations`
+          // payload as a classifier-direct PRODUCT_ISSUE verdict.
+          // Investigation already collected file/line info on
+          // findings[].location during this exact analysis.
           investigationVerdictOverride: {
             suggestedLocation: investigation.verdictOverride.suggestedLocation,
             confidence: investigation.verdictOverride.confidence,
             evidence: investigation.verdictOverride.evidence,
+            suggestedSourceLocations: investigation.findings
+              .filter((f) => f.location?.file)
+              .slice(0, 5)
+              .map((f) => ({
+                file: f.location!.file,
+                lines: f.location!.line ? String(f.location!.line) : '?',
+                reason: f.relationToError || f.description,
+              })),
           },
         }),
       };

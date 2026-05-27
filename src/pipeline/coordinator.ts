@@ -735,6 +735,31 @@ export class PipelineCoordinator {
 }
 
 /**
+ * Strip a leading verdict-emoji label from a classifier-produced summary.
+ *
+ * `summary-generator.generateAnalysisSummary` emits summaries shaped like:
+ *   `🧪 Test Issue: <reasoning>`         (TEST_ISSUE)
+ *   `🐛 Product Issue: <reasoning>`      (PRODUCT_ISSUE)
+ *   `❓ Inconclusive: <reasoning>`        (INCONCLUSIVE)
+ *   etc. (see `analysis/summary-generator.ts:14-22`)
+ *
+ * When `applyInvestigationVerdictOverride` swaps the verdict and prepends
+ * its own override label, the result without stripping is the
+ * double-emoji string `🐛 Product Issue (investigation override): 🧪 Test
+ * Issue: …` — two contradictory verdict labels in one Slack-bound line.
+ * Strip the existing label so only one verdict prefix survives.
+ *
+ * The match is intentionally narrow (only the known verdict labels) so
+ * arbitrary text that happens to start with an emoji is left alone.
+ */
+function stripClassifierVerdictPrefix(summary: string): string {
+  return summary.replace(
+    /^[^\w\s]+\s*(?:Test Issue|Product Issue|Inconclusive|Pending|Error|No Failure)\s*:\s*/u,
+    ''
+  );
+}
+
+/**
  * If the orchestrator's InvestigationAgent flagged the failure as
  * product-side (`APP_CODE`) with confidence at or above
  * `VERDICT_OVERRIDE_CONFIDENCE_THRESHOLD`, swap the exported verdict
@@ -762,6 +787,13 @@ export class PipelineCoordinator {
  *     downstream `setSuccessOutput` code paths that gate on
  *     `result.verdict === 'TEST_ISSUE'` for fix outputs naturally
  *     stop emitting them now that the verdict is `PRODUCT_ISSUE`.
+ *
+ * The four early-return guards below are unreachable under the current
+ * call graph (the orchestrator only populates `investigationVerdictOverride`
+ * in its APP_CODE-confidence-above-threshold abort branch, and the
+ * coordinator only reaches this helper after `classification.verdict ===
+ * 'TEST_ISSUE'`). They are kept as idempotency guards so adding a second
+ * call site cannot mis-fire silently.
  */
 function applyInvestigationVerdictOverride(result: AnalysisResult): void {
   const override = result.repairTelemetry?.investigationVerdictOverride;
@@ -779,18 +811,51 @@ function applyInvestigationVerdictOverride(result: AnalysisResult): void {
       `(APP_CODE ${override.confidence}% ≥ ${VERDICT_OVERRIDE_CONFIDENCE_THRESHOLD}%).`
   );
   core.info(`   ${evidenceLine}`);
+  recordGate('verdictOverrideSwaps');
 
+  // Frame the classifier's now-superseded reasoning explicitly rather
+  // than appending it under the override header without context. Pre-this
+  // change, swapped reasoning read like an override evidence paragraph
+  // followed by a verbose paragraph saying "this is a TEST_ISSUE
+  // because…" — internally contradictory and confusing to humans + LLMs.
   const overrideHeader =
-    `[Verdict reassigned to PRODUCT_ISSUE by InvestigationAgent ` +
-    `(APP_CODE, ${override.confidence}% confidence).] ${evidenceLine}\n\n`;
+    `Verdict reassigned to PRODUCT_ISSUE by InvestigationAgent ` +
+    `(suggestedLocation=APP_CODE, confidence=${override.confidence}%).\n` +
+    `${evidenceLine}\n\n` +
+    `--- Original classifier reasoning (now SUPERSEDED by the override above) ---\n`;
+
+  // Preserve the original classifier confidence so post-mortems and
+  // accuracy dashboards can recover the (TEST_ISSUE, 95%) → (PRODUCT_ISSUE,
+  // override-confidence) transition. Without this, dashboards plotting
+  // "average confidence on PRODUCT_ISSUE" silently mix override-path and
+  // classifier-direct entries with very different distributions.
+  if (result.repairTelemetry) {
+    result.repairTelemetry.priorClassifierConfidence = result.confidence;
+  }
 
   result.verdict = 'PRODUCT_ISSUE';
   result.confidence = override.confidence;
   result.reasoning = overrideHeader + result.reasoning;
-  if (result.summary) {
-    result.summary = `🐛 Product Issue (investigation override): ${result.summary}`;
-  } else {
-    result.summary = `🐛 Product Issue (investigation override): ${evidenceLine}`;
+
+  // Strip the classifier's own verdict-emoji prefix from `summary`
+  // before prepending the override label. Otherwise the swap produces
+  // `🐛 Product Issue (investigation override): 🧪 Test Issue: …` —
+  // double emoji + contradictory labels in one line.
+  const strippedPriorSummary = result.summary
+    ? stripClassifierVerdictPrefix(result.summary)
+    : '';
+  result.summary = strippedPriorSummary
+    ? `🐛 Product Issue (investigation override): ${strippedPriorSummary}`
+    : `🐛 Product Issue (investigation override): ${evidenceLine}`;
+
+  // Surface investigation findings' file/line tuples as
+  // `suggestedSourceLocations` so the swapped PRODUCT_ISSUE verdict has
+  // the same `triage_json.suggestedSourceLocations` shape as a
+  // classifier-direct PRODUCT_ISSUE. The override path is exactly where
+  // these are most actionable — the human is being told "investigate
+  // product code," and the investigation already knows where to look.
+  if (override.suggestedSourceLocations && override.suggestedSourceLocations.length > 0) {
+    result.suggestedSourceLocations = override.suggestedSourceLocations;
   }
 }
 

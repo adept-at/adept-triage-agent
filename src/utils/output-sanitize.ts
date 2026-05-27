@@ -1,31 +1,40 @@
 /**
- * Defensive sanitizer for action outputs that flow into shell scripts.
+ * Defensive sanitizer for raw string action outputs.
  *
- * GitHub Actions writes string outputs using a delimited multi-line
- * protocol (`name<<EOF\nvalue\nEOF`), so newlines are technically safe
- * at the GHA layer. The real failure mode is consumer workflows that
- * interpolate `${{ steps.triage.outputs.<name> }}` directly into a
- * bash script body; embedded `"`, parens, or newlines in the action's
- * output then break the consuming bash parser. The bash injection
- * incident in adept-common's `triage-failed-tests.yml` (May 2026) is
- * the canonical case — fix landed on the workflow side, this helper
- * is the in-agent defense in depth so a future consumer regression
- * cannot wedge the agent again.
- *
- * The sanitizer is intentionally conservative:
+ * Scope of the defense (be honest about what this helper does):
  *  - Strip ASCII control characters that have no place in action
  *    outputs (NUL, BEL, etc.). Tab, LF, and CR are preserved unless
  *    `singleLine` is set.
- *  - In `singleLine` mode, collapse all line terminators to a single
- *    space so workflow consumers can interpolate the value into a
- *    quoted string without breaking out of the quotes.
  *  - Cap length so a runaway LLM emission cannot dump tens of KB into
- *    `${{ outputs }}` (where each char is interpolated literally on
- *    consumer side).
+ *    a single output value.
+ *  - In `singleLine` mode, collapse all line terminators to a single
+ *    middle-dot separator so workflow consumers can interpolate the
+ *    value into a quoted string without embedded newlines splitting
+ *    it across multiple bash tokens.
  *
- * `triage_json` and other JSON-encoded outputs do NOT need this — JSON
- * encoding already escapes the relevant characters. Apply only to raw
- * string outputs (`reasoning`, `summary`, `repair_summary`, etc.).
+ * Scope of the defense — what it does NOT cover:
+ *  - This helper does NOT escape quotes (`"`, `'`), backticks, or
+ *    parens. Consumer workflows that interpolate `${{ outputs }}`
+ *    directly into a bash body remain responsible for using `env:`
+ *    plumbing (the canonical fix from adept-common PR #34) — there is
+ *    no general-purpose, content-preserving way to "make any string
+ *    safe to drop into bash" from this side.
+ *  - GitHub Actions itself uses a delimited multi-line output
+ *    protocol (`name<<EOF\nvalue\nEOF`) so newlines are safe at the
+ *    GHA layer. The `singleLine` option is for consumers that wedge
+ *    the value into a single shell-quoted string downstream.
+ *
+ * Output asymmetry vs. `triage_json`:
+ *  - This helper truncates raw string outputs to `maxLen`. Consumers
+ *    that need the full unmodified text should read it from
+ *    `triage_json` (parsed JSON, no truncation, no control-char
+ *    stripping). Direct outputs are the consumer-friendly preview;
+ *    `triage_json` is the source of truth.
+ *
+ * Apply this helper to raw string outputs (`reasoning`, `summary`,
+ * `repair_summary`, etc.). Do NOT apply to JSON-encoded outputs
+ * (`triage_json`) — JSON encoding already handles the relevant
+ * character classes.
  */
 export interface SanitizeOpts {
   /** Cap the output at this many characters (after sanitation). */
@@ -78,8 +87,16 @@ export function sanitizeActionOutput(
   }
 
   if (cleaned.length > maxLen) {
-    const cutoff = Math.max(0, maxLen - TRUNCATION_MARKER.length);
-    cleaned = cleaned.substring(0, cutoff) + TRUNCATION_MARKER;
+    // When the cap is too small to fit the truncation marker, drop the
+    // marker entirely and respect the cap. Otherwise the helper would
+    // silently emit a string longer than `maxLen` (marker length is 13;
+    // any caller that asks for `maxLen < 13` gets just the marker).
+    if (maxLen <= TRUNCATION_MARKER.length) {
+      cleaned = cleaned.substring(0, maxLen);
+    } else {
+      const cutoff = maxLen - TRUNCATION_MARKER.length;
+      cleaned = cleaned.substring(0, cutoff) + TRUNCATION_MARKER;
+    }
   }
 
   return cleaned;

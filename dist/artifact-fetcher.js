@@ -56,6 +56,9 @@ function toBuffer(data) {
     }
     return Buffer.from(data);
 }
+const SCORE_SEPARATOR_BOUNDED = 100;
+const SCORE_WORD_INTERNAL_PUNCT = 50;
+const SCORE_ARBITRARY_INTERNAL = 25;
 function scoreArtifactMatch(artifactName, searchToken) {
     const a = artifactName.toLowerCase();
     const s = searchToken.toLowerCase();
@@ -63,16 +66,25 @@ function scoreArtifactMatch(artifactName, searchToken) {
         return -Infinity;
     const idx = a.indexOf(s);
     const before = idx === 0 ? '' : a[idx - 1];
-    const isBoundary = idx === 0 || /[-_/]/.test(before);
-    let score = isBoundary ? 100 : -50;
-    score -= a.length / 1000;
-    return score;
+    let baseScore;
+    if (idx === 0 || /[-_/]/.test(before)) {
+        baseScore = SCORE_SEPARATOR_BOUNDED;
+    }
+    else if (before === '.') {
+        baseScore = SCORE_WORD_INTERNAL_PUNCT;
+    }
+    else {
+        baseScore = SCORE_ARBITRARY_INTERNAL;
+    }
+    return baseScore - a.length / 1000;
 }
 function pickBestArtifactMatch(artifacts, searchToken) {
     let best = null;
     for (const artifact of artifacts) {
         const score = scoreArtifactMatch(artifact.name, searchToken);
-        if (score > 0 && (!best || score > best.score)) {
+        if (score === -Infinity)
+            continue;
+        if (!best || score > best.score) {
             best = { artifact, score };
         }
     }
@@ -81,7 +93,7 @@ function pickBestArtifactMatch(artifacts, searchToken) {
 function filterArtifactsByMatch(artifacts, searchToken) {
     const scored = artifacts
         .map((artifact) => ({ artifact, score: scoreArtifactMatch(artifact.name, searchToken) }))
-        .filter((entry) => entry.score > 0)
+        .filter((entry) => entry.score >= SCORE_WORD_INTERNAL_PUNCT)
         .sort((a, b) => b.score - a.score);
     return scored.map((entry) => entry.artifact);
 }

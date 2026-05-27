@@ -426,6 +426,9 @@ class PipelineCoordinator {
     }
 }
 exports.PipelineCoordinator = PipelineCoordinator;
+function stripClassifierVerdictPrefix(summary) {
+    return summary.replace(/^[^\w\s]+\s*(?:Test Issue|Product Issue|Inconclusive|Pending|Error|No Failure)\s*:\s*/u, '');
+}
 function applyInvestigationVerdictOverride(result) {
     const override = result.repairTelemetry?.investigationVerdictOverride;
     if (!override)
@@ -442,16 +445,25 @@ function applyInvestigationVerdictOverride(result) {
     core.warning(`🔁 Verdict swapped: TEST_ISSUE → PRODUCT_ISSUE based on investigation override ` +
         `(APP_CODE ${override.confidence}% ≥ ${constants_1.VERDICT_OVERRIDE_CONFIDENCE_THRESHOLD}%).`);
     core.info(`   ${evidenceLine}`);
-    const overrideHeader = `[Verdict reassigned to PRODUCT_ISSUE by InvestigationAgent ` +
-        `(APP_CODE, ${override.confidence}% confidence).] ${evidenceLine}\n\n`;
+    (0, run_telemetry_1.recordGate)('verdictOverrideSwaps');
+    const overrideHeader = `Verdict reassigned to PRODUCT_ISSUE by InvestigationAgent ` +
+        `(suggestedLocation=APP_CODE, confidence=${override.confidence}%).\n` +
+        `${evidenceLine}\n\n` +
+        `--- Original classifier reasoning (now SUPERSEDED by the override above) ---\n`;
+    if (result.repairTelemetry) {
+        result.repairTelemetry.priorClassifierConfidence = result.confidence;
+    }
     result.verdict = 'PRODUCT_ISSUE';
     result.confidence = override.confidence;
     result.reasoning = overrideHeader + result.reasoning;
-    if (result.summary) {
-        result.summary = `🐛 Product Issue (investigation override): ${result.summary}`;
-    }
-    else {
-        result.summary = `🐛 Product Issue (investigation override): ${evidenceLine}`;
+    const strippedPriorSummary = result.summary
+        ? stripClassifierVerdictPrefix(result.summary)
+        : '';
+    result.summary = strippedPriorSummary
+        ? `🐛 Product Issue (investigation override): ${strippedPriorSummary}`
+        : `🐛 Product Issue (investigation override): ${evidenceLine}`;
+    if (override.suggestedSourceLocations && override.suggestedSourceLocations.length > 0) {
+        result.suggestedSourceLocations = override.suggestedSourceLocations;
     }
 }
 function inferRootCauseCategory(fix) {

@@ -16,8 +16,13 @@ function sanitizeActionOutput(text, opts = {}) {
         cleaned = cleaned.replace(/\r\n|\r/g, '\n');
     }
     if (cleaned.length > maxLen) {
-        const cutoff = Math.max(0, maxLen - TRUNCATION_MARKER.length);
-        cleaned = cleaned.substring(0, cutoff) + TRUNCATION_MARKER;
+        if (maxLen <= TRUNCATION_MARKER.length) {
+            cleaned = cleaned.substring(0, maxLen);
+        }
+        else {
+            const cutoff = maxLen - TRUNCATION_MARKER.length;
+            cleaned = cleaned.substring(0, cutoff) + TRUNCATION_MARKER;
+        }
     }
     return cleaned;
 }

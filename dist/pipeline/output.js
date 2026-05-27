@@ -112,7 +112,7 @@ function finalizeRepairTelemetry(base, fixRecommendation, autoFixResult) {
 }
 function emitRepairOutputs(repair) {
     core.setOutput('repair_status', repair.status);
-    core.setOutput('repair_summary', (0, output_sanitize_1.sanitizeActionOutput)(repair.summary));
+    core.setOutput('repair_summary', (0, output_sanitize_1.sanitizeActionOutput)(repair.summary, { singleLine: true }));
     core.setOutput('repair_details', JSON.stringify({
         iterations: repair.iterations,
         lastStage: repair.lastStage,
@@ -153,7 +153,7 @@ function setErrorOutput(reason) {
     core.setOutput('verdict', 'ERROR');
     core.setOutput('confidence', '0');
     core.setOutput('reasoning', (0, output_sanitize_1.sanitizeActionOutput)(reason));
-    core.setOutput('summary', (0, output_sanitize_1.sanitizeActionOutput)(`Triage failed: ${reason}`));
+    core.setOutput('summary', (0, output_sanitize_1.sanitizeActionOutput)(`Triage failed: ${reason}`, { singleLine: true }));
     const errorRepair = {
         status: 'not_started',
         summary: `Repair did not run (triage error: ${reason}).`,
@@ -243,13 +243,13 @@ function setSuccessOutput(result, errorData, autoFixResult, flakiness) {
     core.setOutput('verdict', result.verdict);
     core.setOutput('confidence', result.confidence.toString());
     core.setOutput('reasoning', (0, output_sanitize_1.sanitizeActionOutput)(result.reasoning));
-    core.setOutput('summary', (0, output_sanitize_1.sanitizeActionOutput)(result.summary || ''));
+    core.setOutput('summary', (0, output_sanitize_1.sanitizeActionOutput)(result.summary || '', { singleLine: true }));
     core.setOutput('triage_json', JSON.stringify(triageJson));
     emitRepairOutputs(repairBlock);
     if (result.fixRecommendation) {
         core.setOutput('has_fix_recommendation', 'true');
         core.setOutput('fix_recommendation', JSON.stringify(result.fixRecommendation));
-        core.setOutput('fix_summary', (0, output_sanitize_1.sanitizeActionOutput)(result.fixRecommendation.summary));
+        core.setOutput('fix_summary', (0, output_sanitize_1.sanitizeActionOutput)(result.fixRecommendation.summary, { singleLine: true }));
         core.setOutput('fix_confidence', result.fixRecommendation.confidence.toString());
     }
     else {
@@ -278,7 +278,7 @@ function setSuccessOutput(result, errorData, autoFixResult, flakiness) {
     }
     core.setOutput('auto_fix_skipped', result.autoFixSkipped ? 'true' : 'false');
     if (result.autoFixSkippedReason) {
-        core.setOutput('auto_fix_skipped_reason', (0, output_sanitize_1.sanitizeActionOutput)(result.autoFixSkippedReason));
+        core.setOutput('auto_fix_skipped_reason', (0, output_sanitize_1.sanitizeActionOutput)(result.autoFixSkippedReason, { singleLine: true }));
     }
     core.info(`Verdict: ${result.verdict}`);
     core.info(`Confidence: ${result.confidence}%`);
