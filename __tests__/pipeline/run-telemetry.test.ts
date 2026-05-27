@@ -33,6 +33,7 @@ describe('run-telemetry — recordGate / getGateCounters', () => {
       branchDedupeHits: 0,
       infraFastPathHits: 0,
       verdictOverrideAborts: 0,
+      verdictOverrideSwaps: 0,
       priorFailedTrajectoryBoosts: 0,
       skillWriteSkips: 0,
       flakinessWatchEmits: 0,
@@ -76,6 +77,7 @@ describe('run-telemetry — logRunGateSummary', () => {
     expect(line).toContain('branch-dedupe=1');
     expect(line).toContain('infra-fast-path=1');
     expect(line).toContain('verdict-override=1');
+    expect(line).toContain('verdict-override-swap=0');
     expect(line).toContain('prior-failed-boost=0');
     expect(line).toContain('skill-write-skip=0');
     expect(line).toContain('flakiness-watch=0');

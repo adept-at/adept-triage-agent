@@ -342,6 +342,7 @@ class PipelineCoordinator {
             }
         }
         result.repairTelemetry = (0, output_1.finalizeRepairTelemetry)(repairTelemetryFromRun, fixRecommendation, autoFixResult);
+        applyInvestigationVerdictOverride(result);
         const flakinessSignal = skillStore
             ? skillStore.detectFlakiness(errorData.fileName || 'unknown')
             : undefined;
@@ -425,6 +426,46 @@ class PipelineCoordinator {
     }
 }
 exports.PipelineCoordinator = PipelineCoordinator;
+function stripClassifierVerdictPrefix(summary) {
+    return summary.replace(/^[^\w\s]+\s*(?:Test Issue|Product Issue|Inconclusive|Pending|Error|No Failure)\s*:\s*/u, '');
+}
+function applyInvestigationVerdictOverride(result) {
+    const override = result.repairTelemetry?.investigationVerdictOverride;
+    if (!override)
+        return;
+    if (override.suggestedLocation !== 'APP_CODE')
+        return;
+    if (override.confidence < constants_1.VERDICT_OVERRIDE_CONFIDENCE_THRESHOLD)
+        return;
+    if (result.verdict !== 'TEST_ISSUE')
+        return;
+    const evidenceLine = override.evidence.length > 0
+        ? `Evidence: ${override.evidence.join('; ')}`
+        : 'No specific evidence recorded';
+    core.warning(`🔁 Verdict swapped: TEST_ISSUE → PRODUCT_ISSUE based on investigation override ` +
+        `(APP_CODE ${override.confidence}% ≥ ${constants_1.VERDICT_OVERRIDE_CONFIDENCE_THRESHOLD}%).`);
+    core.info(`   ${evidenceLine}`);
+    (0, run_telemetry_1.recordGate)('verdictOverrideSwaps');
+    const overrideHeader = `Verdict reassigned to PRODUCT_ISSUE by InvestigationAgent ` +
+        `(suggestedLocation=APP_CODE, confidence=${override.confidence}%).\n` +
+        `${evidenceLine}\n\n` +
+        `--- Original classifier reasoning (now SUPERSEDED by the override above) ---\n`;
+    if (result.repairTelemetry) {
+        result.repairTelemetry.priorClassifierConfidence = result.confidence;
+    }
+    result.verdict = 'PRODUCT_ISSUE';
+    result.confidence = override.confidence;
+    result.reasoning = overrideHeader + result.reasoning;
+    const strippedPriorSummary = result.summary
+        ? stripClassifierVerdictPrefix(result.summary)
+        : '';
+    result.summary = strippedPriorSummary
+        ? `🐛 Product Issue (investigation override): ${strippedPriorSummary}`
+        : `🐛 Product Issue (investigation override): ${evidenceLine}`;
+    if (override.suggestedSourceLocations && override.suggestedSourceLocations.length > 0) {
+        result.suggestedSourceLocations = override.suggestedSourceLocations;
+    }
+}
 function inferRootCauseCategory(fix) {
     return (0, root_cause_category_1.inferRootCauseCategoryFromText)([
         fix.summary,

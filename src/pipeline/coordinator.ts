@@ -18,7 +18,7 @@ import { processWorkflowLogs } from '../services/log-processor';
 import { SkillStore, buildSkill, describeFixPattern } from '../services/skill-store';
 import { RepoContextFetcher } from '../services/repo-context-fetcher';
 import { inferRootCauseCategoryFromText } from '../repair/root-cause-category';
-import { CHRONIC_FLAKINESS_THRESHOLD } from '../config/constants';
+import { CHRONIC_FLAKINESS_THRESHOLD, VERDICT_OVERRIDE_CONFIDENCE_THRESHOLD } from '../config/constants';
 import { recordGate, logRunGateSummary } from './run-telemetry';
 import {
   resolveAutoFixTargetRepo,
@@ -603,6 +603,24 @@ export class PipelineCoordinator {
       autoFixResult
     );
 
+    // Verdict-override swap: when the InvestigationAgent flagged the
+    // failure as APP_CODE with high confidence, the orchestrator already
+    // aborted repair (gate `verdictOverrideAborts`). Pre-this-block the
+    // exported verdict still came from the classifier — so the action's
+    // outputs said `TEST_ISSUE` while its own logs said
+    // `Investigation override: APP_CODE`. Concrete incident:
+    // learn-webapp run 26479009022 (mobile axe failure, 2026-05-26)
+    // exported `TEST_ISSUE 95%` despite an internal
+    // `Investigation override: APP_CODE (92%)` warning, contradicting
+    // the desktop variant that exported `PRODUCT_ISSUE 95%` for the
+    // same incident.
+    //
+    // Now: when the override fired, swap the exported verdict to
+    // `PRODUCT_ISSUE`, preserve the original classifier reasoning, and
+    // prepend the investigation evidence so consumers can see why the
+    // verdict was reassigned.
+    applyInvestigationVerdictOverride(result);
+
     const flakinessSignal = skillStore
       ? skillStore.detectFlakiness(errorData.fileName || 'unknown')
       : undefined;
@@ -713,6 +731,131 @@ export class PipelineCoordinator {
     }
 
     setErrorOutput('No error data found to analyze');
+  }
+}
+
+/**
+ * Strip a leading verdict-emoji label from a classifier-produced summary.
+ *
+ * `summary-generator.generateAnalysisSummary` emits summaries shaped like:
+ *   `🧪 Test Issue: <reasoning>`         (TEST_ISSUE)
+ *   `🐛 Product Issue: <reasoning>`      (PRODUCT_ISSUE)
+ *   `❓ Inconclusive: <reasoning>`        (INCONCLUSIVE)
+ *   etc. (see `analysis/summary-generator.ts:14-22`)
+ *
+ * When `applyInvestigationVerdictOverride` swaps the verdict and prepends
+ * its own override label, the result without stripping is the
+ * double-emoji string `🐛 Product Issue (investigation override): 🧪 Test
+ * Issue: …` — two contradictory verdict labels in one Slack-bound line.
+ * Strip the existing label so only one verdict prefix survives.
+ *
+ * The match is intentionally narrow (only the known verdict labels) so
+ * arbitrary text that happens to start with an emoji is left alone.
+ */
+function stripClassifierVerdictPrefix(summary: string): string {
+  return summary.replace(
+    /^[^\w\s]+\s*(?:Test Issue|Product Issue|Inconclusive|Pending|Error|No Failure)\s*:\s*/u,
+    ''
+  );
+}
+
+/**
+ * If the orchestrator's InvestigationAgent flagged the failure as
+ * product-side (`APP_CODE`) with confidence at or above
+ * `VERDICT_OVERRIDE_CONFIDENCE_THRESHOLD`, swap the exported verdict
+ * from `TEST_ISSUE` to `PRODUCT_ISSUE` and embed the investigation
+ * evidence in the reasoning. Mutates `result` in place.
+ *
+ * Pre-this-helper the override aborted repair (gate
+ * `verdictOverrideAborts`) but never affected the action's exported
+ * verdict — so consumers received `TEST_ISSUE` action outputs while
+ * the action's own logs warned `Investigation override: APP_CODE`.
+ * Concrete incident: learn-webapp run 26479009022 (mobile axe
+ * failure, 2026-05-26).
+ *
+ * Override semantics:
+ *   - Only `APP_CODE` swaps. `TEST_CODE` already aligns with the
+ *     existing `TEST_ISSUE` classification (no swap needed).
+ *   - `BOTH` is intentionally ignored — the investigation is
+ *     inconclusive about which side owns the defect, so the original
+ *     classifier verdict is preserved.
+ *   - Confidence floor matches the orchestrator's abort gate so the
+ *     two sites stay consistent. If the orchestrator aborted, this
+ *     swap fires; if not, it doesn't.
+ *   - The fix-recommendation block is left as-is on the result. The
+ *     orchestrator already aborted before generating a fix, so the
+ *     downstream `setSuccessOutput` code paths that gate on
+ *     `result.verdict === 'TEST_ISSUE'` for fix outputs naturally
+ *     stop emitting them now that the verdict is `PRODUCT_ISSUE`.
+ *
+ * The four early-return guards below are unreachable under the current
+ * call graph (the orchestrator only populates `investigationVerdictOverride`
+ * in its APP_CODE-confidence-above-threshold abort branch, and the
+ * coordinator only reaches this helper after `classification.verdict ===
+ * 'TEST_ISSUE'`). They are kept as idempotency guards so adding a second
+ * call site cannot mis-fire silently.
+ */
+function applyInvestigationVerdictOverride(result: AnalysisResult): void {
+  const override = result.repairTelemetry?.investigationVerdictOverride;
+  if (!override) return;
+  if (override.suggestedLocation !== 'APP_CODE') return;
+  if (override.confidence < VERDICT_OVERRIDE_CONFIDENCE_THRESHOLD) return;
+  if (result.verdict !== 'TEST_ISSUE') return;
+
+  const evidenceLine = override.evidence.length > 0
+    ? `Evidence: ${override.evidence.join('; ')}`
+    : 'No specific evidence recorded';
+
+  core.warning(
+    `🔁 Verdict swapped: TEST_ISSUE → PRODUCT_ISSUE based on investigation override ` +
+      `(APP_CODE ${override.confidence}% ≥ ${VERDICT_OVERRIDE_CONFIDENCE_THRESHOLD}%).`
+  );
+  core.info(`   ${evidenceLine}`);
+  recordGate('verdictOverrideSwaps');
+
+  // Frame the classifier's now-superseded reasoning explicitly rather
+  // than appending it under the override header without context. Pre-this
+  // change, swapped reasoning read like an override evidence paragraph
+  // followed by a verbose paragraph saying "this is a TEST_ISSUE
+  // because…" — internally contradictory and confusing to humans + LLMs.
+  const overrideHeader =
+    `Verdict reassigned to PRODUCT_ISSUE by InvestigationAgent ` +
+    `(suggestedLocation=APP_CODE, confidence=${override.confidence}%).\n` +
+    `${evidenceLine}\n\n` +
+    `--- Original classifier reasoning (now SUPERSEDED by the override above) ---\n`;
+
+  // Preserve the original classifier confidence so post-mortems and
+  // accuracy dashboards can recover the (TEST_ISSUE, 95%) → (PRODUCT_ISSUE,
+  // override-confidence) transition. Without this, dashboards plotting
+  // "average confidence on PRODUCT_ISSUE" silently mix override-path and
+  // classifier-direct entries with very different distributions.
+  if (result.repairTelemetry) {
+    result.repairTelemetry.priorClassifierConfidence = result.confidence;
+  }
+
+  result.verdict = 'PRODUCT_ISSUE';
+  result.confidence = override.confidence;
+  result.reasoning = overrideHeader + result.reasoning;
+
+  // Strip the classifier's own verdict-emoji prefix from `summary`
+  // before prepending the override label. Otherwise the swap produces
+  // `🐛 Product Issue (investigation override): 🧪 Test Issue: …` —
+  // double emoji + contradictory labels in one line.
+  const strippedPriorSummary = result.summary
+    ? stripClassifierVerdictPrefix(result.summary)
+    : '';
+  result.summary = strippedPriorSummary
+    ? `🐛 Product Issue (investigation override): ${strippedPriorSummary}`
+    : `🐛 Product Issue (investigation override): ${evidenceLine}`;
+
+  // Surface investigation findings' file/line tuples as
+  // `suggestedSourceLocations` so the swapped PRODUCT_ISSUE verdict has
+  // the same `triage_json.suggestedSourceLocations` shape as a
+  // classifier-direct PRODUCT_ISSUE. The override path is exactly where
+  // these are most actionable — the human is being told "investigate
+  // product code," and the investigation already knows where to look.
+  if (override.suggestedSourceLocations && override.suggestedSourceLocations.length > 0) {
+    result.suggestedSourceLocations = override.suggestedSourceLocations;
   }
 }
 

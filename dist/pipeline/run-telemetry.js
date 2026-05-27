@@ -45,6 +45,7 @@ function createEmpty() {
         branchDedupeHits: 0,
         infraFastPathHits: 0,
         verdictOverrideAborts: 0,
+        verdictOverrideSwaps: 0,
         priorFailedTrajectoryBoosts: 0,
         skillWriteSkips: 0,
         flakinessWatchEmits: 0,
@@ -68,6 +69,7 @@ function logRunGateSummary() {
             `branch-dedupe=${c.branchDedupeHits} ` +
             `infra-fast-path=${c.infraFastPathHits} ` +
             `verdict-override=${c.verdictOverrideAborts} ` +
+            `verdict-override-swap=${c.verdictOverrideSwaps} ` +
             `prior-failed-boost=${c.priorFailedTrajectoryBoosts} ` +
             `skill-write-skip=${c.skillWriteSkips} ` +
             `flakiness-watch=${c.flakinessWatchEmits} ` +

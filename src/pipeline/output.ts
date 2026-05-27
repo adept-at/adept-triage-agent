@@ -3,6 +3,7 @@ import * as github from '@actions/github';
 import { ActionInputs, FixRecommendation, RepairStatus, RepairTelemetry } from '../types';
 import { ApplyResult } from '../repair/fix-applier';
 import { parseRepoString } from '../utils/repo-utils';
+import { sanitizeActionOutput } from '../utils/output-sanitize';
 
 export function resolveAutoFixTargetRepo(inputs: ActionInputs): {
   owner: string;
@@ -103,7 +104,13 @@ export function finalizeRepairTelemetry(
 
 export function emitRepairOutputs(repair: RepairTelemetry): void {
   core.setOutput('repair_status', repair.status);
-  core.setOutput('repair_summary', repair.summary);
+  // `repair_summary` is consumed by Slack / shell scripts that often
+  // interpolate it directly (`${{ steps.triage.outputs.repair_summary }}`).
+  // Force single-line so embedded newlines from agent-emitted summaries
+  // can't break a consuming bash parser. (Defense in depth — the
+  // adept-common workflow PR #34 fixed the canonical incident on the
+  // consumer side.)
+  core.setOutput('repair_summary', sanitizeActionOutput(repair.summary, { singleLine: true }));
   core.setOutput(
     'repair_details',
     JSON.stringify({
@@ -147,7 +154,11 @@ export function setInconclusiveOutput(
   };
   core.setOutput('verdict', 'INCONCLUSIVE');
   core.setOutput('confidence', result.confidence.toString());
-  core.setOutput('reasoning', `Low confidence: ${result.reasoning}`);
+  // `reasoning` is allowed multi-line because consumers display it as
+  // a body paragraph (Slack message, dashboard expansion). The full
+  // text is also available in `triage_json.reasoning` for parsing
+  // consumers — see output-sanitize.ts docstring on output asymmetry.
+  core.setOutput('reasoning', sanitizeActionOutput(`Low confidence: ${result.reasoning}`));
   core.setOutput('summary', 'Analysis inconclusive due to low confidence');
   core.setOutput('triage_json', JSON.stringify(inconclusiveTriageJson));
   emitRepairOutputs(NOT_STARTED_REPAIR);
@@ -156,8 +167,10 @@ export function setInconclusiveOutput(
 export function setErrorOutput(reason: string): void {
   core.setOutput('verdict', 'ERROR');
   core.setOutput('confidence', '0');
-  core.setOutput('reasoning', reason);
-  core.setOutput('summary', `Triage failed: ${reason}`);
+  core.setOutput('reasoning', sanitizeActionOutput(reason));
+  // `summary` is single-line since consumers render it as a Slack
+  // header / single-row table cell; multi-line summaries break that.
+  core.setOutput('summary', sanitizeActionOutput(`Triage failed: ${reason}`, { singleLine: true }));
   const errorRepair: RepairTelemetry = {
     status: 'not_started',
     summary: `Repair did not run (triage error: ${reason}).`,
@@ -290,8 +303,11 @@ export function setSuccessOutput(
 
   core.setOutput('verdict', result.verdict);
   core.setOutput('confidence', result.confidence.toString());
-  core.setOutput('reasoning', result.reasoning);
-  core.setOutput('summary', result.summary || '');
+  core.setOutput('reasoning', sanitizeActionOutput(result.reasoning));
+  // `summary` is single-line: consumers (Slack header, dashboard rows,
+  // shell-script interpolation) treat it as a one-line label. Multi-line
+  // summaries break the canonical Slack `*<summary>*` rendering.
+  core.setOutput('summary', sanitizeActionOutput(result.summary || '', { singleLine: true }));
   core.setOutput('triage_json', JSON.stringify(triageJson));
   emitRepairOutputs(repairBlock);
 
@@ -301,7 +317,7 @@ export function setSuccessOutput(
       'fix_recommendation',
       JSON.stringify(result.fixRecommendation)
     );
-    core.setOutput('fix_summary', result.fixRecommendation.summary);
+    core.setOutput('fix_summary', sanitizeActionOutput(result.fixRecommendation.summary, { singleLine: true }));
     core.setOutput(
       'fix_confidence',
       result.fixRecommendation.confidence.toString()
@@ -349,7 +365,7 @@ export function setSuccessOutput(
   // was intentionally withheld for human review".
   core.setOutput('auto_fix_skipped', result.autoFixSkipped ? 'true' : 'false');
   if (result.autoFixSkippedReason) {
-    core.setOutput('auto_fix_skipped_reason', result.autoFixSkippedReason);
+    core.setOutput('auto_fix_skipped_reason', sanitizeActionOutput(result.autoFixSkippedReason, { singleLine: true }));
   }
 
   core.info(`Verdict: ${result.verdict}`);

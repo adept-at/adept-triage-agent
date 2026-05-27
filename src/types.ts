@@ -135,6 +135,49 @@ export interface RepairTelemetry {
   /** Orchestrator wall-clock budget (ms) when repair ran under AgentOrchestrator */
   timeoutMs?: number;
   elapsedMs: number;
+  /**
+   * Set when the InvestigationAgent flagged the failure as product-side
+   * (`APP_CODE`) with confidence at or above
+   * `VERDICT_OVERRIDE_CONFIDENCE_THRESHOLD`. The orchestrator already
+   * uses this signal to abort repair, but historically the data was
+   * thrown away after that — the action's exported `verdict` stayed at
+   * the original classifier value (`TEST_ISSUE`), so consumers received
+   * a contradictory pair of signals: a product-side override warning in
+   * logs but a test-side verdict in outputs.
+   *
+   * Surfacing the override here lets the coordinator authoritatively
+   * swap the exported verdict to `PRODUCT_ISSUE` and embed the
+   * investigation evidence in the reasoning, instead of relying on
+   * downstream consumers to reconcile two different signals.
+   *
+   * `suggestedSourceLocations` carries the file/line tuples the
+   * investigation already collected on `findings[].location` so the
+   * swapped `PRODUCT_ISSUE` verdict has the same `triage_json`
+   * `suggestedSourceLocations` shape as a classifier-direct
+   * `PRODUCT_ISSUE` verdict. Without this, swap-path PRODUCT_ISSUE
+   * outputs would be the only ones missing source locations — exactly
+   * the case where they're most actionable.
+   */
+  investigationVerdictOverride?: {
+    suggestedLocation: 'APP_CODE' | 'TEST_CODE' | 'BOTH';
+    confidence: number;
+    evidence: string[];
+    suggestedSourceLocations?: Array<{
+      file: string;
+      lines: string;
+      reason: string;
+    }>;
+  };
+  /**
+   * Original classifier confidence captured before
+   * `applyInvestigationVerdictOverride` overwrites `result.confidence`
+   * with the override confidence. Preserved for accuracy tracking and
+   * post-mortems — without this, dashboards plotting "average confidence
+   * on PRODUCT_ISSUE" would silently include override-path numbers
+   * (typically 70–90%) alongside classifier-direct numbers (typically
+   * 90+) and not realize they are different distributions.
+   */
+  priorClassifierConfidence?: number;
 }
 
 export interface AnalysisResult {

@@ -70,6 +70,7 @@ function buildRepairTelemetry(params) {
         lastFixConfidence: params.lastFixConfidence,
         timeoutMs: params.timeoutMs,
         elapsedMs: Date.now() - params.startedAtMs,
+        investigationVerdictOverride: params.investigationVerdictOverride,
     };
 }
 class AgentOrchestrator {
@@ -307,6 +308,19 @@ class AgentOrchestrator {
                     lastStage: 'investigation',
                     startedAtMs,
                     timeoutMs: this.config.totalTimeoutMs,
+                    investigationVerdictOverride: {
+                        suggestedLocation: investigation.verdictOverride.suggestedLocation,
+                        confidence: investigation.verdictOverride.confidence,
+                        evidence: investigation.verdictOverride.evidence,
+                        suggestedSourceLocations: investigation.findings
+                            .filter((f) => f.location?.file)
+                            .slice(0, 5)
+                            .map((f) => ({
+                            file: f.location.file,
+                            lines: f.location.line ? String(f.location.line) : '?',
+                            reason: f.relationToError || f.description,
+                        })),
+                    },
                 }),
             };
         }

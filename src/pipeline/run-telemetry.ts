@@ -31,6 +31,14 @@ interface GateCounters {
   infraFastPathHits: number;
   /** Repair aborted because investigation override flagged confident APP_CODE. */
   verdictOverrideAborts: number;
+  /**
+   * Coordinator successfully swapped the exported verdict from TEST_ISSUE
+   * to PRODUCT_ISSUE after an investigation override fired. Should equal
+   * `verdictOverrideAborts` 1:1 in steady state — divergence indicates a
+   * wiring break between the orchestrator's abort and the coordinator's
+   * downstream swap.
+   */
+  verdictOverrideSwaps: number;
   /** requiredConfidence threshold raised because of recent failed trajectories. */
   priorFailedTrajectoryBoosts: number;
   /** Skill-store outcome write skipped (validation pending / no terminal status). */
@@ -49,6 +57,7 @@ function createEmpty(): GateCounters {
     branchDedupeHits: 0,
     infraFastPathHits: 0,
     verdictOverrideAborts: 0,
+    verdictOverrideSwaps: 0,
     priorFailedTrajectoryBoosts: 0,
     skillWriteSkips: 0,
     flakinessWatchEmits: 0,
@@ -104,6 +113,7 @@ export function logRunGateSummary(): void {
         `branch-dedupe=${c.branchDedupeHits} ` +
         `infra-fast-path=${c.infraFastPathHits} ` +
         `verdict-override=${c.verdictOverrideAborts} ` +
+        `verdict-override-swap=${c.verdictOverrideSwaps} ` +
         `prior-failed-boost=${c.priorFailedTrajectoryBoosts} ` +
         `skill-write-skip=${c.skillWriteSkips} ` +
         `flakiness-watch=${c.flakinessWatchEmits} ` +

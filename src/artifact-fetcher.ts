@@ -39,6 +39,107 @@ interface GitHubArtifact {
   expires_at?: string | null;
 }
 
+/**
+ * Score how well an artifact name matches a search token. A higher score
+ * means a better match. Returns -Infinity if there is no substring match.
+ *
+ * Why: artifact names commonly look like `cy-logs-<spec>-<runId>`. With
+ * matrix jobs that share spec roots (desktop spec `adept.dashboard.links`
+ * vs mobile spec `mobile.adept.dashboard.links`), a naive `.includes()`
+ * match returns BOTH artifacts when searching for the desktop spec —
+ * because the desktop name is a strict suffix of the mobile name. The
+ * triage agent then analyzed mobile screenshots/logs while reporting on
+ * the desktop spec (real incident, learn-webapp run 26478965727).
+ *
+ * Tiered scoring so a "process all artifacts" fallback isn't needed
+ * whenever the only candidates are non-bounded substring matches (the
+ * pre-tiering version returned null in that case, which made
+ * `fetchTestArtifactLogs` process every log artifact in the run —
+ * strictly worse than the old single-substring-match behavior for runs
+ * with unconventional artifact naming).
+ *
+ * Tiers:
+ *  - SEPARATOR_BOUNDED (+100): match starts at index 0 or after `-_/`.
+ *    Targets `cy-logs-adept.dashboard...` searched with `adept.dashboard`.
+ *  - WORD_INTERNAL_PUNCT (+50): preceded by `.`. Common in adept matrix
+ *    naming (mobile.adept, desktop.adept) where `.` is the field
+ *    separator. Worse than SEPARATOR_BOUNDED but still a meaningful
+ *    match — picks SOMETHING when no separator-bounded match exists.
+ *  - ARBITRARY_INTERNAL (+25): preceded by any word character (letter
+ *    or digit). The token is embedded inside a longer compound name —
+ *    weakest signal but better than discarding the candidate entirely.
+ *
+ *  - Tiebreaker: shorter artifact name wins (less surrounding noise).
+ */
+const SCORE_SEPARATOR_BOUNDED = 100;
+const SCORE_WORD_INTERNAL_PUNCT = 50;
+const SCORE_ARBITRARY_INTERNAL = 25;
+
+function scoreArtifactMatch(artifactName: string, searchToken: string): number {
+  const a = artifactName.toLowerCase();
+  const s = searchToken.toLowerCase();
+  if (!s || !a.includes(s)) return -Infinity;
+
+  const idx = a.indexOf(s);
+  const before = idx === 0 ? '' : a[idx - 1];
+
+  let baseScore: number;
+  if (idx === 0 || /[-_/]/.test(before)) {
+    baseScore = SCORE_SEPARATOR_BOUNDED;
+  } else if (before === '.') {
+    baseScore = SCORE_WORD_INTERNAL_PUNCT;
+  } else {
+    baseScore = SCORE_ARBITRARY_INTERNAL;
+  }
+
+  // Tiebreaker: prefer shorter artifact name (e.g. desktop variant beats
+  // mobile-prefixed variant when both contain the searched token).
+  return baseScore - a.length / 1000;
+}
+
+/**
+ * Pick the artifact that best matches `searchToken`. Returns null only
+ * when there is no substring match anywhere — i.e. genuinely no
+ * candidate. With tiered scoring, callers no longer need to choose
+ * between "the boundary-perfect match" and "process all artifacts" — if
+ * any candidate contains the token, the highest-scoring one wins.
+ */
+function pickBestArtifactMatch<T extends { name: string }>(
+  artifacts: T[],
+  searchToken: string
+): T | null {
+  let best: { artifact: T; score: number } | null = null;
+  for (const artifact of artifacts) {
+    const score = scoreArtifactMatch(artifact.name, searchToken);
+    if (score === -Infinity) continue;
+    if (!best || score > best.score) {
+      best = { artifact, score };
+    }
+  }
+  return best ? best.artifact : null;
+}
+
+/**
+ * Filter to artifacts that have a positive `scoreArtifactMatch` score,
+ * sorted by descending score. Used by `fetchScreenshots` where multiple
+ * artifacts per job are legitimate (logs + screenshots + videos).
+ *
+ * Drops the lowest tier (`ARBITRARY_INTERNAL`) since the fetchScreenshots
+ * call site already has a token-overlap fallback for poor matches —
+ * surfacing arbitrary-internal candidates here would risk fetching
+ * sibling-job artifacts and contaminating the screenshot set.
+ */
+function filterArtifactsByMatch<T extends { name: string }>(
+  artifacts: T[],
+  searchToken: string
+): T[] {
+  const scored = artifacts
+    .map((artifact) => ({ artifact, score: scoreArtifactMatch(artifact.name, searchToken) }))
+    .filter((entry) => entry.score >= SCORE_WORD_INTERNAL_PUNCT)
+    .sort((a, b) => b.score - a.score);
+  return scored.map((entry) => entry.artifact);
+}
+
 export class ArtifactFetcher {
   constructor(private octokit: Octokit) {}
 
@@ -78,10 +179,13 @@ export class ArtifactFetcher {
         const matrixMatch = jobName.match(/\((.*?)\)/);
         const searchName = matrixMatch ? matrixMatch[1] : jobName;
         const jobLower = jobName.toLowerCase();
-        const searchLower = searchName.toLowerCase();
 
-        let jobSpecificArtifacts = screenshotArtifacts.filter(artifact =>
-          artifact.name.toLowerCase().includes(searchLower)
+        // Use separator-bounded matching (see `scoreArtifactMatch`) so
+        // that a desktop spec doesn't mistakenly include sibling
+        // `mobile.<spec>` artifacts as primary matches.
+        let jobSpecificArtifacts = filterArtifactsByMatch(
+          screenshotArtifacts,
+          searchName
         );
 
         if (jobSpecificArtifacts.length === 0) {
@@ -256,10 +360,14 @@ export class ArtifactFetcher {
         // Extract matrix name from job name format: "previewUrlTest (matrix-name.js)"
         const matrixMatch = jobName.match(/\((.*?)\)/);
         const searchName = matrixMatch ? matrixMatch[1] : jobName;
-        
-        const specificArtifact = logArtifacts.find(artifact => 
-          artifact.name.toLowerCase().includes(searchName.toLowerCase())
-        );
+
+        // Prefer separator-bounded matches over plain substring matches.
+        // Plain `.includes()` returns false positives when the desktop
+        // spec name is a suffix of the mobile spec name (e.g. searching
+        // `adept.dashboard.links.load.js` would also match
+        // `cy-logs-mobile.adept.dashboard.links.load.js`). See
+        // `scoreArtifactMatch` for the full rationale.
+        const specificArtifact = pickBestArtifactMatch(logArtifacts, searchName);
         if (specificArtifact) {
           core.info(`Found specific artifact for job ${jobName}: ${specificArtifact.name}`);
           return await this.processArtifactForLogs(specificArtifact, { owner, repo });

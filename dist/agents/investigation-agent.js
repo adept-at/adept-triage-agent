@@ -75,7 +75,7 @@ You MUST respond with a JSON object matching this schema:
     }
   ],
   "confidence": <0-100>,
-  "verdictOverride": <optional object — ONLY include if your investigation reveals the failure is NOT fixable in test code. Include { "suggestedLocation": "APP_CODE"|"TEST_CODE"|"BOTH", "confidence": <0-100>, "evidence": ["reason1", "reason2"] }>
+  "verdictOverride": <optional object — ONLY include when you have CONCRETE EVIDENCE the defect is on the side you name. Setting suggestedLocation="APP_CODE" now flips the action's user-facing verdict from TEST_ISSUE to PRODUCT_ISSUE and pages product engineers, so the bar is high. For "APP_CODE" specifically, require AT LEAST ONE of: (a) a specific bug visible in product code (null-pointer access, broken null-check, accidental deletion, regression introduced by the product diff), (b) the product behavior contradicts its own diff in a way that looks unintentional, or (c) a backend/API response that violates the documented contract. DO NOT emit "APP_CODE" merely because the test is hard to repair in test code — that is grounds for isTestCodeFixable=false, not a product verdict. "TEST_CODE" and "BOTH" do not flip the user-facing verdict, so the bar is lower (any clear test-side defect or genuine ambiguity). Include { "suggestedLocation": "APP_CODE"|"TEST_CODE"|"BOTH", "confidence": <0-100>, "evidence": ["specific defect 1", "specific defect 2"] }>
 }`;
     }
     buildUserPrompt(input, context) {
