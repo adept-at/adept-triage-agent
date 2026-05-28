@@ -357,6 +357,28 @@ export class GitHubFixApplier implements FixApplier {
       // Get the test file from the first proposed change
       const testFile = recommendation.proposedChanges[0].file;
 
+      // Open-PR dedupe (v1.52.18). If there is already an open
+      // `fix/triage-agent/<sanitized-test-file>-*` PR for this spec, do
+      // not push another one. The branch-age window in
+      // `findRecentDuplicateBranch` is 6h, but draft PRs from prior days
+      // routinely sit open waiting for engineer review and were the
+      // source of duplicate noise in the May-2026 audit (PR #83 and
+      // PR #84 on `adept-at/wdio-9-bidi-mux3` for the same spec, 24h
+      // apart). The state of the PR — not the age of the branch — is
+      // the right signal for "the operator already has work pending."
+      const openPr = await this.findOpenTriageAgentPR(testFile);
+      if (openPr) {
+        core.warning(
+          `⏭️  Open-PR dedupe: refusing to push — existing open PR #${openPr.number} ('${openPr.branchName}') already proposes a triage-agent fix for the same spec. Resolve or close the existing PR before another auto-fix attempt.`
+        );
+        recordGate('branchDedupeHits');
+        return {
+          success: false,
+          modifiedFiles: [],
+          error: `Open-PR dedupe: PR #${openPr.number} ('${openPr.branchName}') is already open for this spec.`,
+        };
+      }
+
       // Branch dedupe within window (P1 #7 from audit-last-5-runs).
       // If a `fix/triage-agent/<sanitized-test-file>-*` branch was created
       // within `BRANCH_DEDUPE_WINDOW_MS`, refuse to push another. Two
@@ -523,14 +545,53 @@ export class GitHubFixApplier implements FixApplier {
    * Returns the most-recent matching branch when one falls inside the
    * window, or `null` when the path is clear to push a fresh branch.
    */
+  /**
+   * Look for an already-open triage-agent PR proposing a fix for the same
+   * test file. Returns the most-recent matching PR, or null when the path
+   * is clear to push a new one.
+   *
+   * Open PRs are matched by branch name shape (`fix/triage-agent/<sanitized-
+   * test-file>-*`), not by inspecting the PR's changed files — the latter
+   * would cost an extra API round-trip per PR and the branch convention is
+   * already deterministic per spec via `generateFixBranchName`.
+   *
+   * Best-effort: any API failure logs at debug and returns null so we never
+   * block a legitimate fix because the dedupe lookup happened to throw.
+   */
+  private async findOpenTriageAgentPR(
+    testFile: string
+  ): Promise<{ branchName: string; number: number; htmlUrl: string } | null> {
+    const sanitized = sanitizedTestFilePrefix(testFile);
+    const branchPrefix = `${AUTO_FIX.BRANCH_PREFIX}${sanitized}-`;
+    const { octokit, owner, repo } = this.config;
+    try {
+      const response = await octokit.pulls.list({
+        owner,
+        repo,
+        state: 'open',
+        per_page: 100,
+      });
+      const match = response.data.find((pr) =>
+        pr.head?.ref?.startsWith(branchPrefix)
+      );
+      if (!match) return null;
+      return {
+        branchName: match.head.ref,
+        number: match.number,
+        htmlUrl: match.html_url,
+      };
+    } catch (err) {
+      core.debug(
+        `Open-PR dedupe lookup failed for ${branchPrefix}: ${err instanceof Error ? err.message : String(err)}`
+      );
+      return null;
+    }
+  }
+
   private async findRecentDuplicateBranch(
     testFile: string
   ): Promise<{ name: string; ageMs: number } | null> {
-    const sanitized = testFile
-      .replace(/[^a-zA-Z0-9]/g, '-')
-      .replace(/-+/g, '-')
-      .replace(/^-|-$/g, '')
-      .slice(0, 40);
+    const sanitized = sanitizedTestFilePrefix(testFile);
     const prefix = `${AUTO_FIX.BRANCH_PREFIX}${sanitized}-`;
     const refPattern = `heads/${prefix}`;
 
@@ -1366,6 +1427,19 @@ export function decodeLogPayload(data: unknown): string {
 }
 
 /**
+ * Sanitize a test file path into the slug used in
+ * `fix/triage-agent/<slug>-<date>-<suffix>`. Shared by branch generation
+ * and dedupe lookups so a path always maps to the same slug.
+ */
+export function sanitizedTestFilePrefix(testFile: string): string {
+  return testFile
+    .replace(/[^a-zA-Z0-9]/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '')
+    .slice(0, 40); // Reduced to allow room for longer timestamp
+}
+
+/**
  * Generate a branch name for a fix
  * Includes timestamp with milliseconds for uniqueness to prevent collisions
  */
@@ -1374,11 +1448,7 @@ export function generateFixBranchName(
   timestamp: Date = new Date(),
   forceUnique: boolean = false
 ): string {
-  const sanitizedFile = testFile
-    .replace(/[^a-zA-Z0-9]/g, '-')
-    .replace(/-+/g, '-')
-    .replace(/^-|-$/g, '')
-    .slice(0, 40); // Reduced to allow room for longer timestamp
+  const sanitizedFile = sanitizedTestFilePrefix(testFile);
 
   const dateStr = timestamp.toISOString().slice(0, 10).replace(/-/g, '');
 

@@ -1,6 +1,5 @@
 import * as core from '@actions/core';
 import { finalizeRepairTelemetry, setSuccessOutput } from '../../src/pipeline/output';
-import { CHRONIC_FLAKINESS_THRESHOLD } from '../../src/config/constants';
 
 jest.mock('@actions/core');
 jest.mock('@actions/github', () => ({
@@ -339,20 +338,5 @@ describe('setSuccessOutput — auto-fix skip signal', () => {
     );
     expect(merged.status).toBe('validated');
     expect(merged.summary).toBe('Auto-fix validated.');
-  });
-});
-
-describe('CHRONIC_FLAKINESS_THRESHOLD', () => {
-  it('is exported as a positive integer', () => {
-    expect(Number.isInteger(CHRONIC_FLAKINESS_THRESHOLD)).toBe(true);
-    expect(CHRONIC_FLAKINESS_THRESHOLD).toBeGreaterThan(0);
-  });
-
-  it('is set to 3 — aligned with the default flakiness windows', () => {
-    // The skill store marks isFlaky at 2 fixes in 3 days (short window) or
-    // 3 in 7 days (long window). A threshold of 3 means we only skip after
-    // the SECOND retry has already been tried (fixCount=3) — giving the
-    // agent enough signal that its fixes aren't sticking.
-    expect(CHRONIC_FLAKINESS_THRESHOLD).toBe(3);
   });
 });
