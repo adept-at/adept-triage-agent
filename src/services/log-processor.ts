@@ -17,6 +17,7 @@ import { ArtifactFetcher } from '../artifact-fetcher';
 import { extractErrorFromLogs } from '../simplified-analyzer';
 import { LOG_LIMITS, SHORT_SHA_LENGTH, DEFAULT_PRODUCT_REPO } from '../config/constants';
 import { ANSI_ESCAPE_REGEX } from '../utils/text-utils';
+import { decodeLogPayload } from '../repair/fix-applier';
 
 interface RepoDetails {
   owner: string;
@@ -126,7 +127,12 @@ export async function processWorkflowLogs(
       repo,
       job_id: failedJob.id,
     });
-    fullLogs = String(logsResponse.data);
+    // Use decodeLogPayload (not String(...)): Octokit can return a Buffer,
+    // ArrayBuffer, or Uint8Array here. `String(arrayBuffer)` yields the
+    // literal "[object ArrayBuffer]", which would silently blind the entire
+    // error extraction. This is the live ingestion path — same hazard the
+    // helper was written to fix on the validation-log path.
+    fullLogs = decodeLogPayload(logsResponse.data);
     core.info(
       `Downloaded ${fullLogs.length} characters of logs for error extraction`
     );

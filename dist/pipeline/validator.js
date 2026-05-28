@@ -136,6 +136,30 @@ async function iterativeFixValidateLoop(inputs, repoDetails, autoFixTargetRepo, 
     }, octokit);
     let validatorReady = false;
     try {
+        await validator.setup();
+        validatorReady = true;
+        const baseline = await validator.baselineCheck();
+        if (baseline.passed) {
+            core.info('✅ Baseline check passed — test passes without fix. Failure was likely transient.');
+            core.info('📊 learning-telemetry baseline=passed validation=skipped iterations=0');
+            return {
+                fixRecommendation: null,
+                autoFixResult: null,
+                iterations: 0,
+                agentRootCause,
+                agentInvestigationFindings,
+                autoFixSkipped,
+                autoFixSkippedReason,
+                repairTelemetry: {
+                    status: 'skipped',
+                    summary: 'Repair skipped: baseline check passed without a fix (failure likely transient).',
+                    iterations: 0,
+                    elapsedMs: 0,
+                },
+            };
+        }
+        core.info('❌ Baseline check confirmed failure — proceeding with fix.');
+        core.info(`📊 learning-telemetry baseline=failed durationMs=${baseline.durationMs}`);
         for (let iteration = 0; iteration < maxIterations; iteration++) {
             completedIterations = iteration + 1;
             core.info(`\n${'='.repeat(60)}\n🔄 Fix-Validate iteration ${iteration + 1}/${maxIterations}\n${'='.repeat(60)}`);
@@ -193,32 +217,6 @@ async function iterativeFixValidateLoop(inputs, repoDetails, autoFixTargetRepo, 
                 break;
             }
             core.info(`Iteration ${iteration + 1}: fix passed quality gates (confidence: ${fixRecommendation.confidence}%, changes: ${fixRecommendation.proposedChanges.length})`);
-            if (!validatorReady) {
-                await validator.setup();
-                validatorReady = true;
-                const baseline = await validator.baselineCheck();
-                if (baseline.passed) {
-                    core.info('✅ Baseline check passed — test passes without fix. Failure was likely transient.');
-                    core.info('📊 learning-telemetry baseline=passed validation=skipped iterations=0');
-                    return {
-                        fixRecommendation: null,
-                        autoFixResult: null,
-                        iterations: 0,
-                        agentRootCause,
-                        agentInvestigationFindings,
-                        autoFixSkipped,
-                        autoFixSkippedReason,
-                        repairTelemetry: {
-                            status: 'skipped',
-                            summary: 'Repair skipped: baseline check passed without a fix (failure likely transient).',
-                            iterations: 0,
-                            elapsedMs: 0,
-                        },
-                    };
-                }
-                core.info('❌ Baseline check confirmed failure — proceeding with fix.');
-                core.info(`📊 learning-telemetry baseline=failed durationMs=${baseline.durationMs}`);
-            }
             try {
                 await validator.applyFix(fixRecommendation.proposedChanges);
             }

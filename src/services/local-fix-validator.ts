@@ -578,7 +578,27 @@ export class LocalFixValidator {
       };
     } catch (err: unknown) {
       const durationMs = Date.now() - start;
-      const execErr = err as { status?: number; stdout?: string; stderr?: string; killed?: boolean };
+      const execErr = err as { status?: number; code?: string; stdout?: string; stderr?: string; killed?: boolean };
+
+      // A maxBuffer overflow surfaces as code='ENOBUFS' AND killed=true.
+      // Check it BEFORE the killed branch so a test that merely produced
+      // more than MAX_BUFFER of output isn't mislabeled as a timeout — that
+      // wrong failure signature would otherwise be persisted into the
+      // failed-trajectory skill and fed back as retry context.
+      if (execErr.code === 'ENOBUFS') {
+        const partial = [execErr.stdout || '', execErr.stderr || '']
+          .join('\n')
+          .slice(-MAX_LOG_CHARS);
+        core.warning(
+          `Test output exceeded the ${MAX_BUFFER}-byte capture buffer (ENOBUFS) — treating as failed (not a timeout).`
+        );
+        return {
+          passed: false,
+          logs: `Test output exceeded the ${MAX_BUFFER}-byte capture buffer (ENOBUFS).${partial ? `\n\n--- partial output (tail) ---\n${partial}` : ''}`,
+          exitCode: execErr.status ?? 1,
+          durationMs,
+        };
+      }
 
       if (execErr.killed) {
         return {

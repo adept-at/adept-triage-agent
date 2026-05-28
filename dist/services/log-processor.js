@@ -42,6 +42,7 @@ const github = __importStar(require("@actions/github"));
 const simplified_analyzer_1 = require("../simplified-analyzer");
 const constants_1 = require("../config/constants");
 const text_utils_1 = require("../utils/text-utils");
+const fix_applier_1 = require("../repair/fix-applier");
 async function processWorkflowLogs(octokit, artifactFetcher, inputs, repoDetails) {
     const context = github.context;
     const { owner, repo } = context.repo;
@@ -95,7 +96,7 @@ async function processWorkflowLogs(octokit, artifactFetcher, inputs, repoDetails
             repo,
             job_id: failedJob.id,
         });
-        fullLogs = String(logsResponse.data);
+        fullLogs = (0, fix_applier_1.decodeLogPayload)(logsResponse.data);
         core.info(`Downloaded ${fullLogs.length} characters of logs for error extraction`);
         extractedError = (0, simplified_analyzer_1.extractErrorFromLogs)(fullLogs);
         if (inputs.prNumber && extractedError) {

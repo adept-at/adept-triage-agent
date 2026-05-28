@@ -152,6 +152,7 @@ class PipelineCoordinator {
             agentRootCause = singleResult.agentRootCause;
             agentInvestigationFindings = singleResult.agentInvestigationFindings;
             repairTelemetry = singleResult.repairTelemetry;
+            iterations = singleResult.repairTelemetry?.iterations ?? 0;
             if (fixRecommendation && this.inputs.enableAutoFix && autoFixTargetRepo) {
                 const outcome = await (0, validator_1.attemptAutoFix)(this.inputs, fixRecommendation, this.octokit, autoFixTargetRepo, errorData, skillStore);
                 autoFixResult = outcome.applied;
@@ -259,7 +260,26 @@ class PipelineCoordinator {
             }, errorData, null, chronicFlakinessSignal);
             return;
         }
-        const { fixRecommendation, autoFixResult, iterations, prUrl: skillPrUrl, agentRootCause, agentInvestigationFindings, autoFixSkipped: repairAutoFixSkipped, autoFixSkippedReason: repairAutoFixSkippedReason, repairTelemetry: repairTelemetryFromRun, } = await this.repair(classification, errorData, skillStore);
+        let repairOutcome;
+        try {
+            repairOutcome = await this.repair(classification, errorData, skillStore);
+        }
+        catch (repairError) {
+            const reason = repairError instanceof Error ? repairError.message : String(repairError);
+            core.error(`Repair stage failed (infrastructure): ${reason}`);
+            const degraded = {
+                ...classification,
+                repairTelemetry: {
+                    status: 'no_fix_generated',
+                    summary: `No auto-fix applied. Repair stage failed before producing a result (infrastructure error): ${reason}`,
+                    iterations: 0,
+                    elapsedMs: 0,
+                },
+            };
+            (0, output_1.setSuccessOutput)(degraded, errorData, null, chronicFlakinessSignal);
+            return;
+        }
+        const { fixRecommendation, autoFixResult, iterations, prUrl: skillPrUrl, agentRootCause, agentInvestigationFindings, autoFixSkipped: repairAutoFixSkipped, autoFixSkippedReason: repairAutoFixSkippedReason, repairTelemetry: repairTelemetryFromRun, } = repairOutcome;
         if (skillStore && autoFixTargetRepo && errorData) {
             const validationStatus = autoFixResult?.validationResult?.status || autoFixResult?.validationStatus;
             const validationPassed = validationStatus === 'passed';
@@ -337,10 +357,7 @@ class PipelineCoordinator {
             }
         }
         result.repairTelemetry = (0, output_1.finalizeRepairTelemetry)(repairTelemetryFromRun, fixRecommendation, autoFixResult);
-        const flakinessSignal = skillStore
-            ? skillStore.detectFlakiness(errorData.fileName || 'unknown')
-            : undefined;
-        (0, output_1.setSuccessOutput)(result, errorData, autoFixResult, flakinessSignal);
+        (0, output_1.setSuccessOutput)(result, errorData, autoFixResult, chronicFlakinessSignal);
     }
     async handleNoErrorData() {
         const { owner, repo } = this.repoDetails;
