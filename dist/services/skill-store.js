@@ -242,6 +242,55 @@ class SkillStore {
             core.warning(`DynamoDB recordOutcome failed: ${err}`);
         }
     }
+    async reinforceSkill(skillId, outcome) {
+        if (!this.loaded)
+            await this.load();
+        const skill = this.skills.find((s) => s.id === skillId);
+        if (!skill) {
+            core.warning(`Skill ${skillId} not found in DynamoDB in-memory cache for ${this.owner}/${this.repo} — skipping reinforcement`);
+            return;
+        }
+        const now = new Date().toISOString();
+        try {
+            const { UpdateCommand } = await import('@aws-sdk/lib-dynamodb');
+            const client = await this.getDocClient();
+            const counterField = outcome.success ? 'successCount' : 'failCount';
+            const values = { ':inc': 1, ':now': now };
+            const setClauses = ['lastUsedAt = :now'];
+            if (outcome.validatedLocally === true) {
+                values[':true'] = true;
+                setClauses.push('validatedLocally = :true');
+                if (typeof outcome.prUrl === 'string' && outcome.prUrl.length > 0) {
+                    values[':prUrl'] = outcome.prUrl;
+                    setClauses.push('prUrl = :prUrl');
+                }
+                if (typeof outcome.confidence === 'number') {
+                    values[':confidence'] = Math.max(skill.confidence ?? 0, outcome.confidence);
+                    setClauses.push('confidence = :confidence');
+                }
+            }
+            const updateExpression = `ADD ${counterField} :inc SET ${setClauses.join(', ')}`;
+            const result = await client.send(new UpdateCommand({
+                TableName: this.tableName,
+                Key: { pk: `REPO#${this.owner}/${this.repo}`, sk: `SKILL#${skillId}` },
+                UpdateExpression: updateExpression,
+                ConditionExpression: 'attribute_exists(pk) AND attribute_exists(sk)',
+                ExpressionAttributeValues: values,
+                ReturnValues: 'ALL_NEW',
+            }));
+            const attributes = result.Attributes;
+            skill.successCount = attributes?.successCount ?? skill.successCount ?? 0;
+            skill.failCount = attributes?.failCount ?? skill.failCount ?? 0;
+            skill.lastUsedAt = attributes?.lastUsedAt ?? now;
+            skill.validatedLocally =
+                attributes?.validatedLocally ?? skill.validatedLocally;
+            skill.prUrl = attributes?.prUrl ?? skill.prUrl;
+            skill.confidence = attributes?.confidence ?? skill.confidence;
+        }
+        catch (err) {
+            core.warning(`DynamoDB reinforceSkill failed: ${err}`);
+        }
+    }
     async recordClassificationOutcome(skillId, outcome) {
         if (!this.loaded)
             await this.load();
@@ -415,6 +464,22 @@ class SkillStore {
             normalizeSpec(s.spec) === querySpec &&
             now - parseSkillTimestamp(s.createdAt) < windowMs)
             .map((s) => s.fixFingerprint);
+    }
+    findReinforcementTarget(opts) {
+        if (!opts.fixFingerprint)
+            return undefined;
+        const querySpec = normalizeSpec(opts.spec);
+        const matches = this.skills.filter((s) => !s.retired &&
+            !s.isSeed &&
+            s.fixFingerprint === opts.fixFingerprint &&
+            normalizeSpec(s.spec) === querySpec);
+        if (matches.length === 0)
+            return undefined;
+        if (matches.length === 1)
+            return matches[0];
+        const testNameMatches = matches.filter((s) => s.testName === opts.testName);
+        const pool = testNameMatches.length > 0 ? testNameMatches : matches;
+        return [...pool].sort(compareSkillRecency)[0];
     }
     countForSpec(spec) {
         const querySpec = normalizeSpec(spec);

@@ -39,6 +39,8 @@ interface GateCounters {
   flakinessWatchEmits: number;
   /** Auto-fix skipped because spec was unfixable per a curated nonFixable seed. */
   nonFixableSeedSkips: number;
+  /** Existing skill reinforced (byte-identical fix reuse) instead of a new insert. */
+  skillReinforcements: number;
 }
 
 const counters: GateCounters = createEmpty();
@@ -53,6 +55,7 @@ function createEmpty(): GateCounters {
     skillWriteSkips: 0,
     flakinessWatchEmits: 0,
     nonFixableSeedSkips: 0,
+    skillReinforcements: 0,
   };
 }
 
@@ -89,7 +92,7 @@ export function _resetGateCounters(): void {
  *
  *   📊 gate-telemetry-summary blast-radius=N branch-dedupe=N infra-fast-path=N
  *   verdict-override=N prior-failed-boost=N skill-write-skip=N
- *   flakiness-watch=N non-fixable-seed=N
+ *   flakiness-watch=N non-fixable-seed=N skill-reinforce=N
  *
  * Always emitted, even when all counters are zero, so absence of the
  * line in run logs is itself a signal (e.g., the line was suppressed
@@ -107,7 +110,8 @@ export function logRunGateSummary(): void {
         `prior-failed-boost=${c.priorFailedTrajectoryBoosts} ` +
         `skill-write-skip=${c.skillWriteSkips} ` +
         `flakiness-watch=${c.flakinessWatchEmits} ` +
-        `non-fixable-seed=${c.nonFixableSeedSkips}`
+        `non-fixable-seed=${c.nonFixableSeedSkips} ` +
+        `skill-reinforce=${c.skillReinforcements}`
     );
   } catch {
     // Never-throw contract: telemetry must not destabilize end-of-run cleanup.

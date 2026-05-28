@@ -37,6 +37,7 @@ describe('run-telemetry — recordGate / getGateCounters', () => {
       skillWriteSkips: 0,
       flakinessWatchEmits: 0,
       nonFixableSeedSkips: 0,
+      skillReinforcements: 0,
     });
   });
 

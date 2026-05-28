@@ -54,6 +54,12 @@ export declare class SkillStore {
     load(): Promise<TriageSkill[]>;
     save(skill: TriageSkill): Promise<boolean>;
     recordOutcome(skillId: string, success: boolean): Promise<void>;
+    reinforceSkill(skillId: string, outcome: {
+        success: boolean;
+        validatedLocally: boolean;
+        prUrl?: string;
+        confidence?: number;
+    }): Promise<void>;
     recordClassificationOutcome(skillId: string, outcome: 'correct' | 'incorrect'): Promise<void>;
     findRelevant(opts: {
         framework: string;
@@ -74,6 +80,11 @@ export declare class SkillStore {
     detectFlakiness(spec: string): FlakinessSignal;
     countRecentFailedTrajectories(spec: string, windowMs: number): number;
     findRecentFailedFingerprints(spec: string, windowMs: number): string[];
+    findReinforcementTarget(opts: {
+        spec?: string;
+        testName?: string;
+        fixFingerprint?: string;
+    }): TriageSkill | undefined;
     countForSpec(spec: string): number;
     getUsageStats(): {
         loaded: number;

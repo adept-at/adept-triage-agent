@@ -7,6 +7,7 @@ interface GateCounters {
     skillWriteSkips: number;
     flakinessWatchEmits: number;
     nonFixableSeedSkips: number;
+    skillReinforcements: number;
 }
 export declare function recordGate(kind: keyof GateCounters): void;
 export declare function getGateCounters(): GateCounters;

@@ -549,75 +549,105 @@ export class PipelineCoordinator {
       }
 
       if (fixAttempted && shouldSaveSkill) {
-        const firstChange = fixRecommendation!.proposedChanges?.[0];
-        const rootCause = agentRootCause || inferRootCauseCategory(fixRecommendation!);
-        const currentFindings = agentInvestigationFindings || '';
-        const failedFixEvidence = validationPassed
-          ? undefined
-          : buildFailedFixEvidence(errorData, autoFixResult);
-
-        const skill = buildSkill({
-          repo: `${autoFixTargetRepo.owner}/${autoFixTargetRepo.repo}`,
-          spec: errorData.fileName || 'unknown',
-          testName: errorData.testName || 'unknown',
-          framework: errorData.framework || 'unknown',
-          errorMessage: errorData.message,
-          rootCauseCategory: rootCause,
-          fix: {
-            file: firstChange?.file || 'unknown',
-            changeType: rootCause,
-            summary: fixRecommendation!.summary,
-            pattern: describeFixPattern(fixRecommendation!.proposedChanges || []),
-          },
-          confidence: fixRecommendation!.confidence,
-          iterations,
-          // skillPrUrl is only set in `iterativeFixValidateLoop` when
-          // `pushAndCreatePR` succeeded, so falling back to '' here is correct
-          // both for "no publish attempt" and "publish failed after pass".
-          prUrl: skillPrUrl || '',
-          validatedLocally: validationPassed,
-          // Persist a stable fingerprint so the next run's auto-fix gate can
-          // detect when it's about to ship a byte-equivalent fix that already
-          // failed validation. See `findRecentFailedFingerprints` consumers
-          // in `validator.ts`.
+        // Close the learning loop: when this run produced a fix that is
+        // byte-identical to an existing skill's fix on the same spec,
+        // reinforce that prior skill in place instead of inserting a
+        // near-duplicate. Legacy/no-fingerprint runs return undefined here
+        // and fall through to the existing insert path unchanged.
+        const reinforceTarget = skillStore.findReinforcementTarget({
+          spec: errorData.fileName,
+          testName: errorData.testName,
           fixFingerprint: fixFingerprint(fixRecommendation!),
-          priorSkillCount: skillStore.countForSpec(errorData.fileName || 'unknown'),
-          investigationFindings: currentFindings,
-          rootCauseChain: `${rootCause} → ${fixRecommendation!.summary?.slice(0, 80)}`,
-          // R3: persist the causal trace so future runs against the same
-          // spec can see how the prior successful fix reasoned about the
-          // failure (originalState → rootMechanism → newStateAfterFix →
-          // whyAssertionPassesNow). Undefined on skills from pre-v1.49.1
-          // or from an older run before trace persistence existed — both are fine.
-          failureModeTrace: fixRecommendation!.failureModeTrace,
-          failedFixEvidence,
         });
 
-        const saveSucceeded = await skillStore.save(skill).catch((err) => {
-          core.warning(`Failed to save skill: ${err}`);
-          return false;
-        });
-
-        // Skip outcome writes when save failed — the skill is not in the
-        // in-memory cache, so recordOutcome / recordClassificationOutcome
-        // would hit the "skill not found" warning path and emit misleading
-        // logs. Counters will be recorded on the next run after a fresh load.
-        // recordOutcome / recordClassificationOutcome never reject — they
-        // log their own warnings on failure — so no .catch is needed here.
-        if (saveSucceeded) {
-          if (validationPassed) {
-            await skillStore.recordOutcome(skill.id, true);
-            await skillStore.recordClassificationOutcome(skill.id, 'correct');
-            core.info(`📝 Saved validated skill ${skill.id}`);
-          } else {
-            await skillStore.recordOutcome(skill.id, false);
-            core.info(`📝 Saved failed skill trajectory ${skill.id}`);
-          }
+        if (reinforceTarget) {
+          await skillStore.reinforceSkill(reinforceTarget.id, {
+            success: validationPassed,
+            validatedLocally: validationPassed,
+            prUrl: skillPrUrl || '',
+            confidence: fixRecommendation!.confidence,
+          });
+          core.info(
+            `📝 Reinforced existing skill ${reinforceTarget.id} ` +
+              `(byte-identical fix reuse, validationPassed=${validationPassed})`
+          );
+          recordGate('skillReinforcements');
           core.info(
             `📊 learning-telemetry verdict=${classification.verdict} ` +
-              `savedSkillId=${skill.id} validationPassed=${validationPassed} ` +
+              `reinforcedSkillId=${reinforceTarget.id} validationPassed=${validationPassed} ` +
               `publishSucceeded=${publishSucceeded} iterations=${iterations}`
           );
+        } else {
+          const firstChange = fixRecommendation!.proposedChanges?.[0];
+          const rootCause = agentRootCause || inferRootCauseCategory(fixRecommendation!);
+          const currentFindings = agentInvestigationFindings || '';
+          const failedFixEvidence = validationPassed
+            ? undefined
+            : buildFailedFixEvidence(errorData, autoFixResult);
+
+          const skill = buildSkill({
+            repo: `${autoFixTargetRepo.owner}/${autoFixTargetRepo.repo}`,
+            spec: errorData.fileName || 'unknown',
+            testName: errorData.testName || 'unknown',
+            framework: errorData.framework || 'unknown',
+            errorMessage: errorData.message,
+            rootCauseCategory: rootCause,
+            fix: {
+              file: firstChange?.file || 'unknown',
+              changeType: rootCause,
+              summary: fixRecommendation!.summary,
+              pattern: describeFixPattern(fixRecommendation!.proposedChanges || []),
+            },
+            confidence: fixRecommendation!.confidence,
+            iterations,
+            // skillPrUrl is only set in `iterativeFixValidateLoop` when
+            // `pushAndCreatePR` succeeded, so falling back to '' here is correct
+            // both for "no publish attempt" and "publish failed after pass".
+            prUrl: skillPrUrl || '',
+            validatedLocally: validationPassed,
+            // Persist a stable fingerprint so the next run's auto-fix gate can
+            // detect when it's about to ship a byte-equivalent fix that already
+            // failed validation. See `findRecentFailedFingerprints` consumers
+            // in `validator.ts`.
+            fixFingerprint: fixFingerprint(fixRecommendation!),
+            priorSkillCount: skillStore.countForSpec(errorData.fileName || 'unknown'),
+            investigationFindings: currentFindings,
+            rootCauseChain: `${rootCause} → ${fixRecommendation!.summary?.slice(0, 80)}`,
+            // R3: persist the causal trace so future runs against the same
+            // spec can see how the prior successful fix reasoned about the
+            // failure (originalState → rootMechanism → newStateAfterFix →
+            // whyAssertionPassesNow). Undefined on skills from pre-v1.49.1
+            // or from an older run before trace persistence existed — both are fine.
+            failureModeTrace: fixRecommendation!.failureModeTrace,
+            failedFixEvidence,
+          });
+
+          const saveSucceeded = await skillStore.save(skill).catch((err) => {
+            core.warning(`Failed to save skill: ${err}`);
+            return false;
+          });
+
+          // Skip outcome writes when save failed — the skill is not in the
+          // in-memory cache, so recordOutcome / recordClassificationOutcome
+          // would hit the "skill not found" warning path and emit misleading
+          // logs. Counters will be recorded on the next run after a fresh load.
+          // recordOutcome / recordClassificationOutcome never reject — they
+          // log their own warnings on failure — so no .catch is needed here.
+          if (saveSucceeded) {
+            if (validationPassed) {
+              await skillStore.recordOutcome(skill.id, true);
+              await skillStore.recordClassificationOutcome(skill.id, 'correct');
+              core.info(`📝 Saved validated skill ${skill.id}`);
+            } else {
+              await skillStore.recordOutcome(skill.id, false);
+              core.info(`📝 Saved failed skill trajectory ${skill.id}`);
+            }
+            core.info(
+              `📊 learning-telemetry verdict=${classification.verdict} ` +
+                `savedSkillId=${skill.id} validationPassed=${validationPassed} ` +
+                `publishSucceeded=${publishSucceeded} iterations=${iterations}`
+            );
+          }
         }
       }
     }

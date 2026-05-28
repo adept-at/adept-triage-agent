@@ -538,6 +538,109 @@ export class SkillStore {
   }
 
   /**
+   * Reinforce a PRIOR surfaced skill instead of inserting a near-duplicate.
+   *
+   * Called by the coordinator when the current run produced a fix that is
+   * byte-identical (same `fixFingerprint`, same normalized spec) to an
+   * existing skill, resolved via `findReinforcementTarget`. Closes the
+   * append-only loop where every validated run minted a brand-new UUID and
+   * froze each skill's track record at 1/1 or 0/1.
+   *
+   * Behavior:
+   *   - Always increments `successCount` (success) or `failCount` (failure)
+   *     and refreshes `lastUsedAt`.
+   *   - On a validated reuse (`outcome.validatedLocally === true`), also
+   *     promotes the skill: sets `validatedLocally = true`, sets `prUrl` when
+   *     a non-empty URL is supplied, and raises `confidence` to the MAX of the
+   *     existing and incoming confidence.
+   *   - Never downgrades `validatedLocally` on a failure outcome — a
+   *     previously-validated skill that later fails keeps `validatedLocally`
+   *     and only increments `failCount`. The existing trace-suppression gate
+   *     (`total >= 3 && successCount === 0`) handles empirically-bad skills.
+   *
+   * @invariant This method must never reject. All DynamoDB errors are caught
+   * and logged. Missing-skill cases short-circuit with a warning. Mirrors the
+   * `recordOutcome` never-reject contract — the coordinator awaits without a
+   * `.catch`.
+   */
+  async reinforceSkill(
+    skillId: string,
+    outcome: {
+      success: boolean;
+      validatedLocally: boolean;
+      prUrl?: string;
+      confidence?: number;
+    }
+  ): Promise<void> {
+    if (!this.loaded) await this.load();
+    const skill = this.skills.find((s) => s.id === skillId);
+    if (!skill) {
+      core.warning(
+        `Skill ${skillId} not found in DynamoDB in-memory cache for ${this.owner}/${this.repo} — skipping reinforcement`
+      );
+      return;
+    }
+
+    const now = new Date().toISOString();
+
+    try {
+      const { UpdateCommand } = await import('@aws-sdk/lib-dynamodb');
+      const client = await this.getDocClient();
+      const counterField = outcome.success ? 'successCount' : 'failCount';
+
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const values: Record<string, any> = { ':inc': 1, ':now': now };
+      const setClauses = ['lastUsedAt = :now'];
+
+      // Only a validated reuse promotes the skill. A failing reuse just bumps
+      // failCount + lastUsedAt above and leaves validatedLocally / prUrl /
+      // confidence untouched (no downgrade).
+      if (outcome.validatedLocally === true) {
+        values[':true'] = true;
+        setClauses.push('validatedLocally = :true');
+
+        if (typeof outcome.prUrl === 'string' && outcome.prUrl.length > 0) {
+          values[':prUrl'] = outcome.prUrl;
+          setClauses.push('prUrl = :prUrl');
+        }
+
+        if (typeof outcome.confidence === 'number') {
+          values[':confidence'] = Math.max(
+            skill.confidence ?? 0,
+            outcome.confidence
+          );
+          setClauses.push('confidence = :confidence');
+        }
+      }
+
+      // One ADD clause (counter) + one comma-separated SET clause.
+      const updateExpression = `ADD ${counterField} :inc SET ${setClauses.join(', ')}`;
+
+      const result = await client.send(
+        new UpdateCommand({
+          TableName: this.tableName,
+          Key: { pk: `REPO#${this.owner}/${this.repo}`, sk: `SKILL#${skillId}` },
+          UpdateExpression: updateExpression,
+          ConditionExpression: 'attribute_exists(pk) AND attribute_exists(sk)',
+          ExpressionAttributeValues: values,
+          ReturnValues: 'ALL_NEW',
+        })
+      );
+
+      const attributes = result.Attributes as Partial<TriageSkill> | undefined;
+      skill.successCount = attributes?.successCount ?? skill.successCount ?? 0;
+      skill.failCount = attributes?.failCount ?? skill.failCount ?? 0;
+      skill.lastUsedAt = attributes?.lastUsedAt ?? now;
+      skill.validatedLocally =
+        attributes?.validatedLocally ?? skill.validatedLocally;
+      skill.prUrl = attributes?.prUrl ?? skill.prUrl;
+      skill.confidence = attributes?.confidence ?? skill.confidence;
+    } catch (err) {
+      core.warning(`DynamoDB reinforceSkill failed: ${err}`);
+    }
+  }
+
+  /**
    * Record whether the classifier's verdict was correct for this skill.
    * Only `'correct'` is currently written by the pipeline (see
    * `PipelineCoordinator.execute`); the `'incorrect'` case is reserved for
@@ -858,6 +961,53 @@ export class SkillStore {
           now - parseSkillTimestamp(s.createdAt) < windowMs
       )
       .map((s) => s.fixFingerprint as string);
+  }
+
+  /**
+   * Find an existing skill to reinforce instead of inserting a near-duplicate.
+   *
+   * Called by the coordinator before it builds/saves a new skill: when the
+   * current run produced a fix byte-identical to a prior skill (same
+   * `fixFingerprint` on the same normalized spec), we reinforce that skill's
+   * track record rather than minting a fresh UUID with a frozen 1/1 record.
+   *
+   * Match requirements (all must hold):
+   *   - `opts.fixFingerprint` is truthy. Legacy / no-fingerprint runs can't
+   *     match anything deterministically → return undefined so the caller
+   *     falls back to the insert path.
+   *   - candidate skill is NOT `retired` and NOT `isSeed` (seeds are curated
+   *     guidance, never reinforced by runtime outcomes).
+   *   - `s.fixFingerprint === opts.fixFingerprint`.
+   *   - `normalizeSpec(s.spec) === normalizeSpec(opts.spec)`.
+   *
+   * testName is a secondary tiebreaker only — fingerprint + spec already
+   * strongly identify the fix, so we do NOT require exact testName equality
+   * as the primary key. When multiple skills match, prefer the one whose
+   * `testName === opts.testName`; otherwise pick the most recently used
+   * (reusing `compareSkillRecency`). Returns the single best match, or
+   * undefined when nothing qualifies.
+   */
+  findReinforcementTarget(opts: {
+    spec?: string;
+    testName?: string;
+    fixFingerprint?: string;
+  }): TriageSkill | undefined {
+    if (!opts.fixFingerprint) return undefined;
+
+    const querySpec = normalizeSpec(opts.spec);
+    const matches = this.skills.filter(
+      (s) =>
+        !s.retired &&
+        !s.isSeed &&
+        s.fixFingerprint === opts.fixFingerprint &&
+        normalizeSpec(s.spec) === querySpec
+    );
+    if (matches.length === 0) return undefined;
+    if (matches.length === 1) return matches[0];
+
+    const testNameMatches = matches.filter((s) => s.testName === opts.testName);
+    const pool = testNameMatches.length > 0 ? testNameMatches : matches;
+    return [...pool].sort(compareSkillRecency)[0];
   }
 
   /**
