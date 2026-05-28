@@ -1133,7 +1133,7 @@ describe('fix-applier', () => {
       expect(result.success).toBe(true);
       expect(mockOctokit.repos.getContent).toHaveBeenCalledTimes(2);
       expect(mockCore.warning).toHaveBeenCalledWith(
-        expect.stringContaining('Rate limited')
+        expect.stringContaining('429')
       );
     }, 15000); // Increase timeout for retry delay
   });
