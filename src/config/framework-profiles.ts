@@ -17,7 +17,121 @@ export interface FrameworkProfile {
   label: string;
   commandPrefix: string;
   fixPatternBlock: string;
+
+  /**
+   * Matches in-test command invocations (used by the deterministic
+   * code-reading agent to harvest helper/command calls from a spec).
+   * Cypress: `cy.*` calls. WDIO: `browser.*` / `driver.*` calls plus
+   * `$()` / `$$()` element queries. `unknown` is a permissive UNION so an
+   * unattributed spec still extracts something.
+   */
+  commandInvocationPattern: RegExp;
+
+  /**
+   * Matches custom-command DEFINITIONS in support files. Capture group 1
+   * (or, for the `unknown` union, the first defined group) is the command
+   * name. Cypress: `Cypress.Commands.add('name', ...)`. WDIO:
+   * `browser.addCommand('name', ...)` / `driver.addCommand(...)`.
+   */
+  customCommandPattern: RegExp;
+
+  /**
+   * Matches selector usage so the agent can surface the selectors a page
+   * object / support file relies on. Cypress: `cy.get('sel')` +
+   * `[data-testid=...]`. WDIO: `$('sel')` / `$$('sel')` + `aria/` +
+   * `[data-testid=...]`. The first defined capture group is the selector.
+   */
+  selectorPattern: RegExp;
+
+  /**
+   * Repo-relative candidate paths/dirs probed for shared support / command
+   * files. The code-reading agent fetches these (tree-filtered) when
+   * building context. Cypress: `cypress/support/*` plus the shared
+   * helper/conf locations. WDIO: `test/*` support locations + `wdio.conf`
+   * variants. `unknown`: the UNION of both lists. NOTE: the agent's
+   * discovery machinery fetches FILES, so bare directory entries simply
+   * resolve to nothing (and are dropped by the repo-tree filter) — they
+   * are harmless and kept for documentation of where each framework keeps
+   * its shared code.
+   */
+  supportFileCandidates: string[];
 }
+
+// --- Extraction patterns -----------------------------------------------------
+// Module-level RegExp literals are STATELESS sources of truth; the code-reading
+// agent clones them (new RegExp(source, flags)) before each `.exec` loop so the
+// shared `/g` `lastIndex` is never mutated across calls.
+
+/** Cypress in-test command calls: `cy.get`, `cy.login`, ... */
+const CYPRESS_COMMAND_INVOCATION = /cy\.[a-zA-Z]\w*/g;
+/** WDIO command calls + element queries: `browser.url`, `driver.x`, `$(`, `$$(`. */
+const WDIO_COMMAND_INVOCATION = /(?:browser|driver)\.[a-zA-Z]\w*|\$\$?\(/g;
+
+/** Cypress custom-command definition; group 1 = command name. */
+const CYPRESS_CUSTOM_COMMAND = /Cypress\.Commands\.add\(\s*['"`]([\w-]+)['"`]/g;
+/** WDIO custom-command definition; group 1 = command name. */
+const WDIO_CUSTOM_COMMAND = /(?:browser|driver)\.addCommand\(\s*['"`]([\w-]+)['"`]/g;
+
+/** Cypress selector usage: `cy.get('sel')` (group 1) or `[data-testid=...]` (group 2). */
+const CYPRESS_SELECTOR =
+  /cy\.get\s*\(\s*['"`]([^'"`]+)['"`]|(\[data-testid=["'][^"']+["']\])/g;
+/** WDIO selector usage: `$('sel')`/`$$('sel')`, `[data-testid=...]`, or `aria/...`. */
+const WDIO_SELECTOR =
+  /\$\$?\(\s*['"`]([^'"`]+)['"`]\s*\)|(\[data-testid=["'][^"']+["']\])|(aria\/[\w-]+)/g;
+
+/** Build a permissive `/g` union of two pattern sources (group numbers shift; */
+/* consumers read the first DEFINED capture group, so the shift is irrelevant). */
+const union = (a: RegExp, b: RegExp): RegExp =>
+  new RegExp(`${a.source}|${b.source}`, 'g');
+
+// --- Support-file candidate lists --------------------------------------------
+
+/** Cypress shared support / command file locations (existing list, preserved). */
+const CYPRESS_SUPPORT_FILE_CANDIDATES = [
+  'cypress/support/commands.js',
+  'cypress/support/commands.ts',
+  'cypress/support/e2e.js',
+  'cypress/support/e2e.ts',
+  'cypress/support/index.js',
+  'cypress/support/index.ts',
+  'test/helpers/index.ts',
+  'test/helpers/index.js',
+  'test/support/index.ts',
+  'test/support/index.js',
+  'wdio.conf.ts',
+  'wdio.conf.js',
+];
+
+/**
+ * WDIO shared support / command file locations. The bare dirs/bases
+ * (`test/specs`, `test/pageobjects`, `pageobjects`, `test/support`,
+ * `commands`) come from the design spec; since discovery fetches FILES they
+ * resolve to nothing on their own, so concrete `.ts`/`.js` files that the
+ * machinery can actually fetch are listed alongside them.
+ */
+const WDIO_SUPPORT_FILE_CANDIDATES = [
+  'test/specs',
+  'test/pageobjects',
+  'pageobjects',
+  'test/support',
+  'commands',
+  'test/support/index.ts',
+  'test/support/index.js',
+  'test/helpers/index.ts',
+  'test/helpers/index.js',
+  'commands.ts',
+  'commands.js',
+  'wdio.conf.ts',
+  'wdio.conf.js',
+];
+
+/** Union of both lists for unattributed (`unknown`) repos. */
+const UNKNOWN_SUPPORT_FILE_CANDIDATES = [
+  ...new Set([
+    ...CYPRESS_SUPPORT_FILE_CANDIDATES,
+    ...WDIO_SUPPORT_FILE_CANDIDATES,
+  ]),
+];
 
 export const CYPRESS_PATTERNS = `## Cypress Fix Patterns
 
@@ -265,6 +379,14 @@ const NEUTRAL_PROFILE: FrameworkProfile = {
   label: 'unknown',
   commandPrefix: '',
   fixPatternBlock: NEUTRAL_FIX_PATTERN_BLOCK,
+  // Permissive UNIONS so an unattributed repo still extracts something.
+  commandInvocationPattern: union(
+    CYPRESS_COMMAND_INVOCATION,
+    WDIO_COMMAND_INVOCATION
+  ),
+  customCommandPattern: union(CYPRESS_CUSTOM_COMMAND, WDIO_CUSTOM_COMMAND),
+  selectorPattern: union(CYPRESS_SELECTOR, WDIO_SELECTOR),
+  supportFileCandidates: UNKNOWN_SUPPORT_FILE_CANDIDATES,
 };
 
 const FRAMEWORK_PROFILES = {
@@ -272,11 +394,19 @@ const FRAMEWORK_PROFILES = {
     label: 'Cypress',
     commandPrefix: 'cy',
     fixPatternBlock: CYPRESS_PATTERNS,
+    commandInvocationPattern: CYPRESS_COMMAND_INVOCATION,
+    customCommandPattern: CYPRESS_CUSTOM_COMMAND,
+    selectorPattern: CYPRESS_SELECTOR,
+    supportFileCandidates: CYPRESS_SUPPORT_FILE_CANDIDATES,
   },
   webdriverio: {
     label: 'WebDriverIO',
     commandPrefix: 'browser',
     fixPatternBlock: WDIO_PATTERNS,
+    commandInvocationPattern: WDIO_COMMAND_INVOCATION,
+    customCommandPattern: WDIO_CUSTOM_COMMAND,
+    selectorPattern: WDIO_SELECTOR,
+    supportFileCandidates: WDIO_SUPPORT_FILE_CANDIDATES,
   },
 } satisfies Record<Exclude<Framework, 'unknown'>, FrameworkProfile>;
 

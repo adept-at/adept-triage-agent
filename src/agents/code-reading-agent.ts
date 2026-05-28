@@ -11,6 +11,7 @@ import {
 } from './base-agent';
 import { OpenAIClient } from '../openai-client';
 import { SourceFetchContext } from '../types';
+import { getFrameworkProfile } from '../config/framework-profiles';
 
 /**
  * Output from the Code Reading Agent
@@ -98,6 +99,10 @@ export class CodeReadingAgent extends BaseAgent<
 
     try {
       this.log('Starting code reading...');
+      // Resolve the framework behavior profile once. Drives every extractor
+      // and the support-file candidate list below so this deterministic agent
+      // produces symmetric context for Cypress AND WebDriverIO specs.
+      const profile = getFrameworkProfile(context.framework ?? 'unknown');
       const cleanTestFile = this.cleanFilePath(input.testFile);
       this.log(`Test file: ${cleanTestFile} (raw: ${input.testFile})`);
 
@@ -153,14 +158,18 @@ export class CodeReadingAgent extends BaseAgent<
 
       // Parse the test file to find imports and helpers
       const imports = this.extractImports(testFileContent);
-      const helperCalls = this.extractHelperCalls(testFileContent);
+      const helperCalls = this.extractHelperCalls(
+        testFileContent,
+        profile.commandInvocationPattern
+      );
       const pageObjectRefs = this.extractPageObjectReferences(testFileContent);
 
       // Fetch helper/support files
       const supportFiles = await this.findAndFetchSupportFiles(
         cleanTestFile || input.testFile,
         imports,
-        helperCalls
+        helperCalls,
+        profile.supportFileCandidates
       );
       for (const [path, content] of supportFiles) {
         if (fetchedPaths.has(path)) continue;
@@ -173,7 +182,11 @@ export class CodeReadingAgent extends BaseAgent<
         apiCalls++;
 
         // Extract custom commands from support files
-        const commands = this.extractCustomCommands(content, path);
+        const commands = this.extractCustomCommands(
+          content,
+          path,
+          profile.customCommandPattern
+        );
         customCommands.push(...commands);
       }
 
@@ -196,7 +209,10 @@ export class CodeReadingAgent extends BaseAgent<
             pageObjects.push({
               name: pageObjRef,
               file: pageObjFile,
-              selectors: this.extractSelectorsFromCode(content),
+              selectors: this.extractSelectorsFromCode(
+                content,
+                profile.selectorPattern
+              ),
             });
           }
         }
@@ -520,77 +536,18 @@ export class CodeReadingAgent extends BaseAgent<
   }
 
   /**
-   * Extract helper function calls
+   * Extract in-test command/helper calls using the framework profile's
+   * `commandInvocationPattern`. The pattern is cloned (fresh `lastIndex`)
+   * because the profile owns a shared `/g` RegExp. Returns the matched call
+   * tokens (e.g. `cy.login`, `browser.url`, `$(`), deduplicated.
    */
-  private extractHelperCalls(code: string): string[] {
+  private extractHelperCalls(code: string, pattern: RegExp): string[] {
     const helpers: string[] = [];
-
-    // Look for cy.customCommand() patterns
-    const customCmdRegex = /cy\.(\w+)\s*\(/g;
-    const standardCommands = new Set([
-      'get',
-      'find',
-      'contains',
-      'click',
-      'type',
-      'should',
-      'wait',
-      'visit',
-      'request',
-      'intercept',
-      'wrap',
-      'then',
-      'its',
-      'invoke',
-      'log',
-      'pause',
-      'debug',
-      'scrollTo',
-      'scrollIntoView',
-      'focus',
-      'blur',
-      'clear',
-      'submit',
-      'select',
-      'check',
-      'uncheck',
-      'trigger',
-      'readFile',
-      'writeFile',
-      'fixture',
-      'task',
-      'exec',
-      'screenshot',
-      'viewport',
-      'clearCookies',
-      'clearLocalStorage',
-      'getCookies',
-      'setCookie',
-      'getCookie',
-      'hash',
-      'location',
-      'url',
-      'title',
-      'document',
-      'window',
-      'root',
-      'within',
-      'as',
-      'clock',
-      'tick',
-      'stub',
-      'spy',
-      'reload',
-      'go',
-      'session',
-      'origin',
-    ]);
+    const regex = new RegExp(pattern.source, pattern.flags);
 
     let match;
-    while ((match = customCmdRegex.exec(code)) !== null) {
-      if (!standardCommands.has(match[1])) {
-        helpers.push(match[1]);
-      }
+    while ((match = regex.exec(code)) !== null) {
+      helpers.push(match[0]);
     }
 
     return [...new Set(helpers)];
@@ -628,27 +585,16 @@ export class CodeReadingAgent extends BaseAgent<
   private async findAndFetchSupportFiles(
     testFile: string,
     imports: string[],
-    _helperCalls: string[]
+    _helperCalls: string[],
+    supportPaths: string[]
   ): Promise<Map<string, string>> {
     const files = new Map<string, string>();
     const testDir = testFile.split('/').slice(0, -1).join('/');
 
-    // Cypress and WebDriverIO support file locations
-    const supportPaths = [
-      'cypress/support/commands.js',
-      'cypress/support/commands.ts',
-      'cypress/support/e2e.js',
-      'cypress/support/e2e.ts',
-      'cypress/support/index.js',
-      'cypress/support/index.ts',
-      'test/helpers/index.ts',
-      'test/helpers/index.js',
-      'test/support/index.ts',
-      'test/support/index.js',
-      'wdio.conf.ts',
-      'wdio.conf.js',
-    ];
-
+    // Candidate support-file locations come from the framework profile
+    // (Cypress vs WebDriverIO vs the union for unknown). The resolution
+    // machinery below is unchanged — only the candidate SOURCE list moved
+    // into the profile registry.
     const treePathSet = await this.ensureTreePathSet();
     const supportPathsToFetch = treePathSet
       ? supportPaths.filter((p) => treePathSet.has(p))
@@ -759,20 +705,26 @@ export class CodeReadingAgent extends BaseAgent<
   }
 
   /**
-   * Extract custom commands from support files
+   * Extract custom-command definitions from support files using the
+   * framework profile's `customCommandPattern`. The command name is the
+   * first DEFINED capture group (Cypress has one group; the `unknown` union
+   * has several — only the matching branch's group is defined). The pattern
+   * is cloned so the profile's shared `/g` `lastIndex` is never mutated.
    */
   private extractCustomCommands(
     code: string,
-    file: string
+    file: string,
+    pattern: RegExp
   ): CodeReadingOutput['customCommands'] {
     const commands: CodeReadingOutput['customCommands'] = [];
+    const regex = new RegExp(pattern.source, pattern.flags);
 
-    // Look for Cypress.Commands.add patterns
-    const addCmdRegex = /Cypress\.Commands\.add\s*\(\s*['"](\w+)['"]/g;
     let match;
-    while ((match = addCmdRegex.exec(code)) !== null) {
+    while ((match = regex.exec(code)) !== null) {
+      const name = match.slice(1).find((g) => g !== undefined);
+      if (!name) continue;
       commands.push({
-        name: match[1],
+        name,
         file,
         definition: this.extractFunctionDefinition(code, match.index),
       });
@@ -782,22 +734,22 @@ export class CodeReadingAgent extends BaseAgent<
   }
 
   /**
-   * Extract selectors from code
+   * Extract selectors from code using the framework profile's
+   * `selectorPattern`. Each pattern's branches each carry one capture group
+   * holding the selector text (e.g. the `cy.get`/`$` argument, a full
+   * `[data-testid=...]`, or an `aria/...` token); we push the first DEFINED
+   * group. The pattern is cloned to avoid mutating the shared `/g` regex.
    */
-  private extractSelectorsFromCode(code: string): string[] {
+  private extractSelectorsFromCode(code: string, pattern: RegExp): string[] {
     const selectors: string[] = [];
+    const regex = new RegExp(pattern.source, pattern.flags);
 
-    // CSS selectors in cy.get()
-    const getRegex = /cy\.get\s*\(\s*['"`]([^'"`]+)['"`]/g;
     let match;
-    while ((match = getRegex.exec(code)) !== null) {
-      selectors.push(match[1]);
-    }
-
-    // Data-testid selectors
-    const testidRegex = /\[data-testid=["']([^"']+)["']\]/g;
-    while ((match = testidRegex.exec(code)) !== null) {
-      selectors.push(`[data-testid="${match[1]}"]`);
+    while ((match = regex.exec(code)) !== null) {
+      const selector = match.slice(1).find((g) => g !== undefined);
+      if (selector) {
+        selectors.push(selector);
+      }
     }
 
     return [...new Set(selectors)];
