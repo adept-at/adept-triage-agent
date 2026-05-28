@@ -2,6 +2,48 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.WDIO_PATTERNS = exports.CYPRESS_PATTERNS = void 0;
 exports.getFrameworkProfile = getFrameworkProfile;
+const CYPRESS_COMMAND_INVOCATION = /cy\.[a-zA-Z]\w*/g;
+const WDIO_COMMAND_INVOCATION = /(?:browser|driver)\.[a-zA-Z]\w*|\$\$?\(/g;
+const CYPRESS_CUSTOM_COMMAND = /Cypress\.Commands\.add\(\s*['"`]([\w-]+)['"`]/g;
+const WDIO_CUSTOM_COMMAND = /(?:browser|driver)\.addCommand\(\s*['"`]([\w-]+)['"`]/g;
+const CYPRESS_SELECTOR = /cy\.get\s*\(\s*['"`]([^'"`]+)['"`]|(\[data-testid=["'][^"']+["']\])/g;
+const WDIO_SELECTOR = /\$\$?\(\s*['"`]([^'"`]+)['"`]\s*\)|(\[data-testid=["'][^"']+["']\])|(aria\/[\w-]+)/g;
+const union = (a, b) => new RegExp(`${a.source}|${b.source}`, 'g');
+const CYPRESS_SUPPORT_FILE_CANDIDATES = [
+    'cypress/support/commands.js',
+    'cypress/support/commands.ts',
+    'cypress/support/e2e.js',
+    'cypress/support/e2e.ts',
+    'cypress/support/index.js',
+    'cypress/support/index.ts',
+    'test/helpers/index.ts',
+    'test/helpers/index.js',
+    'test/support/index.ts',
+    'test/support/index.js',
+    'wdio.conf.ts',
+    'wdio.conf.js',
+];
+const WDIO_SUPPORT_FILE_CANDIDATES = [
+    'test/specs',
+    'test/pageobjects',
+    'pageobjects',
+    'test/support',
+    'commands',
+    'test/support/index.ts',
+    'test/support/index.js',
+    'test/helpers/index.ts',
+    'test/helpers/index.js',
+    'commands.ts',
+    'commands.js',
+    'wdio.conf.ts',
+    'wdio.conf.js',
+];
+const UNKNOWN_SUPPORT_FILE_CANDIDATES = [
+    ...new Set([
+        ...CYPRESS_SUPPORT_FILE_CANDIDATES,
+        ...WDIO_SUPPORT_FILE_CANDIDATES,
+    ]),
+];
 exports.CYPRESS_PATTERNS = `## Cypress Fix Patterns
 
 ### Chaining & Retry-ability
@@ -240,17 +282,29 @@ const NEUTRAL_PROFILE = {
     label: 'unknown',
     commandPrefix: '',
     fixPatternBlock: NEUTRAL_FIX_PATTERN_BLOCK,
+    commandInvocationPattern: union(CYPRESS_COMMAND_INVOCATION, WDIO_COMMAND_INVOCATION),
+    customCommandPattern: union(CYPRESS_CUSTOM_COMMAND, WDIO_CUSTOM_COMMAND),
+    selectorPattern: union(CYPRESS_SELECTOR, WDIO_SELECTOR),
+    supportFileCandidates: UNKNOWN_SUPPORT_FILE_CANDIDATES,
 };
 const FRAMEWORK_PROFILES = {
     cypress: {
         label: 'Cypress',
         commandPrefix: 'cy',
         fixPatternBlock: exports.CYPRESS_PATTERNS,
+        commandInvocationPattern: CYPRESS_COMMAND_INVOCATION,
+        customCommandPattern: CYPRESS_CUSTOM_COMMAND,
+        selectorPattern: CYPRESS_SELECTOR,
+        supportFileCandidates: CYPRESS_SUPPORT_FILE_CANDIDATES,
     },
     webdriverio: {
         label: 'WebDriverIO',
         commandPrefix: 'browser',
         fixPatternBlock: exports.WDIO_PATTERNS,
+        commandInvocationPattern: WDIO_COMMAND_INVOCATION,
+        customCommandPattern: WDIO_CUSTOM_COMMAND,
+        selectorPattern: WDIO_SELECTOR,
+        supportFileCandidates: WDIO_SUPPORT_FILE_CANDIDATES,
     },
 };
 function getFrameworkProfile(f) {

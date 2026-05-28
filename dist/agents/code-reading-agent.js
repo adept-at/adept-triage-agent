@@ -2,6 +2,7 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.CodeReadingAgent = void 0;
 const base_agent_1 = require("./base-agent");
+const framework_profiles_1 = require("../config/framework-profiles");
 class CodeReadingAgent extends base_agent_1.BaseAgent {
     sourceFetchContext;
     treePathSet = null;
@@ -15,6 +16,7 @@ class CodeReadingAgent extends base_agent_1.BaseAgent {
         let apiCalls = 0;
         try {
             this.log('Starting code reading...');
+            const profile = (0, framework_profiles_1.getFrameworkProfile)(context.framework ?? 'unknown');
             const cleanTestFile = this.cleanFilePath(input.testFile);
             this.log(`Test file: ${cleanTestFile} (raw: ${input.testFile})`);
             let testFileContent = context.sourceFileContent || '';
@@ -62,9 +64,9 @@ class CodeReadingAgent extends base_agent_1.BaseAgent {
                 };
             }
             const imports = this.extractImports(testFileContent);
-            const helperCalls = this.extractHelperCalls(testFileContent);
+            const helperCalls = this.extractHelperCalls(testFileContent, profile.commandInvocationPattern);
             const pageObjectRefs = this.extractPageObjectReferences(testFileContent);
-            const supportFiles = await this.findAndFetchSupportFiles(cleanTestFile || input.testFile, imports, helperCalls);
+            const supportFiles = await this.findAndFetchSupportFiles(cleanTestFile || input.testFile, imports, helperCalls, profile.supportFileCandidates);
             for (const [path, content] of supportFiles) {
                 if (fetchedPaths.has(path))
                     continue;
@@ -75,7 +77,7 @@ class CodeReadingAgent extends base_agent_1.BaseAgent {
                     relevance: 'Helper/support file',
                 });
                 apiCalls++;
-                const commands = this.extractCustomCommands(content, path);
+                const commands = this.extractCustomCommands(content, path, profile.customCommandPattern);
                 customCommands.push(...commands);
             }
             for (const pageObjRef of pageObjectRefs) {
@@ -93,7 +95,7 @@ class CodeReadingAgent extends base_agent_1.BaseAgent {
                         pageObjects.push({
                             name: pageObjRef,
                             file: pageObjFile,
-                            selectors: this.extractSelectorsFromCode(content),
+                            selectors: this.extractSelectorsFromCode(content, profile.selectorPattern),
                         });
                     }
                 }
@@ -274,72 +276,12 @@ class CodeReadingAgent extends base_agent_1.BaseAgent {
         }
         return imports;
     }
-    extractHelperCalls(code) {
+    extractHelperCalls(code, pattern) {
         const helpers = [];
-        const customCmdRegex = /cy\.(\w+)\s*\(/g;
-        const standardCommands = new Set([
-            'get',
-            'find',
-            'contains',
-            'click',
-            'type',
-            'should',
-            'wait',
-            'visit',
-            'request',
-            'intercept',
-            'wrap',
-            'then',
-            'its',
-            'invoke',
-            'log',
-            'pause',
-            'debug',
-            'scrollTo',
-            'scrollIntoView',
-            'focus',
-            'blur',
-            'clear',
-            'submit',
-            'select',
-            'check',
-            'uncheck',
-            'trigger',
-            'readFile',
-            'writeFile',
-            'fixture',
-            'task',
-            'exec',
-            'screenshot',
-            'viewport',
-            'clearCookies',
-            'clearLocalStorage',
-            'getCookies',
-            'setCookie',
-            'getCookie',
-            'hash',
-            'location',
-            'url',
-            'title',
-            'document',
-            'window',
-            'root',
-            'within',
-            'as',
-            'clock',
-            'tick',
-            'stub',
-            'spy',
-            'reload',
-            'go',
-            'session',
-            'origin',
-        ]);
+        const regex = new RegExp(pattern.source, pattern.flags);
         let match;
-        while ((match = customCmdRegex.exec(code)) !== null) {
-            if (!standardCommands.has(match[1])) {
-                helpers.push(match[1]);
-            }
+        while ((match = regex.exec(code)) !== null) {
+            helpers.push(match[0]);
         }
         return [...new Set(helpers)];
     }
@@ -354,23 +296,9 @@ class CodeReadingAgent extends base_agent_1.BaseAgent {
         }
         return [...new Set(pageObjects)];
     }
-    async findAndFetchSupportFiles(testFile, imports, _helperCalls) {
+    async findAndFetchSupportFiles(testFile, imports, _helperCalls, supportPaths) {
         const files = new Map();
         const testDir = testFile.split('/').slice(0, -1).join('/');
-        const supportPaths = [
-            'cypress/support/commands.js',
-            'cypress/support/commands.ts',
-            'cypress/support/e2e.js',
-            'cypress/support/e2e.ts',
-            'cypress/support/index.js',
-            'cypress/support/index.ts',
-            'test/helpers/index.ts',
-            'test/helpers/index.js',
-            'test/support/index.ts',
-            'test/support/index.js',
-            'wdio.conf.ts',
-            'wdio.conf.js',
-        ];
         const treePathSet = await this.ensureTreePathSet();
         const supportPathsToFetch = treePathSet
             ? supportPaths.filter((p) => treePathSet.has(p))
@@ -449,29 +377,31 @@ class CodeReadingAgent extends base_agent_1.BaseAgent {
         }
         return null;
     }
-    extractCustomCommands(code, file) {
+    extractCustomCommands(code, file, pattern) {
         const commands = [];
-        const addCmdRegex = /Cypress\.Commands\.add\s*\(\s*['"](\w+)['"]/g;
+        const regex = new RegExp(pattern.source, pattern.flags);
         let match;
-        while ((match = addCmdRegex.exec(code)) !== null) {
+        while ((match = regex.exec(code)) !== null) {
+            const name = match.slice(1).find((g) => g !== undefined);
+            if (!name)
+                continue;
             commands.push({
-                name: match[1],
+                name,
                 file,
                 definition: this.extractFunctionDefinition(code, match.index),
             });
         }
         return commands;
     }
-    extractSelectorsFromCode(code) {
+    extractSelectorsFromCode(code, pattern) {
         const selectors = [];
-        const getRegex = /cy\.get\s*\(\s*['"`]([^'"`]+)['"`]/g;
+        const regex = new RegExp(pattern.source, pattern.flags);
         let match;
-        while ((match = getRegex.exec(code)) !== null) {
-            selectors.push(match[1]);
-        }
-        const testidRegex = /\[data-testid=["']([^"']+)["']\]/g;
-        while ((match = testidRegex.exec(code)) !== null) {
-            selectors.push(`[data-testid="${match[1]}"]`);
+        while ((match = regex.exec(code)) !== null) {
+            const selector = match.slice(1).find((g) => g !== undefined);
+            if (selector) {
+                selectors.push(selector);
+            }
         }
         return [...new Set(selectors)];
     }
