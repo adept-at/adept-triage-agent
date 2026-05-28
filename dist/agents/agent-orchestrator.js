@@ -289,10 +289,12 @@ class AgentOrchestrator {
         core.info(`   Findings: ${investigation.findings.length}`);
         core.info(`   Test code fixable: ${investigation.isTestCodeFixable}`);
         core.info(`   Recommended approach: ${investigation.recommendedApproach}`);
+        const overrideLocation = investigation.verdictOverride?.suggestedLocation;
+        const isProductSideOverride = overrideLocation === 'APP_CODE' || overrideLocation === 'BOTH';
         if (investigation.verdictOverride &&
-            investigation.verdictOverride.suggestedLocation === 'APP_CODE' &&
+            isProductSideOverride &&
             investigation.verdictOverride.confidence >= constants_1.VERDICT_OVERRIDE_CONFIDENCE_THRESHOLD) {
-            core.warning(`🛑 Investigation override: APP_CODE (${investigation.verdictOverride.confidence}% confidence ≥ ${constants_1.VERDICT_OVERRIDE_CONFIDENCE_THRESHOLD}% threshold; analysis was ${analysis.confidence}% on a different axis). Aborting repair.`);
+            core.warning(`🛑 Investigation override: ${overrideLocation} (${investigation.verdictOverride.confidence}% confidence ≥ ${constants_1.VERDICT_OVERRIDE_CONFIDENCE_THRESHOLD}% threshold; analysis was ${analysis.confidence}% on a different axis). Aborting repair.`);
             (0, run_telemetry_1.recordGate)('verdictOverrideAborts');
             core.info(`   Evidence: ${investigation.verdictOverride.evidence.join('; ')}`);
             trace.iterations = iterations;
@@ -310,8 +312,8 @@ class AgentOrchestrator {
                 }),
             };
         }
-        if (!investigation.isTestCodeFixable && !investigation.verdictOverride) {
-            core.warning('🛑 Investigation says not test-code-fixable but no verdict override — aborting conservatively');
+        if (!investigation.isTestCodeFixable) {
+            core.warning('🛑 Investigation says not test-code-fixable (no confident product-side override) — aborting conservatively');
             trace.iterations = iterations;
             return {
                 error: 'Investigation determined issue is not test-code-fixable',
@@ -832,13 +834,14 @@ function autoCorrectOldCode(changes, sourceFiles, _context) {
         }
         if (change.line > 0) {
             const oldCodeLineCount = change.oldCode.split('\n').length;
-            const startLine = Math.max(0, change.line - 3);
-            const endLine = Math.min(sourceLines.length, change.line + oldCodeLineCount + 2);
+            const targetIdx = Math.max(0, change.line - 1);
+            const startLine = Math.max(0, targetIdx - 3);
+            const endLine = Math.min(sourceLines.length, targetIdx + oldCodeLineCount + 2);
             const regionLines = sourceLines.slice(startLine, endLine);
             const region = regionLines.join('\n');
             const keySignatures = extractKeySignatures(change.oldCode);
             if (keySignatures.length > 0) {
-                const matchedRegion = findRegionBySignatures(sourceLines, keySignatures, change.line, oldCodeLineCount);
+                const matchedRegion = findRegionBySignatures(sourceLines, keySignatures, targetIdx, oldCodeLineCount);
                 if (matchedRegion) {
                     const secondIdx = rawSource.indexOf(matchedRegion, rawSource.indexOf(matchedRegion) + 1);
                     if (secondIdx === -1) {
@@ -856,8 +859,8 @@ function autoCorrectOldCode(changes, sourceFiles, _context) {
             if (overlap.length > 0 && overlap.length >= keywordsInOld.length * 0.5) {
                 const secondIdx = rawSource.indexOf(region, rawSource.indexOf(region) + 1);
                 if (secondIdx === -1) {
-                    const leadingPadCount = Math.max(0, change.line - startLine);
-                    const trailingPadCount = Math.max(0, endLine - (change.line + oldCodeLineCount));
+                    const leadingPadCount = Math.max(0, targetIdx - startLine);
+                    const trailingPadCount = Math.max(0, endLine - (targetIdx + oldCodeLineCount));
                     const leadingPadLines = regionLines.slice(0, leadingPadCount);
                     const trailingPadLines = regionLines.slice(regionLines.length - trailingPadCount);
                     const leadingPad = leadingPadLines.length

@@ -62,6 +62,31 @@ const POSITIVE_EVIDENCE_PATTERNS: readonly RegExp[] = [
   /Spec Files:\s+(\d+)\s+passed,\s+0\s+failed/i,
 ];
 
+/**
+ * Patterns indicating at least one test FAILED. A match here rejects a
+ * "passed" signal even when a positive marker is also present.
+ *
+ * Why this is required: a masked exit code (the `tee`-without-`pipefail`
+ * case this module exists for) can surface a reporter rollup that contains
+ * BOTH `10 passing` AND `2 failing` on the same run. Without this scan,
+ * the positive `\d+ passing` marker alone returned `trustworthy: true`,
+ * so a run that actually had failures was recorded as a validated pass —
+ * shipping a broken fix and poisoning the skill store with a false
+ * `validatedLocally: true` skill. Failures must always win over a
+ * co-present passing count.
+ *
+ * Only non-zero counts match (`[1-9]\d*`) so a clean `0 failing` rollup
+ * does not trip the gate. A false positive here only costs an extra retry
+ * — the same safe-side bias as NO_TESTS_RAN_PATTERNS.
+ */
+const FAILURE_EVIDENCE_PATTERNS: readonly RegExp[] = [
+  /\b([1-9]\d*)\s+failing\b/i,
+  /Tests?:\s+([1-9]\d*)\s+failed/i,
+  /Spec Files:\s+\d+\s+passed,\s+([1-9]\d*)\s+failed/i,
+  /\b([1-9]\d*)\s+failed\b/i,
+  /\bAssertionError\b/,
+];
+
 export interface TestEvidenceResult {
   /**
    * Whether the runner produced trustworthy evidence that at least one
@@ -93,8 +118,12 @@ export interface TestEvidenceResult {
  *      regardless of any positive marker (sentinel wins — runners can
  *      legitimately log a "0 passing" rollup alongside a "PASS suite"
  *      noise line).
- *   2. Otherwise, if any positive marker is present, return trustworthy=true.
- *   3. Otherwise, return trustworthy=false — silence is not consent.
+ *   2. If a concrete failure marker is present (`N failing`, `N failed`,
+ *      AssertionError), return trustworthy=false — a masked exit code can
+ *      surface both passing and failing counts on the same run, and a
+ *      failure must never be reported as a validated pass.
+ *   3. Otherwise, if any positive marker is present, return trustworthy=true.
+ *   4. Otherwise, return trustworthy=false — silence is not consent.
  *
  * The function never throws. Empty / undefined input is treated as
  * inconclusive (= not trustworthy).
@@ -113,6 +142,17 @@ export function verifyTestEvidence(logs: string | undefined): TestEvidenceResult
       return {
         trustworthy: false,
         reason: `runner reported zero tests ran (matched "${match[0]}")`,
+        matched: match[0],
+      };
+    }
+  }
+
+  for (const pattern of FAILURE_EVIDENCE_PATTERNS) {
+    const match = logs.match(pattern);
+    if (match) {
+      return {
+        trustworthy: false,
+        reason: `runner reported test failures (matched "${match[0]}")`,
         matched: match[0],
       };
     }

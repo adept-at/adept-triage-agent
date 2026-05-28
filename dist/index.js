@@ -296,10 +296,12 @@ class AgentOrchestrator {
         core.info(`   Findings: ${investigation.findings.length}`);
         core.info(`   Test code fixable: ${investigation.isTestCodeFixable}`);
         core.info(`   Recommended approach: ${investigation.recommendedApproach}`);
+        const overrideLocation = investigation.verdictOverride?.suggestedLocation;
+        const isProductSideOverride = overrideLocation === 'APP_CODE' || overrideLocation === 'BOTH';
         if (investigation.verdictOverride &&
-            investigation.verdictOverride.suggestedLocation === 'APP_CODE' &&
+            isProductSideOverride &&
             investigation.verdictOverride.confidence >= constants_1.VERDICT_OVERRIDE_CONFIDENCE_THRESHOLD) {
-            core.warning(`🛑 Investigation override: APP_CODE (${investigation.verdictOverride.confidence}% confidence ≥ ${constants_1.VERDICT_OVERRIDE_CONFIDENCE_THRESHOLD}% threshold; analysis was ${analysis.confidence}% on a different axis). Aborting repair.`);
+            core.warning(`🛑 Investigation override: ${overrideLocation} (${investigation.verdictOverride.confidence}% confidence ≥ ${constants_1.VERDICT_OVERRIDE_CONFIDENCE_THRESHOLD}% threshold; analysis was ${analysis.confidence}% on a different axis). Aborting repair.`);
             (0, run_telemetry_1.recordGate)('verdictOverrideAborts');
             core.info(`   Evidence: ${investigation.verdictOverride.evidence.join('; ')}`);
             trace.iterations = iterations;
@@ -317,8 +319,8 @@ class AgentOrchestrator {
                 }),
             };
         }
-        if (!investigation.isTestCodeFixable && !investigation.verdictOverride) {
-            core.warning('🛑 Investigation says not test-code-fixable but no verdict override — aborting conservatively');
+        if (!investigation.isTestCodeFixable) {
+            core.warning('🛑 Investigation says not test-code-fixable (no confident product-side override) — aborting conservatively');
             trace.iterations = iterations;
             return {
                 error: 'Investigation determined issue is not test-code-fixable',
@@ -839,13 +841,14 @@ function autoCorrectOldCode(changes, sourceFiles, _context) {
         }
         if (change.line > 0) {
             const oldCodeLineCount = change.oldCode.split('\n').length;
-            const startLine = Math.max(0, change.line - 3);
-            const endLine = Math.min(sourceLines.length, change.line + oldCodeLineCount + 2);
+            const targetIdx = Math.max(0, change.line - 1);
+            const startLine = Math.max(0, targetIdx - 3);
+            const endLine = Math.min(sourceLines.length, targetIdx + oldCodeLineCount + 2);
             const regionLines = sourceLines.slice(startLine, endLine);
             const region = regionLines.join('\n');
             const keySignatures = extractKeySignatures(change.oldCode);
             if (keySignatures.length > 0) {
-                const matchedRegion = findRegionBySignatures(sourceLines, keySignatures, change.line, oldCodeLineCount);
+                const matchedRegion = findRegionBySignatures(sourceLines, keySignatures, targetIdx, oldCodeLineCount);
                 if (matchedRegion) {
                     const secondIdx = rawSource.indexOf(matchedRegion, rawSource.indexOf(matchedRegion) + 1);
                     if (secondIdx === -1) {
@@ -863,8 +866,8 @@ function autoCorrectOldCode(changes, sourceFiles, _context) {
             if (overlap.length > 0 && overlap.length >= keywordsInOld.length * 0.5) {
                 const secondIdx = rawSource.indexOf(region, rawSource.indexOf(region) + 1);
                 if (secondIdx === -1) {
-                    const leadingPadCount = Math.max(0, change.line - startLine);
-                    const trailingPadCount = Math.max(0, endLine - (change.line + oldCodeLineCount));
+                    const leadingPadCount = Math.max(0, targetIdx - startLine);
+                    const trailingPadCount = Math.max(0, endLine - (targetIdx + oldCodeLineCount));
                     const leadingPadLines = regionLines.slice(0, leadingPadCount);
                     const trailingPadLines = regionLines.slice(regionLines.length - trailingPadCount);
                     const leadingPad = leadingPadLines.length
@@ -2752,7 +2755,7 @@ You MUST respond with a JSON object matching this schema:
             return {
                 findings,
                 primaryFinding,
-                isTestCodeFixable: parsed.isTestCodeFixable !== false,
+                isTestCodeFixable: parsed.isTestCodeFixable === true,
                 recommendedApproach: parsed.recommendedApproach || '',
                 selectorsToUpdate,
                 confidence: (0, number_utils_1.clampConfidence)(parsed.confidence),
@@ -2843,7 +2846,7 @@ Review code changes proposed to fix failing tests. Your job is to:
   - Original \`cy.get('[role="dialog"]').should('be.visible')\` times out → "fix" adds \`.should('be.visible').and('contain.text', 'Success')\`. The \`.and()\` adds a requirement; doesn't help if the dialog was never visible.
   - Original \`element.click()\` fails because element doesn't exist → "fix" adds \`.waitForClickable()\` before click. This is NOT strictly stronger — the wait gives the element time to appear. OK.
   If the code changes the runtime state BEFORE the check (e.g., adds a wait for a state transition, removes a stale-element source), that's a different direction and generally helps. If the code only changes the CHECK itself by adding constraints, it almost certainly doesn't help.
-- **Fix contradicts analysis \`issueLocation=APP_CODE\`** without addressing why the analysis agent believed the failure was product-side. When upstream reasoning said the bug lives in product code and the fix only modifies test code, the fix is likely papering over a real product regression. Reject unless the fix explicitly explains why the test-side change is appropriate despite the APP_CODE verdict (e.g., "the test was asserting on outdated product behavior; the product change is intentional and the test needs to adapt").
+- **Fix contradicts analysis \`issueLocation=APP_CODE\`** without addressing why the analysis agent believed the failure was product-side. When upstream reasoning said the bug lives in product code and the fix only modifies test code, the fix is likely papering over a real product regression. Reject unless the fix explicitly explains why the test-side change is appropriate despite the APP_CODE verdict (e.g., "the test was asserting on outdated product behavior; the product change is intentional and the test needs to adapt"). **EXCEPTION — investigation clearance:** if the Investigation Agent (which had the full code-reading context) reported \`isTestCodeFixable=true\` AND issued NO \`verdictOverride\`, that clearance is itself sufficient justification for a test-side fix. Do NOT flag CRITICAL on the APP_CODE basis alone in that case — analysis's \`issueLocation\` is only an early hypothesis, and investigation already adjudicated it. (You may still reject for any other unsound reason.)
 - **Fix contradicts investigation \`verdictOverride\`**. Investigation can override the classification when its evidence points to a different failure location. If \`verdictOverride.suggestedLocation=APP_CODE\` and the fix modifies test code anyway without citing investigation's evidence as misleading, reject as CRITICAL — the override exists precisely to catch this case.
 - **Fix ignores investigation's \`recommendedApproach\`** when the approach conflicts with what was actually changed. Missing a piece of the recommendation is a WARNING; directly contradicting it (e.g., investigation said "widen the tolerance" and the fix tightens it) is CRITICAL.
 
@@ -2909,7 +2912,12 @@ You MUST respond with a JSON object matching this schema:
             parts.push(`- **Selectors identified by analysis:** ${input.analysis.selectors.map((s) => `\`${s}\``).join(', ')}`);
         }
         if (input.analysis.issueLocation === 'APP_CODE') {
-            parts.push('', '⚠️ **CRITICAL CONTEXT:** Analysis flagged `issueLocation=APP_CODE`. A test-code fix is only appropriate if investigation explicitly identified a test-side workaround is valid. Be highly skeptical of any fix that modifies test code without addressing why analysis thought the problem was product-side.');
+            const investigationCleared = !!input.investigation &&
+                input.investigation.isTestCodeFixable === true &&
+                !input.investigation.verdictOverride;
+            parts.push('', investigationCleared
+                ? '⚠️ **CONTEXT:** Analysis flagged `issueLocation=APP_CODE`, but the Investigation Agent — with the full code-reading context — concluded `isTestCodeFixable=true` and issued NO verdictOverride. Treat that clearance as sufficient justification for a test-side fix; do NOT reject solely because analysis guessed APP_CODE. Review the fix on its own merits (oldCode match, trace quality, no-op, strictly-stronger, etc.).'
+                : '⚠️ **CRITICAL CONTEXT:** Analysis flagged `issueLocation=APP_CODE`. A test-code fix is only appropriate if investigation explicitly identified a test-side workaround is valid. Be highly skeptical of any fix that modifies test code without addressing why analysis thought the problem was product-side.');
         }
         if (input.investigation) {
             const inv = input.investigation;
@@ -2978,7 +2986,7 @@ You MUST respond with a JSON object matching this schema:
         if (context.skillsPrompt) {
             parts.push('', context.skillsPrompt);
         }
-        parts.push('', '## Review Instructions', '1. For each change, verify oldCode appears EXACTLY in the file', '2. Check that newCode is syntactically valid', '3. Verify the fix addresses the root cause', '4. Look for potential side effects', '5. Assess overall likelihood of success', '6. CRITICAL: If PR changes are provided, verify the fix reasoning is consistent with the diff — if the fix claims code was "changed" or "updated" but the diff does NOT show that change, flag as CRITICAL issue', '7. CRITICAL: Inspect `failureModeTrace`. If missing or any field is vague/generic/tautological, flag a CRITICAL issue citing which field is inadequate.', '8. CRITICAL: Determine if the new condition/assertion is **strictly stronger** than the original. If yes, verify `whyAssertionPassesNow` justifies why the added requirement is guaranteed to hold in the failure scenario. If it does not, flag a CRITICAL issue — a strictly stronger condition cannot turn a failing assertion into a passing one.', '9. CRITICAL: If analysis flagged `issueLocation=APP_CODE`, audit whether the proposed test-code fix is appropriate. Flag as CRITICAL if the fix modifies test code without addressing why the analysis agent believed the failure was product-side.', '10. CRITICAL: If investigation provided a `verdictOverride` (especially `APP_CODE`), verify the proposed fix is consistent with that finding. Flag as CRITICAL if the fix contradicts the verdict override evidence without explicit justification.', '11. If investigation provided `recommendedApproach` and/or `selectorsToUpdate`, verify the proposed fix covers them. Flag as WARNING if the fix omits an investigation-flagged selector or deviates from the recommended approach. Flag as CRITICAL if the fix directly contradicts the recommendation.', '12. If investigation listed multiple findings, the fix does not need to address every finding — but the reviewer should note any HIGH-severity finding the fix does not address and flag whether the missed finding is a likely cause of future failures.', '', 'Respond with the JSON object as specified in the system prompt.');
+        parts.push('', '## Review Instructions', '1. For each change, verify oldCode appears EXACTLY in the file', '2. Check that newCode is syntactically valid', '3. Verify the fix addresses the root cause', '4. Look for potential side effects', '5. Assess overall likelihood of success', '6. CRITICAL: If PR changes are provided, verify the fix reasoning is consistent with the diff — if the fix claims code was "changed" or "updated" but the diff does NOT show that change, flag as CRITICAL issue', '7. CRITICAL: Inspect `failureModeTrace`. If missing or any field is vague/generic/tautological, flag a CRITICAL issue citing which field is inadequate.', '8. CRITICAL: Determine if the new condition/assertion is **strictly stronger** than the original. If yes, verify `whyAssertionPassesNow` justifies why the added requirement is guaranteed to hold in the failure scenario. If it does not, flag a CRITICAL issue — a strictly stronger condition cannot turn a failing assertion into a passing one.', '9. CRITICAL: If analysis flagged `issueLocation=APP_CODE`, audit whether the proposed test-code fix is appropriate. Flag as CRITICAL if the fix modifies test code without addressing why the analysis agent believed the failure was product-side. EXCEPTION: if investigation reported `isTestCodeFixable=true` with no verdictOverride, that clearance is sufficient — do NOT flag CRITICAL on the APP_CODE basis alone.', '10. CRITICAL: If investigation provided a `verdictOverride` (especially `APP_CODE`), verify the proposed fix is consistent with that finding. Flag as CRITICAL if the fix contradicts the verdict override evidence without explicit justification.', '11. If investigation provided `recommendedApproach` and/or `selectorsToUpdate`, verify the proposed fix covers them. Flag as WARNING if the fix omits an investigation-flagged selector or deviates from the recommended approach. Flag as CRITICAL if the fix directly contradicts the recommendation.', '12. If investigation listed multiple findings, the fix does not need to address every finding — but the reviewer should note any HIGH-severity finding the fix does not address and flag whether the missed finding is a likely cause of future failures.', '', 'Respond with the JSON object as specified in the system prompt.');
         return parts.join('\n');
     }
     parseResponse(response) {
@@ -6086,6 +6094,21 @@ async function iterativeFixValidateLoop(inputs, repoDetails, autoFixTargetRepo, 
             core.warning(`\n❌ Test FAILED on iteration ${iteration + 1} (exit code: ${testResult.exitCode}, ${testResult.durationMs}ms)`);
             core.info(`📊 learning-telemetry validation=failed iteration=${iteration + 1} durationMs=${testResult.durationMs}`);
             failedFixFingerprints.add(fingerprint);
+            autoFixResult = {
+                success: false,
+                modifiedFiles: fixRecommendation.proposedChanges.map((c) => c.file),
+                error: `Local validation failed on iteration ${iteration + 1} (exit code ${testResult.exitCode})`,
+                validationStatus: 'failed',
+                validationResult: {
+                    status: 'failed',
+                    mode: 'local',
+                    conclusion: 'failure',
+                    failure: {
+                        primaryError: testResult.logs?.slice(-1000) || 'Local validation test failed',
+                        failureStage: 'validation',
+                    },
+                },
+            };
             await validator.reset();
             if (iteration < maxIterations - 1) {
                 core.info('Feeding failure logs + prior agent reasoning back into repair agent for next attempt...');
@@ -9560,6 +9583,13 @@ const POSITIVE_EVIDENCE_PATTERNS = [
     /\bPASS\b\s+\S+/,
     /Spec Files:\s+(\d+)\s+passed,\s+0\s+failed/i,
 ];
+const FAILURE_EVIDENCE_PATTERNS = [
+    /\b([1-9]\d*)\s+failing\b/i,
+    /Tests?:\s+([1-9]\d*)\s+failed/i,
+    /Spec Files:\s+\d+\s+passed,\s+([1-9]\d*)\s+failed/i,
+    /\b([1-9]\d*)\s+failed\b/i,
+    /\bAssertionError\b/,
+];
 function verifyTestEvidence(logs) {
     if (!logs || logs.length === 0) {
         return {
@@ -9573,6 +9603,16 @@ function verifyTestEvidence(logs) {
             return {
                 trustworthy: false,
                 reason: `runner reported zero tests ran (matched "${match[0]}")`,
+                matched: match[0],
+            };
+        }
+    }
+    for (const pattern of FAILURE_EVIDENCE_PATTERNS) {
+        const match = logs.match(pattern);
+        if (match) {
+            return {
+                trustworthy: false,
+                reason: `runner reported test failures (matched "${match[0]}")`,
                 matched: match[0],
             };
         }

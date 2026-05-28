@@ -465,10 +465,19 @@ export class AgentOrchestrator {
     // threshold (`VERDICT_OVERRIDE_CONFIDENCE_THRESHOLD`, currently 70%)
     // makes the gate's semantics match its intent: a confident
     // product-side override fires on its own merits.
+    // Gate on any product-side override location. `BOTH` means a product
+    // component is present in the failure just as `APP_CODE` does; shipping
+    // a test-side fix for a confident `BOTH` override papers over a real
+    // regression exactly like the `APP_CODE` case. Pre-fix this only matched
+    // `APP_CODE`, so a high-confidence `BOTH` slipped past both this gate and
+    // the not-fixable gate below (which skipped because an override existed).
+    const overrideLocation = investigation.verdictOverride?.suggestedLocation;
+    const isProductSideOverride =
+      overrideLocation === 'APP_CODE' || overrideLocation === 'BOTH';
     if (investigation.verdictOverride &&
-        investigation.verdictOverride.suggestedLocation === 'APP_CODE' &&
+        isProductSideOverride &&
         investigation.verdictOverride.confidence >= VERDICT_OVERRIDE_CONFIDENCE_THRESHOLD) {
-      core.warning(`🛑 Investigation override: APP_CODE (${investigation.verdictOverride.confidence}% confidence ≥ ${VERDICT_OVERRIDE_CONFIDENCE_THRESHOLD}% threshold; analysis was ${analysis.confidence}% on a different axis). Aborting repair.`);
+      core.warning(`🛑 Investigation override: ${overrideLocation} (${investigation.verdictOverride.confidence}% confidence ≥ ${VERDICT_OVERRIDE_CONFIDENCE_THRESHOLD}% threshold; analysis was ${analysis.confidence}% on a different axis). Aborting repair.`);
       recordGate('verdictOverrideAborts');
       core.info(`   Evidence: ${investigation.verdictOverride.evidence.join('; ')}`);
       trace.iterations = iterations;
@@ -488,8 +497,16 @@ export class AgentOrchestrator {
       };
     }
 
-    if (!investigation.isTestCodeFixable && !investigation.verdictOverride) {
-      core.warning('🛑 Investigation says not test-code-fixable but no verdict override — aborting conservatively');
+    // Abort whenever investigation says the failure is not fixable in test
+    // code. The only sanctioned "proceed despite not-fixable" is a confident
+    // product-side override, which the gate above already converted into an
+    // abort. Pre-fix this was `!isTestCodeFixable && !verdictOverride`, so a
+    // not-fixable verdict paired with a sub-threshold or non-product-side
+    // override (e.g. a low-confidence `APP_CODE`, or a `BOTH`/`TEST_CODE`
+    // override below threshold) slipped through and burned fix-gen/review
+    // iterations on a failure investigation had already declared unfixable.
+    if (!investigation.isTestCodeFixable) {
+      core.warning('🛑 Investigation says not test-code-fixable (no confident product-side override) — aborting conservatively');
       trace.iterations = iterations;
       return {
         error: 'Investigation determined issue is not test-code-fixable',
@@ -1157,15 +1174,24 @@ export function autoCorrectOldCode(
     // Strategy 3: Line-range extraction using approximate line number
     if (change.line > 0) {
       const oldCodeLineCount = change.oldCode.split('\n').length;
-      const startLine = Math.max(0, change.line - 3);
-      const endLine = Math.min(sourceLines.length, change.line + oldCodeLineCount + 2);
+      // `change.line` is 1-based (the source is shown to fix-gen numbered
+      // from 1, see fix-generation-agent.ts), but `sourceLines` is a 0-based
+      // array. Convert to a 0-based index ONCE here so the region window and
+      // the leading/trailing pad math below all align the replaced middle to
+      // exactly the intended line. Pre-fix, `change.line` was used directly
+      // as a 0-based index, so the replaced span landed one line below the
+      // target — corrupting the edit (the intended line was preserved as pad
+      // and an unintended adjacent line was overwritten).
+      const targetIdx = Math.max(0, change.line - 1);
+      const startLine = Math.max(0, targetIdx - 3);
+      const endLine = Math.min(sourceLines.length, targetIdx + oldCodeLineCount + 2);
       const regionLines = sourceLines.slice(startLine, endLine);
       const region = regionLines.join('\n');
 
       // Try to find a substring of the region that overlaps with the intent
       const keySignatures = extractKeySignatures(change.oldCode);
       if (keySignatures.length > 0) {
-        const matchedRegion = findRegionBySignatures(sourceLines, keySignatures, change.line, oldCodeLineCount);
+        const matchedRegion = findRegionBySignatures(sourceLines, keySignatures, targetIdx, oldCodeLineCount);
         if (matchedRegion) {
           const secondIdx = rawSource.indexOf(matchedRegion, rawSource.indexOf(matchedRegion) + 1);
           if (secondIdx === -1) {
@@ -1201,10 +1227,10 @@ export function autoCorrectOldCode(
           // negative counts that could occur if `change.line` falls
           // outside the [startLine, endLine] range, which shouldn't
           // happen by construction but is defended for safety.
-          const leadingPadCount = Math.max(0, change.line - startLine);
+          const leadingPadCount = Math.max(0, targetIdx - startLine);
           const trailingPadCount = Math.max(
             0,
-            endLine - (change.line + oldCodeLineCount)
+            endLine - (targetIdx + oldCodeLineCount)
           );
           const leadingPadLines = regionLines.slice(0, leadingPadCount);
           const trailingPadLines = regionLines.slice(

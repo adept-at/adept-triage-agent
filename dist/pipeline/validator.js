@@ -293,6 +293,21 @@ async function iterativeFixValidateLoop(inputs, repoDetails, autoFixTargetRepo, 
             core.warning(`\n❌ Test FAILED on iteration ${iteration + 1} (exit code: ${testResult.exitCode}, ${testResult.durationMs}ms)`);
             core.info(`📊 learning-telemetry validation=failed iteration=${iteration + 1} durationMs=${testResult.durationMs}`);
             failedFixFingerprints.add(fingerprint);
+            autoFixResult = {
+                success: false,
+                modifiedFiles: fixRecommendation.proposedChanges.map((c) => c.file),
+                error: `Local validation failed on iteration ${iteration + 1} (exit code ${testResult.exitCode})`,
+                validationStatus: 'failed',
+                validationResult: {
+                    status: 'failed',
+                    mode: 'local',
+                    conclusion: 'failure',
+                    failure: {
+                        primaryError: testResult.logs?.slice(-1000) || 'Local validation test failed',
+                        failureStage: 'validation',
+                    },
+                },
+            };
             await validator.reset();
             if (iteration < maxIterations - 1) {
                 core.info('Feeding failure logs + prior agent reasoning back into repair agent for next attempt...');

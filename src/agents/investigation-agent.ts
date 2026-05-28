@@ -411,7 +411,12 @@ You MUST respond with a JSON object matching this schema:
       return {
         findings,
         primaryFinding,
-        isTestCodeFixable: parsed.isTestCodeFixable !== false,
+        // Fail closed: `isTestCodeFixable` gates the conservative repair
+        // abort in the orchestrator, so a missing / non-boolean value must
+        // NOT default to "fixable". Only an explicit `true` proceeds; any
+        // other shape aborts repair rather than risk papering over a
+        // product-side failure with a test-code change.
+        isTestCodeFixable: parsed.isTestCodeFixable === true,
         recommendedApproach: parsed.recommendedApproach || '',
         selectorsToUpdate,
         confidence: clampConfidence(parsed.confidence),

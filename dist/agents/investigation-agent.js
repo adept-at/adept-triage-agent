@@ -178,7 +178,7 @@ You MUST respond with a JSON object matching this schema:
             return {
                 findings,
                 primaryFinding,
-                isTestCodeFixable: parsed.isTestCodeFixable !== false,
+                isTestCodeFixable: parsed.isTestCodeFixable === true,
                 recommendedApproach: parsed.recommendedApproach || '',
                 selectorsToUpdate,
                 confidence: (0, number_utils_1.clampConfidence)(parsed.confidence),

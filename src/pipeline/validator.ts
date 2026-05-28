@@ -418,6 +418,34 @@ export async function iterativeFixValidateLoop(
       );
       core.info(`📊 learning-telemetry validation=failed iteration=${iteration + 1} durationMs=${testResult.durationMs}`);
       failedFixFingerprints.add(fingerprint);
+
+      // Record a TERMINAL failed validation result so the coordinator
+      // persists this as a `validatedLocally=false` failed-trajectory skill
+      // (with the fix fingerprint). Without this, `autoFixResult` stays null
+      // on every local failure, `shouldWriteSkillOutcome(null)` is false, and
+      // NO failed trajectory is ever written on the local path — leaving
+      // `findRecentFailedFingerprints` / `countRecentFailedTrajectories`
+      // permanently empty and the cross-run dedupe + recent-failed-trajectory
+      // blast-radius boost inert. Overwritten by the success result if a later
+      // iteration passes (that branch returns immediately); on exhaustion the
+      // last failure is what the coordinator records.
+      autoFixResult = {
+        success: false,
+        modifiedFiles: fixRecommendation.proposedChanges.map((c) => c.file),
+        error: `Local validation failed on iteration ${iteration + 1} (exit code ${testResult.exitCode})`,
+        validationStatus: 'failed',
+        validationResult: {
+          status: 'failed',
+          mode: 'local',
+          conclusion: 'failure',
+          failure: {
+            primaryError:
+              testResult.logs?.slice(-1000) || 'Local validation test failed',
+            failureStage: 'validation',
+          },
+        },
+      };
+
       await validator.reset();
 
       if (iteration < maxIterations - 1) {

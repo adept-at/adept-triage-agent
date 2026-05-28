@@ -18,6 +18,13 @@ const POSITIVE_EVIDENCE_PATTERNS = [
     /\bPASS\b\s+\S+/,
     /Spec Files:\s+(\d+)\s+passed,\s+0\s+failed/i,
 ];
+const FAILURE_EVIDENCE_PATTERNS = [
+    /\b([1-9]\d*)\s+failing\b/i,
+    /Tests?:\s+([1-9]\d*)\s+failed/i,
+    /Spec Files:\s+\d+\s+passed,\s+([1-9]\d*)\s+failed/i,
+    /\b([1-9]\d*)\s+failed\b/i,
+    /\bAssertionError\b/,
+];
 function verifyTestEvidence(logs) {
     if (!logs || logs.length === 0) {
         return {
@@ -31,6 +38,16 @@ function verifyTestEvidence(logs) {
             return {
                 trustworthy: false,
                 reason: `runner reported zero tests ran (matched "${match[0]}")`,
+                matched: match[0],
+            };
+        }
+    }
+    for (const pattern of FAILURE_EVIDENCE_PATTERNS) {
+        const match = logs.match(pattern);
+        if (match) {
+            return {
+                trustworthy: false,
+                reason: `runner reported test failures (matched "${match[0]}")`,
                 matched: match[0],
             };
         }
