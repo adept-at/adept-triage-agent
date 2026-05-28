@@ -90,7 +90,6 @@ export declare const FIX_VALIDATE_LOOP: {
     readonly MAX_ITERATIONS: 3;
     readonly TEST_TIMEOUT_MS: 900000;
 };
-export declare const CHRONIC_FLAKINESS_THRESHOLD = 3;
 export declare const BLAST_RADIUS: {
     readonly SHARED_CODE_PATTERNS: readonly string[];
     readonly SHARED_CODE_BOOST: 10;

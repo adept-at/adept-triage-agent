@@ -43,7 +43,6 @@ const log_processor_1 = require("../services/log-processor");
 const skill_store_1 = require("../services/skill-store");
 const repo_context_fetcher_1 = require("../services/repo-context-fetcher");
 const root_cause_category_1 = require("../repair/root-cause-category");
-const constants_1 = require("../config/constants");
 const run_telemetry_1 = require("./run-telemetry");
 const output_1 = require("./output");
 const validator_1 = require("./validator");
@@ -66,10 +65,6 @@ class PipelineCoordinator {
             : undefined;
         if (flakinessSignal?.isFlaky) {
             core.warning(`⚠️ FLAKINESS DETECTED: ${flakinessSignal.message}`);
-        }
-        else if (flakinessSignal && flakinessSignal.fixCount >= 2) {
-            core.warning(`⚠️ FLAKINESS WATCH: This spec has ${flakinessSignal.fixCount} prior auto-fix attempts in ${flakinessSignal.windowDays} days — one more failure will trip the chronic-flakiness gate (threshold ${constants_1.CHRONIC_FLAKINESS_THRESHOLD}).`);
-            (0, run_telemetry_1.recordGate)('flakinessWatchEmits');
         }
         const classifierSkills = skillStore
             ? skillStore.findForClassifier({
@@ -248,8 +243,7 @@ class PipelineCoordinator {
         const chronicFlakinessSignal = skillStore
             ? skillStore.detectFlakiness(errorData.fileName || 'unknown')
             : undefined;
-        if (chronicFlakinessSignal?.isFlaky &&
-            chronicFlakinessSignal.fixCount >= constants_1.CHRONIC_FLAKINESS_THRESHOLD) {
+        if (chronicFlakinessSignal?.isFlaky) {
             const reason = `Chronic flakiness: ${chronicFlakinessSignal.message} Auto-fix skipped — likely needs human refactor (replace fixed pauses with deterministic waits, consolidate success surfaces) rather than another fallback.`;
             core.warning(`⏭️  ${reason}`);
             (0, output_1.setSuccessOutput)({
@@ -305,6 +299,7 @@ class PipelineCoordinator {
                     iterations,
                     prUrl: skillPrUrl || '',
                     validatedLocally: validationPassed,
+                    fixFingerprint: (0, validator_1.fixFingerprint)(fixRecommendation),
                     priorSkillCount: skillStore.countForSpec(errorData.fileName || 'unknown'),
                     investigationFindings: currentFindings,
                     rootCauseChain: `${rootCause} → ${fixRecommendation.summary?.slice(0, 80)}`,

@@ -18,7 +18,6 @@ import { processWorkflowLogs } from '../services/log-processor';
 import { SkillStore, buildSkill, describeFixPattern } from '../services/skill-store';
 import { RepoContextFetcher } from '../services/repo-context-fetcher';
 import { inferRootCauseCategoryFromText } from '../repair/root-cause-category';
-import { CHRONIC_FLAKINESS_THRESHOLD } from '../config/constants';
 import { recordGate, logRunGateSummary } from './run-telemetry';
 import {
   resolveAutoFixTargetRepo,
@@ -33,6 +32,7 @@ import {
   generateFixRecommendation,
   iterativeFixValidateLoop,
   attemptAutoFix,
+  fixFingerprint,
 } from './validator';
 
 export interface ClassificationResult {
@@ -122,18 +122,10 @@ export class PipelineCoordinator {
       ? skillStore.detectFlakiness(errorData.fileName || 'unknown')
       : undefined;
     if (flakinessSignal?.isFlaky) {
+      // `isFlaky=true` also trips the chronic-flakiness gate in
+      // `runClassifyAndRepair`. Surface the same signal here so operators
+      // see why the gate fired even on the classifier-only path.
       core.warning(`⚠️ FLAKINESS DETECTED: ${flakinessSignal.message}`);
-    } else if (flakinessSignal && flakinessSignal.fixCount >= 2) {
-      // Pre-chronic warning level: 2 prior fix attempts in the long window.
-      // The chronic-flakiness gate trips at `CHRONIC_FLAKINESS_THRESHOLD`
-      // (3); emit a softer signal one step earlier so operators can spot
-      // a spec trending toward chronic instability without the gate
-      // already blocking auto-fix. Visible as a `core.warning` so it
-      // surfaces in the Action's annotations and in Slack.
-      core.warning(
-        `⚠️ FLAKINESS WATCH: This spec has ${flakinessSignal.fixCount} prior auto-fix attempts in ${flakinessSignal.windowDays} days — one more failure will trip the chronic-flakiness gate (threshold ${CHRONIC_FLAKINESS_THRESHOLD}).`
-      );
-      recordGate('flakinessWatchEmits');
     }
 
     // v1.50.0 A1-writer: split `findForClassifier` from the prompt
@@ -448,13 +440,19 @@ export class PipelineCoordinator {
     // the recent window, another auto-fix is likely stacking fallbacks rather
     // than addressing the underlying synchronization/product issue. Skip the
     // repair step and surface the classification for human investigation.
+    //
+    // Gate fires whenever `detectFlakiness` returns `isFlaky=true`, which
+    // already encodes the "too many fix attempts in the window" thresholds
+    // (`FLAKY_THRESHOLDS` in skill-store.ts: >1 in 3d short window or
+    // >2 in 7d long window). The prior `fixCount >= CHRONIC_FLAKINESS_THRESHOLD`
+    // check was strictly looser than `isFlaky` and let through every
+    // "second failure in 3 days" case — exactly the runs that auto-fix
+    // is most likely to repeat-and-fail on. Tying the gate to `isFlaky`
+    // makes the warning and the gate the same event.
     const chronicFlakinessSignal = skillStore
       ? skillStore.detectFlakiness(errorData.fileName || 'unknown')
       : undefined;
-    if (
-      chronicFlakinessSignal?.isFlaky &&
-      chronicFlakinessSignal.fixCount >= CHRONIC_FLAKINESS_THRESHOLD
-    ) {
+    if (chronicFlakinessSignal?.isFlaky) {
       const reason = `Chronic flakiness: ${chronicFlakinessSignal.message} Auto-fix skipped — likely needs human refactor (replace fixed pauses with deterministic waits, consolidate success surfaces) rather than another fallback.`;
       core.warning(`⏭️  ${reason}`);
       setSuccessOutput(
@@ -545,6 +543,11 @@ export class PipelineCoordinator {
           // both for "no publish attempt" and "publish failed after pass".
           prUrl: skillPrUrl || '',
           validatedLocally: validationPassed,
+          // Persist a stable fingerprint so the next run's auto-fix gate can
+          // detect when it's about to ship a byte-equivalent fix that already
+          // failed validation. See `findRecentFailedFingerprints` consumers
+          // in `validator.ts`.
+          fixFingerprint: fixFingerprint(fixRecommendation!),
           priorSkillCount: skillStore.countForSpec(errorData.fileName || 'unknown'),
           investigationFindings: currentFindings,
           rootCauseChain: `${rootCause} → ${fixRecommendation!.summary?.slice(0, 80)}`,

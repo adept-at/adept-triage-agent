@@ -66,6 +66,7 @@ export declare class GitHubFixApplier implements FixApplier {
     canApply(recommendation: FixRecommendation): boolean;
     applyFix(recommendation: FixRecommendation): Promise<ApplyResult>;
     private cleanupBranch;
+    private findOpenTriageAgentPR;
     private findRecentDuplicateBranch;
     openDraftPullRequest(params: {
         branchName: string;
@@ -87,5 +88,6 @@ export declare class GitHubFixApplier implements FixApplier {
 }
 export declare function createFixApplier(config: FixApplierConfig): FixApplier;
 export declare function decodeLogPayload(data: unknown): string;
+export declare function sanitizedTestFilePrefix(testFile: string): string;
 export declare function generateFixBranchName(testFile: string, timestamp?: Date, forceUnique?: boolean): string;
 //# sourceMappingURL=fix-applier.d.ts.map

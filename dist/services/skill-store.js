@@ -392,6 +392,20 @@ class SkillStore {
             normalizeSpec(s.spec) === querySpec &&
             now - parseSkillTimestamp(s.createdAt) < windowMs).length;
     }
+    findRecentFailedFingerprints(spec, windowMs) {
+        const now = Date.now();
+        const querySpec = normalizeSpec(spec);
+        if (!querySpec)
+            return [];
+        return this.skills
+            .filter((s) => !s.isSeed &&
+            !s.retired &&
+            s.validatedLocally === false &&
+            !!s.fixFingerprint &&
+            normalizeSpec(s.spec) === querySpec &&
+            now - parseSkillTimestamp(s.createdAt) < windowMs)
+            .map((s) => s.fixFingerprint);
+    }
     countForSpec(spec) {
         const querySpec = normalizeSpec(spec);
         return this.skills.filter((s) => normalizeSpec(s.spec) === querySpec && !s.retired).length;
@@ -497,6 +511,7 @@ function buildSkill(params) {
         errorPattern: normalizeError(params.errorMessage),
         rootCauseCategory: params.rootCauseCategory,
         fix: params.fix,
+        ...(params.fixFingerprint ? { fixFingerprint: params.fixFingerprint } : {}),
         confidence: params.confidence,
         iterations: params.iterations,
         prUrl: params.prUrl,

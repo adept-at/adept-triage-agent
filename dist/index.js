@@ -3923,7 +3923,7 @@ exports.ArtifactFetcher = ArtifactFetcher;
 "use strict";
 
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.BLAST_RADIUS = exports.CHRONIC_FLAKINESS_THRESHOLD = exports.FIX_VALIDATE_LOOP = exports.AGENT_CONFIG = exports.VERDICT_OVERRIDE_CONFIDENCE_THRESHOLD = exports.DEFAULT_PRODUCT_URL = exports.DEFAULT_PRODUCT_REPO = exports.AUTO_FIX = exports.TEST_ISSUE_CATEGORIES = exports.ERROR_TYPES = exports.FORMATTING = exports.ARTIFACTS = exports.SHORT_SHA_LENGTH = exports.REASONING_EFFORT = exports.AGENT_MODEL = exports.OPENAI = exports.CONFIDENCE = exports.LOG_LIMITS = void 0;
+exports.BLAST_RADIUS = exports.FIX_VALIDATE_LOOP = exports.AGENT_CONFIG = exports.VERDICT_OVERRIDE_CONFIDENCE_THRESHOLD = exports.DEFAULT_PRODUCT_URL = exports.DEFAULT_PRODUCT_REPO = exports.AUTO_FIX = exports.TEST_ISSUE_CATEGORIES = exports.ERROR_TYPES = exports.FORMATTING = exports.ARTIFACTS = exports.SHORT_SHA_LENGTH = exports.REASONING_EFFORT = exports.AGENT_MODEL = exports.OPENAI = exports.CONFIDENCE = exports.LOG_LIMITS = void 0;
 exports.supportsReasoningEffort = supportsReasoningEffort;
 exports.LOG_LIMITS = {
     GITHUB_MAX_SIZE: 50_000,
@@ -4016,7 +4016,6 @@ exports.FIX_VALIDATE_LOOP = {
     MAX_ITERATIONS: 3,
     TEST_TIMEOUT_MS: 900_000,
 };
-exports.CHRONIC_FLAKINESS_THRESHOLD = 3;
 exports.BLAST_RADIUS = {
     SHARED_CODE_PATTERNS: [
         '/pageobjects/',
@@ -4907,7 +4906,6 @@ const log_processor_1 = __nccwpck_require__(65833);
 const skill_store_1 = __nccwpck_require__(60215);
 const repo_context_fetcher_1 = __nccwpck_require__(3844);
 const root_cause_category_1 = __nccwpck_require__(21406);
-const constants_1 = __nccwpck_require__(58361);
 const run_telemetry_1 = __nccwpck_require__(93971);
 const output_1 = __nccwpck_require__(12639);
 const validator_1 = __nccwpck_require__(34670);
@@ -4930,10 +4928,6 @@ class PipelineCoordinator {
             : undefined;
         if (flakinessSignal?.isFlaky) {
             core.warning(`⚠️ FLAKINESS DETECTED: ${flakinessSignal.message}`);
-        }
-        else if (flakinessSignal && flakinessSignal.fixCount >= 2) {
-            core.warning(`⚠️ FLAKINESS WATCH: This spec has ${flakinessSignal.fixCount} prior auto-fix attempts in ${flakinessSignal.windowDays} days — one more failure will trip the chronic-flakiness gate (threshold ${constants_1.CHRONIC_FLAKINESS_THRESHOLD}).`);
-            (0, run_telemetry_1.recordGate)('flakinessWatchEmits');
         }
         const classifierSkills = skillStore
             ? skillStore.findForClassifier({
@@ -5112,8 +5106,7 @@ class PipelineCoordinator {
         const chronicFlakinessSignal = skillStore
             ? skillStore.detectFlakiness(errorData.fileName || 'unknown')
             : undefined;
-        if (chronicFlakinessSignal?.isFlaky &&
-            chronicFlakinessSignal.fixCount >= constants_1.CHRONIC_FLAKINESS_THRESHOLD) {
+        if (chronicFlakinessSignal?.isFlaky) {
             const reason = `Chronic flakiness: ${chronicFlakinessSignal.message} Auto-fix skipped — likely needs human refactor (replace fixed pauses with deterministic waits, consolidate success surfaces) rather than another fallback.`;
             core.warning(`⏭️  ${reason}`);
             (0, output_1.setSuccessOutput)({
@@ -5169,6 +5162,7 @@ class PipelineCoordinator {
                     iterations,
                     prUrl: skillPrUrl || '',
                     validatedLocally: validationPassed,
+                    fixFingerprint: (0, validator_1.fixFingerprint)(fixRecommendation),
                     priorSkillCount: skillStore.countForSpec(errorData.fileName || 'unknown'),
                     investigationFindings: currentFindings,
                     rootCauseChain: `${rootCause} → ${fixRecommendation.summary?.slice(0, 80)}`,
@@ -5980,6 +5974,17 @@ async function iterativeFixValidateLoop(inputs, repoDetails, autoFixTargetRepo, 
                 core.warning(`Iteration ${iteration + 1}: fix identical to a previous failed attempt. Stopping.`);
                 break;
             }
+            const priorFingerprints = skillStore
+                ? skillStore.findRecentFailedFingerprints(errorData.fileName || 'unknown', constants_1.BLAST_RADIUS.RECENT_FAILED_WINDOW_MS)
+                : [];
+            if (priorFingerprints.includes(fingerprint)) {
+                const reason = 'Cross-run fingerprint dedupe: identical fix already failed validation on this spec within the last 24h.';
+                core.warning(`⏭️  ${reason}`);
+                autoFixSkipped = true;
+                autoFixSkippedReason = reason;
+                (0, run_telemetry_1.recordGate)('priorFailedTrajectoryBoosts');
+                break;
+            }
             core.info(`Iteration ${iteration + 1}: fix passed quality gates (confidence: ${fixRecommendation.confidence}%, changes: ${fixRecommendation.proposedChanges.length})`);
             if (!validatorReady) {
                 await validator.setup();
@@ -6201,6 +6206,16 @@ async function attemptAutoFix(inputs, fixRecommendation, octokit, repoDetails, e
             skipReason: reasons.length > 0 ? `Blast-radius gate: ${skipMessage}` : undefined,
         };
     }
+    if (skillStore) {
+        const fingerprint = fixFingerprint(fixRecommendation);
+        const priorFingerprints = skillStore.findRecentFailedFingerprints(errorData?.fileName || 'unknown', constants_1.BLAST_RADIUS.RECENT_FAILED_WINDOW_MS);
+        if (priorFingerprints.includes(fingerprint)) {
+            const reason = 'Cross-run fingerprint dedupe: identical fix already failed validation on this spec within the last 24h.';
+            core.warning(`⏭️  ${reason}`);
+            (0, run_telemetry_1.recordGate)('priorFailedTrajectoryBoosts');
+            return { applied: null, skipReason: reason };
+        }
+    }
     const fixApplier = (0, fix_applier_1.createFixApplier)({
         octokit,
         owner: repoDetails.owner,
@@ -6382,6 +6397,7 @@ Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.GitHubFixApplier = void 0;
 exports.createFixApplier = createFixApplier;
 exports.decodeLogPayload = decodeLogPayload;
+exports.sanitizedTestFilePrefix = sanitizedTestFilePrefix;
 exports.generateFixBranchName = generateFixBranchName;
 const core = __importStar(__nccwpck_require__(37484));
 const constants_1 = __nccwpck_require__(58361);
@@ -6502,6 +6518,16 @@ class GitHubFixApplier {
                 };
             }
             const testFile = recommendation.proposedChanges[0].file;
+            const openPr = await this.findOpenTriageAgentPR(testFile);
+            if (openPr) {
+                core.warning(`⏭️  Open-PR dedupe: refusing to push — existing open PR #${openPr.number} ('${openPr.branchName}') already proposes a triage-agent fix for the same spec. Resolve or close the existing PR before another auto-fix attempt.`);
+                (0, run_telemetry_1.recordGate)('branchDedupeHits');
+                return {
+                    success: false,
+                    modifiedFiles: [],
+                    error: `Open-PR dedupe: PR #${openPr.number} ('${openPr.branchName}') is already open for this spec.`,
+                };
+            }
             const dedupeMatch = await this.findRecentDuplicateBranch(testFile);
             if (dedupeMatch) {
                 core.warning(`⏭️  Branch dedupe: refusing to push — existing branch '${dedupeMatch.name}' was created ${Math.round(dedupeMatch.ageMs / 60_000)} minutes ago for the same spec. To re-fix, delete the existing branch first.`);
@@ -6599,12 +6625,33 @@ class GitHubFixApplier {
             core.debug(`Failed to clean up branch ${branchName}: ${errorMsg}`);
         }
     }
+    async findOpenTriageAgentPR(testFile) {
+        const sanitized = sanitizedTestFilePrefix(testFile);
+        const branchPrefix = `${constants_1.AUTO_FIX.BRANCH_PREFIX}${sanitized}-`;
+        const { octokit, owner, repo } = this.config;
+        try {
+            const response = await octokit.pulls.list({
+                owner,
+                repo,
+                state: 'open',
+                per_page: 100,
+            });
+            const match = response.data.find((pr) => pr.head?.ref?.startsWith(branchPrefix));
+            if (!match)
+                return null;
+            return {
+                branchName: match.head.ref,
+                number: match.number,
+                htmlUrl: match.html_url,
+            };
+        }
+        catch (err) {
+            core.debug(`Open-PR dedupe lookup failed for ${branchPrefix}: ${err instanceof Error ? err.message : String(err)}`);
+            return null;
+        }
+    }
     async findRecentDuplicateBranch(testFile) {
-        const sanitized = testFile
-            .replace(/[^a-zA-Z0-9]/g, '-')
-            .replace(/-+/g, '-')
-            .replace(/^-|-$/g, '')
-            .slice(0, 40);
+        const sanitized = sanitizedTestFilePrefix(testFile);
         const prefix = `${constants_1.AUTO_FIX.BRANCH_PREFIX}${sanitized}-`;
         const refPattern = `heads/${prefix}`;
         const { octokit, owner, repo } = this.config;
@@ -7162,12 +7209,15 @@ function decodeLogPayload(data) {
         : typeof data;
     return `[triage-agent: unable to decode log payload of type "${typeLabel}"]`;
 }
-function generateFixBranchName(testFile, timestamp = new Date(), forceUnique = false) {
-    const sanitizedFile = testFile
+function sanitizedTestFilePrefix(testFile) {
+    return testFile
         .replace(/[^a-zA-Z0-9]/g, '-')
         .replace(/-+/g, '-')
         .replace(/^-|-$/g, '')
         .slice(0, 40);
+}
+function generateFixBranchName(testFile, timestamp = new Date(), forceUnique = false) {
+    const sanitizedFile = sanitizedTestFilePrefix(testFile);
     const dateStr = timestamp.toISOString().slice(0, 10).replace(/-/g, '');
     const uniqueSuffix = forceUnique
         ? `-${timestamp.getTime().toString(36)}`
@@ -9202,6 +9252,20 @@ class SkillStore {
             normalizeSpec(s.spec) === querySpec &&
             now - parseSkillTimestamp(s.createdAt) < windowMs).length;
     }
+    findRecentFailedFingerprints(spec, windowMs) {
+        const now = Date.now();
+        const querySpec = normalizeSpec(spec);
+        if (!querySpec)
+            return [];
+        return this.skills
+            .filter((s) => !s.isSeed &&
+            !s.retired &&
+            s.validatedLocally === false &&
+            !!s.fixFingerprint &&
+            normalizeSpec(s.spec) === querySpec &&
+            now - parseSkillTimestamp(s.createdAt) < windowMs)
+            .map((s) => s.fixFingerprint);
+    }
     countForSpec(spec) {
         const querySpec = normalizeSpec(spec);
         return this.skills.filter((s) => normalizeSpec(s.spec) === querySpec && !s.retired).length;
@@ -9307,6 +9371,7 @@ function buildSkill(params) {
         errorPattern: normalizeError(params.errorMessage),
         rootCauseCategory: params.rootCauseCategory,
         fix: params.fix,
+        ...(params.fixFingerprint ? { fixFingerprint: params.fixFingerprint } : {}),
         confidence: params.confidence,
         iterations: params.iterations,
         prUrl: params.prUrl,

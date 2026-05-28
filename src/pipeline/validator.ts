@@ -278,6 +278,28 @@ export async function iterativeFixValidateLoop(
         break;
       }
 
+      // Cross-run dedupe: refuse to re-ship a fix that is byte-equivalent
+      // to one already saved as a `validatedLocally=false` skill on the
+      // same spec within the recent window. This is the same lookup as
+      // the +8 confidence boost, but compares fingerprints directly so a
+      // duplicate is blocked unconditionally — not just when its
+      // confidence happens to dip under the raised threshold.
+      const priorFingerprints = skillStore
+        ? skillStore.findRecentFailedFingerprints(
+            errorData.fileName || 'unknown',
+            BLAST_RADIUS.RECENT_FAILED_WINDOW_MS
+          )
+        : [];
+      if (priorFingerprints.includes(fingerprint)) {
+        const reason =
+          'Cross-run fingerprint dedupe: identical fix already failed validation on this spec within the last 24h.';
+        core.warning(`⏭️  ${reason}`);
+        autoFixSkipped = true;
+        autoFixSkippedReason = reason;
+        recordGate('priorFailedTrajectoryBoosts');
+        break;
+      }
+
       core.info(
         `Iteration ${iteration + 1}: fix passed quality gates (confidence: ${fixRecommendation.confidence}%, changes: ${fixRecommendation.proposedChanges.length})`
       );
@@ -675,6 +697,26 @@ export async function attemptAutoFix(
       applied: null,
       skipReason: reasons.length > 0 ? `Blast-radius gate: ${skipMessage}` : undefined,
     };
+  }
+
+  // Cross-run fingerprint dedupe — see the matching block in
+  // `iterativeFixValidateLoop`. The remote-only path doesn't run the
+  // in-loop `failedFixFingerprints` set (there's no iteration here), so
+  // this check is the only thing standing between a duplicate fix and
+  // another open PR for the same spec.
+  if (skillStore) {
+    const fingerprint = fixFingerprint(fixRecommendation);
+    const priorFingerprints = skillStore.findRecentFailedFingerprints(
+      errorData?.fileName || 'unknown',
+      BLAST_RADIUS.RECENT_FAILED_WINDOW_MS
+    );
+    if (priorFingerprints.includes(fingerprint)) {
+      const reason =
+        'Cross-run fingerprint dedupe: identical fix already failed validation on this spec within the last 24h.';
+      core.warning(`⏭️  ${reason}`);
+      recordGate('priorFailedTrajectoryBoosts');
+      return { applied: null, skipReason: reason };
+    }
   }
 
   const fixApplier = createFixApplier({

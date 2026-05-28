@@ -181,6 +181,17 @@ async function iterativeFixValidateLoop(inputs, repoDetails, autoFixTargetRepo, 
                 core.warning(`Iteration ${iteration + 1}: fix identical to a previous failed attempt. Stopping.`);
                 break;
             }
+            const priorFingerprints = skillStore
+                ? skillStore.findRecentFailedFingerprints(errorData.fileName || 'unknown', constants_1.BLAST_RADIUS.RECENT_FAILED_WINDOW_MS)
+                : [];
+            if (priorFingerprints.includes(fingerprint)) {
+                const reason = 'Cross-run fingerprint dedupe: identical fix already failed validation on this spec within the last 24h.';
+                core.warning(`⏭️  ${reason}`);
+                autoFixSkipped = true;
+                autoFixSkippedReason = reason;
+                (0, run_telemetry_1.recordGate)('priorFailedTrajectoryBoosts');
+                break;
+            }
             core.info(`Iteration ${iteration + 1}: fix passed quality gates (confidence: ${fixRecommendation.confidence}%, changes: ${fixRecommendation.proposedChanges.length})`);
             if (!validatorReady) {
                 await validator.setup();
@@ -401,6 +412,16 @@ async function attemptAutoFix(inputs, fixRecommendation, octokit, repoDetails, e
             applied: null,
             skipReason: reasons.length > 0 ? `Blast-radius gate: ${skipMessage}` : undefined,
         };
+    }
+    if (skillStore) {
+        const fingerprint = fixFingerprint(fixRecommendation);
+        const priorFingerprints = skillStore.findRecentFailedFingerprints(errorData?.fileName || 'unknown', constants_1.BLAST_RADIUS.RECENT_FAILED_WINDOW_MS);
+        if (priorFingerprints.includes(fingerprint)) {
+            const reason = 'Cross-run fingerprint dedupe: identical fix already failed validation on this spec within the last 24h.';
+            core.warning(`⏭️  ${reason}`);
+            (0, run_telemetry_1.recordGate)('priorFailedTrajectoryBoosts');
+            return { applied: null, skipReason: reason };
+        }
     }
     const fixApplier = (0, fix_applier_1.createFixApplier)({
         octokit,

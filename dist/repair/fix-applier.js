@@ -36,6 +36,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.GitHubFixApplier = void 0;
 exports.createFixApplier = createFixApplier;
 exports.decodeLogPayload = decodeLogPayload;
+exports.sanitizedTestFilePrefix = sanitizedTestFilePrefix;
 exports.generateFixBranchName = generateFixBranchName;
 const core = __importStar(require("@actions/core"));
 const constants_1 = require("../config/constants");
@@ -156,6 +157,16 @@ class GitHubFixApplier {
                 };
             }
             const testFile = recommendation.proposedChanges[0].file;
+            const openPr = await this.findOpenTriageAgentPR(testFile);
+            if (openPr) {
+                core.warning(`⏭️  Open-PR dedupe: refusing to push — existing open PR #${openPr.number} ('${openPr.branchName}') already proposes a triage-agent fix for the same spec. Resolve or close the existing PR before another auto-fix attempt.`);
+                (0, run_telemetry_1.recordGate)('branchDedupeHits');
+                return {
+                    success: false,
+                    modifiedFiles: [],
+                    error: `Open-PR dedupe: PR #${openPr.number} ('${openPr.branchName}') is already open for this spec.`,
+                };
+            }
             const dedupeMatch = await this.findRecentDuplicateBranch(testFile);
             if (dedupeMatch) {
                 core.warning(`⏭️  Branch dedupe: refusing to push — existing branch '${dedupeMatch.name}' was created ${Math.round(dedupeMatch.ageMs / 60_000)} minutes ago for the same spec. To re-fix, delete the existing branch first.`);
@@ -253,12 +264,33 @@ class GitHubFixApplier {
             core.debug(`Failed to clean up branch ${branchName}: ${errorMsg}`);
         }
     }
+    async findOpenTriageAgentPR(testFile) {
+        const sanitized = sanitizedTestFilePrefix(testFile);
+        const branchPrefix = `${constants_1.AUTO_FIX.BRANCH_PREFIX}${sanitized}-`;
+        const { octokit, owner, repo } = this.config;
+        try {
+            const response = await octokit.pulls.list({
+                owner,
+                repo,
+                state: 'open',
+                per_page: 100,
+            });
+            const match = response.data.find((pr) => pr.head?.ref?.startsWith(branchPrefix));
+            if (!match)
+                return null;
+            return {
+                branchName: match.head.ref,
+                number: match.number,
+                htmlUrl: match.html_url,
+            };
+        }
+        catch (err) {
+            core.debug(`Open-PR dedupe lookup failed for ${branchPrefix}: ${err instanceof Error ? err.message : String(err)}`);
+            return null;
+        }
+    }
     async findRecentDuplicateBranch(testFile) {
-        const sanitized = testFile
-            .replace(/[^a-zA-Z0-9]/g, '-')
-            .replace(/-+/g, '-')
-            .replace(/^-|-$/g, '')
-            .slice(0, 40);
+        const sanitized = sanitizedTestFilePrefix(testFile);
         const prefix = `${constants_1.AUTO_FIX.BRANCH_PREFIX}${sanitized}-`;
         const refPattern = `heads/${prefix}`;
         const { octokit, owner, repo } = this.config;
@@ -816,12 +848,15 @@ function decodeLogPayload(data) {
         : typeof data;
     return `[triage-agent: unable to decode log payload of type "${typeLabel}"]`;
 }
-function generateFixBranchName(testFile, timestamp = new Date(), forceUnique = false) {
-    const sanitizedFile = testFile
+function sanitizedTestFilePrefix(testFile) {
+    return testFile
         .replace(/[^a-zA-Z0-9]/g, '-')
         .replace(/-+/g, '-')
         .replace(/^-|-$/g, '')
         .slice(0, 40);
+}
+function generateFixBranchName(testFile, timestamp = new Date(), forceUnique = false) {
+    const sanitizedFile = sanitizedTestFilePrefix(testFile);
     const dateStr = timestamp.toISOString().slice(0, 10).replace(/-/g, '');
     const uniqueSuffix = forceUnique
         ? `-${timestamp.getTime().toString(36)}`

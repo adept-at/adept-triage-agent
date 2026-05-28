@@ -14,6 +14,7 @@ export interface TriageSkill {
         summary: string;
         pattern: string;
     };
+    fixFingerprint?: string;
     confidence: number;
     iterations: number;
     prUrl: string;
@@ -72,6 +73,7 @@ export declare class SkillStore {
     }): TriageSkill | undefined;
     detectFlakiness(spec: string): FlakinessSignal;
     countRecentFailedTrajectories(spec: string, windowMs: number): number;
+    findRecentFailedFingerprints(spec: string, windowMs: number): string[];
     countForSpec(spec: string): number;
     getUsageStats(): {
         loaded: number;
@@ -105,6 +107,7 @@ export declare function buildSkill(params: {
         summary: string;
         pattern: string;
     };
+    fixFingerprint?: string;
     confidence: number;
     iterations: number;
     prUrl: string;

@@ -24,6 +24,20 @@ export interface TriageSkill {
     pattern: string;
   };
 
+  /**
+   * Stable fingerprint of the proposed code change(s) for this skill.
+   *
+   * Computed by `fixFingerprint(recommendation)` in `pipeline/validator.ts`
+   * at save time. Used by `findRecentFailedFingerprints` so the auto-fix
+   * gate can refuse to ship a fix that is byte-equivalent to one already
+   * known to fail validation on the same spec.
+   *
+   * Optional for backward compatibility — skills saved before v1.52.18 do
+   * not carry one, and a missing value simply opts that skill out of the
+   * cross-run fingerprint dedupe (other gates still apply).
+   */
+  fixFingerprint?: string;
+
   confidence: number;
   iterations: number;
   /**
@@ -802,6 +816,38 @@ export class SkillStore {
   }
 
   /**
+   * Collect persisted `fixFingerprint` values from recent failed-trajectory
+   * skills for the given spec.
+   *
+   * Companion to `countRecentFailedTrajectories` but returns the actual
+   * fingerprints so callers (auto-fix gate) can detect when the agent is
+   * about to re-ship a byte-equivalent fix that already failed validation.
+   *
+   * Same filter as `countRecentFailedTrajectories` (non-seed, non-retired,
+   * `validatedLocally=false`, within window, normalized-spec match). Skills
+   * missing `fixFingerprint` (legacy records saved before v1.52.18) are
+   * silently dropped — no fingerprint means we can't compare, and we
+   * conservatively let those skills be handled by the existing confidence
+   * boost gate instead of forcing a skip.
+   */
+  findRecentFailedFingerprints(spec: string, windowMs: number): string[] {
+    const now = Date.now();
+    const querySpec = normalizeSpec(spec);
+    if (!querySpec) return [];
+    return this.skills
+      .filter(
+        (s) =>
+          !s.isSeed &&
+          !s.retired &&
+          s.validatedLocally === false &&
+          !!s.fixFingerprint &&
+          normalizeSpec(s.spec) === querySpec &&
+          now - parseSkillTimestamp(s.createdAt) < windowMs
+      )
+      .map((s) => s.fixFingerprint as string);
+  }
+
+  /**
    * Count active (non-retired) skills for the given spec.
    *
    * v1.49.3 A3: aligned with `findRelevant` / `findForClassifier` —
@@ -1014,6 +1060,12 @@ export function buildSkill(params: {
     summary: string;
     pattern: string;
   };
+  /**
+   * Stable fingerprint of the proposed change set. Caller computes via
+   * `fixFingerprint(recommendation)` and forwards here so the skill record
+   * can power cross-run duplicate detection.
+   */
+  fixFingerprint?: string;
   confidence: number;
   iterations: number;
   prUrl: string;
@@ -1052,6 +1104,7 @@ export function buildSkill(params: {
     errorPattern: normalizeError(params.errorMessage),
     rootCauseCategory: params.rootCauseCategory,
     fix: params.fix,
+    ...(params.fixFingerprint ? { fixFingerprint: params.fixFingerprint } : {}),
     confidence: params.confidence,
     iterations: params.iterations,
     prUrl: params.prUrl,
