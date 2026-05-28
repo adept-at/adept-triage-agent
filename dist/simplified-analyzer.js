@@ -35,11 +35,13 @@ var __importStar = (this && this.__importStar) || (function () {
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.analyzeFailure = analyzeFailure;
 exports.extractErrorFromLogs = extractErrorFromLogs;
+exports.resolveFramework = resolveFramework;
 const core = __importStar(require("@actions/core"));
 const summary_generator_1 = require("./analysis/summary-generator");
 const error_classifier_1 = require("./analysis/error-classifier");
 const constants_1 = require("./config/constants");
 const text_utils_1 = require("./utils/text-utils");
+const skill_store_1 = require("./services/skill-store");
 const FEW_SHOT_EXAMPLES = [
     {
         error: 'Intentional failure for triage agent testing',
@@ -193,17 +195,18 @@ const ERROR_PATTERNS = [
     { pattern: /no such element: Unable to locate element/i, framework: 'webdriverio', priority: 9 },
     { pattern: /element not interactable/i, framework: 'webdriverio', priority: 9 },
     { pattern: /(WebDriverError|ProtocolError|SauceLabsError):\s*(.+)/, framework: 'webdriverio', priority: 8 },
-    { pattern: /TypeError: Cannot read propert(?:y|ies) .+ of (?:null|undefined).*/, framework: 'javascript', priority: 10 },
-    { pattern: /TypeError: Cannot access .+ of (?:null|undefined).*/, framework: 'javascript', priority: 10 },
+    { pattern: /TypeError: Cannot read propert(?:y|ies) .+ of (?:null|undefined).*/, framework: 'unknown', priority: 6 },
+    { pattern: /TypeError: Cannot access .+ of (?:null|undefined).*/, framework: 'unknown', priority: 6 },
     { pattern: /(AssertionError|CypressError|TimeoutError):\s*(.+)/, framework: 'cypress', priority: 8 },
     { pattern: /Timed out .+ after \d+ms:\s*(.+)/, framework: 'cypress', priority: 8 },
     { pattern: /Expected to find .+:\s*(.+)/, framework: 'cypress', priority: 7 },
-    { pattern: /(TypeError|ReferenceError|SyntaxError):\s*(.+)/, framework: 'javascript', priority: 6 },
-    { pattern: /Error:\s*(.+)/, framework: 'javascript', priority: 5 },
+    { pattern: /(TypeError|ReferenceError|SyntaxError):\s*(.+)/, framework: 'unknown', priority: 6 },
+    { pattern: /Error:\s*(.+)/, framework: 'unknown', priority: 5 },
     { pattern: /✖\s+(.+)/, framework: 'unknown', priority: 3 },
     { pattern: /FAIL\s+(.+)/, framework: 'unknown', priority: 2 },
     { pattern: /Failed:\s*(.+)/, framework: 'unknown', priority: 1 }
-].sort((a, b) => b.priority - a.priority);
+];
+ERROR_PATTERNS.sort((a, b) => b.priority - a.priority);
 function extractErrorFromLogs(logs) {
     const cleanLogs = logs.replace(text_utils_1.ANSI_ESCAPE_REGEX, '');
     for (const { pattern, framework: patternFramework, priority } of ERROR_PATTERNS) {
@@ -317,6 +320,24 @@ function extractErrorFromLogs(logs) {
         };
     }
     return null;
+}
+function resolveFramework(detected, opts) {
+    const fromDetected = (0, skill_store_1.normalizeFramework)(detected);
+    if (fromDetected !== 'unknown') {
+        return fromDetected;
+    }
+    const file = opts.testFile?.toLowerCase() ?? '';
+    if (file.includes('.cy.') || file.includes('/cypress/')) {
+        return 'cypress';
+    }
+    if (file.includes('wdio') || file.includes('.e2e.') || file.includes('webdriver')) {
+        return 'webdriverio';
+    }
+    const fromInput = (0, skill_store_1.normalizeFramework)(opts.testFrameworksInput);
+    if (fromInput !== 'unknown') {
+        return fromInput;
+    }
+    return 'unknown';
 }
 function calculateConfidence(response, errorData) {
     let confidence = constants_1.CONFIDENCE.BASE;

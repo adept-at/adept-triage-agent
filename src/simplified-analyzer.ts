@@ -1,10 +1,11 @@
 import { OpenAIClient } from './openai-client';
-import { AnalysisResult, ErrorData, FewShotExample, OpenAIResponse } from './types';
+import { AnalysisResult, ErrorData, FewShotExample, Framework, OpenAIResponse } from './types';
 import * as core from '@actions/core';
 import { generateAnalysisSummary } from './analysis/summary-generator';
 import { categorizeTestIssue, extractTestIssueEvidence } from './analysis/error-classifier';
 import { AGENT_MODEL, CONFIDENCE, LOG_LIMITS, REASONING_EFFORT } from './config/constants';
 import { ANSI_ESCAPE_REGEX } from './utils/text-utils';
+import { normalizeFramework } from './services/skill-store';
 
 /**
  * Simplified analyzer that focuses on core functionality
@@ -180,8 +181,10 @@ export async function analyzeFailure(client: OpenAIClient, errorData: ErrorData,
   }
 }
 
-// Error patterns sorted by priority (highest first) — pre-sorted at module load
-const ERROR_PATTERNS = [
+// Error patterns sorted by priority (highest first) — pre-sorted at module load.
+// Generic/unattributed signatures use framework 'unknown' and sit BELOW the
+// framework-specific Cypress/WDIO patterns so a concrete signature always wins.
+const ERROR_PATTERNS: { pattern: RegExp; framework: Framework; priority: number }[] = [
   // Cypress server verification errors (highest priority - happens before tests can even run)
   { pattern: /Cypress could not verify that this server is running.*/, framework: 'cypress', priority: 12 },
   { pattern: /Cypress failed to verify that your server is running.*/, framework: 'cypress', priority: 12 },
@@ -207,24 +210,28 @@ const ERROR_PATTERNS = [
   { pattern: /element not interactable/i, framework: 'webdriverio', priority: 9 },
   { pattern: /(WebDriverError|ProtocolError|SauceLabsError):\s*(.+)/, framework: 'webdriverio', priority: 8 },
 
-  // Specific JavaScript errors with property access (high priority)
-  { pattern: /TypeError: Cannot read propert(?:y|ies) .+ of (?:null|undefined).*/, framework: 'javascript', priority: 10 },
-  { pattern: /TypeError: Cannot access .+ of (?:null|undefined).*/, framework: 'javascript', priority: 10 },
+  // Generic JS property-access errors — NOT framework-specific. Tagged 'unknown'
+  // and demoted below the Cypress/WDIO signatures so a WDIO/Cypress error that
+  // also matches a framework-specific pattern is attributed correctly instead of
+  // being mislabeled (the WDIO TypeError -> 'javascript' -> Cypress-fix bug).
+  { pattern: /TypeError: Cannot read propert(?:y|ies) .+ of (?:null|undefined).*/, framework: 'unknown', priority: 6 },
+  { pattern: /TypeError: Cannot access .+ of (?:null|undefined).*/, framework: 'unknown', priority: 6 },
 
   // Cypress-specific errors
   { pattern: /(AssertionError|CypressError|TimeoutError):\s*(.+)/, framework: 'cypress', priority: 8 },
   { pattern: /Timed out .+ after \d+ms:\s*(.+)/, framework: 'cypress', priority: 8 },
   { pattern: /Expected to find .+:\s*(.+)/, framework: 'cypress', priority: 7 },
 
-  // General JavaScript errors
-  { pattern: /(TypeError|ReferenceError|SyntaxError):\s*(.+)/, framework: 'javascript', priority: 6 },
-  { pattern: /Error:\s*(.+)/, framework: 'javascript', priority: 5 },
+  // General JavaScript errors — unattributed; kept below framework-specific patterns
+  { pattern: /(TypeError|ReferenceError|SyntaxError):\s*(.+)/, framework: 'unknown', priority: 6 },
+  { pattern: /Error:\s*(.+)/, framework: 'unknown', priority: 5 },
 
   // Generic test failures (lower priority)
   { pattern: /✖\s+(.+)/, framework: 'unknown', priority: 3 },
   { pattern: /FAIL\s+(.+)/, framework: 'unknown', priority: 2 },
   { pattern: /Failed:\s*(.+)/, framework: 'unknown', priority: 1 }
-].sort((a, b) => b.priority - a.priority);
+];
+ERROR_PATTERNS.sort((a, b) => b.priority - a.priority);
 
 /**
  * Simplified error extraction from logs
@@ -380,6 +387,43 @@ export function extractErrorFromLogs(logs: string): ErrorData | null {
   }
 
   return null;
+}
+
+/**
+ * Resolve a failure's framework from the best available signals, in order:
+ *   1. The detector's own attribution (`detected`), normalized.
+ *   2. The test file path (`.cy.` / `/cypress/` -> cypress; `wdio` / `.e2e.` /
+ *      `webdriver` -> webdriverio).
+ *   3. The action's TEST_FRAMEWORKS input, normalized.
+ *   4. `'unknown'` when nothing attributes it.
+ *
+ * Centralizes the cypress-vs-webdriverio decision so callers stop hand-rolling
+ * it, and so a bare generic JS error (now tagged `'unknown'` by the detector)
+ * never silently defaults to Cypress.
+ */
+export function resolveFramework(
+  detected: string | undefined,
+  opts: { testFile?: string; testFrameworksInput?: string }
+): Framework {
+  const fromDetected = normalizeFramework(detected);
+  if (fromDetected !== 'unknown') {
+    return fromDetected;
+  }
+
+  const file = opts.testFile?.toLowerCase() ?? '';
+  if (file.includes('.cy.') || file.includes('/cypress/')) {
+    return 'cypress';
+  }
+  if (file.includes('wdio') || file.includes('.e2e.') || file.includes('webdriver')) {
+    return 'webdriverio';
+  }
+
+  const fromInput = normalizeFramework(opts.testFrameworksInput);
+  if (fromInput !== 'unknown') {
+    return fromInput;
+  }
+
+  return 'unknown';
 }
 
 /**

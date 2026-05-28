@@ -119,7 +119,7 @@ You MUST respond with a JSON object matching this schema:
         if (context.delegationContext) {
             parts.push('### Orchestrator Briefing', context.delegationContext, '');
         }
-        parts.push('## Fix Review Request', '', '### Analysis Agent Findings', `- **Root Cause Category:** ${input.analysis.rootCauseCategory}`, `- **Analysis Confidence:** ${input.analysis.confidence}%`, `- **Issue Location:** ${input.analysis.issueLocation}`, `- **Explanation:** ${input.analysis.explanation}`, `- **Suggested Approach (what analysis said the fix should do):** ${input.analysis.suggestedApproach}`);
+        parts.push('## Fix Review Request', '', `**Test framework:** ${(0, base_agent_1.getFrameworkLabel)(context.framework)}`, '', '### Analysis Agent Findings', `- **Root Cause Category:** ${input.analysis.rootCauseCategory}`, `- **Analysis Confidence:** ${input.analysis.confidence}%`, `- **Issue Location:** ${input.analysis.issueLocation}`, `- **Explanation:** ${input.analysis.explanation}`, `- **Suggested Approach (what analysis said the fix should do):** ${input.analysis.suggestedApproach}`);
         const patterns = input.analysis.patterns;
         if (patterns) {
             const flaggedPatterns = Object.entries(patterns)

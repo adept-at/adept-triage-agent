@@ -819,7 +819,7 @@ describe('FixGenerationAgent', () => {
       expect(call.systemPrompt).not.toContain('Cypress Fix Patterns');
     });
 
-    it('should default to Cypress patterns and warn once when framework is unknown', async () => {
+    it('should use framework-neutral patterns (NOT Cypress) and warn once when framework is unknown', async () => {
       // Spy on core.warning to verify we emit a single warning per agent
       // instance even across multiple unknown-framework executions.
       const core = require('@actions/core');
@@ -852,7 +852,10 @@ describe('FixGenerationAgent', () => {
       await agent.execute({ analysis: mockAnalysis, investigation: mockInvestigation }, unknownContext2);
 
       const call = mockOpenAIClient.generateWithCustomPrompt.mock.calls[0][0];
-      expect(call.systemPrompt).toContain('Cypress Fix Patterns');
+      // Unknown framework now emits the NEUTRAL block, NOT Cypress patterns.
+      expect(call.systemPrompt).toContain('Framework is undetermined');
+      expect(call.systemPrompt).toContain('do NOT assume');
+      expect(call.systemPrompt).not.toContain('Cypress Fix Patterns');
       expect(call.systemPrompt).not.toContain('WebDriverIO Fix Patterns');
 
       // Warning fires once per agent instance, even though we ran two

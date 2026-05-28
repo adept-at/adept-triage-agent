@@ -1224,15 +1224,9 @@ exports.getFrameworkLabel = getFrameworkLabel;
 exports.createAgentContext = createAgentContext;
 const core = __importStar(__nccwpck_require__(37484));
 const constants_1 = __nccwpck_require__(58361);
+const framework_profiles_1 = __nccwpck_require__(95647);
 function getFrameworkLabel(framework) {
-    switch (framework) {
-        case 'webdriverio':
-            return 'WebDriverIO';
-        case 'cypress':
-            return 'Cypress';
-        default:
-            return 'unknown';
-    }
+    return (0, framework_profiles_1.getFrameworkProfile)(framework ?? 'unknown').label;
 }
 exports.DEFAULT_AGENT_CONFIG = {
     timeoutMs: constants_1.AGENT_CONFIG.AGENT_TIMEOUT_MS,
@@ -1952,10 +1946,11 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.FixGenerationAgent = exports.WDIO_PATTERNS = exports.CYPRESS_PATTERNS = void 0;
+exports.FixGenerationAgent = void 0;
 const core = __importStar(__nccwpck_require__(37484));
 const base_agent_1 = __nccwpck_require__(46575);
 const constants_1 = __nccwpck_require__(58361);
+const framework_profiles_1 = __nccwpck_require__(95647);
 const text_utils_1 = __nccwpck_require__(11744);
 const number_utils_1 = __nccwpck_require__(25026);
 const CHANGE_TYPES = [
@@ -2011,235 +2006,6 @@ A stricter before-hook does NOT fix bucket C. It just turns the silent fixture p
 3. Should this failure be a non-fixable seed instead (operator-only remediation: refresh the access code, top up the credits)?
 
 For bucket C, prefer (a) introducing a fresh-fixture factory or env override, (b) making reset retry transient failures and surface non-retryable ones with the FULL response body in the error message, and (c) ensuring before- and after-hooks accept the SAME set of "already-reset" / "in-use" responses — never tighten one without the other.
-
-`;
-exports.CYPRESS_PATTERNS = `## Cypress Fix Patterns
-
-### Chaining & Retry-ability
-Cypress commands auto-retry, but \`.then()\` callbacks do not. Prefer assertion-based waits over arbitrary waits.
-
-### Selector Updates
-\`\`\`javascript
-// OLD: Fragile class selector
-cy.get('.old-button-class')
-
-// NEW: Prefer data-testid, aria-label, or cy.contains
-cy.get('[data-testid="submit-button"]')
-cy.get('button').contains('Submit')
-cy.findByRole('button', { name: 'Submit' })
-\`\`\`
-
-### Visibility/Existence Checks
-\`\`\`javascript
-// OLD: Click without checking visibility
-cy.get('#element').click()
-
-// NEW: Assert visible, then act
-cy.get('#element').should('be.visible').click()
-// For conditional elements:
-cy.get('#element').should('exist').and('be.visible').click()
-\`\`\`
-
-### Timing/Wait Issues
-\`\`\`javascript
-// OLD: No wait for async operation
-cy.get('#result')
-
-// BEST: Intercept the API call
-cy.intercept('GET', '/api/data').as('getData')
-cy.wait('@getData')
-cy.get('#result')
-
-// ALT: Increase assertion timeout for slow renders
-cy.get('#result', { timeout: 15000 }).should('contain', 'Expected')
-\`\`\`
-
-### Overflow/Responsive Menu
-\`\`\`javascript
-// OLD: Direct click on element that might be in overflow menu
-cy.get('[aria-label="Action"]').click()
-
-// NEW: Conditional interaction
-cy.get('body').then($body => {
-  if ($body.find('[aria-label="Action"]:visible').length > 0) {
-    cy.get('[aria-label="Action"]').click()
-  } else {
-    cy.get('[aria-label="More"]').click()
-    cy.get('[aria-label="Action"]').click()
-  }
-})
-\`\`\`
-
-### cy.session for Login
-\`\`\`javascript
-// Cache login across tests
-cy.session('user', () => {
-  cy.visit('/login')
-  cy.get('#email').type(user.email)
-  cy.get('#password').type(user.password)
-  cy.get('button[type="submit"]').click()
-  cy.url().should('not.include', '/login')
-})
-\`\`\`
-
-### Iframe & Shadow DOM
-\`\`\`javascript
-// Access shadow DOM
-cy.get('my-component').shadow().find('.inner-element')
-
-// Switch into iframe
-cy.get('iframe#editor').its('0.contentDocument.body').then(cy.wrap)
-\`\`\`
-
-### No-op Patterns to Avoid
-\`\`\`javascript
-// AVOID: wrapping Cypress chains in conditionals that re-check what
-// Cypress already asserts. \`.should('not.exist')\` already waits until
-// the element is gone (or times out).
-// ❌ cy.get('body').then($body => {
-//      if ($body.find('#snackbar').length > 0) {
-//        cy.get('#snackbar').should('not.exist')  // already waits
-//      }
-//    })
-
-// PREFER: just call the assertion — Cypress handles the absent case.
-// ✅ cy.get('#snackbar').should('not.exist')
-
-// Similarly, avoid adding \`cy.wait(1000)\` as a "safety buffer" before an
-// assertion that already retries. Use an assertion-based wait or intercept.
-\`\`\`
-
-### Selector Form: Avoid Ambiguous Text Matches
-\`\`\`javascript
-// AVOID: mixing scope implicitly — \`cy.contains()\` returns the deepest
-// matching element, which may not be the one you want when multiple
-// elements contain the same text.
-// ❌ cy.contains('Success')
-
-// PREFER: scope contains() to a specific container, or use selector + text
-// ✅ cy.get('[role="dialog"]').contains('Success')
-// ✅ cy.findByRole('dialog').findByText('Success')  // @testing-library
-\`\`\`
-
-`;
-exports.WDIO_PATTERNS = `## WebDriverIO Fix Patterns
-
-### Selector Strategy
-\`\`\`javascript
-// OLD: Fragile class selector
-await $('.old-button-class').click()
-
-// NEW: Prefer data-testid or aria selectors
-await $('[data-testid="submit-button"]').click()
-await $('aria/Submit')  // WDIO aria selector strategy
-\`\`\`
-
-### waitForDisplayed / waitForClickable / waitForExist
-\`\`\`javascript
-// OLD: Click without waiting
-await $('button').click()
-
-// NEW: Wait for clickable state
-await $('button').waitForClickable({ timeout: 15000 })
-await $('button').click()
-
-// For elements that load asynchronously
-await $('[data-testid="result"]').waitForDisplayed({ timeout: 10000 })
-const text = await $('[data-testid="result"]').getText()
-
-// For elements that may not be in DOM yet
-await $('[data-testid="modal"]').waitForExist({ timeout: 10000 })
-\`\`\`
-
-### browser.waitUntil for Complex Conditions
-\`\`\`javascript
-// OLD: Simple wait
-await browser.pause(3000)
-
-// NEW: Condition-based wait
-await browser.waitUntil(
-  async () => (await $('[data-testid="status"]').getText()) === 'Ready',
-  { timeout: 15000, timeoutMsg: 'Status never became Ready' }
-)
-\`\`\`
-
-### Multi-remote / Browser Scope
-\`\`\`javascript
-// OLD: Ambiguous browser reference in multi-remote
-await $('button').click()
-
-// NEW: Explicit browser instance
-const elem = await browserA.$('[data-testid="start"]')
-await elem.waitForClickable()
-await elem.click()
-\`\`\`
-
-### Shadow DOM & Custom Elements
-\`\`\`javascript
-// Access shadow root
-const host = await $('mux-player')
-const shadowBtn = await host.shadow$('button.play')
-await shadowBtn.waitForClickable({ timeout: 15000 })
-await shadowBtn.click()
-\`\`\`
-
-### browser.execute for DOM Interaction
-\`\`\`javascript
-// Scroll element into view
-await browser.execute((el) => el.scrollIntoView({ block: 'center' }), await $('button'))
-await $('button').waitForClickable()
-await $('button').click()
-\`\`\`
-
-### Stale Element Recovery
-\`\`\`javascript
-// OLD: Direct action on potentially stale element
-const el = await $('button')
-await el.click()
-
-// NEW: Re-query before action
-await $('button').waitForClickable({ timeout: 10000 })
-await $('button').click()
-\`\`\`
-
-### Selector Form: Avoid Mixed Strategies
-\`\`\`javascript
-// AVOID: combining an attribute selector with partial-text matching on the
-// SAME element. WDIO's docs call this "mixed strategies" and behavior
-// depends on version; the \`*=\` text match may or may not scan descendant
-// text of the attribute-matched element.
-// ❌ await $("[role='dialog']*=Your success text")
-// ❌ await $("header h1*=Welcome")   // explicitly forbidden in WDIO docs
-
-// PREFER: chained element queries (guaranteed to scope correctly)
-// ✅ const dialog = await $("[role='dialog']")
-//    const success = await dialog.$("*=Your success text")
-//    if (await success.isDisplayed()) { ... }
-
-// OR: XPath with explicit descendant semantics (always unambiguous)
-// ✅ await $("//*[@role='dialog']//*[contains(normalize-space(), 'Your success text')]")
-\`\`\`
-
-### No-op Patterns to Avoid
-\`\`\`javascript
-// AVOID: wrapping already-idempotent operations in existence guards.
-// Most WDIO waits already handle the absent case cleanly — adding a guard
-// creates a race window without adding safety.
-// ❌ if (await el.isExisting()) {
-//      await el.waitForExist({ reverse: true })   // already no-ops when absent
-//    }
-// The guarded form converts a real "appeared then didn't dismiss" signal
-// into silence (if the element appears between the isExisting check and
-// the wait, the wait is skipped).
-
-// PREFER: call the wait directly — reverse: true returns immediately when
-// the element doesn't exist, so no guard is needed.
-// ✅ await el.waitForExist({ timeout: 120000, reverse: true })
-
-// Similarly, don't wrap isDisplayed / isExisting in defensive try/catch
-// that just returns false — these methods already return false on missing
-// elements. Only catch when you need to distinguish stale-element errors.
-\`\`\`
 
 `;
 const COMMON_SUFFIX = `## Output Format
@@ -2334,18 +2100,12 @@ class FixGenerationAgent extends base_agent_1.BaseAgent {
         return this.executeWithTimeout(input, context, previousResponseId);
     }
     getSystemPrompt(framework) {
-        switch (framework) {
-            case 'cypress':
-                return COMMON_PREAMBLE + exports.CYPRESS_PATTERNS + COMMON_SUFFIX;
-            case 'webdriverio':
-                return COMMON_PREAMBLE + exports.WDIO_PATTERNS + COMMON_SUFFIX;
-            default:
-                if (!this.warnedUnknownFramework) {
-                    this.warnedUnknownFramework = true;
-                    core.warning(`[FixGenerationAgent] Framework was unknown or missing (got ${JSON.stringify(framework)}); defaulting to Cypress fix patterns.`);
-                }
-                return COMMON_PREAMBLE + exports.CYPRESS_PATTERNS + COMMON_SUFFIX;
+        const resolved = framework ?? 'unknown';
+        if (resolved === 'unknown' && !this.warnedUnknownFramework) {
+            this.warnedUnknownFramework = true;
+            core.warning(`[FixGenerationAgent] Framework was unknown or missing (got ${JSON.stringify(framework)}); using framework-neutral fix guidance.`);
         }
+        return COMMON_PREAMBLE + (0, framework_profiles_1.getFrameworkProfile)(resolved).fixPatternBlock + COMMON_SUFFIX;
     }
     buildUserPrompt(input, context) {
         const frameworkLabel = (0, base_agent_1.getFrameworkLabel)(context.framework);
@@ -2580,6 +2340,7 @@ Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.InvestigationAgent = void 0;
 const base_agent_1 = __nccwpck_require__(46575);
 const constants_1 = __nccwpck_require__(58361);
+const framework_profiles_1 = __nccwpck_require__(95647);
 const text_utils_1 = __nccwpck_require__(11744);
 const number_utils_1 = __nccwpck_require__(25026);
 const FINDING_TYPES = [
@@ -2673,7 +2434,7 @@ You MUST respond with a JSON object matching this schema:
                 }
             }
             if (input.codeContext.customCommands.length > 0) {
-                const cmdPrefix = context.framework === 'webdriverio' ? 'browser' : 'cy';
+                const cmdPrefix = (0, framework_profiles_1.getFrameworkProfile)(context.framework ?? 'unknown').commandPrefix || 'cy';
                 parts.push('', '### Custom Commands', input.codeContext.customCommands
                     .map((c) => `- \`${cmdPrefix}.${c.name}()\` in ${c.file}`)
                     .join('\n'));
@@ -2898,7 +2659,7 @@ You MUST respond with a JSON object matching this schema:
         if (context.delegationContext) {
             parts.push('### Orchestrator Briefing', context.delegationContext, '');
         }
-        parts.push('## Fix Review Request', '', '### Analysis Agent Findings', `- **Root Cause Category:** ${input.analysis.rootCauseCategory}`, `- **Analysis Confidence:** ${input.analysis.confidence}%`, `- **Issue Location:** ${input.analysis.issueLocation}`, `- **Explanation:** ${input.analysis.explanation}`, `- **Suggested Approach (what analysis said the fix should do):** ${input.analysis.suggestedApproach}`);
+        parts.push('## Fix Review Request', '', `**Test framework:** ${(0, base_agent_1.getFrameworkLabel)(context.framework)}`, '', '### Analysis Agent Findings', `- **Root Cause Category:** ${input.analysis.rootCauseCategory}`, `- **Analysis Confidence:** ${input.analysis.confidence}%`, `- **Issue Location:** ${input.analysis.issueLocation}`, `- **Explanation:** ${input.analysis.explanation}`, `- **Suggested Approach (what analysis said the fix should do):** ${input.analysis.suggestedApproach}`);
         const patterns = input.analysis.patterns;
         if (patterns) {
             const flaggedPatterns = Object.entries(patterns)
@@ -4050,6 +3811,275 @@ exports.BLAST_RADIUS = {
     MAX_REQUIRED_CONFIDENCE: 95,
 };
 //# sourceMappingURL=constants.js.map
+
+/***/ }),
+
+/***/ 95647:
+/***/ ((__unused_webpack_module, exports) => {
+
+"use strict";
+
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.WDIO_PATTERNS = exports.CYPRESS_PATTERNS = void 0;
+exports.getFrameworkProfile = getFrameworkProfile;
+exports.CYPRESS_PATTERNS = `## Cypress Fix Patterns
+
+### Chaining & Retry-ability
+Cypress commands auto-retry, but \`.then()\` callbacks do not. Prefer assertion-based waits over arbitrary waits.
+
+### Selector Updates
+\`\`\`javascript
+// OLD: Fragile class selector
+cy.get('.old-button-class')
+
+// NEW: Prefer data-testid, aria-label, or cy.contains
+cy.get('[data-testid="submit-button"]')
+cy.get('button').contains('Submit')
+cy.findByRole('button', { name: 'Submit' })
+\`\`\`
+
+### Visibility/Existence Checks
+\`\`\`javascript
+// OLD: Click without checking visibility
+cy.get('#element').click()
+
+// NEW: Assert visible, then act
+cy.get('#element').should('be.visible').click()
+// For conditional elements:
+cy.get('#element').should('exist').and('be.visible').click()
+\`\`\`
+
+### Timing/Wait Issues
+\`\`\`javascript
+// OLD: No wait for async operation
+cy.get('#result')
+
+// BEST: Intercept the API call
+cy.intercept('GET', '/api/data').as('getData')
+cy.wait('@getData')
+cy.get('#result')
+
+// ALT: Increase assertion timeout for slow renders
+cy.get('#result', { timeout: 15000 }).should('contain', 'Expected')
+\`\`\`
+
+### Overflow/Responsive Menu
+\`\`\`javascript
+// OLD: Direct click on element that might be in overflow menu
+cy.get('[aria-label="Action"]').click()
+
+// NEW: Conditional interaction
+cy.get('body').then($body => {
+  if ($body.find('[aria-label="Action"]:visible').length > 0) {
+    cy.get('[aria-label="Action"]').click()
+  } else {
+    cy.get('[aria-label="More"]').click()
+    cy.get('[aria-label="Action"]').click()
+  }
+})
+\`\`\`
+
+### cy.session for Login
+\`\`\`javascript
+// Cache login across tests
+cy.session('user', () => {
+  cy.visit('/login')
+  cy.get('#email').type(user.email)
+  cy.get('#password').type(user.password)
+  cy.get('button[type="submit"]').click()
+  cy.url().should('not.include', '/login')
+})
+\`\`\`
+
+### Iframe & Shadow DOM
+\`\`\`javascript
+// Access shadow DOM
+cy.get('my-component').shadow().find('.inner-element')
+
+// Switch into iframe
+cy.get('iframe#editor').its('0.contentDocument.body').then(cy.wrap)
+\`\`\`
+
+### No-op Patterns to Avoid
+\`\`\`javascript
+// AVOID: wrapping Cypress chains in conditionals that re-check what
+// Cypress already asserts. \`.should('not.exist')\` already waits until
+// the element is gone (or times out).
+// ❌ cy.get('body').then($body => {
+//      if ($body.find('#snackbar').length > 0) {
+//        cy.get('#snackbar').should('not.exist')  // already waits
+//      }
+//    })
+
+// PREFER: just call the assertion — Cypress handles the absent case.
+// ✅ cy.get('#snackbar').should('not.exist')
+
+// Similarly, avoid adding \`cy.wait(1000)\` as a "safety buffer" before an
+// assertion that already retries. Use an assertion-based wait or intercept.
+\`\`\`
+
+### Selector Form: Avoid Ambiguous Text Matches
+\`\`\`javascript
+// AVOID: mixing scope implicitly — \`cy.contains()\` returns the deepest
+// matching element, which may not be the one you want when multiple
+// elements contain the same text.
+// ❌ cy.contains('Success')
+
+// PREFER: scope contains() to a specific container, or use selector + text
+// ✅ cy.get('[role="dialog"]').contains('Success')
+// ✅ cy.findByRole('dialog').findByText('Success')  // @testing-library
+\`\`\`
+
+`;
+exports.WDIO_PATTERNS = `## WebDriverIO Fix Patterns
+
+### Selector Strategy
+\`\`\`javascript
+// OLD: Fragile class selector
+await $('.old-button-class').click()
+
+// NEW: Prefer data-testid or aria selectors
+await $('[data-testid="submit-button"]').click()
+await $('aria/Submit')  // WDIO aria selector strategy
+\`\`\`
+
+### waitForDisplayed / waitForClickable / waitForExist
+\`\`\`javascript
+// OLD: Click without waiting
+await $('button').click()
+
+// NEW: Wait for clickable state
+await $('button').waitForClickable({ timeout: 15000 })
+await $('button').click()
+
+// For elements that load asynchronously
+await $('[data-testid="result"]').waitForDisplayed({ timeout: 10000 })
+const text = await $('[data-testid="result"]').getText()
+
+// For elements that may not be in DOM yet
+await $('[data-testid="modal"]').waitForExist({ timeout: 10000 })
+\`\`\`
+
+### browser.waitUntil for Complex Conditions
+\`\`\`javascript
+// OLD: Simple wait
+await browser.pause(3000)
+
+// NEW: Condition-based wait
+await browser.waitUntil(
+  async () => (await $('[data-testid="status"]').getText()) === 'Ready',
+  { timeout: 15000, timeoutMsg: 'Status never became Ready' }
+)
+\`\`\`
+
+### Multi-remote / Browser Scope
+\`\`\`javascript
+// OLD: Ambiguous browser reference in multi-remote
+await $('button').click()
+
+// NEW: Explicit browser instance
+const elem = await browserA.$('[data-testid="start"]')
+await elem.waitForClickable()
+await elem.click()
+\`\`\`
+
+### Shadow DOM & Custom Elements
+\`\`\`javascript
+// Access shadow root
+const host = await $('mux-player')
+const shadowBtn = await host.shadow$('button.play')
+await shadowBtn.waitForClickable({ timeout: 15000 })
+await shadowBtn.click()
+\`\`\`
+
+### browser.execute for DOM Interaction
+\`\`\`javascript
+// Scroll element into view
+await browser.execute((el) => el.scrollIntoView({ block: 'center' }), await $('button'))
+await $('button').waitForClickable()
+await $('button').click()
+\`\`\`
+
+### Stale Element Recovery
+\`\`\`javascript
+// OLD: Direct action on potentially stale element
+const el = await $('button')
+await el.click()
+
+// NEW: Re-query before action
+await $('button').waitForClickable({ timeout: 10000 })
+await $('button').click()
+\`\`\`
+
+### Selector Form: Avoid Mixed Strategies
+\`\`\`javascript
+// AVOID: combining an attribute selector with partial-text matching on the
+// SAME element. WDIO's docs call this "mixed strategies" and behavior
+// depends on version; the \`*=\` text match may or may not scan descendant
+// text of the attribute-matched element.
+// ❌ await $("[role='dialog']*=Your success text")
+// ❌ await $("header h1*=Welcome")   // explicitly forbidden in WDIO docs
+
+// PREFER: chained element queries (guaranteed to scope correctly)
+// ✅ const dialog = await $("[role='dialog']")
+//    const success = await dialog.$("*=Your success text")
+//    if (await success.isDisplayed()) { ... }
+
+// OR: XPath with explicit descendant semantics (always unambiguous)
+// ✅ await $("//*[@role='dialog']//*[contains(normalize-space(), 'Your success text')]")
+\`\`\`
+
+### No-op Patterns to Avoid
+\`\`\`javascript
+// AVOID: wrapping already-idempotent operations in existence guards.
+// Most WDIO waits already handle the absent case cleanly — adding a guard
+// creates a race window without adding safety.
+// ❌ if (await el.isExisting()) {
+//      await el.waitForExist({ reverse: true })   // already no-ops when absent
+//    }
+// The guarded form converts a real "appeared then didn't dismiss" signal
+// into silence (if the element appears between the isExisting check and
+// the wait, the wait is skipped).
+
+// PREFER: call the wait directly — reverse: true returns immediately when
+// the element doesn't exist, so no guard is needed.
+// ✅ await el.waitForExist({ timeout: 120000, reverse: true })
+
+// Similarly, don't wrap isDisplayed / isExisting in defensive try/catch
+// that just returns false — these methods already return false on missing
+// elements. Only catch when you need to distinguish stale-element errors.
+\`\`\`
+
+`;
+const NEUTRAL_FIX_PATTERN_BLOCK = `## Framework-Neutral Fix Guidance
+
+Framework is undetermined — do NOT assume \`cy.*\` or \`browser.*\`; match the exact idioms visible in the provided test file. Mirror the commands, selector strategies, and assertion style already present in the test rather than introducing framework-specific APIs.
+
+`;
+const NEUTRAL_PROFILE = {
+    label: 'unknown',
+    commandPrefix: '',
+    fixPatternBlock: NEUTRAL_FIX_PATTERN_BLOCK,
+};
+const FRAMEWORK_PROFILES = {
+    cypress: {
+        label: 'Cypress',
+        commandPrefix: 'cy',
+        fixPatternBlock: exports.CYPRESS_PATTERNS,
+    },
+    webdriverio: {
+        label: 'WebDriverIO',
+        commandPrefix: 'browser',
+        fixPatternBlock: exports.WDIO_PATTERNS,
+    },
+};
+function getFrameworkProfile(f) {
+    if (f === 'cypress' || f === 'webdriverio') {
+        return FRAMEWORK_PROFILES[f];
+    }
+    return NEUTRAL_PROFILE;
+}
+//# sourceMappingURL=framework-profiles.js.map
 
 /***/ }),
 
@@ -8462,6 +8492,10 @@ async function processWorkflowLogs(octokit, artifactFetcher, inputs, repoDetails
     if (extractedError) {
         const errorData = {
             ...extractedError,
+            framework: (0, simplified_analyzer_1.resolveFramework)(extractedError.framework, {
+                testFile: extractedError.fileName,
+                testFrameworksInput: inputs.testFrameworks,
+            }),
             context: `Job: ${failedJob.name}. ${extractedError.context ||
                 'Complete failure context including all logs and artifacts'}`,
             testName: extractedError.testName || failedJob.name,
@@ -8479,7 +8513,9 @@ async function processWorkflowLogs(octokit, artifactFetcher, inputs, repoDetails
     }
     const fallbackError = {
         message: 'Test failure - see full context for details',
-        framework: inputs.testFrameworks || 'unknown',
+        framework: (0, simplified_analyzer_1.resolveFramework)(undefined, {
+            testFrameworksInput: inputs.testFrameworks,
+        }),
         failureType: 'test-failure',
         context: `Job: ${failedJob.name}. Complete failure context including all logs and artifacts`,
         testName: failedJob.name,
@@ -9166,7 +9202,13 @@ class SkillStore {
     findRelevant(opts) {
         const limit = opts.limit ?? 5;
         const normalized = normalizeFramework(opts.framework);
-        const frameworkSkills = this.skills.filter((s) => (s.framework === normalized || s.framework === 'unknown') && !s.retired);
+        const frameworkSkills = this.skills.filter((s) => {
+            if (s.retired)
+                return false;
+            if (normalized === 'unknown')
+                return true;
+            return s.framework === normalized || s.framework === 'unknown';
+        });
         if (frameworkSkills.length === 0)
             return [];
         const querySpec = normalizeSpec(opts.spec);
@@ -9195,9 +9237,13 @@ class SkillStore {
     }
     findForClassifier(opts) {
         const normalized = normalizeFramework(opts.framework);
-        const candidates = this.skills.filter((s) => (s.framework === normalized || s.framework === 'unknown') &&
-            !s.retired &&
-            s.validatedLocally === true);
+        const candidates = this.skills.filter((s) => {
+            if (s.retired || s.validatedLocally !== true)
+                return false;
+            if (normalized === 'unknown')
+                return true;
+            return s.framework === normalized || s.framework === 'unknown';
+        });
         if (candidates.length === 0)
             return [];
         const now = Date.now();
@@ -9691,11 +9737,13 @@ var __importStar = (this && this.__importStar) || (function () {
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.analyzeFailure = analyzeFailure;
 exports.extractErrorFromLogs = extractErrorFromLogs;
+exports.resolveFramework = resolveFramework;
 const core = __importStar(__nccwpck_require__(37484));
 const summary_generator_1 = __nccwpck_require__(78220);
 const error_classifier_1 = __nccwpck_require__(23914);
 const constants_1 = __nccwpck_require__(58361);
 const text_utils_1 = __nccwpck_require__(11744);
+const skill_store_1 = __nccwpck_require__(60215);
 const FEW_SHOT_EXAMPLES = [
     {
         error: 'Intentional failure for triage agent testing',
@@ -9849,17 +9897,18 @@ const ERROR_PATTERNS = [
     { pattern: /no such element: Unable to locate element/i, framework: 'webdriverio', priority: 9 },
     { pattern: /element not interactable/i, framework: 'webdriverio', priority: 9 },
     { pattern: /(WebDriverError|ProtocolError|SauceLabsError):\s*(.+)/, framework: 'webdriverio', priority: 8 },
-    { pattern: /TypeError: Cannot read propert(?:y|ies) .+ of (?:null|undefined).*/, framework: 'javascript', priority: 10 },
-    { pattern: /TypeError: Cannot access .+ of (?:null|undefined).*/, framework: 'javascript', priority: 10 },
+    { pattern: /TypeError: Cannot read propert(?:y|ies) .+ of (?:null|undefined).*/, framework: 'unknown', priority: 6 },
+    { pattern: /TypeError: Cannot access .+ of (?:null|undefined).*/, framework: 'unknown', priority: 6 },
     { pattern: /(AssertionError|CypressError|TimeoutError):\s*(.+)/, framework: 'cypress', priority: 8 },
     { pattern: /Timed out .+ after \d+ms:\s*(.+)/, framework: 'cypress', priority: 8 },
     { pattern: /Expected to find .+:\s*(.+)/, framework: 'cypress', priority: 7 },
-    { pattern: /(TypeError|ReferenceError|SyntaxError):\s*(.+)/, framework: 'javascript', priority: 6 },
-    { pattern: /Error:\s*(.+)/, framework: 'javascript', priority: 5 },
+    { pattern: /(TypeError|ReferenceError|SyntaxError):\s*(.+)/, framework: 'unknown', priority: 6 },
+    { pattern: /Error:\s*(.+)/, framework: 'unknown', priority: 5 },
     { pattern: /✖\s+(.+)/, framework: 'unknown', priority: 3 },
     { pattern: /FAIL\s+(.+)/, framework: 'unknown', priority: 2 },
     { pattern: /Failed:\s*(.+)/, framework: 'unknown', priority: 1 }
-].sort((a, b) => b.priority - a.priority);
+];
+ERROR_PATTERNS.sort((a, b) => b.priority - a.priority);
 function extractErrorFromLogs(logs) {
     const cleanLogs = logs.replace(text_utils_1.ANSI_ESCAPE_REGEX, '');
     for (const { pattern, framework: patternFramework, priority } of ERROR_PATTERNS) {
@@ -9973,6 +10022,24 @@ function extractErrorFromLogs(logs) {
         };
     }
     return null;
+}
+function resolveFramework(detected, opts) {
+    const fromDetected = (0, skill_store_1.normalizeFramework)(detected);
+    if (fromDetected !== 'unknown') {
+        return fromDetected;
+    }
+    const file = opts.testFile?.toLowerCase() ?? '';
+    if (file.includes('.cy.') || file.includes('/cypress/')) {
+        return 'cypress';
+    }
+    if (file.includes('wdio') || file.includes('.e2e.') || file.includes('webdriver')) {
+        return 'webdriverio';
+    }
+    const fromInput = (0, skill_store_1.normalizeFramework)(opts.testFrameworksInput);
+    if (fromInput !== 'unknown') {
+        return fromInput;
+    }
+    return 'unknown';
 }
 function calculateConfidence(response, errorData) {
     let confidence = constants_1.CONFIDENCE.BASE;

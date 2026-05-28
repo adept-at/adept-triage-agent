@@ -7,6 +7,8 @@ import * as core from '@actions/core';
 import OpenAI from 'openai';
 import { OpenAIClient } from '../openai-client';
 import { AGENT_CONFIG, OPENAI, ReasoningEffort } from '../config/constants';
+import { getFrameworkProfile } from '../config/framework-profiles';
+import { Framework } from '../types';
 
 type ChatContentPart =
   | OpenAI.Chat.Completions.ChatCompletionContentPartText
@@ -14,17 +16,12 @@ type ChatContentPart =
 
 /**
  * Maps the internal framework identifier to a human-readable label for prompts.
- * Single source of truth -- all agents should use this instead of inline ternaries.
+ * Single source of truth -- all agents should use this instead of inline
+ * ternaries. Backed by the framework-profile registry; missing/unknown
+ * frameworks render as 'unknown'.
  */
-export function getFrameworkLabel(framework?: string): string {
-  switch (framework) {
-    case 'webdriverio':
-      return 'WebDriverIO';
-    case 'cypress':
-      return 'Cypress';
-    default:
-      return 'unknown';
-  }
+export function getFrameworkLabel(framework?: Framework): string {
+  return getFrameworkProfile(framework ?? 'unknown').label;
 }
 
 /**
@@ -86,8 +83,8 @@ export interface AgentContext {
       status: string;
     }>;
   };
-  /** Test framework: 'cypress' or 'webdriverio' (for sub-agent prompts) */
-  framework?: string;
+  /** Test framework (for sub-agent prompts); 'unknown' when undetermined */
+  framework?: Framework;
   /** Source file content (if fetched) */
   sourceFileContent?: string;
   /** Related files content */
@@ -171,7 +168,7 @@ export abstract class BaseAgent<TInput, TOutput> {
    * Get the system prompt for this agent.
    * Framework is passed so agents can specialize their prompts.
    */
-  protected abstract getSystemPrompt(framework?: string): string;
+  protected abstract getSystemPrompt(framework?: Framework): string;
 
   /**
    * Build the user prompt from input and context
@@ -355,8 +352,8 @@ export function createAgentContext(params: {
   productDiff?: {
     files: Array<{ filename: string; patch?: string; status: string }>;
   };
-  /** Test framework: 'cypress' or 'webdriverio' */
-  framework?: string;
+  /** Test framework; 'unknown' when undetermined */
+  framework?: Framework;
   /** Repo-level conventions (pre-rendered) — see AgentContext.repoContext */
   repoContext?: string;
   /** Pre-seeded test source (e.g. unit tests) — skips GitHub fetch when set */

@@ -1,11 +1,11 @@
-import { FailedFixEvidence, FailureModeTrace } from '../types';
+import { FailedFixEvidence, FailureModeTrace, Framework } from '../types';
 export interface TriageSkill {
     id: string;
     createdAt: string;
     repo: string;
     spec: string;
     testName: string;
-    framework: 'cypress' | 'webdriverio' | 'unknown';
+    framework: Framework;
     errorPattern: string;
     rootCauseCategory: string;
     fix: {
@@ -93,7 +93,7 @@ export declare class SkillStore {
         errorMessage?: string;
     }): string;
 }
-export declare function normalizeFramework(raw?: string): TriageSkill['framework'];
+export declare function normalizeFramework(raw?: string): Framework;
 export declare function buildSkill(params: {
     repo: string;
     spec: string;

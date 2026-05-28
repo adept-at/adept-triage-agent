@@ -1,6 +1,6 @@
 import * as core from '@actions/core';
 import * as crypto from 'crypto';
-import { FailedFixEvidence, FailureModeTrace } from '../types';
+import { FailedFixEvidence, FailureModeTrace, Framework } from '../types';
 
 /**
  * A recorded fix pattern that the agent can recall on future runs.
@@ -12,7 +12,7 @@ export interface TriageSkill {
   repo: string;
   spec: string;
   testName: string;
-  framework: 'cypress' | 'webdriverio' | 'unknown';
+  framework: Framework;
 
   errorPattern: string;
   rootCauseCategory: string;
@@ -591,9 +591,15 @@ export class SkillStore {
   }): TriageSkill[] {
     const limit = opts.limit ?? 5;
     const normalized = normalizeFramework(opts.framework);
-    const frameworkSkills = this.skills.filter(
-      (s) => (s.framework === normalized || s.framework === 'unknown') && !s.retired
-    );
+    // When the query framework is itself 'unknown', DROP the framework filter
+    // entirely (match on spec / error-similarity only). Otherwise an unknown
+    // query would hide every cypress/webdriverio skill and seed. A concrete
+    // query keeps the prior behavior (exact framework, or framework-agnostic).
+    const frameworkSkills = this.skills.filter((s) => {
+      if (s.retired) return false;
+      if (normalized === 'unknown') return true;
+      return s.framework === normalized || s.framework === 'unknown';
+    });
     if (frameworkSkills.length === 0) return [];
 
     // Normalize BOTH sides at read time so this works for legacy
@@ -635,12 +641,13 @@ export class SkillStore {
     errorMessage?: string;
   }): TriageSkill[] {
     const normalized = normalizeFramework(opts.framework);
-    const candidates = this.skills.filter(
-      (s) =>
-        (s.framework === normalized || s.framework === 'unknown') &&
-        !s.retired &&
-        s.validatedLocally === true
-    );
+    // See findRelevant: an 'unknown' query framework drops the framework filter
+    // so concrete-framework validated skills stay reachable for the classifier.
+    const candidates = this.skills.filter((s) => {
+      if (s.retired || s.validatedLocally !== true) return false;
+      if (normalized === 'unknown') return true;
+      return s.framework === normalized || s.framework === 'unknown';
+    });
     if (candidates.length === 0) return [];
 
     const now = Date.now();
@@ -1035,11 +1042,12 @@ export class SkillStore {
 }
 
 /**
- * Normalize any raw framework string to one of the three canonical values.
- * The analyzer can emit 'javascript', 'unknown', or leave it undefined —
- * this collapses those to the right bucket so write and read paths agree.
+ * Normalize any raw framework string to one of the canonical {@link Framework}
+ * values. Accepts legacy/raw inputs ('javascript', undefined, mixed case) and
+ * collapses anything that isn't cypress/webdriverio to 'unknown' so write and
+ * read paths agree.
  */
-export function normalizeFramework(raw?: string): TriageSkill['framework'] {
+export function normalizeFramework(raw?: string): Framework {
   switch (raw?.toLowerCase()) {
     case 'cypress':
       return 'cypress';

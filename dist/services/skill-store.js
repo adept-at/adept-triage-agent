@@ -269,7 +269,13 @@ class SkillStore {
     findRelevant(opts) {
         const limit = opts.limit ?? 5;
         const normalized = normalizeFramework(opts.framework);
-        const frameworkSkills = this.skills.filter((s) => (s.framework === normalized || s.framework === 'unknown') && !s.retired);
+        const frameworkSkills = this.skills.filter((s) => {
+            if (s.retired)
+                return false;
+            if (normalized === 'unknown')
+                return true;
+            return s.framework === normalized || s.framework === 'unknown';
+        });
         if (frameworkSkills.length === 0)
             return [];
         const querySpec = normalizeSpec(opts.spec);
@@ -298,9 +304,13 @@ class SkillStore {
     }
     findForClassifier(opts) {
         const normalized = normalizeFramework(opts.framework);
-        const candidates = this.skills.filter((s) => (s.framework === normalized || s.framework === 'unknown') &&
-            !s.retired &&
-            s.validatedLocally === true);
+        const candidates = this.skills.filter((s) => {
+            if (s.retired || s.validatedLocally !== true)
+                return false;
+            if (normalized === 'unknown')
+                return true;
+            return s.framework === normalized || s.framework === 'unknown';
+        });
         if (candidates.length === 0)
             return [];
         const now = Date.now();

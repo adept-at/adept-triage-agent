@@ -38,15 +38,9 @@ exports.getFrameworkLabel = getFrameworkLabel;
 exports.createAgentContext = createAgentContext;
 const core = __importStar(require("@actions/core"));
 const constants_1 = require("../config/constants");
+const framework_profiles_1 = require("../config/framework-profiles");
 function getFrameworkLabel(framework) {
-    switch (framework) {
-        case 'webdriverio':
-            return 'WebDriverIO';
-        case 'cypress':
-            return 'Cypress';
-        default:
-            return 'unknown';
-    }
+    return (0, framework_profiles_1.getFrameworkProfile)(framework ?? 'unknown').label;
 }
 exports.DEFAULT_AGENT_CONFIG = {
     timeoutMs: constants_1.AGENT_CONFIG.AGENT_TIMEOUT_MS,
