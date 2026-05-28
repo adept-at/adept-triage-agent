@@ -49,6 +49,7 @@ function createEmpty() {
         skillWriteSkips: 0,
         flakinessWatchEmits: 0,
         nonFixableSeedSkips: 0,
+        skillReinforcements: 0,
     };
 }
 function recordGate(kind) {
@@ -71,7 +72,8 @@ function logRunGateSummary() {
             `prior-failed-boost=${c.priorFailedTrajectoryBoosts} ` +
             `skill-write-skip=${c.skillWriteSkips} ` +
             `flakiness-watch=${c.flakinessWatchEmits} ` +
-            `non-fixable-seed=${c.nonFixableSeedSkips}`);
+            `non-fixable-seed=${c.nonFixableSeedSkips} ` +
+            `skill-reinforce=${c.skillReinforcements}`);
     }
     catch {
     }
