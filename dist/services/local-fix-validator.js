@@ -405,6 +405,18 @@ class LocalFixValidator {
         catch (err) {
             const durationMs = Date.now() - start;
             const execErr = err;
+            if (execErr.code === 'ENOBUFS') {
+                const partial = [execErr.stdout || '', execErr.stderr || '']
+                    .join('\n')
+                    .slice(-MAX_LOG_CHARS);
+                core.warning(`Test output exceeded the ${MAX_BUFFER}-byte capture buffer (ENOBUFS) — treating as failed (not a timeout).`);
+                return {
+                    passed: false,
+                    logs: `Test output exceeded the ${MAX_BUFFER}-byte capture buffer (ENOBUFS).${partial ? `\n\n--- partial output (tail) ---\n${partial}` : ''}`,
+                    exitCode: execErr.status ?? 1,
+                    durationMs,
+                };
+            }
             if (execErr.killed) {
                 return {
                     passed: false,

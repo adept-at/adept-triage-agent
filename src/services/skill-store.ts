@@ -748,8 +748,14 @@ export class SkillStore {
     // undercounts on any run where the path format differs from
     // how the skill was stored.
     const querySpec = normalizeSpec(spec);
+    // Exclude seeds: a seed is curated guidance, not a runtime "fix attempt,"
+    // so it must not count as flakiness evidence. Operators legitimately seed
+    // multiple skills for one spec (e.g. selector vs timing vs network-race
+    // failure modes); counting those would trip the chronic-flakiness gate on
+    // a fresh seed batch and silently skip repair on that spec for ~7 days.
+    // Retired skills ARE still counted (see jsdoc) — that polarity is intended.
     const specSkills = this.skills.filter(
-      (s) => normalizeSpec(s.spec) === querySpec
+      (s) => normalizeSpec(s.spec) === querySpec && !s.isSeed
     );
 
     const inShortWindow = specSkills.filter(

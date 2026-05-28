@@ -5023,6 +5023,7 @@ class PipelineCoordinator {
             agentRootCause = singleResult.agentRootCause;
             agentInvestigationFindings = singleResult.agentInvestigationFindings;
             repairTelemetry = singleResult.repairTelemetry;
+            iterations = singleResult.repairTelemetry?.iterations ?? 0;
             if (fixRecommendation && this.inputs.enableAutoFix && autoFixTargetRepo) {
                 const outcome = await (0, validator_1.attemptAutoFix)(this.inputs, fixRecommendation, this.octokit, autoFixTargetRepo, errorData, skillStore);
                 autoFixResult = outcome.applied;
@@ -5130,7 +5131,26 @@ class PipelineCoordinator {
             }, errorData, null, chronicFlakinessSignal);
             return;
         }
-        const { fixRecommendation, autoFixResult, iterations, prUrl: skillPrUrl, agentRootCause, agentInvestigationFindings, autoFixSkipped: repairAutoFixSkipped, autoFixSkippedReason: repairAutoFixSkippedReason, repairTelemetry: repairTelemetryFromRun, } = await this.repair(classification, errorData, skillStore);
+        let repairOutcome;
+        try {
+            repairOutcome = await this.repair(classification, errorData, skillStore);
+        }
+        catch (repairError) {
+            const reason = repairError instanceof Error ? repairError.message : String(repairError);
+            core.error(`Repair stage failed (infrastructure): ${reason}`);
+            const degraded = {
+                ...classification,
+                repairTelemetry: {
+                    status: 'no_fix_generated',
+                    summary: `No auto-fix applied. Repair stage failed before producing a result (infrastructure error): ${reason}`,
+                    iterations: 0,
+                    elapsedMs: 0,
+                },
+            };
+            (0, output_1.setSuccessOutput)(degraded, errorData, null, chronicFlakinessSignal);
+            return;
+        }
+        const { fixRecommendation, autoFixResult, iterations, prUrl: skillPrUrl, agentRootCause, agentInvestigationFindings, autoFixSkipped: repairAutoFixSkipped, autoFixSkippedReason: repairAutoFixSkippedReason, repairTelemetry: repairTelemetryFromRun, } = repairOutcome;
         if (skillStore && autoFixTargetRepo && errorData) {
             const validationStatus = autoFixResult?.validationResult?.status || autoFixResult?.validationStatus;
             const validationPassed = validationStatus === 'passed';
@@ -5208,10 +5228,7 @@ class PipelineCoordinator {
             }
         }
         result.repairTelemetry = (0, output_1.finalizeRepairTelemetry)(repairTelemetryFromRun, fixRecommendation, autoFixResult);
-        const flakinessSignal = skillStore
-            ? skillStore.detectFlakiness(errorData.fileName || 'unknown')
-            : undefined;
-        (0, output_1.setSuccessOutput)(result, errorData, autoFixResult, flakinessSignal);
+        (0, output_1.setSuccessOutput)(result, errorData, autoFixResult, chronicFlakinessSignal);
     }
     async handleNoErrorData() {
         const { owner, repo } = this.repoDetails;
@@ -5937,6 +5954,30 @@ async function iterativeFixValidateLoop(inputs, repoDetails, autoFixTargetRepo, 
     }, octokit);
     let validatorReady = false;
     try {
+        await validator.setup();
+        validatorReady = true;
+        const baseline = await validator.baselineCheck();
+        if (baseline.passed) {
+            core.info('✅ Baseline check passed — test passes without fix. Failure was likely transient.');
+            core.info('📊 learning-telemetry baseline=passed validation=skipped iterations=0');
+            return {
+                fixRecommendation: null,
+                autoFixResult: null,
+                iterations: 0,
+                agentRootCause,
+                agentInvestigationFindings,
+                autoFixSkipped,
+                autoFixSkippedReason,
+                repairTelemetry: {
+                    status: 'skipped',
+                    summary: 'Repair skipped: baseline check passed without a fix (failure likely transient).',
+                    iterations: 0,
+                    elapsedMs: 0,
+                },
+            };
+        }
+        core.info('❌ Baseline check confirmed failure — proceeding with fix.');
+        core.info(`📊 learning-telemetry baseline=failed durationMs=${baseline.durationMs}`);
         for (let iteration = 0; iteration < maxIterations; iteration++) {
             completedIterations = iteration + 1;
             core.info(`\n${'='.repeat(60)}\n🔄 Fix-Validate iteration ${iteration + 1}/${maxIterations}\n${'='.repeat(60)}`);
@@ -5994,32 +6035,6 @@ async function iterativeFixValidateLoop(inputs, repoDetails, autoFixTargetRepo, 
                 break;
             }
             core.info(`Iteration ${iteration + 1}: fix passed quality gates (confidence: ${fixRecommendation.confidence}%, changes: ${fixRecommendation.proposedChanges.length})`);
-            if (!validatorReady) {
-                await validator.setup();
-                validatorReady = true;
-                const baseline = await validator.baselineCheck();
-                if (baseline.passed) {
-                    core.info('✅ Baseline check passed — test passes without fix. Failure was likely transient.');
-                    core.info('📊 learning-telemetry baseline=passed validation=skipped iterations=0');
-                    return {
-                        fixRecommendation: null,
-                        autoFixResult: null,
-                        iterations: 0,
-                        agentRootCause,
-                        agentInvestigationFindings,
-                        autoFixSkipped,
-                        autoFixSkippedReason,
-                        repairTelemetry: {
-                            status: 'skipped',
-                            summary: 'Repair skipped: baseline check passed without a fix (failure likely transient).',
-                            iterations: 0,
-                            elapsedMs: 0,
-                        },
-                    };
-                }
-                core.info('❌ Baseline check confirmed failure — proceeding with fix.');
-                core.info(`📊 learning-telemetry baseline=failed durationMs=${baseline.durationMs}`);
-            }
             try {
                 await validator.applyFix(fixRecommendation.proposedChanges);
             }
@@ -8228,6 +8243,18 @@ class LocalFixValidator {
         catch (err) {
             const durationMs = Date.now() - start;
             const execErr = err;
+            if (execErr.code === 'ENOBUFS') {
+                const partial = [execErr.stdout || '', execErr.stderr || '']
+                    .join('\n')
+                    .slice(-MAX_LOG_CHARS);
+                core.warning(`Test output exceeded the ${MAX_BUFFER}-byte capture buffer (ENOBUFS) — treating as failed (not a timeout).`);
+                return {
+                    passed: false,
+                    logs: `Test output exceeded the ${MAX_BUFFER}-byte capture buffer (ENOBUFS).${partial ? `\n\n--- partial output (tail) ---\n${partial}` : ''}`,
+                    exitCode: execErr.status ?? 1,
+                    durationMs,
+                };
+            }
             if (execErr.killed) {
                 return {
                     passed: false,
@@ -8367,6 +8394,7 @@ const github = __importStar(__nccwpck_require__(93228));
 const simplified_analyzer_1 = __nccwpck_require__(20078);
 const constants_1 = __nccwpck_require__(58361);
 const text_utils_1 = __nccwpck_require__(11744);
+const fix_applier_1 = __nccwpck_require__(72134);
 async function processWorkflowLogs(octokit, artifactFetcher, inputs, repoDetails) {
     const context = github.context;
     const { owner, repo } = context.repo;
@@ -8420,7 +8448,7 @@ async function processWorkflowLogs(octokit, artifactFetcher, inputs, repoDetails
             repo,
             job_id: failedJob.id,
         });
-        fullLogs = String(logsResponse.data);
+        fullLogs = (0, fix_applier_1.decodeLogPayload)(logsResponse.data);
         core.info(`Downloaded ${fullLogs.length} characters of logs for error extraction`);
         extractedError = (0, simplified_analyzer_1.extractErrorFromLogs)(fullLogs);
         if (inputs.prNumber && extractedError) {
@@ -9238,7 +9266,7 @@ class SkillStore {
     detectFlakiness(spec) {
         const now = Date.now();
         const querySpec = normalizeSpec(spec);
-        const specSkills = this.skills.filter((s) => normalizeSpec(s.spec) === querySpec);
+        const specSkills = this.skills.filter((s) => normalizeSpec(s.spec) === querySpec && !s.isSeed);
         const inShortWindow = specSkills.filter((s) => now - parseSkillTimestamp(s.createdAt) < FLAKY_THRESHOLDS.SHORT_WINDOW_DAYS * 86_400_000);
         const inLongWindow = specSkills.filter((s) => now - parseSkillTimestamp(s.createdAt) < FLAKY_THRESHOLDS.LONG_WINDOW_DAYS * 86_400_000);
         if (inShortWindow.length > FLAKY_THRESHOLDS.SHORT_WINDOW_MAX) {

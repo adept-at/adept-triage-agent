@@ -200,6 +200,40 @@ export async function iterativeFixValidateLoop(
   let validatorReady = false;
 
   try {
+    // Setup + baseline check FIRST — before any (expensive) fix generation.
+    // The deterministic 3-pass baseline is the cheapest, highest-signal gate:
+    // if the test now passes without any fix, the original failure was
+    // transient and we must NOT pay the full multi-agent repair cost (up to
+    // 15 min + multiple LLM round-trips) only to throw the result away.
+    // Pre-fix, fix generation ran first and baseline was checked afterward,
+    // so every transient flake — the modal CI failure — burned the entire
+    // agentic budget needlessly.
+    await validator.setup();
+    validatorReady = true;
+
+    const baseline = await validator.baselineCheck();
+    if (baseline.passed) {
+      core.info('✅ Baseline check passed — test passes without fix. Failure was likely transient.');
+      core.info('📊 learning-telemetry baseline=passed validation=skipped iterations=0');
+      return {
+        fixRecommendation: null,
+        autoFixResult: null,
+        iterations: 0,
+        agentRootCause,
+        agentInvestigationFindings,
+        autoFixSkipped,
+        autoFixSkippedReason,
+        repairTelemetry: {
+          status: 'skipped',
+          summary: 'Repair skipped: baseline check passed without a fix (failure likely transient).',
+          iterations: 0,
+          elapsedMs: 0,
+        },
+      };
+    }
+    core.info('❌ Baseline check confirmed failure — proceeding with fix.');
+    core.info(`📊 learning-telemetry baseline=failed durationMs=${baseline.durationMs}`);
+
     for (let iteration = 0; iteration < maxIterations; iteration++) {
       completedIterations = iteration + 1;
       core.info(
@@ -303,34 +337,6 @@ export async function iterativeFixValidateLoop(
       core.info(
         `Iteration ${iteration + 1}: fix passed quality gates (confidence: ${fixRecommendation.confidence}%, changes: ${fixRecommendation.proposedChanges.length})`
       );
-
-      if (!validatorReady) {
-        await validator.setup();
-        validatorReady = true;
-
-        const baseline = await validator.baselineCheck();
-        if (baseline.passed) {
-          core.info('✅ Baseline check passed — test passes without fix. Failure was likely transient.');
-          core.info('📊 learning-telemetry baseline=passed validation=skipped iterations=0');
-          return {
-            fixRecommendation: null,
-            autoFixResult: null,
-            iterations: 0,
-            agentRootCause,
-            agentInvestigationFindings,
-            autoFixSkipped,
-            autoFixSkippedReason,
-            repairTelemetry: {
-              status: 'skipped',
-              summary: 'Repair skipped: baseline check passed without a fix (failure likely transient).',
-              iterations: 0,
-              elapsedMs: 0,
-            },
-          };
-        }
-        core.info('❌ Baseline check confirmed failure — proceeding with fix.');
-        core.info(`📊 learning-telemetry baseline=failed durationMs=${baseline.durationMs}`);
-      }
 
       try {
         await validator.applyFix(fixRecommendation.proposedChanges);

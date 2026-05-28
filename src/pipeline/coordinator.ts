@@ -275,6 +275,12 @@ export class PipelineCoordinator {
       agentRootCause = singleResult.agentRootCause;
       agentInvestigationFindings = singleResult.agentInvestigationFindings;
       repairTelemetry = singleResult.repairTelemetry;
+      // Carry the orchestrator's iteration count through on the remote path
+      // too. Pre-fix, `iterations` stayed at its initial 0 on this branch
+      // (only the local loop reassigned it), so every skill written by a
+      // remote-validation repo persisted `iterations: 0` while the action
+      // output reported the real count — skill store and output disagreed.
+      iterations = singleResult.repairTelemetry?.iterations ?? 0;
       if (fixRecommendation && this.inputs.enableAutoFix && autoFixTargetRepo) {
         const outcome = await attemptAutoFix(
           this.inputs,
@@ -474,6 +480,33 @@ export class PipelineCoordinator {
       return;
     }
 
+    let repairOutcome: RepairResult;
+    try {
+      repairOutcome = await this.repair(classification, errorData, skillStore);
+    } catch (repairError) {
+      // Repair is best-effort; the classification is the product. A throw
+      // here — e.g. a git clone / npm install / network failure during LOCAL
+      // validation setup, which runs outside the fix-validate loop's
+      // per-step guards — must NOT erase a valid TEST_ISSUE classification by
+      // bubbling up to index.ts as verdict=ERROR. Publish the classification
+      // we already computed, with repair telemetry describing the infra
+      // failure so dashboards can tell "no fix" from "triage broke".
+      const reason =
+        repairError instanceof Error ? repairError.message : String(repairError);
+      core.error(`Repair stage failed (infrastructure): ${reason}`);
+      const degraded: AnalysisResult = {
+        ...classification,
+        repairTelemetry: {
+          status: 'no_fix_generated',
+          summary: `No auto-fix applied. Repair stage failed before producing a result (infrastructure error): ${reason}`,
+          iterations: 0,
+          elapsedMs: 0,
+        },
+      };
+      setSuccessOutput(degraded, errorData, null, chronicFlakinessSignal);
+      return;
+    }
+
     const {
       fixRecommendation,
       autoFixResult,
@@ -484,7 +517,7 @@ export class PipelineCoordinator {
       autoFixSkipped: repairAutoFixSkipped,
       autoFixSkippedReason: repairAutoFixSkippedReason,
       repairTelemetry: repairTelemetryFromRun,
-    } = await this.repair(classification, errorData, skillStore);
+    } = repairOutcome;
 
     if (skillStore && autoFixTargetRepo && errorData) {
       const validationStatus =
@@ -606,11 +639,13 @@ export class PipelineCoordinator {
       autoFixResult
     );
 
-    const flakinessSignal = skillStore
-      ? skillStore.detectFlakiness(errorData.fileName || 'unknown')
-      : undefined;
-
-    setSuccessOutput(result, errorData, autoFixResult, flakinessSignal);
+    // Reuse the pre-repair flakiness signal computed for the chronic gate.
+    // Recomputing here would observe the skill we just saved on THIS run
+    // (save + recordOutcome above mutate the in-memory store) and could flip
+    // isFlaky=true on a successful-fix run — reporting "shipped a fix" and
+    // "chronically flaky" simultaneously, driven by our own write. One
+    // measurement, threaded to both the gate and the output.
+    setSuccessOutput(result, errorData, autoFixResult, chronicFlakinessSignal);
   }
 
   private async handleNoErrorData(): Promise<void> {
