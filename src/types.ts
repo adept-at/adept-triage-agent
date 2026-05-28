@@ -9,6 +9,14 @@ export type Verdict =
   | 'NO_FAILURE';
 
 /**
+ * The E2E test framework a failure belongs to. `'unknown'` means the
+ * detector could not attribute the failure to a specific framework — it
+ * must NOT be treated as a Cypress default. See `config/framework-profiles`
+ * for the per-framework behavior registry.
+ */
+export type Framework = 'cypress' | 'webdriverio' | 'unknown';
+
+/**
  * Context for fetching source files from GitHub
  */
 export interface SourceFetchContext {
@@ -40,7 +48,7 @@ export interface AIChange {
 export interface ErrorData {
   message: string;
   stackTrace?: string;
-  framework?: string;
+  framework?: Framework;
   failureType?: string;
   context?: string;
   testName?: string;

@@ -20,7 +20,9 @@ describe('extractErrorFromLogs', () => {
       
       expect(result).toBeTruthy();
       expect(result?.failureType).toBe('TypeError');
-      expect(result?.framework).toBe('javascript');
+      // Generic JS property-access errors are now tagged 'unknown' (was
+      // 'javascript'); this log has no Cypress/WDIO-specific signature.
+      expect(result?.framework).toBe('unknown');
       expect(result?.message).toContain("TypeError: Cannot read properties of undefined (reading 'statusCode')");
       expect(result?.message).toContain('Context.eval');
       expect(result?.testName).toBe('Test that sca can open skill modal, create and delete a lexical skill with multiple components on mobile');

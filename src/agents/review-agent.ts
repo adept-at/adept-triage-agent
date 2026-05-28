@@ -8,6 +8,7 @@ import {
   AgentContext,
   AgentResult,
   AgentConfig,
+  getFrameworkLabel,
 } from './base-agent';
 import { OpenAIClient } from '../openai-client';
 import { AGENT_MODEL, REASONING_EFFORT, supportsReasoningEffort } from '../config/constants';
@@ -235,6 +236,8 @@ You MUST respond with a JSON object matching this schema:
 
     parts.push(
       '## Fix Review Request',
+      '',
+      `**Test framework:** ${getFrameworkLabel(context.framework)}`,
       '',
       '### Analysis Agent Findings',
       `- **Root Cause Category:** ${input.analysis.rootCauseCategory}`,

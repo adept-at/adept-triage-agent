@@ -1,6 +1,7 @@
 import { OpenAIClient } from '../openai-client';
 import { ReasoningEffort } from '../config/constants';
-export declare function getFrameworkLabel(framework?: string): string;
+import { Framework } from '../types';
+export declare function getFrameworkLabel(framework?: Framework): string;
 export interface AgentResult<T = unknown> {
     success: boolean;
     data?: T;
@@ -36,7 +37,7 @@ export interface AgentContext {
             status: string;
         }>;
     };
-    framework?: string;
+    framework?: Framework;
     sourceFileContent?: string;
     relatedFiles?: Map<string, string>;
     skillsPrompt?: string;
@@ -61,7 +62,7 @@ export declare abstract class BaseAgent<TInput, TOutput> {
     protected agentName: string;
     constructor(openaiClient: OpenAIClient, agentName: string, config?: Partial<AgentConfig>);
     abstract execute(input: TInput, context: AgentContext, previousResponseId?: string): Promise<AgentResult<TOutput>>;
-    protected abstract getSystemPrompt(framework?: string): string;
+    protected abstract getSystemPrompt(framework?: Framework): string;
     protected abstract buildUserPrompt(input: TInput, context: AgentContext): string;
     protected abstract parseResponse(response: string): TOutput | null;
     protected executeWithTimeout(input: TInput, context: AgentContext, previousResponseId?: string): Promise<AgentResult<TOutput>>;
@@ -94,7 +95,7 @@ export declare function createAgentContext(params: {
             status: string;
         }>;
     };
-    framework?: string;
+    framework?: Framework;
     repoContext?: string;
     sourceFileContent?: string;
 }): AgentContext;

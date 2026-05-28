@@ -12,6 +12,7 @@ import {
 } from './base-agent';
 import { OpenAIClient } from '../openai-client';
 import { AGENT_MODEL, DEFAULT_PRODUCT_REPO, REASONING_EFFORT } from '../config/constants';
+import { getFrameworkProfile } from '../config/framework-profiles';
 import { AnalysisOutput } from './analysis-agent';
 import { CodeReadingOutput } from './code-reading-agent';
 import { coerceEnum, coerceEnumOrNull } from '../utils/text-utils';
@@ -247,7 +248,10 @@ You MUST respond with a JSON object matching this schema:
       }
 
       if (input.codeContext.customCommands.length > 0) {
-        const cmdPrefix = context.framework === 'webdriverio' ? 'browser' : 'cy';
+        // Empty commandPrefix (the neutral/unknown profile) falls back to 'cy'
+        // to preserve the prior default-to-Cypress rendering shape here.
+        const cmdPrefix =
+          getFrameworkProfile(context.framework ?? 'unknown').commandPrefix || 'cy';
         parts.push(
           '',
           '### Custom Commands',

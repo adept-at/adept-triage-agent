@@ -3,6 +3,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.InvestigationAgent = void 0;
 const base_agent_1 = require("./base-agent");
 const constants_1 = require("../config/constants");
+const framework_profiles_1 = require("../config/framework-profiles");
 const text_utils_1 = require("../utils/text-utils");
 const number_utils_1 = require("../utils/number-utils");
 const FINDING_TYPES = [
@@ -96,7 +97,7 @@ You MUST respond with a JSON object matching this schema:
                 }
             }
             if (input.codeContext.customCommands.length > 0) {
-                const cmdPrefix = context.framework === 'webdriverio' ? 'browser' : 'cy';
+                const cmdPrefix = (0, framework_profiles_1.getFrameworkProfile)(context.framework ?? 'unknown').commandPrefix || 'cy';
                 parts.push('', '### Custom Commands', input.codeContext.customCommands
                     .map((c) => `- \`${cmdPrefix}.${c.name}()\` in ${c.file}`)
                     .join('\n'));

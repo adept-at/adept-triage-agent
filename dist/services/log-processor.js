@@ -133,6 +133,10 @@ async function processWorkflowLogs(octokit, artifactFetcher, inputs, repoDetails
     if (extractedError) {
         const errorData = {
             ...extractedError,
+            framework: (0, simplified_analyzer_1.resolveFramework)(extractedError.framework, {
+                testFile: extractedError.fileName,
+                testFrameworksInput: inputs.testFrameworks,
+            }),
             context: `Job: ${failedJob.name}. ${extractedError.context ||
                 'Complete failure context including all logs and artifacts'}`,
             testName: extractedError.testName || failedJob.name,
@@ -150,7 +154,9 @@ async function processWorkflowLogs(octokit, artifactFetcher, inputs, repoDetails
     }
     const fallbackError = {
         message: 'Test failure - see full context for details',
-        framework: inputs.testFrameworks || 'unknown',
+        framework: (0, simplified_analyzer_1.resolveFramework)(undefined, {
+            testFrameworksInput: inputs.testFrameworks,
+        }),
         failureType: 'test-failure',
         context: `Job: ${failedJob.name}. Complete failure context including all logs and artifacts`,
         testName: failedJob.name,

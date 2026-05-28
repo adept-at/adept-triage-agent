@@ -1,5 +1,6 @@
 import { Octokit } from '@octokit/rest';
 export type Verdict = 'TEST_ISSUE' | 'PRODUCT_ISSUE' | 'INCONCLUSIVE' | 'PENDING' | 'ERROR' | 'NO_FAILURE';
+export type Framework = 'cypress' | 'webdriverio' | 'unknown';
 export interface SourceFetchContext {
     octokit: Octokit;
     owner: string;
@@ -23,7 +24,7 @@ export interface AIChange {
 export interface ErrorData {
     message: string;
     stackTrace?: string;
-    framework?: string;
+    framework?: Framework;
     failureType?: string;
     context?: string;
     testName?: string;

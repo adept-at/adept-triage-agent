@@ -14,7 +14,7 @@ import {
   ActionInputs,
 } from '../types';
 import { ArtifactFetcher } from '../artifact-fetcher';
-import { extractErrorFromLogs } from '../simplified-analyzer';
+import { extractErrorFromLogs, resolveFramework } from '../simplified-analyzer';
 import { LOG_LIMITS, SHORT_SHA_LENGTH, DEFAULT_PRODUCT_REPO } from '../config/constants';
 import { ANSI_ESCAPE_REGEX } from '../utils/text-utils';
 import { withRetry } from '../utils/retry';
@@ -220,6 +220,13 @@ export async function processWorkflowLogs(
   if (extractedError) {
     const errorData: ErrorData = {
       ...extractedError,
+      // Refine the detector's attribution: a generic JS error is tagged
+      // 'unknown' by the detector, so fall back to the spec path / TEST_FRAMEWORKS
+      // input rather than letting it stay unattributed (or, pre-fix, 'javascript').
+      framework: resolveFramework(extractedError.framework, {
+        testFile: extractedError.fileName,
+        testFrameworksInput: inputs.testFrameworks,
+      }),
       context: `Job: ${failedJob.name}. ${
         extractedError.context ||
         'Complete failure context including all logs and artifacts'
@@ -242,7 +249,9 @@ export async function processWorkflowLogs(
   // Fallback if no error could be extracted
   const fallbackError: ErrorData = {
     message: 'Test failure - see full context for details',
-    framework: (inputs.testFrameworks as ErrorData['framework']) || 'unknown',
+    framework: resolveFramework(undefined, {
+      testFrameworksInput: inputs.testFrameworks,
+    }),
     failureType: 'test-failure',
     context: `Job: ${failedJob.name}. Complete failure context including all logs and artifacts`,
     testName: failedJob.name,
