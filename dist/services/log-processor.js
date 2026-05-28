@@ -42,6 +42,7 @@ const github = __importStar(require("@actions/github"));
 const simplified_analyzer_1 = require("../simplified-analyzer");
 const constants_1 = require("../config/constants");
 const text_utils_1 = require("../utils/text-utils");
+const retry_1 = require("../utils/retry");
 const fix_applier_1 = require("../repair/fix-applier");
 async function processWorkflowLogs(octokit, artifactFetcher, inputs, repoDetails) {
     const context = github.context;
@@ -62,26 +63,34 @@ async function processWorkflowLogs(octokit, artifactFetcher, inputs, repoDetails
     }
     const isCurrentJob = !!(inputs.jobName &&
         (inputs.jobName === context.job || inputs.jobName.includes(context.job)));
-    if (!isCurrentJob && (inputs.workflowRunId || context.payload.workflow_run)) {
-        const workflowRun = await octokit.actions.getWorkflowRun({
+    let jobs;
+    try {
+        if (!isCurrentJob &&
+            (inputs.workflowRunId || context.payload.workflow_run)) {
+            const workflowRun = await (0, retry_1.withRetry)(() => octokit.actions.getWorkflowRun({
+                owner,
+                repo,
+                run_id: parseInt(runId, 10),
+            }), { context: 'fetching workflow run' });
+            if (workflowRun.data.status !== 'completed') {
+                core.warning('Workflow run is not completed yet');
+                return null;
+            }
+        }
+        else if (isCurrentJob) {
+            core.info(`Analyzing current job: ${inputs.jobName} (workflow still in progress)`);
+        }
+        jobs = await (0, retry_1.withRetry)(() => octokit.actions.listJobsForWorkflowRun({
             owner,
             repo,
             run_id: parseInt(runId, 10),
-        });
-        if (workflowRun.data.status !== 'completed') {
-            core.warning('Workflow run is not completed yet');
-            return null;
-        }
+            filter: 'latest',
+        }), { context: 'listing jobs for workflow run' });
     }
-    else if (isCurrentJob) {
-        core.info(`Analyzing current job: ${inputs.jobName} (workflow still in progress)`);
+    catch (error) {
+        core.warning(`Failed to fetch workflow run or jobs after retries: ${error instanceof Error ? error.message : String(error)}`);
+        return null;
     }
-    const jobs = await octokit.actions.listJobsForWorkflowRun({
-        owner,
-        repo,
-        run_id: parseInt(runId, 10),
-        filter: 'latest',
-    });
     const targetJob = findTargetJob(jobs.data.jobs, inputs, isCurrentJob ?? false);
     if (!targetJob) {
         return null;

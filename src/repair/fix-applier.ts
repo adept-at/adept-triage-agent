@@ -11,6 +11,7 @@ import { AUTO_FIX, SHORT_SHA_LENGTH } from '../config/constants';
 import { recordGate } from '../pipeline/run-telemetry';
 import { verifyTestEvidence } from '../services/test-evidence';
 import { ANSI_ESCAPE_REGEX } from '../utils/text-utils';
+import { withRetry } from '../utils/retry';
 
 /**
  * Result of applying a fix
@@ -157,15 +158,6 @@ export interface FixApplier {
 }
 
 /**
- * Retry configuration for API calls
- */
-const RETRY_CONFIG = {
-  maxRetries: 3,
-  baseDelayMs: 1000,
-  maxDelayMs: 10000,
-};
-
-/**
  * Sleep for a specified number of milliseconds
  */
 function sleep(ms: number): Promise<void> {
@@ -201,39 +193,6 @@ function isPermissionError(error: unknown): boolean {
     return status === 401 || status === 403;
   }
   return false;
-}
-
-/**
- * Execute an async function with retry logic for rate limiting
- */
-async function withRetry<T>(fn: () => Promise<T>, context: string): Promise<T> {
-  let lastError: unknown;
-
-  for (let attempt = 0; attempt < RETRY_CONFIG.maxRetries; attempt++) {
-    try {
-      return await fn();
-    } catch (error) {
-      lastError = error;
-
-      if (isRateLimitError(error) && attempt < RETRY_CONFIG.maxRetries - 1) {
-        const delay = Math.min(
-          RETRY_CONFIG.baseDelayMs * Math.pow(2, attempt),
-          RETRY_CONFIG.maxDelayMs
-        );
-        core.warning(
-          `Rate limited during ${context}, retrying in ${delay}ms (attempt ${
-            attempt + 1
-          }/${RETRY_CONFIG.maxRetries})`
-        );
-        await sleep(delay);
-        continue;
-      }
-
-      throw error;
-    }
-  }
-
-  throw lastError;
 }
 
 /**
@@ -294,7 +253,7 @@ export class GitHubFixApplier implements FixApplier {
     try {
       const { data } = await withRetry(
         () => octokit.repos.get({ owner, repo }),
-        `resolving default branch for ${owner}/${repo}`
+        { context: `resolving default branch for ${owner}/${repo}` }
       );
       return data.default_branch || 'main';
     } catch (error) {
@@ -417,7 +376,7 @@ export class GitHubFixApplier implements FixApplier {
               repo,
               ref: `heads/${baseBranch}`,
             }),
-          `getting base branch '${baseBranch}'`
+          { context: `getting base branch '${baseBranch}'` }
         );
         baseSha = baseBranchRef.data.object.sha;
         core.debug(`Base branch ${baseBranch} SHA: ${baseSha}`);
@@ -444,7 +403,7 @@ export class GitHubFixApplier implements FixApplier {
               ref: `refs/heads/${branchName}`,
               sha: baseSha,
             }),
-          'creating fix branch'
+          { context: 'creating fix branch' }
         );
         core.info(`Created branch: ${branchName}`);
       } catch (error) {
@@ -464,7 +423,7 @@ export class GitHubFixApplier implements FixApplier {
                 ref: `refs/heads/${branchName}`,
                 sha: baseSha,
               }),
-            'creating fix branch (retry with unique name)'
+            { context: 'creating fix branch (retry with unique name)' }
           );
           core.info(`Created branch: ${branchName}`);
         } else {
@@ -794,7 +753,7 @@ export class GitHubFixApplier implements FixApplier {
               test_command: params.testCommand || '',
             },
           }),
-        'triggering validation workflow'
+        { context: 'triggering validation workflow' }
       );
 
       core.info('Validation workflow triggered successfully');
@@ -816,7 +775,7 @@ export class GitHubFixApplier implements FixApplier {
               event: 'workflow_dispatch',
               per_page: 10,
             }),
-          'listing workflow runs'
+          { context: 'listing workflow runs' }
         );
 
         // Phase 5: prefer correlation by run name including the
@@ -884,7 +843,7 @@ export class GitHubFixApplier implements FixApplier {
     try {
       const baseBranchRef = await withRetry(
         () => octokit.git.getRef({ owner, repo, ref: `heads/${baseBranch}` }),
-        `getting base branch '${baseBranch}'`
+        { context: `getting base branch '${baseBranch}'` }
       );
       const baseSha = baseBranchRef.data.object.sha;
 
@@ -897,7 +856,7 @@ export class GitHubFixApplier implements FixApplier {
             sha: baseSha,
             force: true,
           }),
-        `resetting branch ${branchName} to base`
+        { context: `resetting branch ${branchName} to base` }
       );
       core.info(`Reset branch ${branchName} to base SHA ${baseSha.slice(0, 7)}`);
 
@@ -1044,7 +1003,7 @@ export class GitHubFixApplier implements FixApplier {
             run_id: runId,
             filter: 'latest',
           }),
-        `listing jobs for validation run ${runId}`
+        { context: `listing jobs for validation run ${runId}` }
       );
 
       const jobsToRead = [...jobs.data.jobs].sort((a, b) => {
@@ -1065,7 +1024,7 @@ export class GitHubFixApplier implements FixApplier {
                 repo,
                 job_id: job.id,
               }),
-            `downloading logs for validation job ${job.id}`
+            { context: `downloading logs for validation job ${job.id}` }
           );
           const rawLogs = decodeLogPayload(logsResponse.data);
           logChunks.push(`--- job ${job.name || job.id} (${job.conclusion || 'unknown'}) ---\n${rawLogs}`);
@@ -1132,7 +1091,7 @@ export class GitHubFixApplier implements FixApplier {
                 path: filePath,
                 ref: branchName,
               }),
-            `getting file content for ${filePath}`
+            { context: `getting file content for ${filePath}` }
           );
 
           if (
@@ -1294,7 +1253,7 @@ export class GitHubFixApplier implements FixApplier {
     try {
       const branchRef = await withRetry(
         () => octokit.git.getRef({ owner, repo, ref: `heads/${branchName}` }),
-        `getting ref for ${branchName}`
+        { context: `getting ref for ${branchName}` }
       );
       const baseSha = branchRef.data.object.sha;
 
@@ -1336,7 +1295,7 @@ Confidence: ${recommendation.confidence}%`;
             base_tree: baseSha,
             tree: treeItems,
           }),
-        'creating tree for atomic commit'
+        { context: 'creating tree for atomic commit' }
       );
 
       const commit = await withRetry(
@@ -1348,7 +1307,7 @@ Confidence: ${recommendation.confidence}%`;
             tree: tree.data.sha,
             parents: [baseSha],
           }),
-        'creating commit'
+        { context: 'creating commit' }
       );
 
       await withRetry(
@@ -1359,7 +1318,7 @@ Confidence: ${recommendation.confidence}%`;
             ref: `heads/${branchName}`,
             sha: commit.data.sha,
           }),
-        `updating ref heads/${branchName}`
+        { context: `updating ref heads/${branchName}` }
       );
 
       lastCommitSha = commit.data.sha;

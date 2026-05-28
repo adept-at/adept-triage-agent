@@ -6442,11 +6442,7 @@ const constants_1 = __nccwpck_require__(58361);
 const run_telemetry_1 = __nccwpck_require__(93971);
 const test_evidence_1 = __nccwpck_require__(92356);
 const text_utils_1 = __nccwpck_require__(11744);
-const RETRY_CONFIG = {
-    maxRetries: 3,
-    baseDelayMs: 1000,
-    maxDelayMs: 10000,
-};
+const retry_1 = __nccwpck_require__(92197);
 function sleep(ms) {
     return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -6468,25 +6464,6 @@ function isPermissionError(error) {
         return status === 401 || status === 403;
     }
     return false;
-}
-async function withRetry(fn, context) {
-    let lastError;
-    for (let attempt = 0; attempt < RETRY_CONFIG.maxRetries; attempt++) {
-        try {
-            return await fn();
-        }
-        catch (error) {
-            lastError = error;
-            if (isRateLimitError(error) && attempt < RETRY_CONFIG.maxRetries - 1) {
-                const delay = Math.min(RETRY_CONFIG.baseDelayMs * Math.pow(2, attempt), RETRY_CONFIG.maxDelayMs);
-                core.warning(`Rate limited during ${context}, retrying in ${delay}ms (attempt ${attempt + 1}/${RETRY_CONFIG.maxRetries})`);
-                await sleep(delay);
-                continue;
-            }
-            throw error;
-        }
-    }
-    throw lastError;
 }
 function getErrorMessage(error, context) {
     const baseMessage = error instanceof Error ? error.message : String(error);
@@ -6519,7 +6496,7 @@ class GitHubFixApplier {
     async resolveDefaultBranch() {
         const { octokit, owner, repo } = this.config;
         try {
-            const { data } = await withRetry(() => octokit.repos.get({ owner, repo }), `resolving default branch for ${owner}/${repo}`);
+            const { data } = await (0, retry_1.withRetry)(() => octokit.repos.get({ owner, repo }), { context: `resolving default branch for ${owner}/${repo}` });
             return data.default_branch || 'main';
         }
         catch (error) {
@@ -6580,11 +6557,11 @@ class GitHubFixApplier {
             core.info(`Creating fix branch: ${branchName}`);
             let baseSha;
             try {
-                const baseBranchRef = await withRetry(() => octokit.git.getRef({
+                const baseBranchRef = await (0, retry_1.withRetry)(() => octokit.git.getRef({
                     owner,
                     repo,
                     ref: `heads/${baseBranch}`,
-                }), `getting base branch '${baseBranch}'`);
+                }), { context: `getting base branch '${baseBranch}'` });
                 baseSha = baseBranchRef.data.object.sha;
                 core.debug(`Base branch ${baseBranch} SHA: ${baseSha}`);
             }
@@ -6598,12 +6575,12 @@ class GitHubFixApplier {
                 };
             }
             try {
-                await withRetry(() => octokit.git.createRef({
+                await (0, retry_1.withRetry)(() => octokit.git.createRef({
                     owner,
                     repo,
                     ref: `refs/heads/${branchName}`,
                     sha: baseSha,
-                }), 'creating fix branch');
+                }), { context: 'creating fix branch' });
                 core.info(`Created branch: ${branchName}`);
             }
             catch (error) {
@@ -6611,12 +6588,12 @@ class GitHubFixApplier {
                     error.message.includes('Reference already exists')) {
                     branchName = generateFixBranchName(testFile, new Date(), true);
                     core.info(`Branch exists, trying with unique name: ${branchName}`);
-                    await withRetry(() => octokit.git.createRef({
+                    await (0, retry_1.withRetry)(() => octokit.git.createRef({
                         owner,
                         repo,
                         ref: `refs/heads/${branchName}`,
                         sha: baseSha,
-                    }), 'creating fix branch (retry with unique name)');
+                    }), { context: 'creating fix branch (retry with unique name)' });
                     core.info(`Created branch: ${branchName}`);
                 }
                 else {
@@ -6806,7 +6783,7 @@ class GitHubFixApplier {
         try {
             const dispatchRef = await this.getValidationWorkflowDispatchRef();
             const triageRunId = params.triageRunId || '';
-            await withRetry(() => octokit.actions.createWorkflowDispatch({
+            await (0, retry_1.withRetry)(() => octokit.actions.createWorkflowDispatch({
                 owner,
                 repo,
                 workflow_id: workflowFile,
@@ -6819,7 +6796,7 @@ class GitHubFixApplier {
                     fix_branch_name: params.branch,
                     test_command: params.testCommand || '',
                 },
-            }), 'triggering validation workflow');
+            }), { context: 'triggering validation workflow' });
             core.info('Validation workflow triggered successfully');
             const dispatchedAt = new Date();
             const maxPollAttempts = 10;
@@ -6827,13 +6804,13 @@ class GitHubFixApplier {
             for (let attempt = 1; attempt <= maxPollAttempts; attempt++) {
                 await sleep(attempt === 1 ? 5000 : pollInterval);
                 core.info(`Searching for validation run (attempt ${attempt}/${maxPollAttempts})...`);
-                const runs = await withRetry(() => octokit.actions.listWorkflowRuns({
+                const runs = await (0, retry_1.withRetry)(() => octokit.actions.listWorkflowRuns({
                     owner,
                     repo,
                     workflow_id: workflowFile,
                     event: 'workflow_dispatch',
                     per_page: 10,
-                }), 'listing workflow runs');
+                }), { context: 'listing workflow runs' });
                 const candidates = runs.data.workflow_runs;
                 let match;
                 if (triageRunId) {
@@ -6872,15 +6849,15 @@ class GitHubFixApplier {
     async reapplyFix(recommendation, branchName) {
         const { octokit, owner, repo, baseBranch } = this.config;
         try {
-            const baseBranchRef = await withRetry(() => octokit.git.getRef({ owner, repo, ref: `heads/${baseBranch}` }), `getting base branch '${baseBranch}'`);
+            const baseBranchRef = await (0, retry_1.withRetry)(() => octokit.git.getRef({ owner, repo, ref: `heads/${baseBranch}` }), { context: `getting base branch '${baseBranch}'` });
             const baseSha = baseBranchRef.data.object.sha;
-            await withRetry(() => octokit.git.updateRef({
+            await (0, retry_1.withRetry)(() => octokit.git.updateRef({
                 owner,
                 repo,
                 ref: `heads/${branchName}`,
                 sha: baseSha,
                 force: true,
-            }), `resetting branch ${branchName} to base`);
+            }), { context: `resetting branch ${branchName} to base` });
             core.info(`Reset branch ${branchName} to base SHA ${baseSha.slice(0, 7)}`);
             return await this.commitChanges(recommendation, branchName);
         }
@@ -6986,12 +6963,12 @@ class GitHubFixApplier {
     async getValidationFailureLogs(runId) {
         const { octokit, owner, repo } = this.config;
         try {
-            const jobs = await withRetry(() => octokit.actions.listJobsForWorkflowRun({
+            const jobs = await (0, retry_1.withRetry)(() => octokit.actions.listJobsForWorkflowRun({
                 owner,
                 repo,
                 run_id: runId,
                 filter: 'latest',
-            }), `listing jobs for validation run ${runId}`);
+            }), { context: `listing jobs for validation run ${runId}` });
             const jobsToRead = [...jobs.data.jobs].sort((a, b) => {
                 if (a.conclusion === 'failure' && b.conclusion !== 'failure')
                     return -1;
@@ -7004,11 +6981,11 @@ class GitHubFixApplier {
             const logChunks = [];
             for (const job of jobsToRead) {
                 try {
-                    const logsResponse = await withRetry(() => octokit.actions.downloadJobLogsForWorkflowRun({
+                    const logsResponse = await (0, retry_1.withRetry)(() => octokit.actions.downloadJobLogsForWorkflowRun({
                         owner,
                         repo,
                         job_id: job.id,
-                    }), `downloading logs for validation job ${job.id}`);
+                    }), { context: `downloading logs for validation job ${job.id}` });
                     const rawLogs = decodeLogPayload(logsResponse.data);
                     logChunks.push(`--- job ${job.name || job.id} (${job.conclusion || 'unknown'}) ---\n${rawLogs}`);
                 }
@@ -7041,12 +7018,12 @@ class GitHubFixApplier {
             try {
                 let buffer = fileBuffers.get(filePath);
                 if (!buffer) {
-                    const fileResponse = await withRetry(() => octokit.repos.getContent({
+                    const fileResponse = await (0, retry_1.withRetry)(() => octokit.repos.getContent({
                         owner,
                         repo,
                         path: filePath,
                         ref: branchName,
-                    }), `getting file content for ${filePath}`);
+                    }), { context: `getting file content for ${filePath}` });
                     if (Array.isArray(fileResponse.data) ||
                         fileResponse.data.type !== 'file') {
                         validationErrors.push(`${filePath} is not a file`);
@@ -7164,7 +7141,7 @@ class GitHubFixApplier {
             };
         }
         try {
-            const branchRef = await withRetry(() => octokit.git.getRef({ owner, repo, ref: `heads/${branchName}` }), `getting ref for ${branchName}`);
+            const branchRef = await (0, retry_1.withRetry)(() => octokit.git.getRef({ owner, repo, ref: `heads/${branchName}` }), { context: `getting ref for ${branchName}` });
             const baseSha = branchRef.data.object.sha;
             const treeItems = [];
             for (const [filePath, buffer] of fileBuffers) {
@@ -7189,25 +7166,25 @@ Automated fix generated by adept-triage-agent.
 
 Files: ${fileList}
 Confidence: ${recommendation.confidence}%`;
-            const tree = await withRetry(() => octokit.git.createTree({
+            const tree = await (0, retry_1.withRetry)(() => octokit.git.createTree({
                 owner,
                 repo,
                 base_tree: baseSha,
                 tree: treeItems,
-            }), 'creating tree for atomic commit');
-            const commit = await withRetry(() => octokit.git.createCommit({
+            }), { context: 'creating tree for atomic commit' });
+            const commit = await (0, retry_1.withRetry)(() => octokit.git.createCommit({
                 owner,
                 repo,
                 message: commitMessage,
                 tree: tree.data.sha,
                 parents: [baseSha],
-            }), 'creating commit');
-            await withRetry(() => octokit.git.updateRef({
+            }), { context: 'creating commit' });
+            await (0, retry_1.withRetry)(() => octokit.git.updateRef({
                 owner,
                 repo,
                 ref: `heads/${branchName}`,
                 sha: commit.data.sha,
-            }), `updating ref heads/${branchName}`);
+            }), { context: `updating ref heads/${branchName}` });
             lastCommitSha = commit.data.sha;
             for (const f of modifiedFiles)
                 core.info(`Modified: ${f}`);
@@ -8394,6 +8371,7 @@ const github = __importStar(__nccwpck_require__(93228));
 const simplified_analyzer_1 = __nccwpck_require__(20078);
 const constants_1 = __nccwpck_require__(58361);
 const text_utils_1 = __nccwpck_require__(11744);
+const retry_1 = __nccwpck_require__(92197);
 const fix_applier_1 = __nccwpck_require__(72134);
 async function processWorkflowLogs(octokit, artifactFetcher, inputs, repoDetails) {
     const context = github.context;
@@ -8414,26 +8392,34 @@ async function processWorkflowLogs(octokit, artifactFetcher, inputs, repoDetails
     }
     const isCurrentJob = !!(inputs.jobName &&
         (inputs.jobName === context.job || inputs.jobName.includes(context.job)));
-    if (!isCurrentJob && (inputs.workflowRunId || context.payload.workflow_run)) {
-        const workflowRun = await octokit.actions.getWorkflowRun({
+    let jobs;
+    try {
+        if (!isCurrentJob &&
+            (inputs.workflowRunId || context.payload.workflow_run)) {
+            const workflowRun = await (0, retry_1.withRetry)(() => octokit.actions.getWorkflowRun({
+                owner,
+                repo,
+                run_id: parseInt(runId, 10),
+            }), { context: 'fetching workflow run' });
+            if (workflowRun.data.status !== 'completed') {
+                core.warning('Workflow run is not completed yet');
+                return null;
+            }
+        }
+        else if (isCurrentJob) {
+            core.info(`Analyzing current job: ${inputs.jobName} (workflow still in progress)`);
+        }
+        jobs = await (0, retry_1.withRetry)(() => octokit.actions.listJobsForWorkflowRun({
             owner,
             repo,
             run_id: parseInt(runId, 10),
-        });
-        if (workflowRun.data.status !== 'completed') {
-            core.warning('Workflow run is not completed yet');
-            return null;
-        }
+            filter: 'latest',
+        }), { context: 'listing jobs for workflow run' });
     }
-    else if (isCurrentJob) {
-        core.info(`Analyzing current job: ${inputs.jobName} (workflow still in progress)`);
+    catch (error) {
+        core.warning(`Failed to fetch workflow run or jobs after retries: ${error instanceof Error ? error.message : String(error)}`);
+        return null;
     }
-    const jobs = await octokit.actions.listJobsForWorkflowRun({
-        owner,
-        repo,
-        run_id: parseInt(runId, 10),
-        filter: 'latest',
-    });
     const targetJob = findTargetJob(jobs.data.jobs, inputs, isCurrentJob ?? false);
     if (!targetJob) {
         return null;
@@ -10123,6 +10109,88 @@ function parseRepoString(value, label) {
     return github.context.repo;
 }
 //# sourceMappingURL=repo-utils.js.map
+
+/***/ }),
+
+/***/ 92197:
+/***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
+
+"use strict";
+
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.withRetry = withRetry;
+const core = __importStar(__nccwpck_require__(37484));
+const RETRYABLE_NETWORK_CODES = new Set(['ECONNRESET', 'ETIMEDOUT', 'EAI_AGAIN']);
+function sleep(ms) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+}
+function extractErrorFields(error) {
+    if (!error || typeof error !== 'object')
+        return {};
+    const status = error.status;
+    const code = error.code;
+    return {
+        status: typeof status === 'number' ? status : undefined,
+        code: typeof code === 'string' ? code : undefined,
+    };
+}
+async function withRetry(fn, opts) {
+    const { context, maxRetries = 3, retryableStatuses = [429, 502, 503, 504], baseDelayMs = 1000, maxDelayMs = 10000, } = opts;
+    let lastError;
+    for (let attempt = 0; attempt < maxRetries; attempt++) {
+        try {
+            return await fn();
+        }
+        catch (error) {
+            lastError = error;
+            const { status, code } = extractErrorFields(error);
+            const retryable = (status !== undefined && retryableStatuses.includes(status)) ||
+                (code !== undefined && RETRYABLE_NETWORK_CODES.has(code));
+            if (!retryable || attempt >= maxRetries - 1) {
+                throw error;
+            }
+            const delay = Math.min(maxDelayMs, baseDelayMs * 2 ** attempt) *
+                (0.5 + Math.random() * 0.5);
+            core.warning(`Retrying ${context} after ${status || code} (attempt ${attempt + 1}/${maxRetries})`);
+            await sleep(delay);
+        }
+    }
+    throw lastError;
+}
+//# sourceMappingURL=retry.js.map
 
 /***/ }),
 

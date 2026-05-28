@@ -17,6 +17,7 @@ import { ArtifactFetcher } from '../artifact-fetcher';
 import { extractErrorFromLogs } from '../simplified-analyzer';
 import { LOG_LIMITS, SHORT_SHA_LENGTH, DEFAULT_PRODUCT_REPO } from '../config/constants';
 import { ANSI_ESCAPE_REGEX } from '../utils/text-utils';
+import { withRetry } from '../utils/retry';
 import { decodeLogPayload } from '../repair/fix-applier';
 
 interface RepoDetails {
@@ -76,31 +77,60 @@ export async function processWorkflowLogs(
     (inputs.jobName === context.job || inputs.jobName.includes(context.job))
   );
 
-  // Check if workflow is completed when analyzing a different workflow
-  if (!isCurrentJob && (inputs.workflowRunId || context.payload.workflow_run)) {
-    const workflowRun = await octokit.actions.getWorkflowRun({
-      owner,
-      repo,
-      run_id: parseInt(runId, 10),
-    });
+  // Fetch the workflow run (when analyzing a different run) and the job list.
+  // Both GitHub API calls go through withRetry so a transient 429/5xx or
+  // network blip is retried instead of failing the whole triage run. If they
+  // still throw after retries, degrade to the no-error-data path (return null)
+  // the coordinator already handles, rather than letting the rejection
+  // propagate to index.ts and surface as verdict=ERROR.
+  let jobs: Awaited<
+    ReturnType<typeof octokit.actions.listJobsForWorkflowRun>
+  >;
+  try {
+    // Check if workflow is completed when analyzing a different workflow
+    if (
+      !isCurrentJob &&
+      (inputs.workflowRunId || context.payload.workflow_run)
+    ) {
+      const workflowRun = await withRetry(
+        () =>
+          octokit.actions.getWorkflowRun({
+            owner,
+            repo,
+            run_id: parseInt(runId, 10),
+          }),
+        { context: 'fetching workflow run' }
+      );
 
-    if (workflowRun.data.status !== 'completed') {
-      core.warning('Workflow run is not completed yet');
-      return null;
+      if (workflowRun.data.status !== 'completed') {
+        core.warning('Workflow run is not completed yet');
+        return null;
+      }
+    } else if (isCurrentJob) {
+      core.info(
+        `Analyzing current job: ${inputs.jobName} (workflow still in progress)`
+      );
     }
-  } else if (isCurrentJob) {
-    core.info(
-      `Analyzing current job: ${inputs.jobName} (workflow still in progress)`
-    );
-  }
 
-  // Get the failed job
-  const jobs = await octokit.actions.listJobsForWorkflowRun({
-    owner,
-    repo,
-    run_id: parseInt(runId, 10),
-    filter: 'latest',
-  });
+    // Get the failed job
+    jobs = await withRetry(
+      () =>
+        octokit.actions.listJobsForWorkflowRun({
+          owner,
+          repo,
+          run_id: parseInt(runId, 10),
+          filter: 'latest',
+        }),
+      { context: 'listing jobs for workflow run' }
+    );
+  } catch (error) {
+    core.warning(
+      `Failed to fetch workflow run or jobs after retries: ${
+        error instanceof Error ? error.message : String(error)
+      }`
+    );
+    return null;
+  }
 
   const targetJob = findTargetJob(
     jobs.data.jobs as JobInfo[],
