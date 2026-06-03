@@ -144,6 +144,19 @@ export async function analyzeFailure(client: OpenAIClient, errorData: ErrorData,
         indicators: infrastructureHeuristic.indicators
       };
     }
+
+    const edgeRejection = detectPreconditionEdgeRejection(errorData);
+    if (edgeRejection) {
+      core.info('Detected auth-precondition 4xx (edge/WAF rejection) pattern; returning INCONCLUSIVE without auto-fix.');
+
+      return {
+        verdict: edgeRejection.verdict,
+        confidence: 95,
+        reasoning: edgeRejection.reasoning,
+        summary: generateSummary(edgeRejection, errorData),
+        indicators: edgeRejection.indicators
+      };
+    }
     
     // Get AI analysis
     const response = await client.analyze(errorData, FEW_SHOT_EXAMPLES, skillContext, {
@@ -518,6 +531,87 @@ function detectInfrastructureFailure(errorData: ErrorData): OpenAIResponse | nul
     verdict: 'INCONCLUSIVE',
     reasoning:
       'Detected browser or session infrastructure failure signals before the test flow completed. This points to execution infrastructure (browser crash, session termination, or provider instability) rather than an actionable test or product defect, so this failure should remain inconclusive and must not trigger auto-fix.',
+    indicators: Array.from(new Set(indicators))
+  };
+}
+
+/**
+ * Detects an auth/login/token PRECONDITION rejected with HTTP 401/403/429 before
+ * the test exercised the feature. A 4xx on a shared login/token setup is most
+ * consistent with a transient edge block (WAF/firewall rule, IP-allowlist
+ * propagation delay, or rate-limit throttle) — AWS API Gateway/CloudFront emit
+ * bare bodies like {"message":"Forbidden"} when a request is blocked before
+ * reaching application code — so it is INCONCLUSIVE rather than PRODUCT_ISSUE.
+ */
+export function detectPreconditionEdgeRejection(errorData: ErrorData): OpenAIResponse | null {
+  const combinedContext = [
+    errorData.message,
+    errorData.stackTrace,
+    errorData.context,
+    errorData.logs?.join('\n'),
+    errorData.testArtifactLogs
+  ]
+    .filter((value): value is string => Boolean(value))
+    .join('\n');
+
+  if (!combinedContext) {
+    return null;
+  }
+
+  const hasTestExecutionContext =
+    errorData.framework === 'webdriverio' ||
+    errorData.framework === 'cypress' ||
+    /webdriver|webdriverio|selenium|sauce labs|saucelabs|ondemand\.[\w.-]*saucelabs\.com|cypress|chromium|chrome(?:driver)?/i.test(
+      combinedContext
+    );
+
+  if (!hasTestExecutionContext) {
+    return null;
+  }
+
+  // Auth/login/token precondition rejected with a 4xx.
+  const hasAuthPreconditionThrow =
+    /(?:login|loginWithEmail|token|auth\w*)[^\n]{0,80}\bfailed with\b[^\n]{0,20}\b(?:401|403|429)\b/i.test(
+      combinedContext
+    );
+  const hasAuthEndpoint4xx =
+    /\/loginWithEmail|\/web\/token|\bweb\/token\b/i.test(combinedContext) &&
+    /\b(?:401|403|429)\b/.test(combinedContext);
+  const hasAuthPrecondition4xx = hasAuthPreconditionThrow || hasAuthEndpoint4xx;
+
+  // Edge/gateway/WAF default rejection body — the high-precision signal that the
+  // 4xx came from the edge (AWS API Gateway / CloudFront / WAF) rather than from
+  // application authorization logic (app authz 4xx carry an app-specific `code`).
+  const hasEdgeGatewayBody =
+    /\{\s*"message"\s*:\s*"(?:Forbidden|Missing Authentication Token|Limit Exceeded|Unauthorized)"\s*\}|The request could not be satisfied/i.test(
+      combinedContext
+    );
+
+  if (!hasAuthPrecondition4xx || !hasEdgeGatewayBody) {
+    return null;
+  }
+
+  // Only check the extracted error message (not the full combined context) — the
+  // message is the primary signal; scanning all logs would be too noisy.
+  const extractedMessage = errorData.message || '';
+  const hasStrongProductSignal = STRONG_PRODUCT_SIGNAL_PATTERNS.some((pattern) =>
+    pattern.test(extractedMessage)
+  );
+
+  if (hasStrongProductSignal) {
+    return null;
+  }
+
+  const indicators = [
+    'Auth precondition (login/token endpoint) rejected with HTTP 401/403/429',
+    'Edge/gateway default rejection body present (e.g. {"message":"Forbidden"}, "Missing Authentication Token", 429 "Limit Exceeded", or a CloudFront block) — request blocked before reaching application code',
+    'Failure occurred in shared login/token setup before the test exercised the feature'
+  ];
+
+  return {
+    verdict: 'INCONCLUSIVE',
+    reasoning:
+      'The causal failure is an HTTP 401/403/429 returned to a shared login/token/authentication precondition (e.g. loginWithEmail or the web token endpoint), not an application assertion, selector timeout, or product stack trace. A 4xx rejection of an auth precondition in CI is most consistent with transient infrastructure — a WAF/firewall rule, IP-allowlist propagation delay, or rate-limit/anti-abuse throttle — and AWS API Gateway/CloudFront emit bare bodies such as {"message":"Forbidden"} when a request is blocked before reaching application code. This is classified INCONCLUSIVE: re-run the spec; if it persists across re-runs, escalate to the auth/infra team to confirm the CI runner IP/origin is allowlisted.',
     indicators: Array.from(new Set(indicators))
   };
 }
