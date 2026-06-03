@@ -35,6 +35,7 @@ var __importStar = (this && this.__importStar) || (function () {
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.processWorkflowLogs = processWorkflowLogs;
 exports.fetchDiffWithFallback = fetchDiffWithFallback;
+exports.selectProductDiff = selectProductDiff;
 exports.capArtifactLogs = capArtifactLogs;
 exports.buildStructuredSummary = buildStructuredSummary;
 const core = __importStar(require("@actions/core"));
@@ -286,21 +287,10 @@ async function fetchProductDiff(artifactFetcher, inputs) {
         return null;
     }
 }
-function selectProductDiff({ prNumber, repoOwner, repoName, productRepo, validationPreviewUrl, prDiff, fetchedProductDiff, commitCount, }) {
+function selectProductDiff({ prNumber, repoOwner, repoName, productRepo, prDiff, fetchedProductDiff, commitCount, }) {
     if (prNumber && `${repoOwner}/${repoName}`.toLowerCase() === productRepo.toLowerCase()) {
         core.info(`📦 Product diff sourced from PR #${prNumber} (same-repo PR path)`);
         return prDiff;
-    }
-    if (validationPreviewUrl) {
-        try {
-            const url = new URL(validationPreviewUrl);
-            if (url.hostname.endsWith('.vercel.app')) {
-                core.info(`📦 Product diff skipped — preview URL detected (${url.hostname}) and no branch input available`);
-                return null;
-            }
-        }
-        catch {
-        }
     }
     core.info(`📦 Product diff sourced from last ${commitCount} commits on ${productRepo} main`);
     return fetchedProductDiff;
@@ -340,7 +330,6 @@ async function fetchArtifactsParallel(artifactFetcher, runId, jobName, artifactR
         repoOwner: diffRepoDetails.owner,
         repoName: diffRepoDetails.repo,
         productRepo,
-        validationPreviewUrl: inputs.validationPreviewUrl,
         prDiff,
         fetchedProductDiff: rawProductDiff,
         commitCount,

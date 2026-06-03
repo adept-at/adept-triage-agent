@@ -4484,6 +4484,9 @@ When tests fail during login, authentication, or other shared setup steps (e.g.,
 - Common root causes: wrong API endpoint configured, broken deployment, missing environment variables, authentication service down.
 - If screenshots show a blank page, error page, or page without the login form, this is a PRODUCT_ISSUE.
 - If the PR diff contains environment config changes, API URL changes, or build configuration changes, this strongly suggests PRODUCT_ISSUE.
+- DISTINGUISH a login-page RENDER failure from a login-API 4xx rejection. The rules above (broken deployment / missing env vars -> PRODUCT_ISSUE) apply when the login page or its form FAILS TO RENDER (e.g. #password/#email never found, blank or error page). They do NOT apply when the login form renders correctly but a login/token/auth request returns an HTTP 401, 403, or 429 (e.g. loginWithEmail failed with 403: {"message":"Forbidden"}).
+- A 401/403/429 on a login/token/auth precondition is usually a TRANSIENT INFRASTRUCTURE rejection — a WAF/firewall rule, IP-allowlist propagation delay, or rate-limit/anti-abuse throttle. AWS API Gateway and CloudFront return bare bodies like {"message":"Forbidden"}, {"message":"Missing Authentication Token"}, 429 {"message":"Limit Exceeded"}, or a CloudFront "request could not be satisfied" page when they block a request before it reaches application code. Note: a bare {"message":...} body is NOT by itself proof of a gateway block (some app handlers also return that shape) — anchor on the precondition context + the 4xx status, not on the body shape alone.
+- For a login/token/auth precondition returning 401/403/429, prefer INCONCLUSIVE (recommend a re-run; escalate to the auth/infra team if it persists) over PRODUCT_ISSUE. Only choose PRODUCT_ISSUE if corroborated by a concrete app-side signal (a 5xx, an application stack trace, or the same auth failure across ALL parallel variants/browsers in the run).
 - Only classify login failures as TEST_ISSUE if there is specific evidence that the login test code itself was recently changed and broken.
 - When elements with alt text or aria-labels are "not found" but the screenshot shows the UI rendered correctly, the element is likely covered/obscured by overlays, tabs, or modals (TEST_ISSUE)
 - Long timeouts (>10s) that still fail often indicate the element exists but isn't in the expected state (covered, not visible, or conditionally rendered) rather than actual missing functionality
@@ -8401,6 +8404,7 @@ var __importStar = (this && this.__importStar) || (function () {
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.processWorkflowLogs = processWorkflowLogs;
 exports.fetchDiffWithFallback = fetchDiffWithFallback;
+exports.selectProductDiff = selectProductDiff;
 exports.capArtifactLogs = capArtifactLogs;
 exports.buildStructuredSummary = buildStructuredSummary;
 const core = __importStar(__nccwpck_require__(37484));
@@ -8652,21 +8656,10 @@ async function fetchProductDiff(artifactFetcher, inputs) {
         return null;
     }
 }
-function selectProductDiff({ prNumber, repoOwner, repoName, productRepo, validationPreviewUrl, prDiff, fetchedProductDiff, commitCount, }) {
+function selectProductDiff({ prNumber, repoOwner, repoName, productRepo, prDiff, fetchedProductDiff, commitCount, }) {
     if (prNumber && `${repoOwner}/${repoName}`.toLowerCase() === productRepo.toLowerCase()) {
         core.info(`📦 Product diff sourced from PR #${prNumber} (same-repo PR path)`);
         return prDiff;
-    }
-    if (validationPreviewUrl) {
-        try {
-            const url = new URL(validationPreviewUrl);
-            if (url.hostname.endsWith('.vercel.app')) {
-                core.info(`📦 Product diff skipped — preview URL detected (${url.hostname}) and no branch input available`);
-                return null;
-            }
-        }
-        catch {
-        }
     }
     core.info(`📦 Product diff sourced from last ${commitCount} commits on ${productRepo} main`);
     return fetchedProductDiff;
@@ -8706,7 +8699,6 @@ async function fetchArtifactsParallel(artifactFetcher, runId, jobName, artifactR
         repoOwner: diffRepoDetails.owner,
         repoName: diffRepoDetails.repo,
         productRepo,
-        validationPreviewUrl: inputs.validationPreviewUrl,
         prDiff,
         fetchedProductDiff: rawProductDiff,
         commitCount,
@@ -9810,6 +9802,7 @@ Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.analyzeFailure = analyzeFailure;
 exports.extractErrorFromLogs = extractErrorFromLogs;
 exports.resolveFramework = resolveFramework;
+exports.detectPreconditionEdgeRejection = detectPreconditionEdgeRejection;
 const core = __importStar(__nccwpck_require__(37484));
 const summary_generator_1 = __nccwpck_require__(78220);
 const error_classifier_1 = __nccwpck_require__(23914);
@@ -9926,6 +9919,17 @@ async function analyzeFailure(client, errorData, skillContext) {
                 reasoning: infrastructureHeuristic.reasoning,
                 summary: generateSummary(infrastructureHeuristic, errorData),
                 indicators: infrastructureHeuristic.indicators
+            };
+        }
+        const edgeRejection = detectPreconditionEdgeRejection(errorData);
+        if (edgeRejection) {
+            core.info('Detected auth-precondition 4xx (edge/WAF rejection) pattern; returning INCONCLUSIVE without auto-fix.');
+            return {
+                verdict: edgeRejection.verdict,
+                confidence: 95,
+                reasoning: edgeRejection.reasoning,
+                summary: generateSummary(edgeRejection, errorData),
+                indicators: edgeRejection.indicators
             };
         }
         const response = await client.analyze(errorData, FEW_SHOT_EXAMPLES, skillContext, {
@@ -10170,6 +10174,49 @@ function detectInfrastructureFailure(errorData) {
     return {
         verdict: 'INCONCLUSIVE',
         reasoning: 'Detected browser or session infrastructure failure signals before the test flow completed. This points to execution infrastructure (browser crash, session termination, or provider instability) rather than an actionable test or product defect, so this failure should remain inconclusive and must not trigger auto-fix.',
+        indicators: Array.from(new Set(indicators))
+    };
+}
+function detectPreconditionEdgeRejection(errorData) {
+    const combinedContext = [
+        errorData.message,
+        errorData.stackTrace,
+        errorData.context,
+        errorData.logs?.join('\n'),
+        errorData.testArtifactLogs
+    ]
+        .filter((value) => Boolean(value))
+        .join('\n');
+    if (!combinedContext) {
+        return null;
+    }
+    const hasTestExecutionContext = errorData.framework === 'webdriverio' ||
+        errorData.framework === 'cypress' ||
+        /webdriver|webdriverio|selenium|sauce labs|saucelabs|ondemand\.[\w.-]*saucelabs\.com|cypress|chromium|chrome(?:driver)?/i.test(combinedContext);
+    if (!hasTestExecutionContext) {
+        return null;
+    }
+    const hasAuthPreconditionThrow = /(?:login|loginWithEmail|token|auth\w*)[^\n]{0,80}\bfailed with\b[^\n]{0,20}\b(?:401|403|429)\b/i.test(combinedContext);
+    const hasAuthEndpoint4xx = /\/loginWithEmail|\/web\/token|\bweb\/token\b/i.test(combinedContext) &&
+        /\b(?:401|403|429)\b/.test(combinedContext);
+    const hasAuthPrecondition4xx = hasAuthPreconditionThrow || hasAuthEndpoint4xx;
+    const hasEdgeGatewayBody = /\{\s*"message"\s*:\s*"(?:Forbidden|Missing Authentication Token|Limit Exceeded|Unauthorized)"\s*\}|The request could not be satisfied/i.test(combinedContext);
+    if (!hasAuthPrecondition4xx || !hasEdgeGatewayBody) {
+        return null;
+    }
+    const extractedMessage = errorData.message || '';
+    const hasStrongProductSignal = STRONG_PRODUCT_SIGNAL_PATTERNS.some((pattern) => pattern.test(extractedMessage));
+    if (hasStrongProductSignal) {
+        return null;
+    }
+    const indicators = [
+        'Auth precondition (login/token endpoint) rejected with HTTP 401/403/429',
+        'Edge/gateway default rejection body present (e.g. {"message":"Forbidden"}, "Missing Authentication Token", 429 "Limit Exceeded", or a CloudFront block) — request blocked before reaching application code',
+        'Failure occurred in shared login/token setup before the test exercised the feature'
+    ];
+    return {
+        verdict: 'INCONCLUSIVE',
+        reasoning: 'The causal failure is an HTTP 401/403/429 returned to a shared login/token/authentication precondition (e.g. loginWithEmail or the web token endpoint), not an application assertion, selector timeout, or product stack trace. A 4xx rejection of an auth precondition in CI is most consistent with transient infrastructure — a WAF/firewall rule, IP-allowlist propagation delay, or rate-limit/anti-abuse throttle — and AWS API Gateway/CloudFront emit bare bodies such as {"message":"Forbidden"} when a request is blocked before reaching application code. This is classified INCONCLUSIVE: re-run the spec; if it persists across re-runs, escalate to the auth/infra team to confirm the CI runner IP/origin is allowlisted.',
         indicators: Array.from(new Set(indicators))
     };
 }

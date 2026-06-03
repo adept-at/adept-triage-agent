@@ -1,4 +1,4 @@
-import { capArtifactLogs, buildStructuredSummary, fetchDiffWithFallback } from '../../src/services/log-processor';
+import { capArtifactLogs, buildStructuredSummary, fetchDiffWithFallback, selectProductDiff } from '../../src/services/log-processor';
 import { ErrorData, ActionInputs, PRDiff } from '../../src/types';
 import { ArtifactFetcher } from '../../src/artifact-fetcher';
 import * as core from '@actions/core';
@@ -610,6 +610,112 @@ describe('log-processor', () => {
         expect(result).toBeNull();
         expect(mockArtifactFetcher.fetchRecentProductDiff).not.toHaveBeenCalled();
       });
+    });
+  });
+
+  describe('selectProductDiff', () => {
+    const prDiff: PRDiff = {
+      files: [{ filename: 'src/feature.tsx', status: 'modified', additions: 4, deletions: 1, changes: 5 }],
+      totalChanges: 1,
+      additions: 4,
+      deletions: 1,
+    };
+    const productDiff: PRDiff = {
+      files: [{ filename: 'src/auth/login.ts', status: 'modified', additions: 9, deletions: 3, changes: 12 }],
+      totalChanges: 1,
+      additions: 9,
+      deletions: 3,
+    };
+
+    beforeEach(() => jest.clearAllMocks());
+
+    it('uses the PR diff when the failing repo IS the product repo (same-repo PR)', () => {
+      const result = selectProductDiff({
+        prNumber: '123',
+        repoOwner: 'adept-at',
+        repoName: 'learn-webapp',
+        productRepo: 'adept-at/learn-webapp',
+        prDiff,
+        fetchedProductDiff: productDiff,
+        commitCount: 5,
+      });
+
+      expect(result).toBe(prDiff);
+    });
+
+    it('matches the same-repo PR path case-insensitively', () => {
+      const result = selectProductDiff({
+        prNumber: '123',
+        repoOwner: 'Adept-At',
+        repoName: 'Learn-WebApp',
+        productRepo: 'adept-at/learn-webapp',
+        prDiff,
+        fetchedProductDiff: productDiff,
+        commitCount: 5,
+      });
+
+      expect(result).toBe(prDiff);
+    });
+
+    // Regression guard for the preview-URL bug (June 2026): every wdio/canary
+    // repo triages learn-webapp through a *.vercel.app preview. Those runs are
+    // cross-repo (test repo != product repo) and must STILL surface the fetched
+    // product diff — previously they were silently dropped to null, biasing the
+    // verdict toward TEST_ISSUE and masking real product regressions.
+    it('surfaces the fetched product diff for a cross-repo preview-URL run', () => {
+      const result = selectProductDiff({
+        prNumber: undefined,
+        repoOwner: 'adept-at',
+        repoName: 'lib-wdio-8-multi-remote',
+        productRepo: 'adept-at/learn-webapp',
+        prDiff: null,
+        fetchedProductDiff: productDiff,
+        commitCount: 5,
+      });
+
+      expect(result).toBe(productDiff);
+    });
+
+    it('ignores a test-repo PR diff when the PR is not in the product repo', () => {
+      const result = selectProductDiff({
+        prNumber: '999',
+        repoOwner: 'adept-at',
+        repoName: 'lib-wdio-8-multi-remote',
+        productRepo: 'adept-at/learn-webapp',
+        prDiff, // a test-repo PR diff — must NOT be used as the product diff
+        fetchedProductDiff: productDiff,
+        commitCount: 5,
+      });
+
+      expect(result).toBe(productDiff);
+    });
+
+    it('falls back to the product diff when there is no PR number', () => {
+      const result = selectProductDiff({
+        prNumber: undefined,
+        repoOwner: 'adept-at',
+        repoName: 'learn-webapp',
+        productRepo: 'adept-at/learn-webapp',
+        prDiff: null,
+        fetchedProductDiff: productDiff,
+        commitCount: 5,
+      });
+
+      expect(result).toBe(productDiff);
+    });
+
+    it('returns null only when no product diff could be fetched', () => {
+      const result = selectProductDiff({
+        prNumber: undefined,
+        repoOwner: 'adept-at',
+        repoName: 'lib-wdio-8-multi-remote',
+        productRepo: 'adept-at/learn-webapp',
+        prDiff: null,
+        fetchedProductDiff: null,
+        commitCount: 5,
+      });
+
+      expect(result).toBeNull();
     });
   });
 });

@@ -464,17 +464,22 @@ async function fetchProductDiff(
 }
 
 /**
- * Decide which product diff to surface based on the three-case rule:
- * 1. Same-repo PR → reuse the PR diff
- * 2. Vercel preview detected → skip (no branch input)
- * 3. Fallthrough → use the fetched last-N-commits diff
+ * Decide which product diff to surface:
+ * 1. Same-repo PR → reuse the PR diff (the PR *is* the product change).
+ * 2. Otherwise → use the fetched last-N-commits product diff.
+ *
+ * We intentionally surface the recent-main product diff even on preview-URL
+ * runs. Every wdio/canary repo triages learn-webapp via a *.vercel.app preview,
+ * and giving the analysis agents real product context (even "recent main"
+ * rather than the exact preview branch) is far more useful than giving them
+ * nothing — an empty product diff silently biases every preview run toward a
+ * TEST_ISSUE verdict and would mask real product regressions.
  */
-function selectProductDiff({
+export function selectProductDiff({
   prNumber,
   repoOwner,
   repoName,
   productRepo,
-  validationPreviewUrl,
   prDiff,
   fetchedProductDiff,
   commitCount,
@@ -483,7 +488,6 @@ function selectProductDiff({
   repoOwner: string;
   repoName: string;
   productRepo: string;
-  validationPreviewUrl: string | undefined;
   prDiff: PRDiff | null;
   fetchedProductDiff: PRDiff | null;
   commitCount: number;
@@ -491,18 +495,6 @@ function selectProductDiff({
   if (prNumber && `${repoOwner}/${repoName}`.toLowerCase() === productRepo.toLowerCase()) {
     core.info(`📦 Product diff sourced from PR #${prNumber} (same-repo PR path)`);
     return prDiff;
-  }
-
-  if (validationPreviewUrl) {
-    try {
-      const url = new URL(validationPreviewUrl);
-      if (url.hostname.endsWith('.vercel.app')) {
-        core.info(`📦 Product diff skipped — preview URL detected (${url.hostname}) and no branch input available`);
-        return null;
-      }
-    } catch {
-      // fall through to Case 3
-    }
   }
 
   core.info(`📦 Product diff sourced from last ${commitCount} commits on ${productRepo} main`);
@@ -563,7 +555,6 @@ async function fetchArtifactsParallel(
     repoOwner: diffRepoDetails.owner,
     repoName: diffRepoDetails.repo,
     productRepo,
-    validationPreviewUrl: inputs.validationPreviewUrl,
     prDiff,
     fetchedProductDiff: rawProductDiff,
     commitCount,
