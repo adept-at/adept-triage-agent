@@ -8,7 +8,7 @@ set -euo pipefail
 REPOS=(
   "adept-at/lib-cypress-canary"
   "adept-at/lib-wdio-8-e2e-ts"
-  "adept-at/lib-wdio-8-multi-remote"
+  "adept-at/lib-wdio-9-multi-remote"
 )
 RUN_IDS=(
   "22693448847"
