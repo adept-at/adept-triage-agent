@@ -1,5 +1,5 @@
 {
-  "repo": "adept-at/lib-wdio-8-e2e-ts",
+  "repo": "adept-at/lib-wdio-9-e2e",
   "spec": "test/specs/skills/lms.video.plays.e2e.ts",
   "testName": "should login with valid credentials to LMS, and load a skill, play, pause, and resume the first video",
   "framework": "webdriverio",
