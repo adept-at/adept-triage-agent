@@ -1,5 +1,5 @@
 {
-  "repo": "adept-at/lib-wdio-8-multi-remote",
+  "repo": "adept-at/lib-wdio-9-multi-remote",
   "spec": "test/specs/skills/multi.skill.lock.editor.ts",
   "testName": "Log in and open skill, grab lock, and edit skill on browser 1 with user 1",
   "framework": "webdriverio",

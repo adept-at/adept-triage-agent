@@ -1,5 +1,5 @@
 {
-  "repo": "adept-at/lib-wdio-8-e2e-ts",
+  "repo": "adept-at/lib-wdio-9-e2e",
   "spec": "test/specs/dashboard/dash.greeting.canary.spec.ts",
   "testName": "should display the user greeting on the dashboard",
   "framework": "webdriverio",

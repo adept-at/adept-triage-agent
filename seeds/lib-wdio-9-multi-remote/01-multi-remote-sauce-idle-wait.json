@@ -1,5 +1,5 @@
 {
-  "repo": "adept-at/lib-wdio-8-multi-remote",
+  "repo": "adept-at/lib-wdio-9-multi-remote",
   "spec": "test/specs/orginvites/multi.invite.phil.license.signup.ts",
   "testName": "Invite email arrives in Mailosaur",
   "framework": "webdriverio",

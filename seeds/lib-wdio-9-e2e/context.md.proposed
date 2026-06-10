@@ -1,5 +1,5 @@
 ## Framework & runtime
-- Despite the legacy repo name, this is **WebdriverIO 9** (`@wdio/*` ^9.0.0) with **BiDi** by default. README and `wdio.conf.ts` confirm v9.
+- **WebdriverIO 9** (`@wdio/*` ^9.0.0) with **BiDi** by default. README and `wdio.conf.ts` confirm v9.
 - **Mocha** (`bdd`); TS via `autoCompileOpts` + `ts-node` (`transpileOnly: true`, `project: ./tsconfig.json`).
 - Runner: `local`. Sauce: `@wdio/sauce-service`, `region: 'us'`, credentials via `SAUCE_USERNAME` / `SAUCE_ACCESS_KEY`.
 - Capabilities are commander-driven from CLI (`-t local|sauce`, `-spec`, `-b`, `-u`, `--negativeTest`, `--blockPartyCookies`, `--noBidi`). `--noBidi` flips local Chrome to `wdio:enforceWebDriverClassic: true` — used for cross-origin iframe flows.
