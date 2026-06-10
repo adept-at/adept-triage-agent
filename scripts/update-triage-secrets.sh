@@ -6,7 +6,8 @@ REPOS=(
   "adept-at/lib-cypress-canary"
   "adept-at/lib-wdio-8-e2e-ts"
   "adept-at/learn-webapp"
-  "adept-at/lib-wdio-8-multi-remote"
+  "adept-at/lib-wdio-9-multi-remote"
+  "adept-at/wdio-9-bidi-mux3"
 )
 
 echo "============================================"
