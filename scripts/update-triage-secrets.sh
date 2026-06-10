@@ -4,7 +4,7 @@ set -euo pipefail
 # All repos that use adept-triage-agent@v1
 REPOS=(
   "adept-at/lib-cypress-canary"
-  "adept-at/lib-wdio-8-e2e-ts"
+  "adept-at/lib-wdio-9-e2e"
   "adept-at/learn-webapp"
   "adept-at/lib-wdio-9-multi-remote"
   "adept-at/wdio-9-bidi-mux3"
