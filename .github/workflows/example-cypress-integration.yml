@@ -57,7 +57,7 @@ jobs:
         with:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         if: failure()
         with:
           name: cy-logs-${{ matrix.containers }}-${{ github.run_id }}
