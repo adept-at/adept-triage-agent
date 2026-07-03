@@ -9,10 +9,27 @@
  */
 
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
-import { DynamoDBDocumentClient, ScanCommand } from '@aws-sdk/lib-dynamodb';
+import { DynamoDBDocumentClient, QueryCommand } from '@aws-sdk/lib-dynamodb';
 
 const TABLE = process.env.TRIAGE_DYNAMO_TABLE || 'triage-skills-v1-live';
 const REGION = process.env.AWS_REGION || 'us-east-1';
+
+// Per-repo Query instead of Scan: the operator read-only SSO role
+// (DevProdReadOnly) allows dynamodb:Query on this table but not Scan.
+// Override via TRIAGE_REPOS (comma-separated owner/repo values).
+const REPOS = (
+  process.env.TRIAGE_REPOS ||
+  [
+    'adept-at/learn-webapp',
+    'adept-at/lib-cypress-canary',
+    'adept-at/lib-wdio-9-e2e',
+    'adept-at/lib-wdio-9-multi-remote',
+    'adept-at/wdio-9-bidi-mux3',
+  ].join(',')
+)
+  .split(',')
+  .map(r => r.trim())
+  .filter(Boolean);
 
 const daysIdx = process.argv.indexOf('--days');
 const DAYS = daysIdx === -1 ? 7 : parseInt(process.argv[daysIdx + 1], 10);
@@ -37,19 +54,25 @@ async function main() {
 
   const client = DynamoDBDocumentClient.from(new DynamoDBClient({ region: REGION }));
   const events: FailureEvent[] = [];
-  let lastKey: Record<string, unknown> | undefined;
-  do {
-    const page = await client.send(
-      new ScanCommand({
-        TableName: TABLE,
-        FilterExpression: 'begins_with(sk, :f) AND failedAt >= :start',
-        ExpressionAttributeValues: { ':f': 'FAILURE#', ':start': start.toISOString() },
-        ExclusiveStartKey: lastKey
-      })
-    );
-    events.push(...((page.Items || []) as FailureEvent[]));
-    lastKey = page.LastEvaluatedKey;
-  } while (lastKey);
+  for (const repo of REPOS) {
+    let lastKey: Record<string, unknown> | undefined;
+    do {
+      const page = await client.send(
+        new QueryCommand({
+          TableName: TABLE,
+          KeyConditionExpression: 'pk = :pk AND sk BETWEEN :start AND :end',
+          ExpressionAttributeValues: {
+            ':pk': `REPO#${repo}`,
+            ':start': `FAILURE#${start.toISOString()}`,
+            ':end': `FAILURE#${end.toISOString()}\uffff`,
+          },
+          ExclusiveStartKey: lastKey
+        })
+      );
+      events.push(...((page.Items || []) as FailureEvent[]));
+      lastKey = page.LastEvaluatedKey;
+    } while (lastKey);
+  }
 
   console.log('# Weekly Failure Report');
   console.log();
