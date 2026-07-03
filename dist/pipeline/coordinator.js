@@ -41,6 +41,7 @@ const github = __importStar(require("@actions/github"));
 const simplified_analyzer_1 = require("../simplified-analyzer");
 const log_processor_1 = require("../services/log-processor");
 const skill_store_1 = require("../services/skill-store");
+const failure_event_store_1 = require("../services/failure-event-store");
 const repo_context_fetcher_1 = require("../services/repo-context-fetcher");
 const root_cause_category_1 = require("../repair/root-cause-category");
 const run_telemetry_1 = require("./run-telemetry");
@@ -209,10 +210,12 @@ class PipelineCoordinator {
                 summary: infraVerdict.summary,
                 indicators: infraVerdict.indicators,
             };
+            await this.recordFailure(errorData, 'INCONCLUSIVE', 95, autoFixTargetRepo);
             (0, output_1.setInconclusiveOutput)(infraResult, this.inputs, errorData);
             return;
         }
         const classification = await this.classify(errorData, skillStore);
+        await this.recordFailure(errorData, classification.verdict, classification.confidence, autoFixTargetRepo);
         if (classification.confidence < this.inputs.confidenceThreshold)
             return;
         if (classification.verdict !== 'TEST_ISSUE')
@@ -379,6 +382,32 @@ class PipelineCoordinator {
         }
         result.repairTelemetry = (0, output_1.finalizeRepairTelemetry)(repairTelemetryFromRun, fixRecommendation, autoFixResult);
         (0, output_1.setSuccessOutput)(result, errorData, autoFixResult, chronicFlakinessSignal);
+    }
+    async recordFailure(errorData, verdict, confidence, autoFixTargetRepo) {
+        const repo = autoFixTargetRepo
+            ? `${autoFixTargetRepo.owner}/${autoFixTargetRepo.repo}`
+            : process.env.GITHUB_REPOSITORY;
+        if (!repo) {
+            core.warning('Skipping failure-event record: no target repo and GITHUB_REPOSITORY is unset');
+            return;
+        }
+        const { GITHUB_SERVER_URL, GITHUB_REPOSITORY, GITHUB_RUN_ID } = process.env;
+        const triageRunUrl = GITHUB_SERVER_URL && GITHUB_REPOSITORY && GITHUB_RUN_ID
+            ? `${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}`
+            : '';
+        await (0, failure_event_store_1.recordFailureEvent)(this.inputs.triageAwsRegion || 'us-east-1', this.inputs.triageDynamoTable || 'triage-skills-v1-live', {
+            repo,
+            spec: (0, skill_store_1.normalizeSpec)(errorData.fileName) || 'unknown',
+            testName: errorData.testName || 'unknown',
+            framework: errorData.framework || 'unknown',
+            verdict,
+            confidence,
+            failedAt: new Date().toISOString(),
+            sourceRunId: this.inputs.workflowRunId || '',
+            triageRunUrl,
+            branch: this.inputs.branch || '',
+            prNumber: this.inputs.prNumber || '',
+        });
     }
     async handleNoErrorData() {
         const { owner, repo } = this.repoDetails;

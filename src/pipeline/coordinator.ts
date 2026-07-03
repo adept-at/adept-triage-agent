@@ -15,7 +15,8 @@ import {
 import { ApplyResult } from '../repair/fix-applier';
 import { analyzeFailure } from '../simplified-analyzer';
 import { processWorkflowLogs } from '../services/log-processor';
-import { SkillStore, buildSkill, describeFixPattern } from '../services/skill-store';
+import { SkillStore, buildSkill, describeFixPattern, normalizeSpec } from '../services/skill-store';
+import { recordFailureEvent } from '../services/failure-event-store';
 import { RepoContextFetcher } from '../services/repo-context-fetcher';
 import { inferRootCauseCategoryFromText } from '../repair/root-cause-category';
 import { recordGate, logRunGateSummary } from './run-telemetry';
@@ -389,11 +390,21 @@ export class PipelineCoordinator {
         summary: infraVerdict.summary,
         indicators: infraVerdict.indicators,
       };
+      await this.recordFailure(errorData, 'INCONCLUSIVE', 95, autoFixTargetRepo);
       setInconclusiveOutput(infraResult, this.inputs, errorData);
       return;
     }
 
     const classification = await this.classify(errorData, skillStore);
+
+    // Record BEFORE the early returns below so every verdict (including
+    // low-confidence and non-TEST_ISSUE) leaves a durable failure event.
+    await this.recordFailure(
+      errorData,
+      classification.verdict,
+      classification.confidence,
+      autoFixTargetRepo
+    );
 
     if (classification.confidence < this.inputs.confidenceThreshold) return;
     if (classification.verdict !== 'TEST_ISSUE') return;
@@ -676,6 +687,52 @@ export class PipelineCoordinator {
     // "chronically flaky" simultaneously, driven by our own write. One
     // measurement, threaded to both the gate and the output.
     setSuccessOutput(result, errorData, autoFixResult, chronicFlakinessSignal);
+  }
+
+  /**
+   * Write one durable failure-event record per verdict. Fires
+   * unconditionally on both classify paths (infra fast-path and normal),
+   * regardless of auto-fix settings. `recordFailureEvent` never rejects.
+   */
+  private async recordFailure(
+    errorData: ErrorData,
+    verdict: string,
+    confidence: number,
+    autoFixTargetRepo: { owner: string; repo: string } | null
+  ): Promise<void> {
+    const repo = autoFixTargetRepo
+      ? `${autoFixTargetRepo.owner}/${autoFixTargetRepo.repo}`
+      : process.env.GITHUB_REPOSITORY;
+    if (!repo) {
+      core.warning(
+        'Skipping failure-event record: no target repo and GITHUB_REPOSITORY is unset'
+      );
+      return;
+    }
+
+    const { GITHUB_SERVER_URL, GITHUB_REPOSITORY, GITHUB_RUN_ID } = process.env;
+    const triageRunUrl =
+      GITHUB_SERVER_URL && GITHUB_REPOSITORY && GITHUB_RUN_ID
+        ? `${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}`
+        : '';
+
+    await recordFailureEvent(
+      this.inputs.triageAwsRegion || 'us-east-1',
+      this.inputs.triageDynamoTable || 'triage-skills-v1-live',
+      {
+        repo,
+        spec: normalizeSpec(errorData.fileName) || 'unknown',
+        testName: errorData.testName || 'unknown',
+        framework: errorData.framework || 'unknown',
+        verdict,
+        confidence,
+        failedAt: new Date().toISOString(),
+        sourceRunId: this.inputs.workflowRunId || '',
+        triageRunUrl,
+        branch: this.inputs.branch || '',
+        prNumber: this.inputs.prNumber || '',
+      }
+    );
   }
 
   private async handleNoErrorData(): Promise<void> {

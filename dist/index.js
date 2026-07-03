@@ -4929,6 +4929,7 @@ const github = __importStar(__nccwpck_require__(93228));
 const simplified_analyzer_1 = __nccwpck_require__(20078);
 const log_processor_1 = __nccwpck_require__(65833);
 const skill_store_1 = __nccwpck_require__(60215);
+const failure_event_store_1 = __nccwpck_require__(1109);
 const repo_context_fetcher_1 = __nccwpck_require__(3844);
 const root_cause_category_1 = __nccwpck_require__(21406);
 const run_telemetry_1 = __nccwpck_require__(93971);
@@ -5097,10 +5098,12 @@ class PipelineCoordinator {
                 summary: infraVerdict.summary,
                 indicators: infraVerdict.indicators,
             };
+            await this.recordFailure(errorData, 'INCONCLUSIVE', 95, autoFixTargetRepo);
             (0, output_1.setInconclusiveOutput)(infraResult, this.inputs, errorData);
             return;
         }
         const classification = await this.classify(errorData, skillStore);
+        await this.recordFailure(errorData, classification.verdict, classification.confidence, autoFixTargetRepo);
         if (classification.confidence < this.inputs.confidenceThreshold)
             return;
         if (classification.verdict !== 'TEST_ISSUE')
@@ -5267,6 +5270,32 @@ class PipelineCoordinator {
         }
         result.repairTelemetry = (0, output_1.finalizeRepairTelemetry)(repairTelemetryFromRun, fixRecommendation, autoFixResult);
         (0, output_1.setSuccessOutput)(result, errorData, autoFixResult, chronicFlakinessSignal);
+    }
+    async recordFailure(errorData, verdict, confidence, autoFixTargetRepo) {
+        const repo = autoFixTargetRepo
+            ? `${autoFixTargetRepo.owner}/${autoFixTargetRepo.repo}`
+            : process.env.GITHUB_REPOSITORY;
+        if (!repo) {
+            core.warning('Skipping failure-event record: no target repo and GITHUB_REPOSITORY is unset');
+            return;
+        }
+        const { GITHUB_SERVER_URL, GITHUB_REPOSITORY, GITHUB_RUN_ID } = process.env;
+        const triageRunUrl = GITHUB_SERVER_URL && GITHUB_REPOSITORY && GITHUB_RUN_ID
+            ? `${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}`
+            : '';
+        await (0, failure_event_store_1.recordFailureEvent)(this.inputs.triageAwsRegion || 'us-east-1', this.inputs.triageDynamoTable || 'triage-skills-v1-live', {
+            repo,
+            spec: (0, skill_store_1.normalizeSpec)(errorData.fileName) || 'unknown',
+            testName: errorData.testName || 'unknown',
+            framework: errorData.framework || 'unknown',
+            verdict,
+            confidence,
+            failedAt: new Date().toISOString(),
+            sourceRunId: this.inputs.workflowRunId || '',
+            triageRunUrl,
+            branch: this.inputs.branch || '',
+            prNumber: this.inputs.prNumber || '',
+        });
     }
     async handleNoErrorData() {
         const { owner, repo } = this.repoDetails;
@@ -7846,6 +7875,75 @@ function getBundledRepoContext(owner, repo) {
     return exports.BUNDLED_REPO_CONTEXTS[`${owner}/${repo}`.toLowerCase()];
 }
 //# sourceMappingURL=bundled-repo-contexts.js.map
+
+/***/ }),
+
+/***/ 1109:
+/***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
+
+"use strict";
+
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.recordFailureEvent = recordFailureEvent;
+const core = __importStar(__nccwpck_require__(37484));
+const crypto = __importStar(__nccwpck_require__(76982));
+async function recordFailureEvent(region, tableName, event) {
+    try {
+        const { DynamoDBClient } = await __nccwpck_require__.e(/* import() */ 305).then(__nccwpck_require__.t.bind(__nccwpck_require__, 64305, 23));
+        const { DynamoDBDocumentClient, PutCommand } = await Promise.all(/* import() */[__nccwpck_require__.e(305), __nccwpck_require__.e(907)]).then(__nccwpck_require__.t.bind(__nccwpck_require__, 58907, 19));
+        const raw = new DynamoDBClient({ region });
+        const client = DynamoDBDocumentClient.from(raw, {
+            marshallOptions: { removeUndefinedValues: true },
+        });
+        const runId = process.env.GITHUB_RUN_ID || crypto.randomUUID().slice(0, 8);
+        await client.send(new PutCommand({
+            TableName: tableName,
+            Item: {
+                pk: `REPO#${event.repo}`,
+                sk: `FAILURE#${event.failedAt}#${runId}`,
+                ...event,
+            },
+        }));
+        core.info(`📝 failure-event recorded for ${event.repo} ${event.spec}`);
+    }
+    catch (err) {
+        core.warning(`Failed to record failure event for ${event.repo}: ${err}`);
+    }
+}
+//# sourceMappingURL=failure-event-store.js.map
 
 /***/ }),
 

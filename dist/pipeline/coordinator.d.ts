@@ -52,6 +52,7 @@ export declare class PipelineCoordinator {
     repair(_classification: ClassificationResult, errorData: ErrorData, skillStore?: SkillStore): Promise<RepairResult>;
     execute(): Promise<void>;
     private runClassifyAndRepair;
+    private recordFailure;
     private handleNoErrorData;
 }
 export declare function shouldWriteSkillOutcome(autoFixResult: ApplyResult | null | undefined): boolean;
