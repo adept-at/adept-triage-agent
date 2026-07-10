@@ -64,5 +64,6 @@ export declare function detectInfrastructureFailure(errorData: ErrorData): {
     summary: string;
     indicators: string[];
 } | null;
+export declare function detectSyntheticCanaryFailure(errorData: ErrorData, repo: string | null): ClassificationResult | null;
 export {};
 //# sourceMappingURL=coordinator.d.ts.map

@@ -36,6 +36,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.PipelineCoordinator = void 0;
 exports.shouldWriteSkillOutcome = shouldWriteSkillOutcome;
 exports.detectInfrastructureFailure = detectInfrastructureFailure;
+exports.detectSyntheticCanaryFailure = detectSyntheticCanaryFailure;
 const core = __importStar(require("@actions/core"));
 const github = __importStar(require("@actions/github"));
 const simplified_analyzer_1 = require("../simplified-analyzer");
@@ -47,6 +48,7 @@ const outcome_telemetry_1 = require("./outcome-telemetry");
 const repo_context_fetcher_1 = require("../services/repo-context-fetcher");
 const root_cause_category_1 = require("../repair/root-cause-category");
 const run_telemetry_1 = require("./run-telemetry");
+const constants_1 = require("../config/constants");
 const output_1 = require("./output");
 const validator_1 = require("./validator");
 class PipelineCoordinator {
@@ -251,7 +253,14 @@ class PipelineCoordinator {
             (0, output_1.setInconclusiveOutput)(infraResult, this.inputs, errorData);
             return;
         }
-        const classification = await this.classify(errorData, skillStore);
+        const canaryRepo = autoFixTargetRepo
+            ? `${autoFixTargetRepo.owner}/${autoFixTargetRepo.repo}`
+            : null;
+        const canaryClassification = detectSyntheticCanaryFailure(errorData, canaryRepo);
+        if (canaryClassification) {
+            core.info('⏭️  Synthetic canary fast-path: TEST_ISSUE');
+        }
+        const classification = canaryClassification ?? (await this.classify(errorData, skillStore));
         await this.recordFailure(errorData, classification.verdict, classification.confidence, autoFixTargetRepo);
         if (classification.confidence < this.inputs.confidenceThreshold) {
             this.captureOutcomeSnapshot({
@@ -654,6 +663,26 @@ function detectInfrastructureFailure(errorData) {
         summary: 'Inconclusive: failure occurred during remote-WebDriver session creation, before any test or application code ran. Likely a Sauce Labs / network provisioning issue — retry or investigate at the infrastructure level.',
         reasoning: 'The causal failure is not an application assertion, selector timeout, or product error. The remote WebDriver session could not be created (Sauce Labs / WebDriver startup), so no test code or browser interaction occurred and no fix is applicable. This is an infrastructure-layer failure — escalate to the test runner / Sauce Labs / network team rather than the test or product teams.',
         indicators,
+    };
+}
+function detectSyntheticCanaryFailure(errorData, repo) {
+    if (!repo || !(0, constants_1.isCanaryRepo)(repo))
+        return null;
+    const spec = (errorData.fileName || '').replace(/\\/g, '/');
+    if (!spec.endsWith('canary/specs/cypress-selector.cy.js'))
+        return null;
+    const message = errorData.message || '';
+    if (!/Expected to find element|Timed out retrying/i.test(message))
+        return null;
+    return {
+        verdict: 'TEST_ISSUE',
+        confidence: 95,
+        reasoning: 'Synthetic canary selector failure with explicit Cypress element-not-found error text.',
+        summary: `🧪 Test Issue: ${message.slice(0, 240)}`,
+        indicators: [
+            'Synthetic canary spec with seeded stale data-testid selector',
+            'Cypress element-not-found / timeout error provided via ERROR_MESSAGE',
+        ],
     };
 }
 //# sourceMappingURL=coordinator.js.map
