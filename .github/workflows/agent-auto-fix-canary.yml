@@ -56,9 +56,7 @@ jobs:
         with:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           GITHUB_TOKEN: ${{ github.token }}
-          ERROR_MESSAGE: >-
-            Timed out retrying after 10000ms: Expected to find element: '[data-testid="submit"]', but never found it.
-            The page exposes [data-testid="submit-button"] for the submit control; restore the working data-testid selector.
+          ERROR_MESSAGE: "Timed out retrying after 10000ms: Expected to find element: '[data-testid=\"submit\"]', but never found it."
           ERROR_FILE: canary/specs/cypress-selector.cy.js
           ERROR_TEST_NAME: uses the current submit selector
           TEST_FRAMEWORKS: cypress

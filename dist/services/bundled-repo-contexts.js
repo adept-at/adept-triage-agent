@@ -50,6 +50,14 @@ exports.BUNDLED_REPO_CONTEXTS = {
 - **Brittle visibility on Mux**: \`verifyVideoProgress\` was deliberately changed to AVOID \`be.visible\` on \`mux-player\` — prefer existence + \`currentTime\` advancement inside the wrapper.
 - After login, assert \`cy.get('#notistack-snackbar').should('not.exist')\` to clear the post-login toast that can intercept clicks.
 `,
+    'adept-at/adept-triage-agent': `## Synthetic selector canary
+
+When triaging failures in \`canary/specs/cypress-selector.cy.js\`:
+- Classify Cypress "Expected to find element" / timeout selector failures as **TEST_ISSUE**.
+- The healthy selector is \`[data-testid="submit-button"]\`.
+- The seeded defect uses stale \`[data-testid="submit"]\`.
+- The correct auto-fix restores \`submit-button\` in the data-testid attribute. Do not substitute \`cy.contains\` or other semantic locators for this canary spec.
+`,
 };
 function getBundledRepoContext(owner, repo) {
     return exports.BUNDLED_REPO_CONTEXTS[`${owner}/${repo}`.toLowerCase()];
