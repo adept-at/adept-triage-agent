@@ -1,7 +1,8 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.BLAST_RADIUS = exports.FIX_VALIDATE_LOOP = exports.AGENT_CONFIG = exports.VERDICT_OVERRIDE_CONFIDENCE_THRESHOLD = exports.DEFAULT_PRODUCT_URL = exports.DEFAULT_PRODUCT_REPO = exports.AUTO_FIX = exports.TEST_ISSUE_CATEGORIES = exports.ERROR_TYPES = exports.FORMATTING = exports.ARTIFACTS = exports.SHORT_SHA_LENGTH = exports.REASONING_EFFORT = exports.AGENT_MODEL = exports.OPENAI = exports.CONFIDENCE = exports.LOG_LIMITS = void 0;
+exports.CANARY_REPOS = exports.BLAST_RADIUS = exports.FIX_VALIDATE_LOOP = exports.AGENT_CONFIG = exports.VERDICT_OVERRIDE_CONFIDENCE_THRESHOLD = exports.DEFAULT_PRODUCT_URL = exports.DEFAULT_PRODUCT_REPO = exports.AUTO_FIX = exports.TEST_ISSUE_CATEGORIES = exports.ERROR_TYPES = exports.FORMATTING = exports.ARTIFACTS = exports.SHORT_SHA_LENGTH = exports.REASONING_EFFORT = exports.AGENT_MODEL = exports.OPENAI = exports.CONFIDENCE = exports.LOG_LIMITS = void 0;
 exports.supportsReasoningEffort = supportsReasoningEffort;
+exports.isCanaryRepo = isCanaryRepo;
 exports.LOG_LIMITS = {
     GITHUB_MAX_SIZE: 50_000,
     ARTIFACT_SOFT_CAP: 20_000,
@@ -118,4 +119,8 @@ exports.BLAST_RADIUS = {
     HELPER_CONTRACT_CHANGE_BOOST: 5,
     MAX_REQUIRED_CONFIDENCE: 95,
 };
+exports.CANARY_REPOS = ['adept-at/adept-triage-agent'];
+function isCanaryRepo(repo) {
+    return exports.CANARY_REPOS.includes(repo);
+}
 //# sourceMappingURL=constants.js.map

@@ -47,15 +47,18 @@ export declare class PipelineCoordinator {
     private artifactFetcher;
     private inputs;
     private repoDetails;
+    private outcomeSnapshot;
     constructor(deps: PipelineCoordinatorDeps);
     classify(errorData: ErrorData, skillStore?: SkillStore): Promise<ClassificationResult>;
     repair(_classification: ClassificationResult, errorData: ErrorData, skillStore?: SkillStore): Promise<RepairResult>;
     execute(): Promise<void>;
+    private captureOutcomeSnapshot;
+    private persistRunOutcome;
     private runClassifyAndRepair;
     private recordFailure;
     private handleNoErrorData;
 }
-export declare function shouldWriteSkillOutcome(autoFixResult: ApplyResult | null | undefined): boolean;
+export declare function shouldWriteSkillOutcome(autoFixResult: ApplyResult | null | undefined, errorData?: ErrorData): boolean;
 export declare function detectInfrastructureFailure(errorData: ErrorData): {
     reasoning: string;
     summary: string;

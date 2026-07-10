@@ -9,6 +9,7 @@
     "test": "jest",
     "test:watch": "jest --watch",
     "test:integration": "jest --testPathPattern=integration --testPathIgnorePatterns=[]",
+    "test:integration:deterministic": "jest --testPathPattern=integration/agent-workflow --testPathIgnorePatterns=[]",
     "test:pr-diff": "npx ts-node __tests__/integration/pr-diff-fetcher.integration.test.ts",
     "lint": "eslint src/**/*.ts",
     "package": "ncc build dist/index.js -o dist --source-map --license licenses.txt",

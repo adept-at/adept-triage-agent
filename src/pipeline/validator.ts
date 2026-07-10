@@ -83,7 +83,12 @@ export async function generateFixRecommendation(
     );
     const skills = skillStore
       ? {
-          relevant: skillStore.findRelevant({
+          relevant: skillStore.findRelevantForInvestigation({
+            framework: (errorData as ErrorData).framework || 'unknown',
+            spec: errorData.fileName,
+            errorMessage: errorData.message,
+          }),
+          failedTrajectories: skillStore.findFailedTrajectories({
             framework: (errorData as ErrorData).framework || 'unknown',
             spec: errorData.fileName,
             errorMessage: errorData.message,

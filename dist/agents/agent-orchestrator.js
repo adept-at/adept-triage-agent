@@ -176,7 +176,7 @@ class AgentOrchestrator {
         trace.lastStage = 'analysis';
         core.info('📊 Step 1: Running Analysis Agent...');
         if (skills && skills.relevant.length > 0) {
-            context.skillsPrompt = (0, skill_store_1.formatSkillsForPrompt)(skills.relevant, 'investigation', skills.flakiness);
+            context.skillsPrompt = (0, skill_store_1.formatSkillsForPrompt)(skills.relevant.filter((s) => s.isSeed || s.validatedLocally === true), 'investigation', skills.flakiness);
         }
         const analysisResult = await this.analysisAgent.execute({}, context, lastResponseId);
         agentResults.analysis = analysisResult;
@@ -254,7 +254,7 @@ class AgentOrchestrator {
             : '';
         context.delegationContext = this.buildDelegationContext('investigation', { analysis, productDiffSummary });
         const baseInvestigationSkills = skills
-            ? (0, skill_store_1.formatSkillsForPrompt)(skills.relevant, 'investigation', skills.flakiness)
+            ? (0, skill_store_1.formatSkillsForPrompt)(skills.relevant.filter((s) => s.isSeed || s.validatedLocally === true), 'investigation', skills.flakiness)
             : '';
         context.skillsPrompt = context.priorInvestigationContext
             ? `### Prior Investigation Findings\n${context.priorInvestigationContext}\n\n${baseInvestigationSkills}`
@@ -418,7 +418,12 @@ class AgentOrchestrator {
                 productDiffSummary,
             });
             context.skillsPrompt = skills
-                ? (0, skill_store_1.formatSkillsForPrompt)(skills.relevant, 'fix_generation', skills.flakiness)
+                ? [
+                    (0, skill_store_1.formatSkillsForPrompt)(skills.relevant.filter((s) => s.isSeed || s.validatedLocally === true), 'fix_generation', skills.flakiness),
+                    (0, skill_store_1.formatFailedTrajectoriesForPrompt)(skills.failedTrajectories || []),
+                ]
+                    .filter(Boolean)
+                    .join('\n\n')
                 : '';
             if (reviewFeedback) {
                 core.info(`   📨 Sending previous review feedback to Fix Gen Agent:`);
@@ -516,7 +521,12 @@ class AgentOrchestrator {
                     productDiffSummary,
                 });
                 context.skillsPrompt = skills
-                    ? (0, skill_store_1.formatSkillsForPrompt)(skills.relevant, 'review', skills.flakiness)
+                    ? [
+                        (0, skill_store_1.formatSkillsForPrompt)(skills.relevant.filter((s) => s.isSeed || s.validatedLocally === true), 'review', skills.flakiness),
+                        (0, skill_store_1.formatFailedTrajectoriesForPrompt)(skills.failedTrajectories || []),
+                    ]
+                        .filter(Boolean)
+                        .join('\n\n')
                     : '';
                 const reviewResult = await this.reviewAgent.execute({
                     proposedFix: lastFix,

@@ -22,8 +22,8 @@ describe('shouldWriteSkillOutcome', () => {
     expect(shouldWriteSkillOutcome(result)).toBe(false);
   });
 
-  it('writes skill outcomes only for terminal validation statuses', () => {
-    for (const status of ['passed', 'failed', 'inconclusive'] as const) {
+  it('writes skill outcomes only for terminal validation statuses that should learn', () => {
+    for (const status of ['passed', 'failed'] as const) {
       const result: ApplyResult = {
         success: status === 'passed',
         modifiedFiles: ['spec.ts'],
@@ -37,6 +37,18 @@ describe('shouldWriteSkillOutcome', () => {
 
       expect(shouldWriteSkillOutcome(result)).toBe(true);
     }
+
+    const inconclusive: ApplyResult = {
+      success: false,
+      modifiedFiles: ['spec.ts'],
+      validationStatus: 'inconclusive',
+      validationResult: {
+        status: 'inconclusive',
+        mode: 'remote',
+        conclusion: 'inconclusive',
+      },
+    };
+    expect(shouldWriteSkillOutcome(inconclusive)).toBe(false);
   });
 
   it('does not treat skipped validation as falsified fix evidence', () => {

@@ -32,6 +32,9 @@ jobs:
     - name: Run tests
       run: npm test
       
+    - name: Run deterministic integration tests
+      run: npm run test:integration:deterministic
+      
     - name: Build action
       run: npm run build
       

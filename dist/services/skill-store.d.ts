@@ -67,6 +67,18 @@ export declare class SkillStore {
         errorMessage?: string;
         limit?: number;
     }): TriageSkill[];
+    findRelevantForInvestigation(opts: {
+        framework: string;
+        spec?: string;
+        errorMessage?: string;
+        limit?: number;
+    }): TriageSkill[];
+    findFailedTrajectories(opts: {
+        framework: string;
+        spec?: string;
+        errorMessage?: string;
+        limit?: number;
+    }): TriageSkill[];
     findForClassifier(opts: {
         framework: string;
         spec?: string;
@@ -141,4 +153,5 @@ export declare function describeFixPattern(changes: Array<{
 export declare function normalizeSpec(raw?: string): string;
 export declare function normalizeError(msg: string): string;
 export declare function formatSkillsForPrompt(skills: TriageSkill[], role: 'investigation' | 'fix_generation' | 'review', flakiness?: FlakinessSignal): string;
+export declare function formatFailedTrajectoriesForPrompt(skills: TriageSkill[]): string;
 //# sourceMappingURL=skill-store.d.ts.map

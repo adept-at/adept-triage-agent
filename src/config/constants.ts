@@ -323,3 +323,10 @@ export const BLAST_RADIUS = {
    */
   MAX_REQUIRED_CONFIDENCE: 95,
 } as const;
+
+/** Repos whose triage runs are synthetic canary demonstrations, not production. */
+export const CANARY_REPOS: readonly string[] = ['adept-at/adept-triage-agent'];
+
+export function isCanaryRepo(repo: string): boolean {
+  return CANARY_REPOS.includes(repo);
+}

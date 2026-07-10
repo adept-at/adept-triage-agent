@@ -288,10 +288,47 @@ export interface FewShotExample {
   reasoning: string;
 }
 
+/** Terminal repair funnel record written to DynamoDB under OUTCOME# prefix. */
+export interface OutcomeEvent {
+  repo: string;
+  spec: string;
+  testName: string;
+  failureKey: string;
+  framework: string;
+  verdict: string;
+  confidence: number;
+  deploymentTier: 'canary' | 'production';
+  s1_testIssue: boolean;
+  s2_fixGenerated: boolean;
+  s3_reviewApproved: boolean;
+  s4_baselineReproduced: boolean;
+  s5_patchApplied: boolean;
+  s6_validationPassed: boolean;
+  s7_published: boolean;
+  repairStatus: string;
+  validationStatus: string;
+  autoFixSkipped: boolean;
+  autoFixSkippedReason?: string;
+  fixFingerprint?: string;
+  skillId?: string;
+  prUrl?: string;
+  repairElapsedMs?: number;
+  completedAt: string;
+  triageRunId: string;
+  sourceRunId: string;
+  triageRunUrl: string;
+}
+
 export interface ActionInputs {
   githubToken: string;
   openaiApiKey: string;
   errorMessage?: string;
+  /** Test file path for direct ERROR_MESSAGE mode */
+  errorFile?: string;
+  /** Test case name for direct ERROR_MESSAGE mode */
+  errorTestName?: string;
+  /** When false, skip DynamoDB persistence (skills, failures, outcomes) */
+  persistResults?: boolean;
   workflowRunId?: string;
   jobName?: string;
   confidenceThreshold: number;

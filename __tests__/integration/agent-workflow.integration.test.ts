@@ -6,6 +6,8 @@
 import {
   AgentOrchestrator,
   createOrchestrator,
+  MIN_FIX_GEN_BUDGET_MS,
+  MIN_REVIEW_BUDGET_MS,
 } from '../../src/agents/agent-orchestrator';
 import { createAgentContext, AgentContext } from '../../src/agents/base-agent';
 import { AnalysisOutput } from '../../src/agents/analysis-agent';
@@ -182,7 +184,7 @@ describe('Login Page', () => {
       maxIterations: 3,
       minConfidence: 70,
       requireReview: true,
-      totalTimeoutMs: 30000,
+      totalTimeoutMs: MIN_FIX_GEN_BUDGET_MS + MIN_REVIEW_BUDGET_MS + 30_000,
     });
 
     // Create a realistic test context

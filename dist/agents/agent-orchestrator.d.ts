@@ -45,6 +45,7 @@ export declare class AgentOrchestrator {
     constructor(openaiClient: OpenAIClient, config?: Partial<OrchestratorConfig>, sourceFetchContext?: SourceFetchContext);
     orchestrate(context: AgentContext, errorData?: ErrorData, previousResponseId?: string, skills?: {
         relevant: TriageSkill[];
+        failedTrajectories?: TriageSkill[];
         flakiness?: FlakinessSignal;
     }): Promise<OrchestrationResult>;
     private runPipeline;

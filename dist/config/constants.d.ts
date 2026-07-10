@@ -102,4 +102,6 @@ export declare const BLAST_RADIUS: {
     readonly HELPER_CONTRACT_CHANGE_BOOST: 5;
     readonly MAX_REQUIRED_CONFIDENCE: 95;
 };
+export declare const CANARY_REPOS: readonly string[];
+export declare function isCanaryRepo(repo: string): boolean;
 //# sourceMappingURL=constants.d.ts.map

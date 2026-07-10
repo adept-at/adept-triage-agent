@@ -47,6 +47,9 @@ function getInputs(): ActionInputs {
       core.getInput('GITHUB_TOKEN') || process.env.GITHUB_TOKEN || '',
     openaiApiKey: core.getInput('OPENAI_API_KEY', { required: true }),
     errorMessage: core.getInput('ERROR_MESSAGE'),
+    errorFile: core.getInput('ERROR_FILE') || undefined,
+    errorTestName: core.getInput('ERROR_TEST_NAME') || undefined,
+    persistResults: core.getInput('PERSIST_RESULTS') !== 'false',
     workflowRunId: core.getInput('WORKFLOW_RUN_ID'),
     jobName: core.getInput('JOB_NAME'),
     confidenceThreshold: safeParseInt(

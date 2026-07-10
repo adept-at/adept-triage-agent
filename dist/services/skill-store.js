@@ -41,6 +41,7 @@ exports.describeFixPattern = describeFixPattern;
 exports.normalizeSpec = normalizeSpec;
 exports.normalizeError = normalizeError;
 exports.formatSkillsForPrompt = formatSkillsForPrompt;
+exports.formatFailedTrajectoriesForPrompt = formatFailedTrajectoriesForPrompt;
 const core = __importStar(require("@actions/core"));
 const crypto = __importStar(require("crypto"));
 const FLAKY_THRESHOLDS = {
@@ -351,6 +352,17 @@ class SkillStore {
             this.usageStats.surfacedIds.add(s.id);
         return result;
     }
+    findRelevantForInvestigation(opts) {
+        return this.findRelevant(opts).filter((s) => s.isSeed === true || s.validatedLocally === true);
+    }
+    findFailedTrajectories(opts) {
+        const limit = opts.limit ?? 3;
+        return this.findRelevant({ ...opts, limit: limit * 2 })
+            .filter((s) => !s.isSeed &&
+            s.validatedLocally !== true &&
+            (s.failCount ?? 0) > 0)
+            .slice(0, limit);
+    }
     findForClassifier(opts) {
         const normalized = normalizeFramework(opts.framework);
         const candidates = this.skills.filter((s) => {
@@ -532,7 +544,7 @@ class SkillStore {
         return this.formatSkillsForClassifierContext(this.findForClassifier(opts));
     }
     formatForInvestigation(opts) {
-        const relevant = this.findRelevant({
+        const relevant = this.findRelevantForInvestigation({
             framework: opts.framework,
             spec: opts.spec,
             errorMessage: opts.errorMessage,
@@ -746,5 +758,29 @@ function formatSkillsForPrompt(skills, role, flakiness) {
         parts.push('', `⚠️ FLAKINESS SIGNAL: ${flakiness.message}`);
     }
     return parts.join('\n');
+}
+function formatFailedTrajectoriesForPrompt(skills) {
+    if (skills.length === 0)
+        return '';
+    logSkillTelemetry('failed_trajectory', skills.map((s) => s.id));
+    const lines = skills.map((s, i) => {
+        const failures = s.failCount ?? 0;
+        const total = failures + (s.successCount ?? 0);
+        return [
+            `${i + 1}. Failed trajectory (${total > 0 ? `${failures}/${total} failed` : 'unvalidated'}) on ${sanitizeForPrompt(s.spec)}`,
+            `   Error pattern: ${sanitizeForPrompt(s.errorPattern)}`,
+            `   Attempted pattern: ${sanitizeForPrompt(s.fix.pattern)}`,
+            s.failedFixEvidence?.reasonTheFixWasWrong
+                ? `   Why it failed: ${sanitizeForPrompt(s.failedFixEvidence.reasonTheFixWasWrong)}`
+                : '   Why it failed: validation did not pass with this fix',
+        ].join('\n');
+    });
+    return [
+        '### Negative Evidence: Prior Failed Fix Attempts',
+        '',
+        'These fixes were tried and did NOT validate. Do NOT repeat them unless you can explain why they will succeed now.',
+        '',
+        ...lines,
+    ].join('\n');
 }
 //# sourceMappingURL=skill-store.js.map

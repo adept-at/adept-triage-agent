@@ -19,6 +19,11 @@ function getTokenUsage(response: unknown): number | undefined {
   return total > 0 ? total : undefined;
 }
 
+function isAbortError(error: unknown): boolean {
+  if (error instanceof Error && error.name === 'AbortError') return true;
+  return error instanceof DOMException && error.name === 'AbortError';
+}
+
 export class OpenAIClient {
   private openai: OpenAI;
   private maxRetries: number = OPENAI.MAX_RETRIES;
@@ -28,7 +33,7 @@ export class OpenAIClient {
     this.openai = new OpenAI({ apiKey });
   }
 
-  async analyze(errorData: ErrorData, examples: FewShotExample[], skillContext?: string, options?: { model?: string; reasoningEffort?: ReasoningEffort }): Promise<OpenAIResponse & { responseId: string }> {
+  async analyze(errorData: ErrorData, examples: FewShotExample[], skillContext?: string, options?: { model?: string; reasoningEffort?: ReasoningEffort; signal?: AbortSignal }): Promise<OpenAIResponse & { responseId: string }> {
     const model = options?.model ?? OPENAI.LEGACY_MODEL;
     const reasoningEffort = options?.reasoningEffort ?? 'none';
     core.info(`🧠 Using ${model} model for analysis (Responses API) reasoningEffort=${reasoningEffort}`);
@@ -51,7 +56,7 @@ export class OpenAIClient {
       try {
         core.info(`Analyzing with ${model} (attempt ${attempt}/${this.maxRetries})`);
         
-        const response = await this.openai.responses.create({
+        const requestBody = {
           model,
           instructions: systemPrompt,
           input,
@@ -59,17 +64,13 @@ export class OpenAIClient {
           text: { format: { type: 'json_object' as const } },
           ...(reasoningEffort !== 'none'
             ? {
-                // Cast rationale: the installed OpenAI SDK's ReasoningEffort
-                // type does not yet include 'xhigh'. The API accepts it
-                // (gpt-5.5 supports the level), so the runtime value
-                // passes through unchanged — the cast is purely to satisfy
-                // the SDK's compile-time narrower type. DO NOT narrow the
-                // input type to remove this cast; that would silently drop
-                // 'xhigh' support. Remove only when the SDK updates.
                 reasoning: { effort: reasoningEffort as 'low' | 'medium' | 'high' },
               }
             : {}),
-        });
+        };
+        const response = options?.signal
+          ? await this.openai.responses.create(requestBody, { signal: options.signal })
+          : await this.openai.responses.create(requestBody);
 
         const tokensUsed = getTokenUsage(response);
         if (tokensUsed !== undefined) {
@@ -89,6 +90,9 @@ export class OpenAIClient {
           : { ...result, responseId: response.id, tokensUsed };
 
       } catch (error) {
+        if (isAbortError(error)) {
+          throw error;
+        }
         core.warning(`OpenAI API attempt ${attempt} failed: ${error}`);
         
         if (attempt === this.maxRetries) {
@@ -766,6 +770,7 @@ Changed Product Files:
     model?: string;
     reasoningEffort?: ReasoningEffort;
     maxTokens?: number;
+    signal?: AbortSignal;
   }): Promise<{ text: string; responseId: string; tokensUsed?: number }> {
     const model = params.model ?? OPENAI.LEGACY_MODEL;
     const reasoningEffort = params.reasoningEffort ?? 'none';
@@ -778,7 +783,7 @@ Changed Product Files:
 
     for (let attempt = 1; attempt <= this.maxRetries; attempt++) {
       try {
-        const response = await this.openai.responses.create({
+        const requestBody = {
           model,
           instructions: params.systemPrompt,
           input,
@@ -787,13 +792,13 @@ Changed Product Files:
           ...(params.previousResponseId ? { previous_response_id: params.previousResponseId } : {}),
           ...(reasoningEffort !== 'none'
             ? {
-                // Cast rationale: see parallel comment in analyze(). SDK's
-            // ReasoningEffort type does not include 'xhigh' yet; the API
-                // accepts it. DO NOT narrow input type to remove this cast.
                 reasoning: { effort: reasoningEffort as 'low' | 'medium' | 'high' },
               }
             : {}),
-        });
+        };
+        const response = params.signal
+          ? await this.openai.responses.create(requestBody, { signal: params.signal })
+          : await this.openai.responses.create(requestBody);
 
         const content = response.output_text;
         if (!content) {
@@ -804,6 +809,9 @@ Changed Product Files:
           ? { text: content, responseId: response.id }
           : { text: content, responseId: response.id, tokensUsed };
       } catch (error) {
+        if (isAbortError(error)) {
+          throw error;
+        }
         core.warning(`OpenAI custom prompt attempt ${attempt} failed: ${error}`);
 
         if (attempt === this.maxRetries) {

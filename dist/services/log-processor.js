@@ -41,6 +41,7 @@ exports.buildStructuredSummary = buildStructuredSummary;
 const core = __importStar(require("@actions/core"));
 const github = __importStar(require("@actions/github"));
 const simplified_analyzer_1 = require("../simplified-analyzer");
+const skill_store_1 = require("./skill-store");
 const constants_1 = require("../config/constants");
 const text_utils_1 = require("../utils/text-utils");
 const retry_1 = require("../utils/retry");
@@ -51,7 +52,9 @@ async function processWorkflowLogs(octokit, artifactFetcher, inputs, repoDetails
     if (inputs.errorMessage) {
         return {
             message: inputs.errorMessage,
-            framework: 'unknown',
+            framework: resolveDirectErrorFramework(inputs),
+            fileName: inputs.errorFile,
+            testName: inputs.errorTestName,
             context: 'Error message provided directly via input',
         };
     }
@@ -426,5 +429,17 @@ function buildStructuredSummary(err) {
             logSize: err.logs?.reduce((sum, l) => sum + l.length, 0) ?? 0,
         },
     };
+}
+function resolveDirectErrorFramework(inputs) {
+    const fromInput = (0, skill_store_1.normalizeFramework)(inputs.testFrameworks);
+    if (fromInput !== 'unknown')
+        return fromInput;
+    const file = inputs.errorFile?.toLowerCase() ?? '';
+    if (file.includes('.cy.') || file.includes('/cypress/'))
+        return 'cypress';
+    if (file.includes('wdio') || file.includes('.e2e.') || file.includes('webdriver')) {
+        return 'webdriverio';
+    }
+    return 'unknown';
 }
 //# sourceMappingURL=log-processor.js.map

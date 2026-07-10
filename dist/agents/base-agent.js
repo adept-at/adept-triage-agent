@@ -61,30 +61,40 @@ class BaseAgent {
         const startTime = Date.now();
         let apiCalls = 0;
         let timeoutId;
+        const abortController = new AbortController();
         try {
             core.info(`[${this.agentName}] Starting execution...`);
             const timeoutPromise = new Promise((_, reject) => {
                 timeoutId = setTimeout(() => {
+                    abortController.abort();
                     reject(new Error(`Agent timed out after ${this.config.timeoutMs}ms`));
                 }, this.config.timeoutMs);
             });
-            const taskPromise = this.runAgentTask(input, context, previousResponseId);
+            const taskPromise = this.runAgentTask(input, context, previousResponseId, abortController.signal);
             apiCalls++;
-            const { data: result, responseId, tokensUsed } = await Promise.race([taskPromise, timeoutPromise]);
-            clearTimeout(timeoutId);
-            const executionTimeMs = Date.now() - startTime;
-            core.info(`[${this.agentName}] Completed in ${executionTimeMs}ms`);
-            if (tokensUsed !== undefined) {
-                core.info(`[${this.agentName}] Token usage: ${tokensUsed}`);
+            try {
+                const { data: result, responseId, tokensUsed } = await Promise.race([
+                    taskPromise,
+                    timeoutPromise,
+                ]);
+                clearTimeout(timeoutId);
+                const executionTimeMs = Date.now() - startTime;
+                core.info(`[${this.agentName}] Completed in ${executionTimeMs}ms`);
+                if (tokensUsed !== undefined) {
+                    core.info(`[${this.agentName}] Token usage: ${tokensUsed}`);
+                }
+                return {
+                    success: true,
+                    data: result,
+                    executionTimeMs,
+                    apiCalls,
+                    responseId,
+                    tokensUsed,
+                };
             }
-            return {
-                success: true,
-                data: result,
-                executionTimeMs,
-                apiCalls,
-                responseId,
-                tokensUsed,
-            };
+            finally {
+                taskPromise.catch(() => { });
+            }
         }
         catch (error) {
             clearTimeout(timeoutId);
@@ -99,7 +109,7 @@ class BaseAgent {
             };
         }
     }
-    async runAgentTask(input, context, previousResponseId) {
+    async runAgentTask(input, context, previousResponseId, signal) {
         const baseSystemPrompt = this.getSystemPrompt(context.framework);
         const systemPrompt = context.repoContext
             ? `${baseSystemPrompt}\n\n${context.repoContext}`
@@ -131,6 +141,7 @@ class BaseAgent {
             model: this.config.model,
             reasoningEffort: this.config.reasoningEffort,
             maxTokens: this.config.maxTokens,
+            signal,
         });
         const parsed = this.parseResponse(text);
         if (!parsed) {

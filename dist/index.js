@@ -183,7 +183,7 @@ class AgentOrchestrator {
         trace.lastStage = 'analysis';
         core.info('📊 Step 1: Running Analysis Agent...');
         if (skills && skills.relevant.length > 0) {
-            context.skillsPrompt = (0, skill_store_1.formatSkillsForPrompt)(skills.relevant, 'investigation', skills.flakiness);
+            context.skillsPrompt = (0, skill_store_1.formatSkillsForPrompt)(skills.relevant.filter((s) => s.isSeed || s.validatedLocally === true), 'investigation', skills.flakiness);
         }
         const analysisResult = await this.analysisAgent.execute({}, context, lastResponseId);
         agentResults.analysis = analysisResult;
@@ -261,7 +261,7 @@ class AgentOrchestrator {
             : '';
         context.delegationContext = this.buildDelegationContext('investigation', { analysis, productDiffSummary });
         const baseInvestigationSkills = skills
-            ? (0, skill_store_1.formatSkillsForPrompt)(skills.relevant, 'investigation', skills.flakiness)
+            ? (0, skill_store_1.formatSkillsForPrompt)(skills.relevant.filter((s) => s.isSeed || s.validatedLocally === true), 'investigation', skills.flakiness)
             : '';
         context.skillsPrompt = context.priorInvestigationContext
             ? `### Prior Investigation Findings\n${context.priorInvestigationContext}\n\n${baseInvestigationSkills}`
@@ -425,7 +425,12 @@ class AgentOrchestrator {
                 productDiffSummary,
             });
             context.skillsPrompt = skills
-                ? (0, skill_store_1.formatSkillsForPrompt)(skills.relevant, 'fix_generation', skills.flakiness)
+                ? [
+                    (0, skill_store_1.formatSkillsForPrompt)(skills.relevant.filter((s) => s.isSeed || s.validatedLocally === true), 'fix_generation', skills.flakiness),
+                    (0, skill_store_1.formatFailedTrajectoriesForPrompt)(skills.failedTrajectories || []),
+                ]
+                    .filter(Boolean)
+                    .join('\n\n')
                 : '';
             if (reviewFeedback) {
                 core.info(`   📨 Sending previous review feedback to Fix Gen Agent:`);
@@ -523,7 +528,12 @@ class AgentOrchestrator {
                     productDiffSummary,
                 });
                 context.skillsPrompt = skills
-                    ? (0, skill_store_1.formatSkillsForPrompt)(skills.relevant, 'review', skills.flakiness)
+                    ? [
+                        (0, skill_store_1.formatSkillsForPrompt)(skills.relevant.filter((s) => s.isSeed || s.validatedLocally === true), 'review', skills.flakiness),
+                        (0, skill_store_1.formatFailedTrajectoriesForPrompt)(skills.failedTrajectories || []),
+                    ]
+                        .filter(Boolean)
+                        .join('\n\n')
                     : '';
                 const reviewResult = await this.reviewAgent.execute({
                     proposedFix: lastFix,
@@ -1247,30 +1257,40 @@ class BaseAgent {
         const startTime = Date.now();
         let apiCalls = 0;
         let timeoutId;
+        const abortController = new AbortController();
         try {
             core.info(`[${this.agentName}] Starting execution...`);
             const timeoutPromise = new Promise((_, reject) => {
                 timeoutId = setTimeout(() => {
+                    abortController.abort();
                     reject(new Error(`Agent timed out after ${this.config.timeoutMs}ms`));
                 }, this.config.timeoutMs);
             });
-            const taskPromise = this.runAgentTask(input, context, previousResponseId);
+            const taskPromise = this.runAgentTask(input, context, previousResponseId, abortController.signal);
             apiCalls++;
-            const { data: result, responseId, tokensUsed } = await Promise.race([taskPromise, timeoutPromise]);
-            clearTimeout(timeoutId);
-            const executionTimeMs = Date.now() - startTime;
-            core.info(`[${this.agentName}] Completed in ${executionTimeMs}ms`);
-            if (tokensUsed !== undefined) {
-                core.info(`[${this.agentName}] Token usage: ${tokensUsed}`);
+            try {
+                const { data: result, responseId, tokensUsed } = await Promise.race([
+                    taskPromise,
+                    timeoutPromise,
+                ]);
+                clearTimeout(timeoutId);
+                const executionTimeMs = Date.now() - startTime;
+                core.info(`[${this.agentName}] Completed in ${executionTimeMs}ms`);
+                if (tokensUsed !== undefined) {
+                    core.info(`[${this.agentName}] Token usage: ${tokensUsed}`);
+                }
+                return {
+                    success: true,
+                    data: result,
+                    executionTimeMs,
+                    apiCalls,
+                    responseId,
+                    tokensUsed,
+                };
             }
-            return {
-                success: true,
-                data: result,
-                executionTimeMs,
-                apiCalls,
-                responseId,
-                tokensUsed,
-            };
+            finally {
+                taskPromise.catch(() => { });
+            }
         }
         catch (error) {
             clearTimeout(timeoutId);
@@ -1285,7 +1305,7 @@ class BaseAgent {
             };
         }
     }
-    async runAgentTask(input, context, previousResponseId) {
+    async runAgentTask(input, context, previousResponseId, signal) {
         const baseSystemPrompt = this.getSystemPrompt(context.framework);
         const systemPrompt = context.repoContext
             ? `${baseSystemPrompt}\n\n${context.repoContext}`
@@ -1317,6 +1337,7 @@ class BaseAgent {
             model: this.config.model,
             reasoningEffort: this.config.reasoningEffort,
             maxTokens: this.config.maxTokens,
+            signal,
         });
         const parsed = this.parseResponse(text);
         if (!parsed) {
@@ -3622,8 +3643,9 @@ exports.ArtifactFetcher = ArtifactFetcher;
 "use strict";
 
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.BLAST_RADIUS = exports.FIX_VALIDATE_LOOP = exports.AGENT_CONFIG = exports.VERDICT_OVERRIDE_CONFIDENCE_THRESHOLD = exports.DEFAULT_PRODUCT_URL = exports.DEFAULT_PRODUCT_REPO = exports.AUTO_FIX = exports.TEST_ISSUE_CATEGORIES = exports.ERROR_TYPES = exports.FORMATTING = exports.ARTIFACTS = exports.SHORT_SHA_LENGTH = exports.REASONING_EFFORT = exports.AGENT_MODEL = exports.OPENAI = exports.CONFIDENCE = exports.LOG_LIMITS = void 0;
+exports.CANARY_REPOS = exports.BLAST_RADIUS = exports.FIX_VALIDATE_LOOP = exports.AGENT_CONFIG = exports.VERDICT_OVERRIDE_CONFIDENCE_THRESHOLD = exports.DEFAULT_PRODUCT_URL = exports.DEFAULT_PRODUCT_REPO = exports.AUTO_FIX = exports.TEST_ISSUE_CATEGORIES = exports.ERROR_TYPES = exports.FORMATTING = exports.ARTIFACTS = exports.SHORT_SHA_LENGTH = exports.REASONING_EFFORT = exports.AGENT_MODEL = exports.OPENAI = exports.CONFIDENCE = exports.LOG_LIMITS = void 0;
 exports.supportsReasoningEffort = supportsReasoningEffort;
+exports.isCanaryRepo = isCanaryRepo;
 exports.LOG_LIMITS = {
     GITHUB_MAX_SIZE: 50_000,
     ARTIFACT_SOFT_CAP: 20_000,
@@ -3740,6 +3762,10 @@ exports.BLAST_RADIUS = {
     HELPER_CONTRACT_CHANGE_BOOST: 5,
     MAX_REQUIRED_CONFIDENCE: 95,
 };
+exports.CANARY_REPOS = ['adept-at/adept-triage-agent'];
+function isCanaryRepo(repo) {
+    return exports.CANARY_REPOS.includes(repo);
+}
 //# sourceMappingURL=constants.js.map
 
 /***/ }),
@@ -4158,6 +4184,9 @@ function getInputs() {
         githubToken: core.getInput('GITHUB_TOKEN') || process.env.GITHUB_TOKEN || '',
         openaiApiKey: core.getInput('OPENAI_API_KEY', { required: true }),
         errorMessage: core.getInput('ERROR_MESSAGE'),
+        errorFile: core.getInput('ERROR_FILE') || undefined,
+        errorTestName: core.getInput('ERROR_TEST_NAME') || undefined,
+        persistResults: core.getInput('PERSIST_RESULTS') !== 'false',
         workflowRunId: core.getInput('WORKFLOW_RUN_ID'),
         jobName: core.getInput('JOB_NAME'),
         confidenceThreshold: safeParseInt(core.getInput('CONFIDENCE_THRESHOLD'), 70),
@@ -4261,6 +4290,11 @@ function getTokenUsage(response) {
     const total = input + output;
     return total > 0 ? total : undefined;
 }
+function isAbortError(error) {
+    if (error instanceof Error && error.name === 'AbortError')
+        return true;
+    return error instanceof DOMException && error.name === 'AbortError';
+}
 class OpenAIClient {
     openai;
     maxRetries = constants_1.OPENAI.MAX_RETRIES;
@@ -4286,7 +4320,7 @@ class OpenAIClient {
         for (let attempt = 1; attempt <= this.maxRetries; attempt++) {
             try {
                 core.info(`Analyzing with ${model} (attempt ${attempt}/${this.maxRetries})`);
-                const response = await this.openai.responses.create({
+                const requestBody = {
                     model,
                     instructions: systemPrompt,
                     input,
@@ -4297,7 +4331,10 @@ class OpenAIClient {
                             reasoning: { effort: reasoningEffort },
                         }
                         : {}),
-                });
+                };
+                const response = options?.signal
+                    ? await this.openai.responses.create(requestBody, { signal: options.signal })
+                    : await this.openai.responses.create(requestBody);
                 const tokensUsed = getTokenUsage(response);
                 if (tokensUsed !== undefined) {
                     core.info(`🧮 ${model} analysis token usage: ${tokensUsed}`);
@@ -4313,6 +4350,9 @@ class OpenAIClient {
                     : { ...result, responseId: response.id, tokensUsed };
             }
             catch (error) {
+                if (isAbortError(error)) {
+                    throw error;
+                }
                 core.warning(`OpenAI API attempt ${attempt} failed: ${error}`);
                 if (attempt === this.maxRetries) {
                     throw new Error(`Failed to get analysis from OpenAI after ${this.maxRetries} attempts: ${error}`);
@@ -4844,7 +4884,7 @@ Changed Product Files:
         core.info(`🧠 Using ${model} model (Responses API) reasoningEffort=${reasoningEffort}`);
         for (let attempt = 1; attempt <= this.maxRetries; attempt++) {
             try {
-                const response = await this.openai.responses.create({
+                const requestBody = {
                     model,
                     instructions: params.systemPrompt,
                     input,
@@ -4856,7 +4896,10 @@ Changed Product Files:
                             reasoning: { effort: reasoningEffort },
                         }
                         : {}),
-                });
+                };
+                const response = params.signal
+                    ? await this.openai.responses.create(requestBody, { signal: params.signal })
+                    : await this.openai.responses.create(requestBody);
                 const content = response.output_text;
                 if (!content) {
                     throw new Error('Empty response from OpenAI');
@@ -4867,6 +4910,9 @@ Changed Product Files:
                     : { text: content, responseId: response.id, tokensUsed };
             }
             catch (error) {
+                if (isAbortError(error)) {
+                    throw error;
+                }
                 core.warning(`OpenAI custom prompt attempt ${attempt} failed: ${error}`);
                 if (attempt === this.maxRetries) {
                     throw new Error(`Failed to get custom prompt response from OpenAI after ${this.maxRetries} attempts: ${error}`);
@@ -4930,6 +4976,8 @@ const simplified_analyzer_1 = __nccwpck_require__(20078);
 const log_processor_1 = __nccwpck_require__(65833);
 const skill_store_1 = __nccwpck_require__(60215);
 const failure_event_store_1 = __nccwpck_require__(1109);
+const outcome_event_store_1 = __nccwpck_require__(74459);
+const outcome_telemetry_1 = __nccwpck_require__(23422);
 const repo_context_fetcher_1 = __nccwpck_require__(3844);
 const root_cause_category_1 = __nccwpck_require__(21406);
 const run_telemetry_1 = __nccwpck_require__(93971);
@@ -4941,6 +4989,7 @@ class PipelineCoordinator {
     artifactFetcher;
     inputs;
     repoDetails;
+    outcomeSnapshot = null;
     constructor(deps) {
         this.octokit = deps.octokit;
         this.openaiClient = deps.openaiClient;
@@ -5074,7 +5123,8 @@ class PipelineCoordinator {
             ? (0, output_1.resolveAutoFixTargetRepo)(this.inputs)
             : null;
         let skillStore;
-        if (autoFixTargetRepo) {
+        const persistResults = this.inputs.persistResults !== false;
+        if (autoFixTargetRepo && persistResults) {
             skillStore = new skill_store_1.SkillStore(this.inputs.triageAwsRegion || 'us-east-1', this.inputs.triageDynamoTable || 'triage-skills-v1-live', autoFixTargetRepo.owner, autoFixTargetRepo.repo);
             await skillStore.load();
         }
@@ -5084,6 +5134,33 @@ class PipelineCoordinator {
         finally {
             skillStore?.logRunSummary();
             (0, run_telemetry_1.logRunGateSummary)();
+            await this.persistRunOutcome(autoFixTargetRepo);
+        }
+    }
+    captureOutcomeSnapshot(params) {
+        this.outcomeSnapshot = params;
+    }
+    async persistRunOutcome(autoFixTargetRepo) {
+        if (!this.outcomeSnapshot)
+            return;
+        const repo = autoFixTargetRepo
+            ? `${autoFixTargetRepo.owner}/${autoFixTargetRepo.repo}`
+            : process.env.GITHUB_REPOSITORY;
+        if (!repo)
+            return;
+        try {
+            const event = (0, outcome_telemetry_1.buildOutcomeEvent)({
+                inputs: this.inputs,
+                repo,
+                ...this.outcomeSnapshot,
+            });
+            (0, outcome_telemetry_1.logOutcomeSummary)(event);
+            if (this.inputs.persistResults !== false) {
+                await (0, outcome_event_store_1.recordOutcomeEvent)(this.inputs.triageAwsRegion || 'us-east-1', this.inputs.triageDynamoTable || 'triage-skills-v1-live', event);
+            }
+        }
+        catch (err) {
+            core.warning(`Failed to persist run outcome: ${err}`);
         }
     }
     async runClassifyAndRepair(errorData, skillStore, autoFixTargetRepo) {
@@ -5099,15 +5176,35 @@ class PipelineCoordinator {
                 indicators: infraVerdict.indicators,
             };
             await this.recordFailure(errorData, 'INCONCLUSIVE', 95, autoFixTargetRepo);
+            this.captureOutcomeSnapshot({
+                errorData,
+                verdict: 'INCONCLUSIVE',
+                confidence: 95,
+                repairTelemetry: output_1.NOT_STARTED_REPAIR,
+            });
             (0, output_1.setInconclusiveOutput)(infraResult, this.inputs, errorData);
             return;
         }
         const classification = await this.classify(errorData, skillStore);
         await this.recordFailure(errorData, classification.verdict, classification.confidence, autoFixTargetRepo);
-        if (classification.confidence < this.inputs.confidenceThreshold)
+        if (classification.confidence < this.inputs.confidenceThreshold) {
+            this.captureOutcomeSnapshot({
+                errorData,
+                verdict: classification.verdict,
+                confidence: classification.confidence,
+                repairTelemetry: output_1.NOT_STARTED_REPAIR,
+            });
             return;
-        if (classification.verdict !== 'TEST_ISSUE')
+        }
+        if (classification.verdict !== 'TEST_ISSUE') {
+            this.captureOutcomeSnapshot({
+                errorData,
+                verdict: classification.verdict,
+                confidence: classification.confidence,
+                repairTelemetry: output_1.NOT_STARTED_REPAIR,
+            });
             return;
+        }
         const nonFixableMatch = skillStore?.findNonFixableMatch({
             framework: errorData.framework || 'unknown',
             spec: errorData.fileName || 'unknown',
@@ -5119,16 +5216,25 @@ class PipelineCoordinator {
                 `Manual intervention required — no code change in this repo can fix this failure.`;
             core.warning(`⏭️  ${reason}`);
             (0, run_telemetry_1.recordGate)('nonFixableSeedSkips');
+            const skipTelemetry = {
+                status: 'skipped',
+                summary: reason,
+                iterations: 0,
+                elapsedMs: 0,
+            };
+            this.captureOutcomeSnapshot({
+                errorData,
+                verdict: classification.verdict,
+                confidence: classification.confidence,
+                repairTelemetry: skipTelemetry,
+                autoFixSkipped: true,
+                autoFixSkippedReason: reason,
+            });
             (0, output_1.setSuccessOutput)({
                 ...classification,
                 autoFixSkipped: true,
                 autoFixSkippedReason: reason,
-                repairTelemetry: {
-                    status: 'skipped',
-                    summary: reason,
-                    iterations: 0,
-                    elapsedMs: 0,
-                },
+                repairTelemetry: skipTelemetry,
             }, errorData, null);
             return;
         }
@@ -5138,16 +5244,25 @@ class PipelineCoordinator {
         if (chronicFlakinessSignal?.isFlaky) {
             const reason = `Chronic flakiness: ${chronicFlakinessSignal.message} Auto-fix skipped — likely needs human refactor (replace fixed pauses with deterministic waits, consolidate success surfaces) rather than another fallback.`;
             core.warning(`⏭️  ${reason}`);
+            const chronicSkipTelemetry = {
+                status: 'skipped',
+                summary: reason,
+                iterations: 0,
+                elapsedMs: 0,
+            };
+            this.captureOutcomeSnapshot({
+                errorData,
+                verdict: classification.verdict,
+                confidence: classification.confidence,
+                repairTelemetry: chronicSkipTelemetry,
+                autoFixSkipped: true,
+                autoFixSkippedReason: reason,
+            });
             (0, output_1.setSuccessOutput)({
                 ...classification,
                 autoFixSkipped: true,
                 autoFixSkippedReason: reason,
-                repairTelemetry: {
-                    status: 'skipped',
-                    summary: reason,
-                    iterations: 0,
-                    elapsedMs: 0,
-                },
+                repairTelemetry: chronicSkipTelemetry,
             }, errorData, null, chronicFlakinessSignal);
             return;
         }
@@ -5167,16 +5282,23 @@ class PipelineCoordinator {
                     elapsedMs: 0,
                 },
             };
+            this.captureOutcomeSnapshot({
+                errorData,
+                verdict: classification.verdict,
+                confidence: classification.confidence,
+                repairTelemetry: degraded.repairTelemetry,
+            });
             (0, output_1.setSuccessOutput)(degraded, errorData, null, chronicFlakinessSignal);
             return;
         }
         const { fixRecommendation, autoFixResult, iterations, prUrl: skillPrUrl, agentRootCause, agentInvestigationFindings, autoFixSkipped: repairAutoFixSkipped, autoFixSkippedReason: repairAutoFixSkippedReason, repairTelemetry: repairTelemetryFromRun, } = repairOutcome;
+        let savedSkillId;
         if (skillStore && autoFixTargetRepo && errorData) {
             const validationStatus = autoFixResult?.validationResult?.status || autoFixResult?.validationStatus;
             const validationPassed = validationStatus === 'passed';
             const publishSucceeded = !!autoFixResult?.success;
             const fixAttempted = !!fixRecommendation;
-            const shouldSaveSkill = shouldWriteSkillOutcome(autoFixResult);
+            const shouldSaveSkill = shouldWriteSkillOutcome(autoFixResult, errorData);
             const validationPending = validationStatus === 'pending';
             if (fixAttempted && validationPending) {
                 core.info('📝 Skipping skill outcome write while remote validation is pending');
@@ -5242,6 +5364,7 @@ class PipelineCoordinator {
                         return false;
                     });
                     if (saveSucceeded) {
+                        savedSkillId = skill.id;
                         if (validationPassed) {
                             await skillStore.recordOutcome(skill.id, true);
                             await skillStore.recordClassificationOutcome(skill.id, 'correct');
@@ -5269,9 +5392,22 @@ class PipelineCoordinator {
             }
         }
         result.repairTelemetry = (0, output_1.finalizeRepairTelemetry)(repairTelemetryFromRun, fixRecommendation, autoFixResult);
+        this.captureOutcomeSnapshot({
+            errorData,
+            verdict: classification.verdict,
+            confidence: classification.confidence,
+            fixRecommendation,
+            autoFixResult,
+            repairTelemetry: result.repairTelemetry,
+            autoFixSkipped: result.autoFixSkipped,
+            autoFixSkippedReason: result.autoFixSkippedReason,
+            skillId: savedSkillId,
+        });
         (0, output_1.setSuccessOutput)(result, errorData, autoFixResult, chronicFlakinessSignal);
     }
     async recordFailure(errorData, verdict, confidence, autoFixTargetRepo) {
+        if (this.inputs.persistResults === false)
+            return;
         const repo = autoFixTargetRepo
             ? `${autoFixTargetRepo.owner}/${autoFixTargetRepo.repo}`
             : process.env.GITHUB_REPOSITORY;
@@ -5409,12 +5545,21 @@ function buildFailedFixEvidence(errorData, autoFixResult) {
 function normalizeFailureSignature(message) {
     return message.replace(/\s+/g, ' ').trim().slice(0, 500);
 }
-function shouldWriteSkillOutcome(autoFixResult) {
+function shouldWriteSkillOutcome(autoFixResult, errorData) {
     const validationStatus = autoFixResult?.validationResult?.status || autoFixResult?.validationStatus;
-    return (!!autoFixResult &&
-        (validationStatus === 'passed' ||
-            validationStatus === 'failed' ||
-            validationStatus === 'inconclusive'));
+    if (!autoFixResult)
+        return false;
+    if (validationStatus === 'passed')
+        return true;
+    if (validationStatus === 'inconclusive')
+        return false;
+    if (validationStatus === 'failed') {
+        if (!errorData)
+            return true;
+        const evidence = buildFailedFixEvidence(errorData, autoFixResult);
+        return !evidence.changedFailureSignature;
+    }
+    return false;
 }
 function detectInfrastructureFailure(errorData) {
     const haystack = `${errorData.message || ''}\n${errorData.stackTrace || ''}`;
@@ -5446,6 +5591,144 @@ function detectInfrastructureFailure(errorData) {
     };
 }
 //# sourceMappingURL=coordinator.js.map
+
+/***/ }),
+
+/***/ 23422:
+/***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
+
+"use strict";
+
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.buildOutcomeEvent = buildOutcomeEvent;
+exports.logOutcomeSummary = logOutcomeSummary;
+const core = __importStar(__nccwpck_require__(37484));
+const constants_1 = __nccwpck_require__(58361);
+const skill_store_1 = __nccwpck_require__(60215);
+const validator_1 = __nccwpck_require__(34670);
+function normalizeFailureKey(spec, testName) {
+    return `${(0, skill_store_1.normalizeSpec)(spec) || 'unknown'}|${testName || 'unknown'}`;
+}
+const REVIEW_APPROVED_STATUSES = [
+    'approved',
+    'applied',
+    'validated',
+    'validated_publish_failed',
+    'validated_not_published',
+];
+function buildOutcomeEvent(params) {
+    const { inputs, errorData, verdict, confidence, fixRecommendation, autoFixResult, repairTelemetry, autoFixSkipped, autoFixSkippedReason, skillId, repo, } = params;
+    const spec = (0, skill_store_1.normalizeSpec)(errorData.fileName) || 'unknown';
+    const testName = errorData.testName || 'unknown';
+    const validationStatus = autoFixResult?.validationResult?.status ||
+        autoFixResult?.validationStatus ||
+        '';
+    const validationPassed = validationStatus === 'passed';
+    const fixFullyAccepted = !!autoFixResult?.success && validationPassed;
+    const repairStatus = repairTelemetry?.status || 'not_started';
+    const s1 = verdict === 'TEST_ISSUE';
+    const s2 = !!fixRecommendation;
+    const s3 = s2 &&
+        REVIEW_APPROVED_STATUSES.includes(repairStatus);
+    const s5 = !!autoFixResult &&
+        ((autoFixResult.modifiedFiles?.length ?? 0) > 0 ||
+            ['applied', 'validated', 'validated_publish_failed', 'validated_not_published'].includes(repairStatus));
+    const s4 = s1 &&
+        !autoFixSkipped &&
+        repairStatus !== 'skipped' &&
+        repairStatus !== 'not_started';
+    const s6 = validationPassed;
+    const s7 = fixFullyAccepted;
+    const { GITHUB_SERVER_URL, GITHUB_REPOSITORY, GITHUB_RUN_ID } = process.env;
+    const triageRunId = GITHUB_RUN_ID || '';
+    const triageRunUrl = GITHUB_SERVER_URL && GITHUB_REPOSITORY && GITHUB_RUN_ID
+        ? `${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}`
+        : '';
+    return {
+        repo,
+        spec,
+        testName,
+        failureKey: normalizeFailureKey(spec, testName),
+        framework: errorData.framework || 'unknown',
+        verdict,
+        confidence,
+        deploymentTier: (0, constants_1.isCanaryRepo)(repo) ? 'canary' : 'production',
+        s1_testIssue: s1,
+        s2_fixGenerated: s2,
+        s3_reviewApproved: s3,
+        s4_baselineReproduced: s4,
+        s5_patchApplied: s5,
+        s6_validationPassed: s6,
+        s7_published: s7,
+        repairStatus,
+        validationStatus: validationStatus || '',
+        autoFixSkipped: !!autoFixSkipped,
+        autoFixSkippedReason,
+        fixFingerprint: fixRecommendation ? (0, validator_1.fixFingerprint)(fixRecommendation) : undefined,
+        skillId,
+        prUrl: autoFixResult?.prUrl,
+        repairElapsedMs: repairTelemetry?.elapsedMs,
+        completedAt: new Date().toISOString(),
+        triageRunId,
+        sourceRunId: inputs.workflowRunId || '',
+        triageRunUrl,
+    };
+}
+function logOutcomeSummary(event) {
+    try {
+        core.info(`📊 outcome-telemetry-summary ` +
+            `tier=${event.deploymentTier} ` +
+            `repo=${event.repo} ` +
+            `triageRunId=${event.triageRunId} ` +
+            `verdict=${event.verdict} ` +
+            `s1=${event.s1_testIssue ? 1 : 0} ` +
+            `s2=${event.s2_fixGenerated ? 1 : 0} ` +
+            `s3=${event.s3_reviewApproved ? 1 : 0} ` +
+            `s4=${event.s4_baselineReproduced ? 1 : 0} ` +
+            `s5=${event.s5_patchApplied ? 1 : 0} ` +
+            `s6=${event.s6_validationPassed ? 1 : 0} ` +
+            `s7=${event.s7_published ? 1 : 0} ` +
+            `repair=${event.repairStatus} ` +
+            `validation=${event.validationStatus || 'none'}` +
+            (event.skillId ? ` skillId=${event.skillId}` : ''));
+    }
+    catch {
+    }
+}
+//# sourceMappingURL=outcome-telemetry.js.map
 
 /***/ }),
 
@@ -5965,7 +6248,12 @@ async function generateFixRecommendation(inputs, repoDetails, errorData, openaiC
         });
         const skills = skillStore
             ? {
-                relevant: skillStore.findRelevant({
+                relevant: skillStore.findRelevantForInvestigation({
+                    framework: errorData.framework || 'unknown',
+                    spec: errorData.fileName,
+                    errorMessage: errorData.message,
+                }),
+                failedTrajectories: skillStore.findFailedTrajectories({
                     framework: errorData.framework || 'unknown',
                     spec: errorData.fileName,
                     errorMessage: errorData.message,
@@ -8508,6 +8796,7 @@ exports.buildStructuredSummary = buildStructuredSummary;
 const core = __importStar(__nccwpck_require__(37484));
 const github = __importStar(__nccwpck_require__(93228));
 const simplified_analyzer_1 = __nccwpck_require__(20078);
+const skill_store_1 = __nccwpck_require__(60215);
 const constants_1 = __nccwpck_require__(58361);
 const text_utils_1 = __nccwpck_require__(11744);
 const retry_1 = __nccwpck_require__(92197);
@@ -8518,7 +8807,9 @@ async function processWorkflowLogs(octokit, artifactFetcher, inputs, repoDetails
     if (inputs.errorMessage) {
         return {
             message: inputs.errorMessage,
-            framework: 'unknown',
+            framework: resolveDirectErrorFramework(inputs),
+            fileName: inputs.errorFile,
+            testName: inputs.errorTestName,
             context: 'Error message provided directly via input',
         };
     }
@@ -8894,7 +9185,89 @@ function buildStructuredSummary(err) {
         },
     };
 }
+function resolveDirectErrorFramework(inputs) {
+    const fromInput = (0, skill_store_1.normalizeFramework)(inputs.testFrameworks);
+    if (fromInput !== 'unknown')
+        return fromInput;
+    const file = inputs.errorFile?.toLowerCase() ?? '';
+    if (file.includes('.cy.') || file.includes('/cypress/'))
+        return 'cypress';
+    if (file.includes('wdio') || file.includes('.e2e.') || file.includes('webdriver')) {
+        return 'webdriverio';
+    }
+    return 'unknown';
+}
 //# sourceMappingURL=log-processor.js.map
+
+/***/ }),
+
+/***/ 74459:
+/***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
+
+"use strict";
+
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.recordOutcomeEvent = recordOutcomeEvent;
+const core = __importStar(__nccwpck_require__(37484));
+const crypto = __importStar(__nccwpck_require__(76982));
+async function recordOutcomeEvent(region, tableName, event) {
+    try {
+        const { DynamoDBClient } = await __nccwpck_require__.e(/* import() */ 305).then(__nccwpck_require__.t.bind(__nccwpck_require__, 64305, 23));
+        const { DynamoDBDocumentClient, PutCommand } = await Promise.all(/* import() */[__nccwpck_require__.e(305), __nccwpck_require__.e(907)]).then(__nccwpck_require__.t.bind(__nccwpck_require__, 58907, 19));
+        const raw = new DynamoDBClient({ region });
+        const client = DynamoDBDocumentClient.from(raw, {
+            marshallOptions: { removeUndefinedValues: true },
+        });
+        const runId = process.env.GITHUB_RUN_ID || crypto.randomUUID().slice(0, 8);
+        await client.send(new PutCommand({
+            TableName: tableName,
+            Item: {
+                pk: `REPO#${event.repo}`,
+                sk: `OUTCOME#${event.completedAt}#${runId}`,
+                entityType: 'outcome',
+                ...event,
+            },
+        }));
+        core.info(`📝 outcome-event recorded for ${event.repo} ${event.spec}`);
+    }
+    catch (err) {
+        core.warning(`Failed to record outcome event for ${event.repo}: ${err}`);
+    }
+}
+//# sourceMappingURL=outcome-event-store.js.map
 
 /***/ }),
 
@@ -9071,6 +9444,7 @@ exports.describeFixPattern = describeFixPattern;
 exports.normalizeSpec = normalizeSpec;
 exports.normalizeError = normalizeError;
 exports.formatSkillsForPrompt = formatSkillsForPrompt;
+exports.formatFailedTrajectoriesForPrompt = formatFailedTrajectoriesForPrompt;
 const core = __importStar(__nccwpck_require__(37484));
 const crypto = __importStar(__nccwpck_require__(76982));
 const FLAKY_THRESHOLDS = {
@@ -9381,6 +9755,17 @@ class SkillStore {
             this.usageStats.surfacedIds.add(s.id);
         return result;
     }
+    findRelevantForInvestigation(opts) {
+        return this.findRelevant(opts).filter((s) => s.isSeed === true || s.validatedLocally === true);
+    }
+    findFailedTrajectories(opts) {
+        const limit = opts.limit ?? 3;
+        return this.findRelevant({ ...opts, limit: limit * 2 })
+            .filter((s) => !s.isSeed &&
+            s.validatedLocally !== true &&
+            (s.failCount ?? 0) > 0)
+            .slice(0, limit);
+    }
     findForClassifier(opts) {
         const normalized = normalizeFramework(opts.framework);
         const candidates = this.skills.filter((s) => {
@@ -9562,7 +9947,7 @@ class SkillStore {
         return this.formatSkillsForClassifierContext(this.findForClassifier(opts));
     }
     formatForInvestigation(opts) {
-        const relevant = this.findRelevant({
+        const relevant = this.findRelevantForInvestigation({
             framework: opts.framework,
             spec: opts.spec,
             errorMessage: opts.errorMessage,
@@ -9776,6 +10161,30 @@ function formatSkillsForPrompt(skills, role, flakiness) {
         parts.push('', `⚠️ FLAKINESS SIGNAL: ${flakiness.message}`);
     }
     return parts.join('\n');
+}
+function formatFailedTrajectoriesForPrompt(skills) {
+    if (skills.length === 0)
+        return '';
+    logSkillTelemetry('failed_trajectory', skills.map((s) => s.id));
+    const lines = skills.map((s, i) => {
+        const failures = s.failCount ?? 0;
+        const total = failures + (s.successCount ?? 0);
+        return [
+            `${i + 1}. Failed trajectory (${total > 0 ? `${failures}/${total} failed` : 'unvalidated'}) on ${sanitizeForPrompt(s.spec)}`,
+            `   Error pattern: ${sanitizeForPrompt(s.errorPattern)}`,
+            `   Attempted pattern: ${sanitizeForPrompt(s.fix.pattern)}`,
+            s.failedFixEvidence?.reasonTheFixWasWrong
+                ? `   Why it failed: ${sanitizeForPrompt(s.failedFixEvidence.reasonTheFixWasWrong)}`
+                : '   Why it failed: validation did not pass with this fix',
+        ].join('\n');
+    });
+    return [
+        '### Negative Evidence: Prior Failed Fix Attempts',
+        '',
+        'These fixes were tried and did NOT validate. Do NOT repeat them unless you can explain why they will succeed now.',
+        '',
+        ...lines,
+    ].join('\n');
 }
 //# sourceMappingURL=skill-store.js.map
 

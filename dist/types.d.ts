@@ -153,10 +153,42 @@ export interface FewShotExample {
     verdict: Verdict;
     reasoning: string;
 }
+export interface OutcomeEvent {
+    repo: string;
+    spec: string;
+    testName: string;
+    failureKey: string;
+    framework: string;
+    verdict: string;
+    confidence: number;
+    deploymentTier: 'canary' | 'production';
+    s1_testIssue: boolean;
+    s2_fixGenerated: boolean;
+    s3_reviewApproved: boolean;
+    s4_baselineReproduced: boolean;
+    s5_patchApplied: boolean;
+    s6_validationPassed: boolean;
+    s7_published: boolean;
+    repairStatus: string;
+    validationStatus: string;
+    autoFixSkipped: boolean;
+    autoFixSkippedReason?: string;
+    fixFingerprint?: string;
+    skillId?: string;
+    prUrl?: string;
+    repairElapsedMs?: number;
+    completedAt: string;
+    triageRunId: string;
+    sourceRunId: string;
+    triageRunUrl: string;
+}
 export interface ActionInputs {
     githubToken: string;
     openaiApiKey: string;
     errorMessage?: string;
+    errorFile?: string;
+    errorTestName?: string;
+    persistResults?: boolean;
     workflowRunId?: string;
     jobName?: string;
     confidenceThreshold: number;

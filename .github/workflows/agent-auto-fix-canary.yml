@@ -1,0 +1,111 @@
+name: Agent Auto-Fix Canary
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Type "canary" to run the live-model auto-fix demonstration'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  pull-requests: write
+  actions: read
+
+jobs:
+  canary:
+    runs-on: ubuntu-latest
+    if: inputs.confirm == 'canary'
+
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Use Node.js 24
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24.x
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build and package action
+        run: npm run all
+
+      - name: Create ephemeral canary base branch with seeded defect
+        id: seed
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          BASE_BRANCH="canary/triage-agent-${GITHUB_RUN_ID}"
+          git config user.name "adept-triage-agent[bot]"
+          git config user.email "adept-triage-agent[bot]@users.noreply.github.com"
+          git checkout -b "$BASE_BRANCH"
+          sed -i 's/submit-button/submit/g' canary/fixtures/cypress-selector.cy.js
+          git add canary/fixtures/cypress-selector.cy.js
+          git commit -m "canary: seed stale selector for auto-fix demo"
+          git push origin "$BASE_BRANCH"
+          echo "base_branch=$BASE_BRANCH" >> "$GITHUB_OUTPUT"
+
+      - name: Run live auto-fix canary
+        id: triage
+        uses: ./
+        with:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          GITHUB_TOKEN: ${{ github.token }}
+          ERROR_MESSAGE: "Timed out retrying after 10000ms: Expected to find element: '[data-testid=\"submit\"]', but never found it."
+          ERROR_FILE: canary/fixtures/cypress-selector.cy.js
+          ERROR_TEST_NAME: uses the current submit selector
+          TEST_FRAMEWORKS: cypress
+          REPOSITORY: ${{ github.repository }}
+          AUTO_FIX_TARGET_REPO: ${{ github.repository }}
+          AUTO_FIX_BASE_BRANCH: ${{ steps.seed.outputs.base_branch }}
+          BRANCH: ${{ steps.seed.outputs.base_branch }}
+          ENABLE_AUTO_FIX: 'true'
+          ENABLE_VALIDATION: 'true'
+          ENABLE_LOCAL_VALIDATION: 'true'
+          VALIDATION_SPEC: canary/fixtures/cypress-selector.cy.js
+          VALIDATION_TEST_COMMAND: 'node canary/validate-selector-fixture.cjs {spec}'
+          PERSIST_RESULTS: 'false'
+          CONFIDENCE_THRESHOLD: '50'
+
+      - name: Write canary artifacts
+        if: always()
+        run: |
+          mkdir -p canary-artifacts
+          cat > canary-artifacts/canary-result.json <<EOF
+          {
+            "verdict": "${{ steps.triage.outputs.verdict }}",
+            "confidence": "${{ steps.triage.outputs.confidence }}",
+            "repair_status": "${{ steps.triage.outputs.repair_status }}",
+            "validation_status": "${{ steps.triage.outputs.validation_status }}",
+            "auto_fix_applied": "${{ steps.triage.outputs.auto_fix_applied }}",
+            "auto_fix_branch": "${{ steps.triage.outputs.auto_fix_branch }}",
+            "base_branch": "${{ steps.seed.outputs.base_branch }}"
+          }
+          EOF
+          echo '${{ steps.triage.outputs.triage_json }}' > canary-artifacts/triage_json.json
+          echo '${{ steps.triage.outputs.fix_recommendation }}' > canary-artifacts/fix-recommendation.json
+
+      - name: Upload canary artifacts
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: canary-auto-fix-proof
+          path: canary-artifacts/
+          retention-days: 14
+
+      - name: Assert canary succeeded
+        run: |
+          if [[ "${{ steps.triage.outputs.auto_fix_applied }}" != "true" ]]; then
+            echo "Canary failed: auto_fix_applied is not true"
+            exit 1
+          fi
+          if [[ "${{ steps.triage.outputs.validation_status }}" != "passed" ]]; then
+            echo "Canary failed: validation did not pass"
+            exit 1
+          fi
+          echo "Canary auto-fix demonstration succeeded"

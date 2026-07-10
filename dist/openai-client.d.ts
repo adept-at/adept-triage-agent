@@ -9,6 +9,7 @@ export declare class OpenAIClient {
     analyze(errorData: ErrorData, examples: FewShotExample[], skillContext?: string, options?: {
         model?: string;
         reasoningEffort?: ReasoningEffort;
+        signal?: AbortSignal;
     }): Promise<OpenAIResponse & {
         responseId: string;
     }>;
@@ -32,6 +33,7 @@ export declare class OpenAIClient {
         model?: string;
         reasoningEffort?: ReasoningEffort;
         maxTokens?: number;
+        signal?: AbortSignal;
     }): Promise<{
         text: string;
         responseId: string;

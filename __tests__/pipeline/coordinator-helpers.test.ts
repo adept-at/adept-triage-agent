@@ -126,14 +126,14 @@ describe('shouldWriteSkillOutcome (v1.52.5 contract)', () => {
     ).toBe(true);
   });
 
-  it('returns true on terminal inconclusive', () => {
+  it('returns false on inconclusive validation', () => {
     expect(
       shouldWriteSkillOutcome({
         success: false,
         modifiedFiles: [],
         validationStatus: 'inconclusive',
       })
-    ).toBe(true);
+    ).toBe(false);
   });
 
   it('prefers validationResult.status over the legacy validationStatus', () => {

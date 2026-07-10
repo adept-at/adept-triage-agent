@@ -17,6 +17,8 @@ import { analyzeFailure } from '../simplified-analyzer';
 import { processWorkflowLogs } from '../services/log-processor';
 import { SkillStore, buildSkill, describeFixPattern, normalizeSpec } from '../services/skill-store';
 import { recordFailureEvent } from '../services/failure-event-store';
+import { recordOutcomeEvent } from '../services/outcome-event-store';
+import { buildOutcomeEvent, logOutcomeSummary } from './outcome-telemetry';
 import { RepoContextFetcher } from '../services/repo-context-fetcher';
 import { inferRootCauseCategoryFromText } from '../repair/root-cause-category';
 import { recordGate, logRunGateSummary } from './run-telemetry';
@@ -106,6 +108,17 @@ export class PipelineCoordinator {
   private artifactFetcher: ArtifactFetcher;
   private inputs: ActionInputs;
   private repoDetails: { owner: string; repo: string };
+  private outcomeSnapshot: {
+    errorData: ErrorData;
+    verdict: string;
+    confidence: number;
+    fixRecommendation?: FixRecommendation | null;
+    autoFixResult?: ApplyResult | null;
+    repairTelemetry?: RepairTelemetry;
+    autoFixSkipped?: boolean;
+    autoFixSkippedReason?: string;
+    skillId?: string;
+  } | null = null;
 
   constructor(deps: PipelineCoordinatorDeps) {
     this.octokit = deps.octokit;
@@ -331,7 +344,8 @@ export class PipelineCoordinator {
       : null;
 
     let skillStore: SkillStore | undefined;
-    if (autoFixTargetRepo) {
+    const persistResults = this.inputs.persistResults !== false;
+    if (autoFixTargetRepo && persistResults) {
       skillStore = new SkillStore(
         this.inputs.triageAwsRegion || 'us-east-1',
         this.inputs.triageDynamoTable || 'triage-skills-v1-live',
@@ -352,11 +366,51 @@ export class PipelineCoordinator {
       await this.runClassifyAndRepair(errorData, skillStore, autoFixTargetRepo);
     } finally {
       skillStore?.logRunSummary();
-      // Always emit the gate-telemetry summary, even when no skill
-      // store is configured. The whole point of the per-run gate
-      // counters is "did our safety/correctness gates fire this
-      // round?" — that question is independent of skill-store state.
       logRunGateSummary();
+      await this.persistRunOutcome(autoFixTargetRepo);
+    }
+  }
+
+  private captureOutcomeSnapshot(params: {
+    errorData: ErrorData;
+    verdict: string;
+    confidence: number;
+    fixRecommendation?: FixRecommendation | null;
+    autoFixResult?: ApplyResult | null;
+    repairTelemetry?: RepairTelemetry;
+    autoFixSkipped?: boolean;
+    autoFixSkippedReason?: string;
+    skillId?: string;
+  }): void {
+    this.outcomeSnapshot = params;
+  }
+
+  private async persistRunOutcome(
+    autoFixTargetRepo: { owner: string; repo: string } | null
+  ): Promise<void> {
+    if (!this.outcomeSnapshot) return;
+
+    const repo = autoFixTargetRepo
+      ? `${autoFixTargetRepo.owner}/${autoFixTargetRepo.repo}`
+      : process.env.GITHUB_REPOSITORY;
+    if (!repo) return;
+
+    try {
+      const event = buildOutcomeEvent({
+        inputs: this.inputs,
+        repo,
+        ...this.outcomeSnapshot,
+      });
+      logOutcomeSummary(event);
+      if (this.inputs.persistResults !== false) {
+        await recordOutcomeEvent(
+          this.inputs.triageAwsRegion || 'us-east-1',
+          this.inputs.triageDynamoTable || 'triage-skills-v1-live',
+          event
+        );
+      }
+    } catch (err) {
+      core.warning(`Failed to persist run outcome: ${err}`);
     }
   }
 
@@ -391,6 +445,12 @@ export class PipelineCoordinator {
         indicators: infraVerdict.indicators,
       };
       await this.recordFailure(errorData, 'INCONCLUSIVE', 95, autoFixTargetRepo);
+      this.captureOutcomeSnapshot({
+        errorData,
+        verdict: 'INCONCLUSIVE',
+        confidence: 95,
+        repairTelemetry: NOT_STARTED_REPAIR,
+      });
       setInconclusiveOutput(infraResult, this.inputs, errorData);
       return;
     }
@@ -406,8 +466,24 @@ export class PipelineCoordinator {
       autoFixTargetRepo
     );
 
-    if (classification.confidence < this.inputs.confidenceThreshold) return;
-    if (classification.verdict !== 'TEST_ISSUE') return;
+    if (classification.confidence < this.inputs.confidenceThreshold) {
+      this.captureOutcomeSnapshot({
+        errorData,
+        verdict: classification.verdict,
+        confidence: classification.confidence,
+        repairTelemetry: NOT_STARTED_REPAIR,
+      });
+      return;
+    }
+    if (classification.verdict !== 'TEST_ISSUE') {
+      this.captureOutcomeSnapshot({
+        errorData,
+        verdict: classification.verdict,
+        confidence: classification.confidence,
+        repairTelemetry: NOT_STARTED_REPAIR,
+      });
+      return;
+    }
 
     // Non-fixable gate: when a curated seed for this spec is flagged
     // nonFixable: true AND its error pattern is sufficiently similar to
@@ -435,17 +511,26 @@ export class PipelineCoordinator {
         `Manual intervention required — no code change in this repo can fix this failure.`;
       core.warning(`⏭️  ${reason}`);
       recordGate('nonFixableSeedSkips');
+      const skipTelemetry = {
+        status: 'skipped' as const,
+        summary: reason,
+        iterations: 0,
+        elapsedMs: 0,
+      };
+      this.captureOutcomeSnapshot({
+        errorData,
+        verdict: classification.verdict,
+        confidence: classification.confidence,
+        repairTelemetry: skipTelemetry,
+        autoFixSkipped: true,
+        autoFixSkippedReason: reason,
+      });
       setSuccessOutput(
         {
           ...classification,
           autoFixSkipped: true,
           autoFixSkippedReason: reason,
-          repairTelemetry: {
-            status: 'skipped',
-            summary: reason,
-            iterations: 0,
-            elapsedMs: 0,
-          },
+          repairTelemetry: skipTelemetry,
         },
         errorData,
         null
@@ -472,17 +557,26 @@ export class PipelineCoordinator {
     if (chronicFlakinessSignal?.isFlaky) {
       const reason = `Chronic flakiness: ${chronicFlakinessSignal.message} Auto-fix skipped — likely needs human refactor (replace fixed pauses with deterministic waits, consolidate success surfaces) rather than another fallback.`;
       core.warning(`⏭️  ${reason}`);
+      const chronicSkipTelemetry = {
+        status: 'skipped' as const,
+        summary: reason,
+        iterations: 0,
+        elapsedMs: 0,
+      };
+      this.captureOutcomeSnapshot({
+        errorData,
+        verdict: classification.verdict,
+        confidence: classification.confidence,
+        repairTelemetry: chronicSkipTelemetry,
+        autoFixSkipped: true,
+        autoFixSkippedReason: reason,
+      });
       setSuccessOutput(
         {
           ...classification,
           autoFixSkipped: true,
           autoFixSkippedReason: reason,
-          repairTelemetry: {
-            status: 'skipped',
-            summary: reason,
-            iterations: 0,
-            elapsedMs: 0,
-          },
+          repairTelemetry: chronicSkipTelemetry,
         },
         errorData,
         null,
@@ -514,6 +608,12 @@ export class PipelineCoordinator {
           elapsedMs: 0,
         },
       };
+      this.captureOutcomeSnapshot({
+        errorData,
+        verdict: classification.verdict,
+        confidence: classification.confidence,
+        repairTelemetry: degraded.repairTelemetry,
+      });
       setSuccessOutput(degraded, errorData, null, chronicFlakinessSignal);
       return;
     }
@@ -530,6 +630,8 @@ export class PipelineCoordinator {
       repairTelemetry: repairTelemetryFromRun,
     } = repairOutcome;
 
+    let savedSkillId: string | undefined;
+
     if (skillStore && autoFixTargetRepo && errorData) {
       const validationStatus =
         autoFixResult?.validationResult?.status || autoFixResult?.validationStatus;
@@ -542,7 +644,7 @@ export class PipelineCoordinator {
       const validationPassed = validationStatus === 'passed';
       const publishSucceeded = !!autoFixResult?.success;
       const fixAttempted = !!fixRecommendation;
-      const shouldSaveSkill = shouldWriteSkillOutcome(autoFixResult);
+      const shouldSaveSkill = shouldWriteSkillOutcome(autoFixResult, errorData);
       const validationPending = validationStatus === 'pending';
 
       if (fixAttempted && validationPending) {
@@ -645,6 +747,7 @@ export class PipelineCoordinator {
           // recordOutcome / recordClassificationOutcome never reject — they
           // log their own warnings on failure — so no .catch is needed here.
           if (saveSucceeded) {
+            savedSkillId = skill.id;
             if (validationPassed) {
               await skillStore.recordOutcome(skill.id, true);
               await skillStore.recordClassificationOutcome(skill.id, 'correct');
@@ -680,6 +783,18 @@ export class PipelineCoordinator {
       autoFixResult
     );
 
+    this.captureOutcomeSnapshot({
+      errorData,
+      verdict: classification.verdict,
+      confidence: classification.confidence,
+      fixRecommendation,
+      autoFixResult,
+      repairTelemetry: result.repairTelemetry,
+      autoFixSkipped: result.autoFixSkipped,
+      autoFixSkippedReason: result.autoFixSkippedReason,
+      skillId: savedSkillId,
+    });
+
     // Reuse the pre-repair flakiness signal computed for the chronic gate.
     // Recomputing here would observe the skill we just saved on THIS run
     // (save + recordOutcome above mutate the in-memory store) and could flip
@@ -700,6 +815,8 @@ export class PipelineCoordinator {
     confidence: number,
     autoFixTargetRepo: { owner: string; repo: string } | null
   ): Promise<void> {
+    if (this.inputs.persistResults === false) return;
+
     const repo = autoFixTargetRepo
       ? `${autoFixTargetRepo.owner}/${autoFixTargetRepo.repo}`
       : process.env.GITHUB_REPOSITORY;
@@ -888,16 +1005,21 @@ function normalizeFailureSignature(message: string): string {
 }
 
 export function shouldWriteSkillOutcome(
-  autoFixResult: ApplyResult | null | undefined
+  autoFixResult: ApplyResult | null | undefined,
+  errorData?: ErrorData
 ): boolean {
   const validationStatus =
     autoFixResult?.validationResult?.status || autoFixResult?.validationStatus;
-  return (
-    !!autoFixResult &&
-    (validationStatus === 'passed' ||
-      validationStatus === 'failed' ||
-      validationStatus === 'inconclusive')
-  );
+  if (!autoFixResult) return false;
+  if (validationStatus === 'passed') return true;
+  if (validationStatus === 'inconclusive') return false;
+  if (validationStatus === 'failed') {
+    if (!errorData) return true;
+    const evidence = buildFailedFixEvidence(errorData, autoFixResult);
+    // Unrelated downstream failures must not poison the skill store.
+    return !evidence.changedFailureSignature;
+  }
+  return false;
 }
 
 /**

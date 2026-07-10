@@ -194,39 +194,52 @@ export abstract class BaseAgent<TInput, TOutput> {
     const startTime = Date.now();
     let apiCalls = 0;
     let timeoutId: ReturnType<typeof setTimeout> | undefined;
+    const abortController = new AbortController();
 
     try {
       core.info(`[${this.agentName}] Starting execution...`);
 
-      // Create a timeout promise that can be cleaned up
       const timeoutPromise = new Promise<never>((_, reject) => {
         timeoutId = setTimeout(() => {
+          abortController.abort();
           reject(new Error(`Agent timed out after ${this.config.timeoutMs}ms`));
         }, this.config.timeoutMs);
       });
 
-      // Execute the agent task
-      const taskPromise = this.runAgentTask(input, context, previousResponseId);
+      const taskPromise = this.runAgentTask(
+        input,
+        context,
+        previousResponseId,
+        abortController.signal
+      );
       apiCalls++;
 
-      // Race between task and timeout
-      const { data: result, responseId, tokensUsed } = await Promise.race([taskPromise, timeoutPromise]);
-      clearTimeout(timeoutId);
+      try {
+        const { data: result, responseId, tokensUsed } = await Promise.race([
+          taskPromise,
+          timeoutPromise,
+        ]);
+        clearTimeout(timeoutId);
 
-      const executionTimeMs = Date.now() - startTime;
-      core.info(`[${this.agentName}] Completed in ${executionTimeMs}ms`);
-      if (tokensUsed !== undefined) {
-        core.info(`[${this.agentName}] Token usage: ${tokensUsed}`);
+        const executionTimeMs = Date.now() - startTime;
+        core.info(`[${this.agentName}] Completed in ${executionTimeMs}ms`);
+        if (tokensUsed !== undefined) {
+          core.info(`[${this.agentName}] Token usage: ${tokensUsed}`);
+        }
+
+        return {
+          success: true,
+          data: result,
+          executionTimeMs,
+          apiCalls,
+          responseId,
+          tokensUsed,
+        };
+      } finally {
+        // If the timeout won the race, the aborted request may reject later.
+        // Swallow that late rejection so it cannot surface as unhandled.
+        taskPromise.catch(() => {});
       }
-
-      return {
-        success: true,
-        data: result,
-        executionTimeMs,
-        apiCalls,
-        responseId,
-        tokensUsed,
-      };
     } catch (error) {
       clearTimeout(timeoutId);
       const executionTimeMs = Date.now() - startTime;
@@ -250,7 +263,8 @@ export abstract class BaseAgent<TInput, TOutput> {
   private async runAgentTask(
     input: TInput,
     context: AgentContext,
-    previousResponseId?: string
+    previousResponseId?: string,
+    signal?: AbortSignal
   ): Promise<{ data: TOutput; responseId: string; tokensUsed?: number }> {
     // Compose the system prompt: agent-specific instructions first,
     // then repo conventions appended below. Order matters — the
@@ -301,6 +315,7 @@ export abstract class BaseAgent<TInput, TOutput> {
       model: this.config.model,
       reasoningEffort: this.config.reasoningEffort,
       maxTokens: this.config.maxTokens,
+      signal,
     });
 
     const parsed = this.parseResponse(text);

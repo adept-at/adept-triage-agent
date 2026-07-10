@@ -23,7 +23,7 @@ import {
   RepairStatus,
   RepairTelemetry,
 } from '../types';
-import { TriageSkill, FlakinessSignal, formatSkillsForPrompt } from '../services/skill-store';
+import { TriageSkill, FlakinessSignal, formatSkillsForPrompt, formatFailedTrajectoriesForPrompt } from '../services/skill-store';
 import { AGENT_CONFIG, VERDICT_OVERRIDE_CONFIDENCE_THRESHOLD } from '../config/constants';
 import { recordGate } from '../pipeline/run-telemetry';
 
@@ -172,7 +172,7 @@ export class AgentOrchestrator {
     context: AgentContext,
     errorData?: ErrorData,
     previousResponseId?: string,
-    skills?: { relevant: TriageSkill[]; flakiness?: FlakinessSignal }
+    skills?: { relevant: TriageSkill[]; failedTrajectories?: TriageSkill[]; flakiness?: FlakinessSignal }
   ): Promise<OrchestrationResult> {
     const startTime = Date.now();
     const agentResults: OrchestrationResult['agentResults'] = {};
@@ -293,7 +293,7 @@ export class AgentOrchestrator {
     _errorData: ErrorData | undefined,
     agentResults: OrchestrationResult['agentResults'],
     previousResponseId: string | undefined,
-    skills: { relevant: TriageSkill[]; flakiness?: FlakinessSignal } | undefined,
+    skills: { relevant: TriageSkill[]; failedTrajectories?: TriageSkill[]; flakiness?: FlakinessSignal } | undefined,
     startedAtMs: number,
     trace: OrchestratorRepairTrace
   ): Promise<{
@@ -310,7 +310,11 @@ export class AgentOrchestrator {
     trace.lastStage = 'analysis';
     core.info('📊 Step 1: Running Analysis Agent...');
     if (skills && skills.relevant.length > 0) {
-      context.skillsPrompt = formatSkillsForPrompt(skills.relevant, 'investigation', skills.flakiness);
+      context.skillsPrompt = formatSkillsForPrompt(
+        skills.relevant.filter((s) => s.isSeed || s.validatedLocally === true),
+        'investigation',
+        skills.flakiness
+      );
     }
     const analysisResult = await this.analysisAgent.execute({}, context, lastResponseId);
     agentResults.analysis = analysisResult;
@@ -408,7 +412,11 @@ export class AgentOrchestrator {
       : '';
     context.delegationContext = this.buildDelegationContext('investigation', { analysis, productDiffSummary });
     const baseInvestigationSkills = skills
-      ? formatSkillsForPrompt(skills.relevant, 'investigation', skills.flakiness)
+      ? formatSkillsForPrompt(
+          skills.relevant.filter((s) => s.isSeed || s.validatedLocally === true),
+          'investigation',
+          skills.flakiness
+        )
       : '';
     context.skillsPrompt = context.priorInvestigationContext
       ? `### Prior Investigation Findings\n${context.priorInvestigationContext}\n\n${baseInvestigationSkills}`
@@ -625,7 +633,16 @@ export class AgentOrchestrator {
         productDiffSummary,
       });
       context.skillsPrompt = skills
-        ? formatSkillsForPrompt(skills.relevant, 'fix_generation', skills.flakiness)
+        ? [
+            formatSkillsForPrompt(
+              skills.relevant.filter((s) => s.isSeed || s.validatedLocally === true),
+              'fix_generation',
+              skills.flakiness
+            ),
+            formatFailedTrajectoriesForPrompt(skills.failedTrajectories || []),
+          ]
+            .filter(Boolean)
+            .join('\n\n')
         : '';
 
       if (reviewFeedback) {
@@ -739,7 +756,16 @@ export class AgentOrchestrator {
           productDiffSummary,
         });
         context.skillsPrompt = skills
-          ? formatSkillsForPrompt(skills.relevant, 'review', skills.flakiness)
+          ? [
+              formatSkillsForPrompt(
+                skills.relevant.filter((s) => s.isSeed || s.validatedLocally === true),
+                'review',
+                skills.flakiness
+              ),
+              formatFailedTrajectoriesForPrompt(skills.failedTrajectories || []),
+            ]
+              .filter(Boolean)
+              .join('\n\n')
           : '';
         const reviewResult = await this.reviewAgent.execute(
           {

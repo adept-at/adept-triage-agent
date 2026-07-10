@@ -375,7 +375,7 @@ export class SimplifiedRepairAgent {
       priorAgentInvestigationFindings?: string;
     },
     previousResponseId?: string,
-    skills?: { relevant: TriageSkill[]; flakiness?: FlakinessSignal },
+    skills?: { relevant: TriageSkill[]; failedTrajectories?: TriageSkill[]; flakiness?: FlakinessSignal },
     priorInvestigationContext?: string,
     /**
      * Pre-rendered repo conventions block (from `.adept-triage/context.md`)
@@ -472,7 +472,7 @@ export class SimplifiedRepairAgent {
       priorAgentInvestigationFindings?: string;
     },
     previousResponseId?: string,
-    skills?: { relevant: TriageSkill[]; flakiness?: FlakinessSignal },
+    skills?: { relevant: TriageSkill[]; failedTrajectories?: TriageSkill[]; flakiness?: FlakinessSignal },
     priorInvestigationContext?: string,
     repoContext?: string
   ): Promise<{

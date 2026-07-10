@@ -51,6 +51,11 @@ function getTokenUsage(response) {
     const total = input + output;
     return total > 0 ? total : undefined;
 }
+function isAbortError(error) {
+    if (error instanceof Error && error.name === 'AbortError')
+        return true;
+    return error instanceof DOMException && error.name === 'AbortError';
+}
 class OpenAIClient {
     openai;
     maxRetries = constants_1.OPENAI.MAX_RETRIES;
@@ -76,7 +81,7 @@ class OpenAIClient {
         for (let attempt = 1; attempt <= this.maxRetries; attempt++) {
             try {
                 core.info(`Analyzing with ${model} (attempt ${attempt}/${this.maxRetries})`);
-                const response = await this.openai.responses.create({
+                const requestBody = {
                     model,
                     instructions: systemPrompt,
                     input,
@@ -87,7 +92,10 @@ class OpenAIClient {
                             reasoning: { effort: reasoningEffort },
                         }
                         : {}),
-                });
+                };
+                const response = options?.signal
+                    ? await this.openai.responses.create(requestBody, { signal: options.signal })
+                    : await this.openai.responses.create(requestBody);
                 const tokensUsed = getTokenUsage(response);
                 if (tokensUsed !== undefined) {
                     core.info(`🧮 ${model} analysis token usage: ${tokensUsed}`);
@@ -103,6 +111,9 @@ class OpenAIClient {
                     : { ...result, responseId: response.id, tokensUsed };
             }
             catch (error) {
+                if (isAbortError(error)) {
+                    throw error;
+                }
                 core.warning(`OpenAI API attempt ${attempt} failed: ${error}`);
                 if (attempt === this.maxRetries) {
                     throw new Error(`Failed to get analysis from OpenAI after ${this.maxRetries} attempts: ${error}`);
@@ -634,7 +645,7 @@ Changed Product Files:
         core.info(`🧠 Using ${model} model (Responses API) reasoningEffort=${reasoningEffort}`);
         for (let attempt = 1; attempt <= this.maxRetries; attempt++) {
             try {
-                const response = await this.openai.responses.create({
+                const requestBody = {
                     model,
                     instructions: params.systemPrompt,
                     input,
@@ -646,7 +657,10 @@ Changed Product Files:
                             reasoning: { effort: reasoningEffort },
                         }
                         : {}),
-                });
+                };
+                const response = params.signal
+                    ? await this.openai.responses.create(requestBody, { signal: params.signal })
+                    : await this.openai.responses.create(requestBody);
                 const content = response.output_text;
                 if (!content) {
                     throw new Error('Empty response from OpenAI');
@@ -657,6 +671,9 @@ Changed Product Files:
                     : { text: content, responseId: response.id, tokensUsed };
             }
             catch (error) {
+                if (isAbortError(error)) {
+                    throw error;
+                }
                 core.warning(`OpenAI custom prompt attempt ${attempt} failed: ${error}`);
                 if (attempt === this.maxRetries) {
                     throw new Error(`Failed to get custom prompt response from OpenAI after ${this.maxRetries} attempts: ${error}`);

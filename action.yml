@@ -16,6 +16,16 @@ inputs:
   ERROR_MESSAGE:
     description: 'Error message to analyze (optional if using workflow artifacts)'
     required: false
+  ERROR_FILE:
+    description: 'Test file path when using ERROR_MESSAGE directly (e.g. cypress/e2e/login.cy.ts). Required for grounded auto-fix in direct-error mode.'
+    required: false
+  ERROR_TEST_NAME:
+    description: 'Test case title when using ERROR_MESSAGE directly (e.g. should login successfully). Improves skill matching and validation scoping.'
+    required: false
+  PERSIST_RESULTS:
+    description: 'When false, skip DynamoDB skill/failure/outcome writes for this run. Outputs and artifacts are still emitted. Use for synthetic canary runs.'
+    required: false
+    default: 'true'
   WORKFLOW_RUN_ID:
     description: 'Workflow run ID to fetch logs from'
     required: false

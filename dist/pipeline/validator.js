@@ -78,7 +78,12 @@ async function generateFixRecommendation(inputs, repoDetails, errorData, openaiC
         });
         const skills = skillStore
             ? {
-                relevant: skillStore.findRelevant({
+                relevant: skillStore.findRelevantForInvestigation({
+                    framework: errorData.framework || 'unknown',
+                    spec: errorData.fileName,
+                    errorMessage: errorData.message,
+                }),
+                failedTrajectories: skillStore.findFailedTrajectories({
                     framework: errorData.framework || 'unknown',
                     spec: errorData.fileName,
                     errorMessage: errorData.message,

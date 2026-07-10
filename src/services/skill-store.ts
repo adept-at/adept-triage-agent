@@ -682,10 +682,6 @@ export class SkillStore {
     }
   }
 
-  /**
-   * Find skills relevant to the current failure.
-   * Exact spec matches scored highest, then same-framework matches by error similarity.
-   */
   findRelevant(opts: {
     framework: string;
     spec?: string;
@@ -732,6 +728,36 @@ export class SkillStore {
       .map((s) => s.skill);
     for (const s of result) this.usageStats.surfacedIds.add(s.id);
     return result;
+  }
+
+  /** Investigation: curated seeds and validated skills only. */
+  findRelevantForInvestigation(opts: {
+    framework: string;
+    spec?: string;
+    errorMessage?: string;
+    limit?: number;
+  }): TriageSkill[] {
+    return this.findRelevant(opts).filter(
+      (s) => s.isSeed === true || s.validatedLocally === true
+    );
+  }
+
+  /** Negative evidence for fix-gen/review — failed trajectories on this spec. */
+  findFailedTrajectories(opts: {
+    framework: string;
+    spec?: string;
+    errorMessage?: string;
+    limit?: number;
+  }): TriageSkill[] {
+    const limit = opts.limit ?? 3;
+    return this.findRelevant({ ...opts, limit: limit * 2 })
+      .filter(
+        (s) =>
+          !s.isSeed &&
+          s.validatedLocally !== true &&
+          (s.failCount ?? 0) > 0
+      )
+      .slice(0, limit);
   }
 
   /**
@@ -1154,7 +1180,7 @@ export class SkillStore {
   }
 
   formatForInvestigation(opts: { framework: string; spec?: string; errorMessage?: string }): string {
-    const relevant = this.findRelevant({
+    const relevant = this.findRelevantForInvestigation({
       framework: opts.framework,
       spec: opts.spec,
       errorMessage: opts.errorMessage,
@@ -1603,4 +1629,32 @@ export function formatSkillsForPrompt(
   }
 
   return parts.join('\n');
+}
+
+/** Negative evidence block for fix-generation and review agents. */
+export function formatFailedTrajectoriesForPrompt(skills: TriageSkill[]): string {
+  if (skills.length === 0) return '';
+
+  logSkillTelemetry('failed_trajectory', skills.map((s) => s.id));
+
+  const lines = skills.map((s, i) => {
+    const failures = s.failCount ?? 0;
+    const total = failures + (s.successCount ?? 0);
+    return [
+      `${i + 1}. Failed trajectory (${total > 0 ? `${failures}/${total} failed` : 'unvalidated'}) on ${sanitizeForPrompt(s.spec)}`,
+      `   Error pattern: ${sanitizeForPrompt(s.errorPattern)}`,
+      `   Attempted pattern: ${sanitizeForPrompt(s.fix.pattern)}`,
+      s.failedFixEvidence?.reasonTheFixWasWrong
+        ? `   Why it failed: ${sanitizeForPrompt(s.failedFixEvidence.reasonTheFixWasWrong)}`
+        : '   Why it failed: validation did not pass with this fix',
+    ].join('\n');
+  });
+
+  return [
+    '### Negative Evidence: Prior Failed Fix Attempts',
+    '',
+    'These fixes were tried and did NOT validate. Do NOT repeat them unless you can explain why they will succeed now.',
+    '',
+    ...lines,
+  ].join('\n');
 }

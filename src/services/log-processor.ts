@@ -12,9 +12,11 @@ import {
   StructuredErrorSummary,
   PRDiff,
   ActionInputs,
+  Framework,
 } from '../types';
 import { ArtifactFetcher } from '../artifact-fetcher';
 import { extractErrorFromLogs, resolveFramework } from '../simplified-analyzer';
+import { normalizeFramework } from './skill-store';
 import { LOG_LIMITS, SHORT_SHA_LENGTH, DEFAULT_PRODUCT_REPO } from '../config/constants';
 import { ANSI_ESCAPE_REGEX } from '../utils/text-utils';
 import { withRetry } from '../utils/retry';
@@ -53,7 +55,9 @@ export async function processWorkflowLogs(
   if (inputs.errorMessage) {
     return {
       message: inputs.errorMessage,
-      framework: 'unknown',
+      framework: resolveDirectErrorFramework(inputs),
+      fileName: inputs.errorFile,
+      testName: inputs.errorTestName,
       context: 'Error message provided directly via input',
     };
   }
@@ -695,4 +699,16 @@ export function buildStructuredSummary(err: ErrorData): StructuredErrorSummary {
       logSize: err.logs?.reduce((sum, l) => sum + l.length, 0) ?? 0,
     },
   } as StructuredErrorSummary;
+}
+
+function resolveDirectErrorFramework(inputs: ActionInputs): Framework {
+  const fromInput = normalizeFramework(inputs.testFrameworks);
+  if (fromInput !== 'unknown') return fromInput;
+
+  const file = inputs.errorFile?.toLowerCase() ?? '';
+  if (file.includes('.cy.') || file.includes('/cypress/')) return 'cypress';
+  if (file.includes('wdio') || file.includes('.e2e.') || file.includes('webdriver')) {
+    return 'webdriverio';
+  }
+  return 'unknown';
 }

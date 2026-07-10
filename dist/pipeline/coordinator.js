@@ -42,6 +42,8 @@ const simplified_analyzer_1 = require("../simplified-analyzer");
 const log_processor_1 = require("../services/log-processor");
 const skill_store_1 = require("../services/skill-store");
 const failure_event_store_1 = require("../services/failure-event-store");
+const outcome_event_store_1 = require("../services/outcome-event-store");
+const outcome_telemetry_1 = require("./outcome-telemetry");
 const repo_context_fetcher_1 = require("../services/repo-context-fetcher");
 const root_cause_category_1 = require("../repair/root-cause-category");
 const run_telemetry_1 = require("./run-telemetry");
@@ -53,6 +55,7 @@ class PipelineCoordinator {
     artifactFetcher;
     inputs;
     repoDetails;
+    outcomeSnapshot = null;
     constructor(deps) {
         this.octokit = deps.octokit;
         this.openaiClient = deps.openaiClient;
@@ -186,7 +189,8 @@ class PipelineCoordinator {
             ? (0, output_1.resolveAutoFixTargetRepo)(this.inputs)
             : null;
         let skillStore;
-        if (autoFixTargetRepo) {
+        const persistResults = this.inputs.persistResults !== false;
+        if (autoFixTargetRepo && persistResults) {
             skillStore = new skill_store_1.SkillStore(this.inputs.triageAwsRegion || 'us-east-1', this.inputs.triageDynamoTable || 'triage-skills-v1-live', autoFixTargetRepo.owner, autoFixTargetRepo.repo);
             await skillStore.load();
         }
@@ -196,6 +200,33 @@ class PipelineCoordinator {
         finally {
             skillStore?.logRunSummary();
             (0, run_telemetry_1.logRunGateSummary)();
+            await this.persistRunOutcome(autoFixTargetRepo);
+        }
+    }
+    captureOutcomeSnapshot(params) {
+        this.outcomeSnapshot = params;
+    }
+    async persistRunOutcome(autoFixTargetRepo) {
+        if (!this.outcomeSnapshot)
+            return;
+        const repo = autoFixTargetRepo
+            ? `${autoFixTargetRepo.owner}/${autoFixTargetRepo.repo}`
+            : process.env.GITHUB_REPOSITORY;
+        if (!repo)
+            return;
+        try {
+            const event = (0, outcome_telemetry_1.buildOutcomeEvent)({
+                inputs: this.inputs,
+                repo,
+                ...this.outcomeSnapshot,
+            });
+            (0, outcome_telemetry_1.logOutcomeSummary)(event);
+            if (this.inputs.persistResults !== false) {
+                await (0, outcome_event_store_1.recordOutcomeEvent)(this.inputs.triageAwsRegion || 'us-east-1', this.inputs.triageDynamoTable || 'triage-skills-v1-live', event);
+            }
+        }
+        catch (err) {
+            core.warning(`Failed to persist run outcome: ${err}`);
         }
     }
     async runClassifyAndRepair(errorData, skillStore, autoFixTargetRepo) {
@@ -211,15 +242,35 @@ class PipelineCoordinator {
                 indicators: infraVerdict.indicators,
             };
             await this.recordFailure(errorData, 'INCONCLUSIVE', 95, autoFixTargetRepo);
+            this.captureOutcomeSnapshot({
+                errorData,
+                verdict: 'INCONCLUSIVE',
+                confidence: 95,
+                repairTelemetry: output_1.NOT_STARTED_REPAIR,
+            });
             (0, output_1.setInconclusiveOutput)(infraResult, this.inputs, errorData);
             return;
         }
         const classification = await this.classify(errorData, skillStore);
         await this.recordFailure(errorData, classification.verdict, classification.confidence, autoFixTargetRepo);
-        if (classification.confidence < this.inputs.confidenceThreshold)
+        if (classification.confidence < this.inputs.confidenceThreshold) {
+            this.captureOutcomeSnapshot({
+                errorData,
+                verdict: classification.verdict,
+                confidence: classification.confidence,
+                repairTelemetry: output_1.NOT_STARTED_REPAIR,
+            });
             return;
-        if (classification.verdict !== 'TEST_ISSUE')
+        }
+        if (classification.verdict !== 'TEST_ISSUE') {
+            this.captureOutcomeSnapshot({
+                errorData,
+                verdict: classification.verdict,
+                confidence: classification.confidence,
+                repairTelemetry: output_1.NOT_STARTED_REPAIR,
+            });
             return;
+        }
         const nonFixableMatch = skillStore?.findNonFixableMatch({
             framework: errorData.framework || 'unknown',
             spec: errorData.fileName || 'unknown',
@@ -231,16 +282,25 @@ class PipelineCoordinator {
                 `Manual intervention required — no code change in this repo can fix this failure.`;
             core.warning(`⏭️  ${reason}`);
             (0, run_telemetry_1.recordGate)('nonFixableSeedSkips');
+            const skipTelemetry = {
+                status: 'skipped',
+                summary: reason,
+                iterations: 0,
+                elapsedMs: 0,
+            };
+            this.captureOutcomeSnapshot({
+                errorData,
+                verdict: classification.verdict,
+                confidence: classification.confidence,
+                repairTelemetry: skipTelemetry,
+                autoFixSkipped: true,
+                autoFixSkippedReason: reason,
+            });
             (0, output_1.setSuccessOutput)({
                 ...classification,
                 autoFixSkipped: true,
                 autoFixSkippedReason: reason,
-                repairTelemetry: {
-                    status: 'skipped',
-                    summary: reason,
-                    iterations: 0,
-                    elapsedMs: 0,
-                },
+                repairTelemetry: skipTelemetry,
             }, errorData, null);
             return;
         }
@@ -250,16 +310,25 @@ class PipelineCoordinator {
         if (chronicFlakinessSignal?.isFlaky) {
             const reason = `Chronic flakiness: ${chronicFlakinessSignal.message} Auto-fix skipped — likely needs human refactor (replace fixed pauses with deterministic waits, consolidate success surfaces) rather than another fallback.`;
             core.warning(`⏭️  ${reason}`);
+            const chronicSkipTelemetry = {
+                status: 'skipped',
+                summary: reason,
+                iterations: 0,
+                elapsedMs: 0,
+            };
+            this.captureOutcomeSnapshot({
+                errorData,
+                verdict: classification.verdict,
+                confidence: classification.confidence,
+                repairTelemetry: chronicSkipTelemetry,
+                autoFixSkipped: true,
+                autoFixSkippedReason: reason,
+            });
             (0, output_1.setSuccessOutput)({
                 ...classification,
                 autoFixSkipped: true,
                 autoFixSkippedReason: reason,
-                repairTelemetry: {
-                    status: 'skipped',
-                    summary: reason,
-                    iterations: 0,
-                    elapsedMs: 0,
-                },
+                repairTelemetry: chronicSkipTelemetry,
             }, errorData, null, chronicFlakinessSignal);
             return;
         }
@@ -279,16 +348,23 @@ class PipelineCoordinator {
                     elapsedMs: 0,
                 },
             };
+            this.captureOutcomeSnapshot({
+                errorData,
+                verdict: classification.verdict,
+                confidence: classification.confidence,
+                repairTelemetry: degraded.repairTelemetry,
+            });
             (0, output_1.setSuccessOutput)(degraded, errorData, null, chronicFlakinessSignal);
             return;
         }
         const { fixRecommendation, autoFixResult, iterations, prUrl: skillPrUrl, agentRootCause, agentInvestigationFindings, autoFixSkipped: repairAutoFixSkipped, autoFixSkippedReason: repairAutoFixSkippedReason, repairTelemetry: repairTelemetryFromRun, } = repairOutcome;
+        let savedSkillId;
         if (skillStore && autoFixTargetRepo && errorData) {
             const validationStatus = autoFixResult?.validationResult?.status || autoFixResult?.validationStatus;
             const validationPassed = validationStatus === 'passed';
             const publishSucceeded = !!autoFixResult?.success;
             const fixAttempted = !!fixRecommendation;
-            const shouldSaveSkill = shouldWriteSkillOutcome(autoFixResult);
+            const shouldSaveSkill = shouldWriteSkillOutcome(autoFixResult, errorData);
             const validationPending = validationStatus === 'pending';
             if (fixAttempted && validationPending) {
                 core.info('📝 Skipping skill outcome write while remote validation is pending');
@@ -354,6 +430,7 @@ class PipelineCoordinator {
                         return false;
                     });
                     if (saveSucceeded) {
+                        savedSkillId = skill.id;
                         if (validationPassed) {
                             await skillStore.recordOutcome(skill.id, true);
                             await skillStore.recordClassificationOutcome(skill.id, 'correct');
@@ -381,9 +458,22 @@ class PipelineCoordinator {
             }
         }
         result.repairTelemetry = (0, output_1.finalizeRepairTelemetry)(repairTelemetryFromRun, fixRecommendation, autoFixResult);
+        this.captureOutcomeSnapshot({
+            errorData,
+            verdict: classification.verdict,
+            confidence: classification.confidence,
+            fixRecommendation,
+            autoFixResult,
+            repairTelemetry: result.repairTelemetry,
+            autoFixSkipped: result.autoFixSkipped,
+            autoFixSkippedReason: result.autoFixSkippedReason,
+            skillId: savedSkillId,
+        });
         (0, output_1.setSuccessOutput)(result, errorData, autoFixResult, chronicFlakinessSignal);
     }
     async recordFailure(errorData, verdict, confidence, autoFixTargetRepo) {
+        if (this.inputs.persistResults === false)
+            return;
         const repo = autoFixTargetRepo
             ? `${autoFixTargetRepo.owner}/${autoFixTargetRepo.repo}`
             : process.env.GITHUB_REPOSITORY;
@@ -521,12 +611,21 @@ function buildFailedFixEvidence(errorData, autoFixResult) {
 function normalizeFailureSignature(message) {
     return message.replace(/\s+/g, ' ').trim().slice(0, 500);
 }
-function shouldWriteSkillOutcome(autoFixResult) {
+function shouldWriteSkillOutcome(autoFixResult, errorData) {
     const validationStatus = autoFixResult?.validationResult?.status || autoFixResult?.validationStatus;
-    return (!!autoFixResult &&
-        (validationStatus === 'passed' ||
-            validationStatus === 'failed' ||
-            validationStatus === 'inconclusive'));
+    if (!autoFixResult)
+        return false;
+    if (validationStatus === 'passed')
+        return true;
+    if (validationStatus === 'inconclusive')
+        return false;
+    if (validationStatus === 'failed') {
+        if (!errorData)
+            return true;
+        const evidence = buildFailedFixEvidence(errorData, autoFixResult);
+        return !evidence.changedFailureSignature;
+    }
+    return false;
 }
 function detectInfrastructureFailure(errorData) {
     const haystack = `${errorData.message || ''}\n${errorData.stackTrace || ''}`;

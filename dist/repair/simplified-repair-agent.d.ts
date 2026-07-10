@@ -33,6 +33,7 @@ export declare class SimplifiedRepairAgent {
         priorAgentInvestigationFindings?: string;
     }, previousResponseId?: string, skills?: {
         relevant: TriageSkill[];
+        failedTrajectories?: TriageSkill[];
         flakiness?: FlakinessSignal;
     }, priorInvestigationContext?: string, repoContext?: string): Promise<{
         fix: FixRecommendation | null;
