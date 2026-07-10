@@ -21,7 +21,7 @@ if (!fs.existsSync(specPath)) {
 }
 
 const content = fs.readFileSync(specPath, 'utf-8');
-const allowedPath = 'canary/fixtures/cypress-selector.cy.js';
+const allowedPath = 'canary/specs/cypress-selector.cy.js';
 const normalized = specArg.replace(/\\/g, '/');
 if (!normalized.endsWith(allowedPath)) {
   console.error(`Refusing to validate outside canary fixture: ${specArg}`);

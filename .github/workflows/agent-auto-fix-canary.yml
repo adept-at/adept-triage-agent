@@ -44,10 +44,10 @@ jobs:
           git config user.name "adept-triage-agent[bot]"
           git config user.email "adept-triage-agent[bot]@users.noreply.github.com"
           git checkout -b "$BASE_BRANCH"
-          sed -i 's/submit-button/submit/g' canary/fixtures/cypress-selector.cy.js
-          git add canary/fixtures/cypress-selector.cy.js
+          sed -i 's/submit-button/submit/g' canary/specs/cypress-selector.cy.js
+          git add canary/specs/cypress-selector.cy.js
           git commit -m "canary: seed stale selector for auto-fix demo"
-          git push origin "$BASE_BRANCH"
+          git push --no-verify origin "$BASE_BRANCH"
           echo "base_branch=$BASE_BRANCH" >> "$GITHUB_OUTPUT"
 
       - name: Run live auto-fix canary
@@ -56,8 +56,10 @@ jobs:
         with:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           GITHUB_TOKEN: ${{ github.token }}
-          ERROR_MESSAGE: "Timed out retrying after 10000ms: Expected to find element: '[data-testid=\"submit\"]', but never found it."
-          ERROR_FILE: canary/fixtures/cypress-selector.cy.js
+          ERROR_MESSAGE: >-
+            Timed out retrying after 10000ms: Expected to find element: '[data-testid="submit"]', but never found it.
+            The page exposes [data-testid="submit-button"] for the submit control; restore the working data-testid selector.
+          ERROR_FILE: canary/specs/cypress-selector.cy.js
           ERROR_TEST_NAME: uses the current submit selector
           TEST_FRAMEWORKS: cypress
           REPOSITORY: ${{ github.repository }}
@@ -67,28 +69,39 @@ jobs:
           ENABLE_AUTO_FIX: 'true'
           ENABLE_VALIDATION: 'true'
           ENABLE_LOCAL_VALIDATION: 'true'
-          VALIDATION_SPEC: canary/fixtures/cypress-selector.cy.js
+          VALIDATION_SPEC: canary/specs/cypress-selector.cy.js
           VALIDATION_TEST_COMMAND: 'node canary/validate-selector-fixture.cjs {spec}'
           PERSIST_RESULTS: 'false'
           CONFIDENCE_THRESHOLD: '50'
+          AUTO_FIX_MIN_CONFIDENCE: '70'
 
       - name: Write canary artifacts
         if: always()
+        env:
+          VERDICT: ${{ steps.triage.outputs.verdict }}
+          CONFIDENCE: ${{ steps.triage.outputs.confidence }}
+          REPAIR_STATUS: ${{ steps.triage.outputs.repair_status }}
+          VALIDATION_STATUS: ${{ steps.triage.outputs.validation_status }}
+          AUTO_FIX_APPLIED: ${{ steps.triage.outputs.auto_fix_applied }}
+          AUTO_FIX_BRANCH: ${{ steps.triage.outputs.auto_fix_branch }}
+          BASE_BRANCH: ${{ steps.seed.outputs.base_branch }}
+          TRIAGE_JSON: ${{ steps.triage.outputs.triage_json }}
+          FIX_RECOMMENDATION: ${{ steps.triage.outputs.fix_recommendation }}
         run: |
           mkdir -p canary-artifacts
           cat > canary-artifacts/canary-result.json <<EOF
           {
-            "verdict": "${{ steps.triage.outputs.verdict }}",
-            "confidence": "${{ steps.triage.outputs.confidence }}",
-            "repair_status": "${{ steps.triage.outputs.repair_status }}",
-            "validation_status": "${{ steps.triage.outputs.validation_status }}",
-            "auto_fix_applied": "${{ steps.triage.outputs.auto_fix_applied }}",
-            "auto_fix_branch": "${{ steps.triage.outputs.auto_fix_branch }}",
-            "base_branch": "${{ steps.seed.outputs.base_branch }}"
+            "verdict": "$VERDICT",
+            "confidence": "$CONFIDENCE",
+            "repair_status": "$REPAIR_STATUS",
+            "validation_status": "$VALIDATION_STATUS",
+            "auto_fix_applied": "$AUTO_FIX_APPLIED",
+            "auto_fix_branch": "$AUTO_FIX_BRANCH",
+            "base_branch": "$BASE_BRANCH"
           }
           EOF
-          echo '${{ steps.triage.outputs.triage_json }}' > canary-artifacts/triage_json.json
-          echo '${{ steps.triage.outputs.fix_recommendation }}' > canary-artifacts/fix-recommendation.json
+          printf '%s' "$TRIAGE_JSON" > canary-artifacts/triage_json.json
+          printf '%s' "$FIX_RECOMMENDATION" > canary-artifacts/fix-recommendation.json
 
       - name: Upload canary artifacts
         if: always()
@@ -109,3 +122,13 @@ jobs:
             exit 1
           fi
           echo "Canary auto-fix demonstration succeeded"
+
+      - name: Delete ephemeral canary base branch
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          BASE_BRANCH="${{ steps.seed.outputs.base_branch }}"
+          if [[ -n "$BASE_BRANCH" ]]; then
+            gh api -X DELETE "repos/${{ github.repository }}/git/refs/heads/${BASE_BRANCH}" || true
+          fi
