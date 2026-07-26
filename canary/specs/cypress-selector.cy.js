@@ -4,6 +4,6 @@
  */
 describe('synthetic selector repair', () => {
   it('uses the current submit selector', () => {
-    cy.get('[data-testid="submit-button"]').click();
+    cy.get('[data-testid="submit"]').click();
   });
 });
