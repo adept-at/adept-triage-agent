@@ -11,12 +11,13 @@ import {
   getFrameworkLabel,
 } from './base-agent';
 import { OpenAIClient } from '../openai-client';
-import { AGENT_MODEL, DEFAULT_PRODUCT_REPO, REASONING_EFFORT } from '../config/constants';
+import { DEFAULT_PRODUCT_REPO, resolveAgentModel, resolveReasoningEffort, STAGE_MAX_OUTPUT_TOKENS } from '../config/constants';
 import { getFrameworkProfile } from '../config/framework-profiles';
 import { AnalysisOutput } from './analysis-agent';
 import { CodeReadingOutput } from './code-reading-agent';
 import { coerceEnum, coerceEnumOrNull } from '../utils/text-utils';
 import { clampConfidence } from '../utils/number-utils';
+import { INVESTIGATION_SCHEMA } from '../openai/json-schemas';
 
 /**
  * Whitelisted runtime values for InvestigationFinding's enum-like fields.
@@ -110,10 +111,13 @@ export class InvestigationAgent extends BaseAgent<
   InvestigationOutput
 > {
   constructor(openaiClient: OpenAIClient, config?: Partial<AgentConfig>) {
+    const model = config?.model ?? resolveAgentModel('investigation');
     super(openaiClient, 'InvestigationAgent', {
       ...config,
-      model: config?.model ?? AGENT_MODEL.investigation,
-      reasoningEffort: config?.reasoningEffort ?? REASONING_EFFORT.investigation,
+      model,
+      reasoningEffort:
+        config?.reasoningEffort ?? resolveReasoningEffort('investigation', model),
+      maxTokens: config?.maxTokens ?? STAGE_MAX_OUTPUT_TOKENS.investigation,
     });
   }
 
@@ -320,18 +324,18 @@ You MUST respond with a JSON object matching this schema:
     return parts.join('\n');
   }
 
+  protected getOutputSchema() {
+    return INVESTIGATION_SCHEMA;
+  }
+
   /**
-   * Parse the response
+   * Parse the response — schema guarantees JSON shape; retain domain
+   * validation JSON Schema cannot express (fail-closed fixable flag,
+   * verdictOverride whitelist).
    */
   protected parseResponse(response: string): InvestigationOutput | null {
     try {
-      const jsonMatch = response.match(/\{[\s\S]*\}/);
-      if (!jsonMatch) {
-        this.log('No JSON found in response', 'warning');
-        return null;
-      }
-
-      const parsed = JSON.parse(jsonMatch[0]);
+      const parsed = JSON.parse(response);
 
       // Normalize a single finding — used for both findings[] and
       // primaryFinding so the enum whitelist is applied consistently
@@ -344,7 +348,13 @@ You MUST respond with a JSON object matching this schema:
         severity: coerceEnum(f?.severity, FINDING_SEVERITIES, 'MEDIUM'),
         description: typeof f?.description === 'string' ? f.description : '',
         evidence: Array.isArray(f?.evidence) ? f!.evidence : [],
-        location: f?.location,
+        location: f?.location
+          ? {
+              file: f.location.file,
+              line: f.location.line ?? undefined,
+              code: f.location.code ?? undefined,
+            }
+          : undefined,
         relationToError:
           typeof f?.relationToError === 'string' ? f.relationToError : '',
       });
@@ -360,27 +370,18 @@ You MUST respond with a JSON object matching this schema:
             (s: {
               current: string;
               reason: string;
-              suggestedReplacement?: string;
+              suggestedReplacement?: string | null;
             }) => ({
               current: s.current || '',
               reason: s.reason || '',
-              suggestedReplacement: s.suggestedReplacement,
+              suggestedReplacement: s.suggestedReplacement ?? undefined,
             })
           )
         : [];
 
       // verdictOverride is a *signal*, not a default. An invalid
       // suggestedLocation means "the model didn't give us a usable
-      // override," not "default to APP_CODE." Pre-v1.49.3 this parser
-      // used coerceEnum(..., 'APP_CODE'), so adversarial or malformed
-      // payloads turned into real APP_CODE overrides, which
-      // AgentOrchestrator then treats as a hard product-side signal
-      // and aborts repair on. v1.49.3 drops the entire override when
-      // suggestedLocation isn't whitelisted and logs a warning so a
-      // prompt-injection attempt against this specific signal is
-      // visible in run logs (otherwise a silent drop would make the
-      // pipeline indistinguishable from the model simply choosing not
-      // to emit an override).
+      // override," not "default to APP_CODE."
       const suggestedLocation = parsed.verdictOverride
         ? coerceEnumOrNull(
             parsed.verdictOverride.suggestedLocation,

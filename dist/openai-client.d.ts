@@ -1,6 +1,7 @@
 import OpenAI from 'openai';
 import { OpenAIResponse, FewShotExample, ErrorData } from './types';
 import { type ReasoningEffort } from './config/constants';
+import { type StrictJsonSchemaFormat } from './openai/json-schemas';
 export declare class OpenAIClient {
     private openai;
     private maxRetries;
@@ -21,6 +22,7 @@ export declare class OpenAIClient {
     private formatPRDiffSection;
     private formatProductDiffSection;
     private parseResponse;
+    private assertCompleteResponse;
     private validateResponse;
     private ensureJsonMention;
     private delay;
@@ -28,6 +30,7 @@ export declare class OpenAIClient {
         systemPrompt: string;
         userContent: string | Array<OpenAI.Chat.Completions.ChatCompletionContentPartText | OpenAI.Chat.Completions.ChatCompletionContentPartImage>;
         responseAsJson?: boolean;
+        jsonSchema?: StrictJsonSchemaFormat;
         temperature?: number;
         previousResponseId?: string;
         model?: string;

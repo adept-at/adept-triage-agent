@@ -40,6 +40,7 @@ export declare class FixGenerationAgent extends BaseAgent<FixGenerationInput, Fi
     protected buildUserPrompt(input: FixGenerationInput, context: AgentContext): string;
     private findErrorLineInFile;
     private findEnclosingFunction;
+    protected getOutputSchema(): import("../openai/json-schemas").StrictJsonSchemaFormat;
     protected parseResponse(response: string): FixGenerationOutput | null;
 }
 //# sourceMappingURL=fix-generation-agent.d.ts.map

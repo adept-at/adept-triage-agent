@@ -33,7 +33,7 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.LocalFixValidator = void 0;
+exports.LocalFixValidator = exports.VALIDATION_PASS_COUNT = void 0;
 exports.shouldDropEnvVar = shouldDropEnvVar;
 const core = __importStar(require("@actions/core"));
 const crypto = __importStar(require("crypto"));
@@ -94,7 +94,7 @@ function filterEnv(npmToken) {
 const DEFAULT_TEST_TIMEOUT_MS = 300_000;
 const MAX_LOG_CHARS = 20_000;
 const MAX_BUFFER = 10 * 1024 * 1024;
-const BASELINE_PASS_COUNT = 3;
+exports.VALIDATION_PASS_COUNT = 3;
 class LocalFixValidator {
     config;
     octokit;
@@ -229,17 +229,60 @@ class LocalFixValidator {
         core.info('✅ Setup complete');
     }
     async baselineCheck() {
-        core.info(`🔍 Running baseline check — does the test pass without any fix? ` +
-            `(requires ${BASELINE_PASS_COUNT} consecutive passes)`);
+        core.info(`🔍 Running baseline check — does the unmodified test fail consistently? ` +
+            `(requires ${exports.VALIDATION_PASS_COUNT}/${exports.VALIDATION_PASS_COUNT} failures to proceed with repair)`);
+        let totalDurationMs = 0;
+        let passCount = 0;
+        let failCount = 0;
+        let lastResult;
+        let lastFailure;
+        for (let pass = 1; pass <= exports.VALIDATION_PASS_COUNT; pass++) {
+            core.info(`   Baseline attempt ${pass}/${exports.VALIDATION_PASS_COUNT}...`);
+            const result = await this.runTest();
+            totalDurationMs += result.durationMs;
+            lastResult = result;
+            if (result.passed) {
+                passCount += 1;
+                core.info(`   ✅ Baseline attempt ${pass} passed`);
+            }
+            else {
+                failCount += 1;
+                lastFailure = result;
+                core.info(`   ❌ Baseline attempt ${pass} failed`);
+            }
+        }
+        let disposition;
+        if (failCount === exports.VALIDATION_PASS_COUNT) {
+            disposition = 'all_failed';
+        }
+        else if (passCount === exports.VALIDATION_PASS_COUNT) {
+            disposition = 'all_passed';
+        }
+        else {
+            disposition = 'mixed';
+        }
+        const representative = lastFailure ?? lastResult;
+        return {
+            passed: disposition === 'all_passed',
+            disposition,
+            passCount,
+            failCount,
+            logs: representative?.logs ?? '',
+            exitCode: representative?.exitCode ?? 0,
+            durationMs: totalDurationMs,
+        };
+    }
+    async validateFixPasses() {
+        core.info(`🧪 Validating applied fix — requires ${exports.VALIDATION_PASS_COUNT} consecutive evidence-bearing passes`);
         let totalDurationMs = 0;
         let lastResult;
-        for (let pass = 1; pass <= BASELINE_PASS_COUNT; pass++) {
-            core.info(`   Baseline pass ${pass}/${BASELINE_PASS_COUNT}...`);
+        for (let pass = 1; pass <= exports.VALIDATION_PASS_COUNT; pass++) {
+            core.info(`   Post-fix pass ${pass}/${exports.VALIDATION_PASS_COUNT}...`);
             const result = await this.runTest();
             totalDurationMs += result.durationMs;
             lastResult = result;
             if (!result.passed) {
-                core.info(`   ❌ Baseline failed on pass ${pass} — short-circuiting.`);
+                core.info(`   ❌ Post-fix pass ${pass} failed — rejecting validation`);
                 return {
                     passed: false,
                     logs: result.logs,
@@ -247,6 +290,7 @@ class LocalFixValidator {
                     durationMs: totalDurationMs,
                 };
             }
+            core.info(`   ✅ Post-fix pass ${pass} passed`);
         }
         return {
             passed: true,
@@ -275,15 +319,6 @@ class LocalFixValidator {
             if (content.indexOf(change.oldCode) === -1) {
                 return { valid: false, reason: `oldCode not found in ${cleanPath}` };
             }
-            if (/\.tsx?$/.test(cleanPath)) {
-                const typeCheck = this.quickTypeCheck(filePath);
-                if (!typeCheck.passed) {
-                    return {
-                        valid: false,
-                        reason: `TypeScript compilation failed: ${typeCheck.error}`,
-                    };
-                }
-            }
         }
         return { valid: true };
     }
@@ -297,33 +332,6 @@ class LocalFixValidator {
             throw new Error(`Path traversal rejected: ${cleanPath}`);
         }
         return { cleanPath, filePath };
-    }
-    quickTypeCheck(filePath) {
-        const tscPath = path.join(this._workDir, 'node_modules', '.bin', 'tsc');
-        if (!fs.existsSync(tscPath)) {
-            return { passed: true };
-        }
-        try {
-            (0, child_process_1.execFileSync)(tscPath, ['--noEmit', '--pretty', 'false', filePath], {
-                cwd: this._workDir,
-                timeout: 30000,
-                stdio: 'pipe',
-                encoding: 'utf-8',
-            });
-            return { passed: true };
-        }
-        catch (err) {
-            const execErr = err;
-            if (execErr.killed) {
-                core.warning(`tsc type-check timed out for ${filePath} — skipping`);
-                return { passed: true };
-            }
-            const output = execErr.stdout || execErr.stderr || String(err);
-            const firstLine = output
-                .split('\n')
-                .find(l => l.trim()) || 'Unknown error';
-            return { passed: false, error: firstLine };
-        }
     }
     async applyFix(changes) {
         const preCheck = await this.preValidateFix(changes);

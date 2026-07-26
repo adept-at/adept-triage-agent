@@ -52,7 +52,7 @@ export const OPENAI = {
   LEGACY_MODEL: 'gpt-5.5',
   /** Model family used by fix-generation and review agents. */
   UPGRADED_MODEL: 'gpt-5.5',
-  /** Maximum completion tokens */
+  /** Shared fallback max completion tokens (prefer STAGE_MAX_OUTPUT_TOKENS). */
   MAX_COMPLETION_TOKENS: 24000,
   /** Maximum retry attempts */
   MAX_RETRIES: 3,
@@ -61,10 +61,26 @@ export const OPENAI = {
 } as const;
 
 /**
+ * Measured per-stage output-token ceilings. Keep GPT-5.5 during the
+ * schema/SDK boundary migration; ceilings prevent a single stage from
+ * consuming the shared 24k budget.
+ */
+export const STAGE_MAX_OUTPUT_TOKENS = {
+  classification: 4000,
+  analysis: 6000,
+  investigation: 8000,
+  fixGeneration: 12000,
+  review: 6000,
+} as const;
+
+/**
  * Per-agent model selection. Entries explicitly name the legacy model
  * for unchanged agents so reverting the upgrade is a one-line edit
  * (flip AGENT_MODEL.fixGeneration and AGENT_MODEL.review back to
  * OPENAI.LEGACY_MODEL).
+ *
+ * Production remains on GPT-5.5 until replay + live-canary evidence
+ * justifies pinning GPT-5.6 IDs from GPT56_CANDIDATE_MODEL.
  */
 export const AGENT_MODEL = {
   classification: OPENAI.LEGACY_MODEL,
@@ -73,6 +89,34 @@ export const AGENT_MODEL = {
   fixGeneration: OPENAI.UPGRADED_MODEL,
   review: OPENAI.UPGRADED_MODEL,
 } as const;
+
+/**
+ * Measured GPT-5.6 candidate routing for replay evaluation and canary.
+ * Not production defaults — activate via TRIAGE_MODEL_PROFILE=gpt56-candidate
+ * or per-stage MODEL_OVERRIDE_* inputs. One-line rollback: unset those.
+ */
+export const GPT56_CANDIDATE_MODEL = {
+  classification: 'gpt-5.6-terra',
+  analysis: 'gpt-5.6-terra',
+  investigation: 'gpt-5.6-terra',
+  fixGeneration: 'gpt-5.6-sol',
+  review: 'gpt-5.6-sol',
+} as const;
+
+/**
+ * Candidate reasoning efforts paired with GPT56_CANDIDATE_MODEL.
+ * Standard reasoning mode only — evaluate `reasoning.mode: "pro"`
+ * separately for difficult retries / disputed reviews.
+ */
+export const GPT56_CANDIDATE_REASONING = {
+  classification: 'medium',
+  analysis: 'high',
+  investigation: 'high',
+  fixGeneration: 'high',
+  review: 'xhigh',
+} as const;
+
+export type AgentStage = keyof typeof AGENT_MODEL;
 
 /**
  * Per-agent reasoning effort. Classification, analysis, and investigation
@@ -89,7 +133,38 @@ export const REASONING_EFFORT = {
 export type ReasoningEffort = 'none' | 'low' | 'medium' | 'high' | 'xhigh';
 
 export function supportsReasoningEffort(model: string): boolean {
-  return model.startsWith('gpt-5.5');
+  return model.startsWith('gpt-5.5') || model.startsWith('gpt-5.6');
+}
+
+/**
+ * Resolve the model for a stage. Precedence:
+ * 1. Explicit override (action input / canary)
+ * 2. TRIAGE_MODEL_PROFILE=gpt56-candidate
+ * 3. Production AGENT_MODEL pin
+ */
+export function resolveAgentModel(
+  stage: AgentStage,
+  override?: string
+): string {
+  if (override && override.trim()) return override.trim();
+  if (process.env.TRIAGE_MODEL_PROFILE === 'gpt56-candidate') {
+    return GPT56_CANDIDATE_MODEL[stage];
+  }
+  return AGENT_MODEL[stage];
+}
+
+/**
+ * Resolve reasoning effort for a stage under the active model profile.
+ */
+export function resolveReasoningEffort(
+  stage: AgentStage,
+  model: string
+): ReasoningEffort {
+  if (!supportsReasoningEffort(model)) return 'none';
+  if (process.env.TRIAGE_MODEL_PROFILE === 'gpt56-candidate') {
+    return GPT56_CANDIDATE_REASONING[stage];
+  }
+  return REASONING_EFFORT[stage];
 }
 
 /** Short SHA display length */
@@ -101,6 +176,14 @@ export const ARTIFACTS = {
   MAX_PR_DIFF_FILES: 30,
   /** Maximum patch lines to include per file */
   MAX_PATCH_LINES: 20,
+  /** Max ZIP entries processed from a single artifact */
+  MAX_ZIP_ENTRIES: 500,
+  /** Max total decompressed bytes across ZIP entries in one artifact */
+  MAX_ZIP_BYTES: 50 * 1024 * 1024,
+  /** Max screenshots forwarded to the model */
+  MAX_SCREENSHOTS: 5,
+  /** Max base64 characters per screenshot (~3.75MB decoded) */
+  MAX_SCREENSHOT_BASE64_CHARS: 5_000_000,
 } as const;
 
 /** Summary and output formatting */
@@ -188,8 +271,14 @@ export const DEFAULT_PRODUCT_URL = 'https://learn.adept.at';
 export const VERDICT_OVERRIDE_CONFIDENCE_THRESHOLD = 70;
 
 export const AGENT_CONFIG = {
-  /** Maximum iterations for the fix generation/review loop */
+  /** Maximum fix/review iterations inside a single orchestrator call (remote path). */
   MAX_AGENT_ITERATIONS: 3,
+  /**
+   * Global budget for generated fixes across nested loops. Local validation
+   * uses one orchestrator fix attempt per outer iteration and caps the outer
+   * loop at this budget so analysis is not re-run 3×3 times.
+   */
+  GLOBAL_FIX_ATTEMPT_BUDGET: 3,
   /**
    * Total timeout for the entire agent orchestration. GPT-5.5 xhigh can
    * spend several minutes on fix-generation + review, especially across
@@ -210,7 +299,8 @@ export const AGENT_CONFIG = {
 
 /** Iterative fix-validate loop configuration */
 export const FIX_VALIDATE_LOOP = {
-  MAX_ITERATIONS: 3,
+  /** Outer local-validation iterations — shares GLOBAL_FIX_ATTEMPT_BUDGET. */
+  MAX_ITERATIONS: AGENT_CONFIG.GLOBAL_FIX_ATTEMPT_BUDGET,
   /** Maximum time for a single local test run (15 minutes) */
   TEST_TIMEOUT_MS: 900_000,
 } as const;

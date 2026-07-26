@@ -1707,6 +1707,8 @@ describe('skill-usage telemetry (v1.49.3 A4)', () => {
         id: 'sk-inv-1',
         spec: 'target.ts',
         framework: 'cypress',
+        validatedLocally: true,
+        errorPattern: 'match',
         investigationFindings: 'prior finding',
       }),
     ]);

@@ -40,6 +40,7 @@ const constants_1 = require("../config/constants");
 const framework_profiles_1 = require("../config/framework-profiles");
 const text_utils_1 = require("../utils/text-utils");
 const number_utils_1 = require("../utils/number-utils");
+const json_schemas_1 = require("../openai/json-schemas");
 const CHANGE_TYPES = [
     'SELECTOR_UPDATE',
     'WAIT_ADDITION',
@@ -173,14 +174,15 @@ When recent product repo changes are provided (e.g. from the learn-webapp), you 
 class FixGenerationAgent extends base_agent_1.BaseAgent {
     warnedUnknownFramework = false;
     constructor(openaiClient, config) {
-        const resolvedModel = config?.model ?? constants_1.AGENT_MODEL.fixGeneration;
+        const resolvedModel = config?.model ?? (0, constants_1.resolveAgentModel)('fixGeneration');
         const resolvedEffort = (0, constants_1.supportsReasoningEffort)(resolvedModel)
-            ? (config?.reasoningEffort ?? constants_1.REASONING_EFFORT.fixGeneration)
+            ? (config?.reasoningEffort ?? (0, constants_1.resolveReasoningEffort)('fixGeneration', resolvedModel))
             : 'none';
         super(openaiClient, 'FixGenerationAgent', {
             ...config,
             model: resolvedModel,
             reasoningEffort: resolvedEffort,
+            maxTokens: config?.maxTokens ?? constants_1.STAGE_MAX_OUTPUT_TOKENS.fixGeneration,
         });
     }
     async execute(input, context, previousResponseId) {
@@ -320,14 +322,12 @@ class FixGenerationAgent extends base_agent_1.BaseAgent {
         }
         return { fnStart, fnEnd };
     }
+    getOutputSchema() {
+        return json_schemas_1.FIX_GENERATION_SCHEMA;
+    }
     parseResponse(response) {
         try {
-            const jsonMatch = response.match(/\{[\s\S]*\}/);
-            if (!jsonMatch) {
-                this.log('No JSON found in response', 'warning');
-                return null;
-            }
-            const parsed = JSON.parse(jsonMatch[0]);
+            const parsed = JSON.parse(response);
             if (!Array.isArray(parsed.changes) || parsed.changes.length === 0) {
                 this.log('No changes in response', 'warning');
                 return null;

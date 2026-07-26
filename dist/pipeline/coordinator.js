@@ -51,6 +51,7 @@ const run_telemetry_1 = require("./run-telemetry");
 const constants_1 = require("../config/constants");
 const output_1 = require("./output");
 const validator_1 = require("./validator");
+const test_evidence_1 = require("../services/test-evidence");
 class PipelineCoordinator {
     octokit;
     openaiClient;
@@ -124,7 +125,7 @@ class PipelineCoordinator {
             : '';
         const contextOwner = autoFixTargetRepo?.owner ?? this.repoDetails.owner;
         const contextRepo = autoFixTargetRepo?.repo ?? this.repoDetails.repo;
-        const contextRef = this.inputs.branch || this.inputs.autoFixBaseBranch || 'main';
+        const contextRef = this.inputs.autoFixBaseBranch || 'main';
         const repoContextFetcher = new repo_context_fetcher_1.RepoContextFetcher(this.octokit);
         const repoContext = await repoContextFetcher.fetch(contextOwner, contextRepo, contextRef);
         let fixRecommendation = null;
@@ -136,6 +137,7 @@ class PipelineCoordinator {
         let autoFixSkipped;
         let autoFixSkippedReason;
         let repairTelemetry;
+        let baselineDisposition;
         if (this.inputs.enableAutoFix &&
             this.inputs.enableValidation &&
             this.inputs.enableLocalValidation &&
@@ -151,6 +153,7 @@ class PipelineCoordinator {
             autoFixSkipped = loopResult.autoFixSkipped;
             autoFixSkippedReason = loopResult.autoFixSkippedReason;
             repairTelemetry = loopResult.repairTelemetry;
+            baselineDisposition = loopResult.baselineDisposition;
         }
         else {
             const singleResult = await (0, validator_1.generateFixRecommendation)(this.inputs, this.repoDetails, errorData, this.openaiClient, this.octokit, undefined, undefined, skillStore, investigationContext, repoContext);
@@ -179,6 +182,7 @@ class PipelineCoordinator {
             autoFixSkipped,
             autoFixSkippedReason,
             repairTelemetry,
+            baselineDisposition,
         };
     }
     async execute() {
@@ -366,7 +370,7 @@ class PipelineCoordinator {
             (0, output_1.setSuccessOutput)(degraded, errorData, null, chronicFlakinessSignal);
             return;
         }
-        const { fixRecommendation, autoFixResult, iterations, prUrl: skillPrUrl, agentRootCause, agentInvestigationFindings, autoFixSkipped: repairAutoFixSkipped, autoFixSkippedReason: repairAutoFixSkippedReason, repairTelemetry: repairTelemetryFromRun, } = repairOutcome;
+        const { fixRecommendation, autoFixResult, iterations, prUrl: skillPrUrl, agentRootCause, agentInvestigationFindings, autoFixSkipped: repairAutoFixSkipped, autoFixSkippedReason: repairAutoFixSkippedReason, repairTelemetry: repairTelemetryFromRun, baselineDisposition, } = repairOutcome;
         let savedSkillId;
         if (skillStore && autoFixTargetRepo && errorData) {
             const validationStatus = autoFixResult?.validationResult?.status || autoFixResult?.validationStatus;
@@ -393,9 +397,10 @@ class PipelineCoordinator {
                     await skillStore.reinforceSkill(reinforceTarget.id, {
                         success: validationPassed,
                         validatedLocally: validationPassed,
-                        prUrl: skillPrUrl || '',
+                        prUrl: skillPrUrl || autoFixResult?.prUrl || '',
                         confidence: fixRecommendation.confidence,
                     });
+                    savedSkillId = reinforceTarget.id;
                     core.info(`📝 Reinforced existing skill ${reinforceTarget.id} ` +
                         `(byte-identical fix reuse, validationPassed=${validationPassed})`);
                     (0, run_telemetry_1.recordGate)('skillReinforcements');
@@ -425,7 +430,7 @@ class PipelineCoordinator {
                         },
                         confidence: fixRecommendation.confidence,
                         iterations,
-                        prUrl: skillPrUrl || '',
+                        prUrl: skillPrUrl || autoFixResult?.prUrl || '',
                         validatedLocally: validationPassed,
                         fixFingerprint: (0, validator_1.fixFingerprint)(fixRecommendation),
                         priorSkillCount: skillStore.countForSpec(errorData.fileName || 'unknown'),
@@ -467,6 +472,9 @@ class PipelineCoordinator {
             }
         }
         result.repairTelemetry = (0, output_1.finalizeRepairTelemetry)(repairTelemetryFromRun, fixRecommendation, autoFixResult);
+        if (autoFixResult && !autoFixResult.prUrl && skillPrUrl) {
+            autoFixResult.prUrl = skillPrUrl;
+        }
         this.captureOutcomeSnapshot({
             errorData,
             verdict: classification.verdict,
@@ -477,6 +485,7 @@ class PipelineCoordinator {
             autoFixSkipped: result.autoFixSkipped,
             autoFixSkippedReason: result.autoFixSkippedReason,
             skillId: savedSkillId,
+            baselineDisposition,
         });
         (0, output_1.setSuccessOutput)(result, errorData, autoFixResult, chronicFlakinessSignal);
     }
@@ -520,13 +529,14 @@ class PipelineCoordinator {
             if (workflowRun.data.status !== 'completed') {
                 if (this.inputs.jobName) {
                     try {
-                        const jobs = await this.octokit.actions.listJobsForWorkflowRun({
+                        const jobs = await this.octokit.paginate(this.octokit.actions.listJobsForWorkflowRun, {
                             owner,
                             repo,
                             run_id: parseInt(runId, 10),
                             filter: 'latest',
+                            per_page: 100,
                         });
-                        const targetJob = jobs.data.jobs.find((job) => job.name === this.inputs.jobName);
+                        const targetJob = jobs.find((job) => job.name === this.inputs.jobName);
                         if (!targetJob) {
                             core.warning(`Job '${this.inputs.jobName}' not found yet while workflow is still in progress`);
                         }
@@ -597,15 +607,20 @@ function inferRootCauseCategory(fix) {
         .join(' '));
 }
 function buildFailedFixEvidence(errorData, autoFixResult) {
-    const validationFailure = autoFixResult?.validationResult?.failure?.primaryError ||
+    const validationFailure = (0, test_evidence_1.extractPrimaryValidationError)(autoFixResult?.validationResult?.failure?.primaryError ||
+        autoFixResult?.error ||
+        '') ||
+        autoFixResult?.validationResult?.failure?.primaryError ||
         autoFixResult?.error ||
         'Fix did not produce a validated passing result';
-    const originalFailure = errorData.message || 'unknown original failure';
+    const originalFailure = (0, test_evidence_1.extractPrimaryValidationError)(errorData.message || '') ||
+        errorData.message ||
+        'unknown original failure';
     return {
         fixCommit: autoFixResult?.commitSha,
         validationRunId: autoFixResult?.validationResult?.runId || autoFixResult?.validationRunId,
-        originalFailureSignature: normalizeFailureSignature(originalFailure),
-        validationFailureSignature: normalizeFailureSignature(validationFailure),
+        originalFailureSignature: (0, test_evidence_1.normalizeFailureSignature)(originalFailure),
+        validationFailureSignature: (0, test_evidence_1.normalizeFailureSignature)(validationFailure),
         failedAssertion: autoFixResult?.validationResult?.failure?.failedAssertion,
         failureStage: autoFixResult?.validationResult?.failure?.failureStage ||
             autoFixResult?.validationResult?.status ||
@@ -613,12 +628,9 @@ function buildFailedFixEvidence(errorData, autoFixResult) {
         reasonTheFixWasWrong: autoFixResult?.validationResult?.failure?.primaryError
             ? 'Validation failed after applying the generated fix; do not reuse this fix as a proven pattern.'
             : undefined,
-        changedFailureSignature: normalizeFailureSignature(originalFailure) !==
-            normalizeFailureSignature(validationFailure),
+        changedFailureSignature: (0, test_evidence_1.normalizeFailureSignature)(originalFailure) !==
+            (0, test_evidence_1.normalizeFailureSignature)(validationFailure),
     };
-}
-function normalizeFailureSignature(message) {
-    return message.replace(/\s+/g, ' ').trim().slice(0, 500);
 }
 function shouldWriteSkillOutcome(autoFixResult, errorData) {
     const validationStatus = autoFixResult?.validationResult?.status || autoFixResult?.validationStatus;

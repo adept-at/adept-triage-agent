@@ -183,11 +183,15 @@ export class AgentOrchestrator {
     const trace: OrchestratorRepairTrace = { iterations: 0 };
 
     let timeoutId: ReturnType<typeof setTimeout> | undefined;
+    const abortController = new AbortController();
+    context.abortSignal = abortController.signal;
 
     try {
-      // Create timeout promise that cleans up after itself
+      // Abort in-flight agent calls on timeout so Promise.race does not
+      // leave the pipeline consuming tokens after timed_out is reported.
       const timeoutPromise = new Promise<never>((_, reject) => {
         timeoutId = setTimeout(() => {
+          abortController.abort();
           reject(
             new Error(
               `Orchestration timed out after ${this.config.totalTimeoutMs}ms`
@@ -206,6 +210,10 @@ export class AgentOrchestrator {
         startTime,
         trace
       );
+
+      // If timeout wins, still attach a catch so a late pipeline rejection
+      // cannot become an unhandled rejection after abort.
+      pipelinePromise.catch(() => {});
 
       const result = await Promise.race([pipelinePromise, timeoutPromise]);
       clearTimeout(timeoutId);
@@ -306,7 +314,16 @@ export class AgentOrchestrator {
     let iterations = 0;
     let lastResponseId: string | undefined = previousResponseId;
 
+    const ensureNotAborted = (stage: string): void => {
+      if (context.abortSignal?.aborted) {
+        throw new Error(
+          `Orchestration timed out after ${this.config.totalTimeoutMs}ms (aborted before ${stage})`
+        );
+      }
+    };
+
     // Step 1: Analysis Agent
+    ensureNotAborted('analysis');
     trace.lastStage = 'analysis';
     core.info('📊 Step 1: Running Analysis Agent...');
     if (skills && skills.relevant.length > 0) {
@@ -342,6 +359,7 @@ export class AgentOrchestrator {
     core.info(`   Confidence: ${analysis.confidence}%`);
 
     // Step 2: Code Reading Agent
+    ensureNotAborted('code_reading');
     trace.lastStage = 'code_reading';
     core.info('📖 Step 2: Running Code Reading Agent...');
     const codeReadingResult = await this.codeReadingAgent.execute(
@@ -405,6 +423,7 @@ export class AgentOrchestrator {
     }
 
     // Step 3: Investigation Agent
+    ensureNotAborted('investigation');
     trace.lastStage = 'investigation';
     core.info('🔍 Step 3: Running Investigation Agent...');
     const productDiffSummary = context.productDiff && context.productDiff.files.length > 0
@@ -539,9 +558,12 @@ export class AgentOrchestrator {
     ].filter(Boolean).join(' | ');
 
     // Step 4 & 5: Fix Generation and Review Loop
+    // Fix/review prompts already carry full prior-stage context, so we do
+    // not chain previous_response_id across those stages (avoids redundant
+    // token spend and stale-context bleed). Analysis→investigation chaining
+    // on low confidence is preserved above.
     let lastFix: FixGenerationOutput | null = null;
     let reviewFeedback: string | null = null;
-    let fixReviewChainId: string | undefined;
     // Captures the issues from the most recent review iteration so the
     // max-iterations fallback can refuse to ship when quality CRITICALs
     // (trace missing/vague, strictly-stronger logic) were still open.
@@ -620,6 +642,7 @@ export class AgentOrchestrator {
       }
 
       iterations++;
+      ensureNotAborted(`fix_generation:${iterations}`);
       trace.iterations = iterations;
       trace.lastStage = 'fix_generation';
       core.info(
@@ -658,11 +681,9 @@ export class AgentOrchestrator {
           investigation,
           previousFeedback: reviewFeedback,
         },
-        context,
-        fixReviewChainId
+        context
       );
       agentResults.fixGeneration = fixGenResult;
-      fixReviewChainId = fixGenResult.responseId ?? fixReviewChainId;
       lastResponseId = fixGenResult.responseId ?? lastResponseId;
 
       if (!fixGenResult.success || !fixGenResult.data) {
@@ -778,11 +799,9 @@ export class AgentOrchestrator {
             investigation,
             codeContext: codeReadingResult.data,
           },
-          context,
-          fixReviewChainId
+          context
         );
         agentResults.review = reviewResult;
-        fixReviewChainId = reviewResult.responseId ?? fixReviewChainId;
         lastResponseId = reviewResult.responseId ?? lastResponseId;
 
         if (reviewResult.success && reviewResult.data) {
@@ -798,8 +817,17 @@ export class AgentOrchestrator {
             core.info(`   Improvements: ${review.improvements.join('; ')}`);
           }
 
-          if (review.approved) {
+          // Belt-and-suspenders: review-agent already fails closed on
+          // missing approval / low confidence / CRITICAL issues. Re-check
+          // confidence here so orchestrator logs distinguish generated-fix
+          // confidence from reviewer confidence.
+          const reviewMeetsConfidence =
+            review.fixConfidence >= this.config.minConfidence;
+          if (review.approved && reviewMeetsConfidence) {
             core.info(`   ✅ Fix APPROVED by Review Agent on iteration ${iterations}`);
+            core.info(
+              `   Reviewer confidence: ${review.fixConfidence}% (generated fix confidence: ${lastFix.confidence}%)`
+            );
             lastReviewRejected = false;
             trace.iterations = iterations;
             trace.lastStage = 'review';
@@ -830,6 +858,9 @@ export class AgentOrchestrator {
             const issueLines = review.issues
               .map((i) => `[${i.severity}] ${i.description}`)
               .join('\n');
+            const confidenceNote = !reviewMeetsConfidence
+              ? `\n[CONFIDENCE] Reviewer fixConfidence ${review.fixConfidence}% below threshold ${this.config.minConfidence}%`
+              : '';
             // When the reviewer flagged a quality CRITICAL (trace/strictly-
             // stronger), replay the prior trace in feedback so the fix-gen
             // agent can see exactly what it said and why it was rejected.
@@ -846,8 +877,10 @@ export class AgentOrchestrator {
                 `- newStateAfterFix: ${priorTrace.newStateAfterFix || '(was empty)'}\n` +
                 `- whyAssertionPassesNow: ${priorTrace.whyAssertionPassesNow || '(was empty)'}`
               : '';
-            reviewFeedback = issueLines + traceReplay;
-            core.warning(`Fix not approved. Issues: ${review.issues.length}`);
+            reviewFeedback = issueLines + confidenceNote + traceReplay;
+            core.warning(
+              `Fix not approved. Issues: ${review.issues.length}; reviewerConfidence=${review.fixConfidence}%; approved=${review.approved}`
+            );
             core.info(`   📝 Feedback to next iteration:\n${reviewFeedback}`);
           }
         }

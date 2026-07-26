@@ -153,6 +153,9 @@ class CodeReadingAgent extends base_agent_1.BaseAgent {
     parseResponse(_response) {
         return null;
     }
+    getOutputSchema() {
+        return null;
+    }
     cleanFilePath(rawPath) {
         if (!rawPath)
             return rawPath;

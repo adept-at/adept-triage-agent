@@ -7,10 +7,12 @@ import { buildRepairContext } from '../repair-context';
 import { SimplifiedRepairAgent } from '../repair/simplified-repair-agent';
 import { createFixApplier, ApplyResult, generateFixBranchName } from '../repair/fix-applier';
 import { LocalFixValidator } from '../services/local-fix-validator';
+import type { BaselineDisposition } from '../services/local-fix-validator';
 import { AUTO_FIX, BLAST_RADIUS, FIX_VALIDATE_LOOP, DEFAULT_PRODUCT_URL } from '../config/constants';
 import { SkillStore } from '../services/skill-store';
 import { parseRepoString } from '../utils/repo-utils';
 import { recordGate } from './run-telemetry';
+import { extractPrimaryValidationError } from '../services/test-evidence';
 
 export async function generateFixRecommendation(
   inputs: ActionInputs,
@@ -37,7 +39,12 @@ export async function generateFixRecommendation(
    * investigation, fix-gen, and review share the same baseline view
    * of the repo. Empty for repos that haven't opted in.
    */
-  repoContext?: string
+  repoContext?: string,
+  /**
+   * Cap fix/review iterations for this call. Local validation passes 1 so
+   * the outer loop owns the global generated-fix budget.
+   */
+  maxFixIterations?: number
 ): Promise<{
   fix: FixRecommendation | null;
   lastResponseId?: string;
@@ -79,6 +86,9 @@ export async function generateFixRecommendation(
       {
         modelOverrideFixGen: inputs.modelOverrideFixGen,
         modelOverrideReview: inputs.modelOverrideReview,
+        ...(typeof maxFixIterations === 'number'
+          ? { orchestratorConfig: { maxIterations: maxFixIterations } }
+          : {}),
       }
     );
     const skills = skillStore
@@ -164,6 +174,8 @@ export async function iterativeFixValidateLoop(
   autoFixSkipped?: boolean;
   autoFixSkippedReason?: string;
   repairTelemetry?: RepairTelemetry;
+  /** Explicit baseline result for outcome telemetry (local path only). */
+  baselineDisposition?: BaselineDisposition;
 }> {
   const maxIterations = FIX_VALIDATE_LOOP.MAX_ITERATIONS;
   let fixRecommendation: FixRecommendation | null = null;
@@ -174,6 +186,7 @@ export async function iterativeFixValidateLoop(
   let autoFixSkipped = false;
   let autoFixSkippedReason: string | undefined;
   let repairTelemetry: RepairTelemetry | undefined;
+  let baselineDisposition: BaselineDisposition | undefined;
   let previousAttempt:
     | {
         iteration: number;
@@ -217,9 +230,16 @@ export async function iterativeFixValidateLoop(
     validatorReady = true;
 
     const baseline = await validator.baselineCheck();
-    if (baseline.passed) {
-      core.info('✅ Baseline check passed — test passes without fix. Failure was likely transient.');
-      core.info('📊 learning-telemetry baseline=passed validation=skipped iterations=0');
+    baselineDisposition = baseline.disposition;
+    if (baseline.disposition !== 'all_failed') {
+      const reason =
+        baseline.disposition === 'all_passed'
+          ? 'baseline check passed without a fix (failure likely transient)'
+          : `baseline mixed results (${baseline.passCount} pass / ${baseline.failCount} fail) — treating as flaky/inconclusive`;
+      core.info(`✅ Skipping repair — ${reason}.`);
+      core.info(
+        `📊 learning-telemetry baseline=${baseline.disposition} validation=skipped iterations=0`
+      );
       return {
         fixRecommendation: null,
         autoFixResult: null,
@@ -230,14 +250,15 @@ export async function iterativeFixValidateLoop(
         autoFixSkippedReason,
         repairTelemetry: {
           status: 'skipped',
-          summary: 'Repair skipped: baseline check passed without a fix (failure likely transient).',
+          summary: `Repair skipped: ${reason}.`,
           iterations: 0,
           elapsedMs: 0,
         },
+        baselineDisposition,
       };
     }
-    core.info('❌ Baseline check confirmed failure — proceeding with fix.');
-    core.info(`📊 learning-telemetry baseline=failed durationMs=${baseline.durationMs}`);
+    core.info('❌ Baseline check confirmed consistent failure — proceeding with fix.');
+    core.info(`📊 learning-telemetry baseline=all_failed durationMs=${baseline.durationMs}`);
 
     for (let iteration = 0; iteration < maxIterations; iteration++) {
       completedIterations = iteration + 1;
@@ -255,7 +276,10 @@ export async function iterativeFixValidateLoop(
         undefined,
         skillStore,
         investigationContext,
-        repoContext
+        repoContext,
+        // One fix/review attempt per outer iteration — the outer loop owns
+        // AGENT_CONFIG.GLOBAL_FIX_ATTEMPT_BUDGET so nested 3×3 cost is gone.
+        1
       );
 
       if (!fixResult.fix) {
@@ -350,8 +374,8 @@ export async function iterativeFixValidateLoop(
         break;
       }
 
-      core.info(`\n🧪 Running test locally...`);
-      const testResult = await validator.runTest();
+      core.info(`\n🧪 Running multi-pass local validation...`);
+      const testResult = await validator.validateFixPasses();
 
       if (testResult.passed) {
         core.info(
@@ -378,6 +402,8 @@ export async function iterativeFixValidateLoop(
             modifiedFiles: fixRecommendation.proposedChanges.map((c) => c.file),
             commitSha: pushResult.commitSha,
             branchName: pushResult.branchName,
+            prUrl: pushResult.prUrl,
+            prNumber: pushResult.prNumber,
             validationStatus: 'passed',
             validationResult: {
               status: 'passed',
@@ -396,6 +422,7 @@ export async function iterativeFixValidateLoop(
             autoFixSkipped,
             autoFixSkippedReason,
             repairTelemetry,
+            baselineDisposition,
           };
         } catch (pushError) {
           core.warning(`Test passed but push/PR creation failed: ${pushError}`);
@@ -421,6 +448,7 @@ export async function iterativeFixValidateLoop(
           autoFixSkipped,
           autoFixSkippedReason,
           repairTelemetry,
+          baselineDisposition,
         };
       }
 
@@ -440,6 +468,9 @@ export async function iterativeFixValidateLoop(
       // blast-radius boost inert. Overwritten by the success result if a later
       // iteration passes (that branch returns immediately); on exhaustion the
       // last failure is what the coordinator records.
+      const primaryError =
+        extractPrimaryValidationError(testResult.logs) ||
+        'Local validation test failed';
       autoFixResult = {
         success: false,
         modifiedFiles: fixRecommendation.proposedChanges.map((c) => c.file),
@@ -450,8 +481,7 @@ export async function iterativeFixValidateLoop(
           mode: 'local',
           conclusion: 'failure',
           failure: {
-            primaryError:
-              testResult.logs?.slice(-1000) || 'Local validation test failed',
+            primaryError,
             failureStage: 'validation',
           },
         },
@@ -495,6 +525,7 @@ export async function iterativeFixValidateLoop(
     autoFixSkipped,
     autoFixSkippedReason,
     repairTelemetry,
+    baselineDisposition,
   };
 }
 
@@ -794,12 +825,16 @@ export async function attemptAutoFix(
       // engineers had to find manually. Best-effort — failures here log a
       // warning but do not abort the fix lifecycle.
       if (result.branchName && result.commitSha) {
-        await fixApplier.openDraftPullRequest({
+        const draftPr = await fixApplier.openDraftPullRequest({
           branchName: result.branchName,
           commitSha: result.commitSha,
           fix: fixRecommendation,
           triageRunId: github.context.runId.toString(),
         });
+        if (draftPr) {
+          result.prUrl = draftPr.url;
+          result.prNumber = draftPr.number;
+        }
       }
 
       if (inputs.enableValidation && result.branchName) {
@@ -863,6 +898,15 @@ export async function attemptAutoFix(
                 core.warning(
                   `❌ Remote validation ${structured.status}: ${structured.failure?.primaryError || structured.conclusion || 'no failure detail'}`
                 );
+              }
+
+              if (result.prNumber) {
+                await fixApplier.finalizeValidationPullRequest({
+                  prNumber: result.prNumber,
+                  validationStatus: structured.status,
+                  validationUrl: result.validationUrl,
+                  triageRunId: github.context.runId.toString(),
+                });
               }
             } else {
               core.info(

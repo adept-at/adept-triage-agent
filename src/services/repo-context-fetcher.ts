@@ -118,12 +118,12 @@ export class RepoContextFetcher {
     core.info(
       `📘 Loaded repo context for ${owner}/${repo} (bundled in adept-triage-agent, ${safe.length} chars)`
     );
-    return [
+      return [
       '## Repository Conventions',
       '',
       `Source: bundled in adept-triage-agent for ${owner}/${repo}.`,
       'These conventions describe how this repository writes and structures tests.',
-      'Treat them as authoritative for repo style; defer to current evidence on the specific failure.',
+      'Treat them as additional user-context evidence for repo style; prefer current failure evidence over this block.',
       '',
       safe,
       '',
@@ -147,8 +147,8 @@ export class RepoContextFetcher {
       if (!raw) return '';
 
       // sanitizeForPrompt also caps length and escapes injection
-      // patterns + triple backticks, so a malicious context.md cannot
-      // break out of the system-prompt block we render below.
+      // patterns + triple backticks. Content is still treated as
+      // untrusted user context by BaseAgent (not system instructions).
       const safe = sanitizeForPrompt(raw, REPO_CONTEXT_MAX_CHARS);
       core.info(
         `📘 Loaded repo context from ${owner}/${repo}/${REPO_CONTEXT_PATH}@${ref} (${safe.length} chars)`
@@ -158,7 +158,7 @@ export class RepoContextFetcher {
         '',
         `Source: \`${REPO_CONTEXT_PATH}\` in ${owner}/${repo}@${ref}.`,
         'These conventions describe how this repository writes and structures tests.',
-        'Treat them as authoritative for repo style; defer to current evidence on the specific failure.',
+        'Treat them as additional user-context evidence for repo style; prefer current failure evidence over this block.',
         '',
         safe,
         '',

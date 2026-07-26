@@ -50,7 +50,7 @@ const REVIEW_APPROVED_STATUSES = [
     'validated_not_published',
 ];
 function buildOutcomeEvent(params) {
-    const { inputs, errorData, verdict, confidence, fixRecommendation, autoFixResult, repairTelemetry, autoFixSkipped, autoFixSkippedReason, skillId, repo, } = params;
+    const { inputs, errorData, verdict, confidence, fixRecommendation, autoFixResult, repairTelemetry, autoFixSkipped, autoFixSkippedReason, skillId, repo, baselineDisposition, } = params;
     const spec = (0, skill_store_1.normalizeSpec)(errorData.fileName) || 'unknown';
     const testName = errorData.testName || 'unknown';
     const validationStatus = autoFixResult?.validationResult?.status ||
@@ -66,10 +66,7 @@ function buildOutcomeEvent(params) {
     const s5 = !!autoFixResult &&
         ((autoFixResult.modifiedFiles?.length ?? 0) > 0 ||
             ['applied', 'validated', 'validated_publish_failed', 'validated_not_published'].includes(repairStatus));
-    const s4 = s1 &&
-        !autoFixSkipped &&
-        repairStatus !== 'skipped' &&
-        repairStatus !== 'not_started';
+    const s4 = baselineDisposition === 'all_failed';
     const s6 = validationPassed;
     const s7 = fixFullyAccepted;
     const { GITHUB_SERVER_URL, GITHUB_REPOSITORY, GITHUB_RUN_ID } = process.env;

@@ -3,6 +3,7 @@ import { OpenAIClient } from '../openai-client';
 import { ArtifactFetcher } from '../artifact-fetcher';
 import { ActionInputs, ErrorData, FixRecommendation, RepairTelemetry, Verdict } from '../types';
 import { ApplyResult } from '../repair/fix-applier';
+import { BaselineDisposition } from '../services/local-fix-validator';
 import { SkillStore } from '../services/skill-store';
 export interface ClassificationResult {
     verdict: Verdict;
@@ -30,6 +31,7 @@ export interface RepairResult {
     autoFixSkipped?: boolean;
     autoFixSkippedReason?: string;
     repairTelemetry?: RepairTelemetry;
+    baselineDisposition?: BaselineDisposition;
 }
 interface PipelineCoordinatorDeps {
     octokit: Octokit;

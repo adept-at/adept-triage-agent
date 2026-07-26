@@ -11,6 +11,7 @@ import { ArtifactFetcher } from '../../src/artifact-fetcher';
 import { SimplifiedRepairAgent } from '../../src/repair/simplified-repair-agent';
 import { buildRepairContext } from '../../src/repair-context';
 import type { ActionInputs, ErrorData, AnalysisResult, FixRecommendation } from '../../src/types';
+import { mockOctokitPaginate } from './mock-paginate';
 
 export interface PipelineHarnessParams {
   rawLogText: string;
@@ -66,6 +67,7 @@ export function createMockOctokit(
       }),
     },
   };
+  mockOctokitPaginate(base as any);
   if (options?.fileContent !== undefined) {
     const content = Buffer.from(options.fileContent, 'utf-8').toString('base64');
     const expectedPath = options.filePath;

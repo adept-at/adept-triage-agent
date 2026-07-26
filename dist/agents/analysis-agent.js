@@ -5,6 +5,7 @@ const base_agent_1 = require("./base-agent");
 const constants_1 = require("../config/constants");
 const text_utils_1 = require("../utils/text-utils");
 const number_utils_1 = require("../utils/number-utils");
+const json_schemas_1 = require("../openai/json-schemas");
 const ROOT_CAUSE_CATEGORIES = [
     'SELECTOR_MISMATCH',
     'TIMING_ISSUE',
@@ -19,10 +20,12 @@ const ROOT_CAUSE_CATEGORIES = [
 const ISSUE_LOCATIONS = ['TEST_CODE', 'APP_CODE', 'BOTH', 'UNKNOWN'];
 class AnalysisAgent extends base_agent_1.BaseAgent {
     constructor(openaiClient, config) {
+        const model = config?.model ?? (0, constants_1.resolveAgentModel)('analysis');
         super(openaiClient, 'AnalysisAgent', {
             ...config,
-            model: config?.model ?? constants_1.AGENT_MODEL.analysis,
-            reasoningEffort: config?.reasoningEffort ?? constants_1.REASONING_EFFORT.analysis,
+            model,
+            reasoningEffort: config?.reasoningEffort ?? (0, constants_1.resolveReasoningEffort)('analysis', model),
+            maxTokens: config?.maxTokens ?? constants_1.STAGE_MAX_OUTPUT_TOKENS.analysis,
         });
     }
     async execute(input, context, previousResponseId) {
@@ -152,14 +155,12 @@ You MUST respond with a JSON object matching this schema:
         parts.push('', '## Instructions', 'Analyze the above information and provide your root cause analysis in the required JSON format.', 'Consider all available evidence including error messages, stack traces, logs, and screenshots.', 'Be specific about which selectors are problematic and why.');
         return parts.filter(Boolean).join('\n');
     }
+    getOutputSchema() {
+        return json_schemas_1.ANALYSIS_SCHEMA;
+    }
     parseResponse(response) {
         try {
-            const jsonMatch = response.match(/\{[\s\S]*\}/);
-            if (!jsonMatch) {
-                this.log('No JSON found in response', 'warning');
-                return null;
-            }
-            const parsed = JSON.parse(jsonMatch[0]);
+            const parsed = JSON.parse(response);
             if (!parsed.rootCauseCategory || typeof parsed.confidence !== 'number') {
                 this.log('Missing required fields in response', 'warning');
                 return null;

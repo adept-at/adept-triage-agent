@@ -12,13 +12,14 @@ import {
   getFrameworkLabel,
 } from './base-agent';
 import { OpenAIClient } from '../openai-client';
-import { DEFAULT_PRODUCT_REPO, AGENT_MODEL, REASONING_EFFORT, supportsReasoningEffort } from '../config/constants';
+import { DEFAULT_PRODUCT_REPO, resolveAgentModel, resolveReasoningEffort, STAGE_MAX_OUTPUT_TOKENS, supportsReasoningEffort } from '../config/constants';
 import { getFrameworkProfile } from '../config/framework-profiles';
 import { Framework } from '../types';
 import { AnalysisOutput } from './analysis-agent';
 import { InvestigationOutput } from './investigation-agent';
 import { coerceEnum } from '../utils/text-utils';
 import { clampConfidence } from '../utils/number-utils';
+import { FIX_GENERATION_SCHEMA } from '../openai/json-schemas';
 
 /**
  * Whitelisted `changeType` values, matching the CodeChange type union
@@ -249,15 +250,16 @@ export class FixGenerationAgent extends BaseAgent<
   private warnedUnknownFramework = false;
 
   constructor(openaiClient: OpenAIClient, config?: Partial<AgentConfig>) {
-    const resolvedModel = config?.model ?? AGENT_MODEL.fixGeneration;
+    const resolvedModel = config?.model ?? resolveAgentModel('fixGeneration');
     const resolvedEffort =
       supportsReasoningEffort(resolvedModel)
-        ? (config?.reasoningEffort ?? REASONING_EFFORT.fixGeneration)
+        ? (config?.reasoningEffort ?? resolveReasoningEffort('fixGeneration', resolvedModel))
         : 'none' as const;
     super(openaiClient, 'FixGenerationAgent', {
       ...config,
       model: resolvedModel,
       reasoningEffort: resolvedEffort,
+      maxTokens: config?.maxTokens ?? STAGE_MAX_OUTPUT_TOKENS.fixGeneration,
     });
   }
 
@@ -506,18 +508,17 @@ export class FixGenerationAgent extends BaseAgent<
     return { fnStart, fnEnd };
   }
 
+  protected getOutputSchema() {
+    return FIX_GENERATION_SCHEMA;
+  }
+
   /**
-   * Parse the response
+   * Parse the response — schema guarantees JSON; retain domain checks
+   * (non-empty changes, required change fields, enum coercion).
    */
   protected parseResponse(response: string): FixGenerationOutput | null {
     try {
-      const jsonMatch = response.match(/\{[\s\S]*\}/);
-      if (!jsonMatch) {
-        this.log('No JSON found in response', 'warning');
-        return null;
-      }
-
-      const parsed = JSON.parse(jsonMatch[0]);
+      const parsed = JSON.parse(response);
 
       // Validate changes
       if (!Array.isArray(parsed.changes) || parsed.changes.length === 0) {

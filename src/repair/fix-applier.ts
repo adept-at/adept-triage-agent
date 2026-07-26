@@ -9,8 +9,7 @@ import { Octokit } from '@octokit/rest';
 import { FixRecommendation, ValidationResult, ValidationStatus } from '../types';
 import { AUTO_FIX, SHORT_SHA_LENGTH } from '../config/constants';
 import { recordGate } from '../pipeline/run-telemetry';
-import { verifyTestEvidence } from '../services/test-evidence';
-import { ANSI_ESCAPE_REGEX } from '../utils/text-utils';
+import { verifyTestEvidence, extractPrimaryValidationError, extractFailedAssertion } from '../services/test-evidence';
 import { withRetry } from '../utils/retry';
 
 /**
@@ -27,6 +26,10 @@ export interface ApplyResult {
   commitSha?: string;
   /** Branch name that was created */
   branchName?: string;
+  /** Draft or published PR URL when opened */
+  prUrl?: string;
+  /** Draft or published PR number when opened */
+  prNumber?: number;
   /** Validation workflow run ID (if validation was triggered) */
   validationRunId?: number;
   /** Validation status */
@@ -145,6 +148,17 @@ export interface FixApplier {
     fix: FixRecommendation;
     triageRunId: string;
   }): Promise<{ url: string; number: number } | null>;
+
+  /**
+   * After remote validation completes, update the draft PR body and
+   * mark it ready for review on verified pass.
+   */
+  finalizeValidationPullRequest(params: {
+    prNumber: number;
+    validationStatus: ValidationStatus;
+    validationUrl?: string;
+    triageRunId: string;
+  }): Promise<void>;
 
   /**
    * Wait for a validation workflow run to complete and return the outcome.
@@ -646,10 +660,10 @@ export class GitHubFixApplier implements FixApplier {
       90
     );
 
-    const body = [
+      const body = [
       '## Auto-generated fix from adept-triage-agent',
       '',
-      '> ⚠️ **Draft PR — remote validation pending or failed.** This PR is opened automatically so engineers can review the proposed fix in context. Status will be updated once the validation workflow concludes.',
+      '> ⚠️ **Draft PR — remote validation pending.** This PR is opened automatically so engineers can review the proposed fix in context. It will be marked ready for review only after validation passes.',
       '',
       `**Triage run:** ${params.triageRunId}`,
       `**Branch:** \`${params.branchName}\``,
@@ -688,6 +702,79 @@ export class GitHubFixApplier implements FixApplier {
         `Failed to open draft PR for ${params.branchName}: ${err instanceof Error ? err.message : String(err)}`
       );
       return null;
+    }
+  }
+
+  /**
+   * Update a remote-validation draft PR after the validation workflow
+   * concludes. On verified pass, mark the PR ready for review. On
+   * failure/pending, keep it draft and update the body status line.
+   */
+  async finalizeValidationPullRequest(params: {
+    prNumber: number;
+    validationStatus: ValidationStatus;
+    validationUrl?: string;
+    triageRunId: string;
+  }): Promise<void> {
+    const { octokit, owner, repo } = this.config;
+    const passed = params.validationStatus === 'passed';
+    const statusLine = passed
+      ? '> ✅ **Remote validation passed.** This PR is ready for review.'
+      : params.validationStatus === 'pending'
+        ? '> ⏳ **Remote validation still pending** after the wait budget.'
+        : `> ❌ **Remote validation ${params.validationStatus}.** Kept as draft.`;
+
+    try {
+      const existing = await octokit.pulls.get({
+        owner,
+        repo,
+        pull_number: params.prNumber,
+      });
+      const previousBody = existing.data.body || '';
+      const updatedBody = previousBody.replace(
+        /> ⚠️ \*\*Draft PR — remote validation pending\.\*\*[^\n]*/,
+        statusLine
+      );
+      const bodyWithLink = params.validationUrl
+        ? `${updatedBody}\n\n**Validation run:** ${params.validationUrl}`
+        : updatedBody;
+
+      await octokit.pulls.update({
+        owner,
+        repo,
+        pull_number: params.prNumber,
+        body: bodyWithLink,
+      });
+
+      if (passed) {
+        try {
+          await octokit.request(
+            'POST /repos/{owner}/{repo}/pulls/{pull_number}/ready_for_review',
+            {
+              owner,
+              repo,
+              pull_number: params.prNumber,
+            }
+          );
+        } catch (readyErr) {
+          core.warning(
+            `PR #${params.prNumber} body updated but mark-ready failed: ${
+              readyErr instanceof Error ? readyErr.message : String(readyErr)
+            }`
+          );
+        }
+      }
+
+      core.info(
+        `📬 PR #${params.prNumber} updated for validation status=${params.validationStatus}` +
+          (passed ? ' (marked ready for review)' : ' (kept draft)')
+      );
+    } catch (err) {
+      core.warning(
+        `Failed to finalize PR #${params.prNumber} after validation: ${
+          err instanceof Error ? err.message : String(err)
+        }`
+      );
     }
   }
 
@@ -758,7 +845,6 @@ export class GitHubFixApplier implements FixApplier {
 
       core.info('Validation workflow triggered successfully');
 
-      const dispatchedAt = new Date();
       const maxPollAttempts = 10;
       const pollInterval = 3000;
 
@@ -778,37 +864,31 @@ export class GitHubFixApplier implements FixApplier {
           { context: 'listing workflow runs' }
         );
 
-        // Phase 5: prefer correlation by run name including the
-        // `triage_run_id`. Consumer `validate-fix.yml` workflows can opt in
-        // by setting `run-name: Triage validate ${{ inputs.triage_run_id }}`;
-        // GitHub exposes that string as `display_title` on the workflow run.
-        // When the title is unset (legacy consumer workflows), fall back to
-        // the time-window heuristic so existing consumers keep attaching,
-        // with their existing concurrency caveat documented via warning.
-        const candidates = runs.data.workflow_runs;
-        let match: typeof candidates[number] | undefined;
-        if (triageRunId) {
-          match = candidates.find(
-            (run) =>
-              typeof run.display_title === 'string' &&
-              run.display_title.includes(triageRunId)
+        // Require exact triage_run_id correlation via consumer run-name.
+        // Time-window fallback was removed — concurrent dispatches could
+        // otherwise attribute another run's result to this fix.
+        if (!triageRunId) {
+          core.warning(
+            'No triage_run_id provided — cannot safely correlate validation runs. ' +
+              'Pass triage_run_id and set consumer run-name to include it.'
           );
+          return null;
         }
+
+        const candidates = runs.data.workflow_runs;
+        const match = candidates.find(
+          (run) =>
+            typeof run.display_title === 'string' &&
+            run.display_title.includes(triageRunId)
+        );
+
         if (!match) {
-          const fallback = candidates.find((run) => {
-            const createdAt = new Date(run.created_at);
-            return createdAt >= new Date(dispatchedAt.getTime() - 30_000);
-          });
-          if (fallback && triageRunId) {
+          if (attempt === maxPollAttempts) {
             core.warning(
-              `Validation run correlation fell back to time window for ` +
-                `triage_run_id=${triageRunId}. For reliable correlation under ` +
-                `concurrency, set \`run-name\` in the consumer ` +
-                `validate-fix.yml to include the triage_run_id ` +
-                `(e.g. \`run-name: Triage validate \${{ inputs.triage_run_id }}\`).`
+              `No validation run matched triage_run_id=${triageRunId} in display_title. ` +
+                `Set \`run-name: Triage validate \${{ inputs.triage_run_id }}\` in the consumer validate-fix.yml.`
             );
           }
-          match = fallback;
         }
 
         if (match) {
@@ -995,18 +1075,17 @@ export class GitHubFixApplier implements FixApplier {
     const { octokit, owner, repo } = this.config;
 
     try {
-      const jobs = await withRetry(
+      const jobsToRead = (await withRetry(
         () =>
-          octokit.actions.listJobsForWorkflowRun({
+          octokit.paginate(octokit.actions.listJobsForWorkflowRun, {
             owner,
             repo,
             run_id: runId,
             filter: 'latest',
+            per_page: 100,
           }),
         { context: `listing jobs for validation run ${runId}` }
-      );
-
-      const jobsToRead = [...jobs.data.jobs].sort((a, b) => {
+      )).sort((a, b) => {
         if (a.conclusion === 'failure' && b.conclusion !== 'failure') return -1;
         if (b.conclusion === 'failure' && a.conclusion !== 'failure') return 1;
         return 0;
@@ -1160,34 +1239,6 @@ export class GitHubFixApplier implements FixApplier {
               matchIndex = currentContent.indexOf(effectiveOldCode);
               if (matchIndex !== -1) {
                 core.info(`  ✅ Matched after trailing whitespace normalization`);
-              }
-            }
-          }
-
-          // Strategy 3: line-range extraction near the specified line number.
-          // Note: when prior edits in the same file have shifted lines, the
-          // recommendation's `change.line` is approximate; the strict-then-
-          // fuzzy match plus uniqueness check below still keeps this safe.
-          if (matchIndex === -1 && change.line > 0) {
-            const contentLines = currentContent.split('\n');
-            const oldLineCount = change.oldCode.split('\n').length;
-            const start = Math.max(0, change.line - 3);
-            const end = Math.min(contentLines.length, change.line + oldLineCount + 2);
-
-            for (let s = start; s <= Math.min(start + 5, end - oldLineCount); s++) {
-              const candidate = contentLines.slice(s, s + oldLineCount).join('\n');
-              const similarity = computeLineSimilarity(change.oldCode, candidate);
-              if (similarity >= 0.5) {
-                const candidateIdx = currentContent.indexOf(candidate);
-                if (candidateIdx !== -1) {
-                  const secondIdx = currentContent.indexOf(candidate, candidateIdx + 1);
-                  if (secondIdx === -1) {
-                    matchIndex = candidateIdx;
-                    effectiveOldCode = candidate;
-                    core.info(`  ✅ Matched via line-range similarity (${(similarity * 100).toFixed(0)}%) at line ${s + 1}`);
-                    break;
-                  }
-                }
               }
             }
           }
@@ -1461,53 +1512,4 @@ function buildRemoteValidationResult(params: {
         }
       : {}),
   };
-}
-
-function extractPrimaryValidationError(logs?: string): string | undefined {
-  if (!logs) return undefined;
-  const clean = logs.replace(ANSI_ESCAPE_REGEX, '');
-  const patterns = [
-    /AssertionError:[^\n]+/i,
-    /CypressError:[^\n]+/i,
-    /TimeoutError:[^\n]+/i,
-    /Error:[^\n]+/i,
-  ];
-  for (const pattern of patterns) {
-    const match = clean.match(pattern);
-    if (match) return match[0].trim().slice(0, 500);
-  }
-  return undefined;
-}
-
-function extractFailedAssertion(primaryError: string): string | undefined {
-  const expectedMatch = primaryError.match(/expected\s+(.+)/i);
-  if (expectedMatch) return expectedMatch[0].slice(0, 300);
-  const timedOutMatch = primaryError.match(/Timed out[^:]*:\s*(.+)/i);
-  if (timedOutMatch) return timedOutMatch[1].slice(0, 300);
-  return undefined;
-}
-
-/**
- * Compute line-by-line similarity between two code blocks.
- * Returns 0-1 where 1 means all tokens in the shorter block appear in the longer one.
- */
-function computeLineSimilarity(a: string, b: string): number {
-  const aLines = a.split('\n').map((l) => l.trim()).filter(Boolean);
-  const bLines = b.split('\n').map((l) => l.trim()).filter(Boolean);
-  if (aLines.length === 0 || bLines.length === 0) return 0;
-
-  let matched = 0;
-  for (const aLine of aLines) {
-    const aTokens = aLine.split(/\s+/).filter((t) => t.length > 2);
-    if (aTokens.length === 0) { matched++; continue; }
-    for (const bLine of bLines) {
-      const hitCount = aTokens.filter((t) => bLine.includes(t)).length;
-      if (hitCount >= aTokens.length * 0.6) {
-        matched++;
-        break;
-      }
-    }
-  }
-
-  return matched / aLines.length;
 }

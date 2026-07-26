@@ -14,6 +14,7 @@ jest.mock('../src/artifact-fetcher');
 import { analyzeFailure, extractErrorFromLogs } from '../src/simplified-analyzer';
 import { ArtifactFetcher } from '../src/artifact-fetcher';
 import { run } from '../src/index';
+import { mockOctokitPaginate } from './helpers/mock-paginate';
 
 describe('GitHub Action', () => {
   let mockCore: jest.Mocked<typeof core>;
@@ -56,6 +57,7 @@ describe('GitHub Action', () => {
         downloadJobLogsForWorkflowRun: jest.fn() as any,
       },
     } as any;
+    mockOctokitPaginate(mockOctokit as any);
     (Octokit as jest.MockedClass<typeof Octokit>).mockImplementation(() => mockOctokit);
 
     // Setup analyzer mocks
@@ -904,7 +906,7 @@ describe('GitHub Action', () => {
 
       await run();
 
-      expect(mockCore.setFailed).toHaveBeenCalledWith('Action failed: Input required and not supplied: OPENAI_API_KEY');
+      expect(mockCore.setFailed).toHaveBeenCalledWith('Input required and not supplied: OPENAI_API_KEY');
     });
 
     it('should handle no error data available', async () => {
@@ -936,7 +938,7 @@ describe('GitHub Action', () => {
 
       await run();
 
-      expect(mockCore.setFailed).toHaveBeenCalledWith('Action failed: OpenAI API error');
+      expect(mockCore.setFailed).toHaveBeenCalledWith('OpenAI API error');
     });
 
     it('should handle non-Error exceptions', async () => {
@@ -946,7 +948,7 @@ describe('GitHub Action', () => {
 
       await run();
 
-      expect(mockCore.setFailed).toHaveBeenCalledWith('Action failed: An unknown error occurred');
+      expect(mockCore.setFailed).toHaveBeenCalledWith('An unknown error occurred');
     });
   });
 

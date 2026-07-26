@@ -40,6 +40,7 @@ export declare class InvestigationAgent extends BaseAgent<InvestigationInput, In
     execute(input: InvestigationInput, context: AgentContext, previousResponseId?: string): Promise<AgentResult<InvestigationOutput>>;
     protected getSystemPrompt(): string;
     protected buildUserPrompt(input: InvestigationInput, context: AgentContext): string;
+    protected getOutputSchema(): import("../openai/json-schemas").StrictJsonSchemaFormat;
     protected parseResponse(response: string): InvestigationOutput | null;
 }
 //# sourceMappingURL=investigation-agent.d.ts.map

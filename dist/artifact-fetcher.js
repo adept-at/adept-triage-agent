@@ -56,6 +56,50 @@ function toBuffer(data) {
     }
     return Buffer.from(data);
 }
+async function listAllWorkflowRunArtifacts(octokit, owner, repo, runId) {
+    return octokit.paginate(octokit.actions.listWorkflowRunArtifacts, {
+        owner,
+        repo,
+        run_id: runId,
+        per_page: 100,
+    });
+}
+function selectArtifactsForJob(artifacts, jobName, label) {
+    if (!jobName || artifacts.length === 0) {
+        return artifacts;
+    }
+    const matrixMatch = jobName.match(/\((.*?)\)/);
+    const searchName = matrixMatch ? matrixMatch[1] : jobName;
+    const jobLower = jobName.toLowerCase();
+    const searchLower = searchName.toLowerCase();
+    let jobSpecific = artifacts.filter((artifact) => artifact.name.toLowerCase().includes(searchLower));
+    if (jobSpecific.length === 0) {
+        const jobTokens = jobLower
+            .split(/[^a-z0-9]+/)
+            .filter((t) => t.length >= 3);
+        if (jobTokens.length > 0) {
+            jobSpecific = artifacts.filter((artifact) => {
+                const artifactLower = artifact.name.toLowerCase();
+                return jobTokens.some((token) => artifactLower.includes(token));
+            });
+            if (jobSpecific.length > 0) {
+                core.info(`Found ${jobSpecific.length} ${label} artifact(s) via token-overlap match for job "${jobName}" (tokens: ${jobTokens.join(', ')})`);
+            }
+        }
+    }
+    if (jobSpecific.length > 0) {
+        if (jobSpecific.length !== artifacts.length) {
+            core.info(`Narrowed to ${jobSpecific.length} ${label} artifact(s) specific to job: ${jobName} (searching for: ${searchName})`);
+        }
+        return jobSpecific;
+    }
+    if (artifacts.length === 1) {
+        core.info(`No job-specific ${label} artifact match for "${jobName}"; using the single remaining candidate ${artifacts[0].name}`);
+        return artifacts;
+    }
+    core.warning(`No ${label} artifacts specifically matched job "${jobName}" and ${artifacts.length} candidates remain — skipping to avoid sibling-job contamination.`);
+    return [];
+}
 class ArtifactFetcher {
     octokit;
     constructor(octokit) {
@@ -65,13 +109,9 @@ class ArtifactFetcher {
         try {
             const { owner, repo } = repoDetails ?? github.context.repo;
             const screenshots = [];
-            const artifactsResponse = await this.octokit.actions.listWorkflowRunArtifacts({
-                owner,
-                repo,
-                run_id: parseInt(runId, 10)
-            });
-            core.info(`Found ${artifactsResponse.data.total_count} artifacts`);
-            let screenshotArtifacts = artifactsResponse.data.artifacts.filter(artifact => {
+            const allArtifacts = await listAllWorkflowRunArtifacts(this.octokit, owner, repo, parseInt(runId, 10));
+            core.info(`Found ${allArtifacts.length} artifacts`);
+            let screenshotArtifacts = allArtifacts.filter(artifact => {
                 const name = artifact.name.toLowerCase();
                 return name.includes('screenshot') ||
                     name.includes('cypress') ||
@@ -80,36 +120,7 @@ class ArtifactFetcher {
                     name.includes('webdriver') ||
                     (name.includes('cy-') && (name.includes('logs') || name.includes('artifacts')));
             });
-            if (jobName) {
-                const matrixMatch = jobName.match(/\((.*?)\)/);
-                const searchName = matrixMatch ? matrixMatch[1] : jobName;
-                const jobLower = jobName.toLowerCase();
-                const searchLower = searchName.toLowerCase();
-                let jobSpecificArtifacts = screenshotArtifacts.filter(artifact => artifact.name.toLowerCase().includes(searchLower));
-                if (jobSpecificArtifacts.length === 0) {
-                    const jobTokens = jobLower
-                        .split(/[^a-z0-9]+/)
-                        .filter((t) => t.length >= 3);
-                    if (jobTokens.length > 0) {
-                        jobSpecificArtifacts = screenshotArtifacts.filter((artifact) => {
-                            const artifactLower = artifact.name.toLowerCase();
-                            return jobTokens.some((token) => artifactLower.includes(token));
-                        });
-                        if (jobSpecificArtifacts.length > 0) {
-                            core.info(`Found ${jobSpecificArtifacts.length} artifact(s) via token-overlap match for job "${jobName}" (tokens: ${jobTokens.join(', ')})`);
-                        }
-                    }
-                }
-                if (jobSpecificArtifacts.length > 0) {
-                    if (jobSpecificArtifacts.length !== screenshotArtifacts.length) {
-                        core.info(`Narrowed to ${jobSpecificArtifacts.length} artifact(s) specific to job: ${jobName} (searching for: ${searchName})`);
-                    }
-                    screenshotArtifacts = jobSpecificArtifacts;
-                }
-                else {
-                    core.warning(`No artifacts specifically matched job "${jobName}" (also tried tokens). Falling back to all ${screenshotArtifacts.length} matching artifact(s) — sibling-job contamination is possible.`);
-                }
-            }
+            screenshotArtifacts = selectArtifactsForJob(screenshotArtifacts, jobName, 'screenshot');
             if (screenshotArtifacts.length === 0) {
                 core.info('No screenshot artifacts found');
                 return screenshots;
@@ -126,15 +137,29 @@ class ArtifactFetcher {
                     const buffer = toBuffer(downloadResponse.data);
                     const zip = new adm_zip_1.default(buffer);
                     const entries = zip.getEntries();
-                    for (const entry of entries) {
+                    let totalBytes = 0;
+                    for (const entry of entries.slice(0, constants_1.ARTIFACTS.MAX_ZIP_ENTRIES)) {
+                        if (screenshots.length >= constants_1.ARTIFACTS.MAX_SCREENSHOTS)
+                            break;
                         const entryName = entry.entryName;
+                        const entrySize = entry.header?.size ?? entry.getData().length;
+                        totalBytes += entrySize;
+                        if (totalBytes > constants_1.ARTIFACTS.MAX_ZIP_BYTES) {
+                            core.warning(`Stopping ZIP scan for ${artifact.name}: decompressed size exceeded ${constants_1.ARTIFACTS.MAX_ZIP_BYTES} bytes`);
+                            break;
+                        }
                         if (this.isScreenshotFile(entryName, artifact.name)) {
                             const fileName = path.basename(entryName);
                             const fileData = entry.getData();
+                            const base64Data = fileData.toString('base64');
+                            if (base64Data.length > constants_1.ARTIFACTS.MAX_SCREENSHOT_BASE64_CHARS) {
+                                core.warning(`Skipping oversized screenshot ${fileName} (${base64Data.length} base64 chars)`);
+                                continue;
+                            }
                             screenshots.push({
                                 name: fileName,
                                 path: entryName,
-                                base64Data: fileData.toString('base64'),
+                                base64Data,
                                 timestamp: artifact.created_at || undefined,
                             });
                             core.info(`Found screenshot: ${fileName}`);
@@ -197,30 +222,18 @@ class ArtifactFetcher {
         try {
             const { owner, repo } = repoDetails ?? github.context.repo;
             let artifactLogs = '';
-            const artifactsResponse = await this.octokit.actions.listWorkflowRunArtifacts({
-                owner,
-                repo,
-                run_id: parseInt(runId, 10)
-            });
-            core.info(`Found ${artifactsResponse.data.total_count} artifacts for test logs`);
-            const logArtifacts = artifactsResponse.data.artifacts.filter(artifact => {
+            const allArtifacts = await listAllWorkflowRunArtifacts(this.octokit, owner, repo, parseInt(runId, 10));
+            core.info(`Found ${allArtifacts.length} artifacts for test logs`);
+            let logArtifacts = allArtifacts.filter(artifact => {
                 const name = artifact.name.toLowerCase();
                 return name.includes('cy-logs') || name.includes('cypress-logs') ||
                     name.includes('wdio-logs') || name.includes('wdio-artifacts') ||
                     (name.includes('cypress') && (name.includes('log') || name.includes('artifacts')));
             });
+            logArtifacts = selectArtifactsForJob(logArtifacts, jobName, 'test-log');
             if (logArtifacts.length === 0) {
                 core.info('No test log artifacts found');
                 return artifactLogs;
-            }
-            if (jobName) {
-                const matrixMatch = jobName.match(/\((.*?)\)/);
-                const searchName = matrixMatch ? matrixMatch[1] : jobName;
-                const specificArtifact = logArtifacts.find(artifact => artifact.name.toLowerCase().includes(searchName.toLowerCase()));
-                if (specificArtifact) {
-                    core.info(`Found specific artifact for job ${jobName}: ${specificArtifact.name}`);
-                    return await this.processArtifactForLogs(specificArtifact, { owner, repo });
-                }
             }
             for (const artifact of logArtifacts) {
                 const logs = await this.processArtifactForLogs(artifact, { owner, repo });
@@ -256,9 +269,22 @@ class ArtifactFetcher {
                 textFiles: [],
                 otherFiles: []
             };
+            let totalBytes = 0;
+            let entriesProcessed = 0;
             for (const entry of zipEntries) {
                 if (entry.isDirectory)
                     continue;
+                if (entriesProcessed >= constants_1.ARTIFACTS.MAX_ZIP_ENTRIES) {
+                    core.warning(`Stopping ZIP scan for ${artifact.name}: entry count exceeded ${constants_1.ARTIFACTS.MAX_ZIP_ENTRIES}`);
+                    break;
+                }
+                entriesProcessed += 1;
+                const entrySize = entry.header?.size ?? 0;
+                totalBytes += entrySize;
+                if (totalBytes > constants_1.ARTIFACTS.MAX_ZIP_BYTES) {
+                    core.warning(`Stopping ZIP scan for ${artifact.name}: decompressed size exceeded ${constants_1.ARTIFACTS.MAX_ZIP_BYTES} bytes`);
+                    break;
+                }
                 const entryName = entry.entryName.toLowerCase();
                 const fullName = entry.entryName;
                 if (entryName.endsWith('.png') || entryName.endsWith('.jpg') || entryName.endsWith('.jpeg')) {
@@ -335,13 +361,13 @@ class ArtifactFetcher {
                 repo,
                 pull_number: parseInt(prNumber, 10)
             });
-            const filesResponse = await this.octokit.pulls.listFiles({
+            const prFiles = await this.octokit.paginate(this.octokit.pulls.listFiles, {
                 owner,
                 repo,
                 pull_number: parseInt(prNumber, 10),
-                per_page: 100
+                per_page: 100,
             });
-            const files = filesResponse.data.map(file => ({
+            const files = prFiles.map(file => ({
                 filename: file.filename,
                 status: file.status,
                 additions: file.additions,

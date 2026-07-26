@@ -26,6 +26,20 @@ export interface TestRunResult {
   durationMs: number;
 }
 
+/**
+ * Disposition of the multi-attempt baseline:
+ * - all_passed: every attempt passed — original failure was transient
+ * - all_failed: every attempt failed — safe to proceed with repair
+ * - mixed: at least one pass and one fail — inconclusive / flaky, do not repair
+ */
+export type BaselineDisposition = 'all_passed' | 'all_failed' | 'mixed';
+
+export interface BaselineCheckResult extends TestRunResult {
+  disposition: BaselineDisposition;
+  passCount: number;
+  failCount: number;
+}
+
 export interface PushResult {
   branchName: string;
   commitSha: string;
@@ -146,19 +160,17 @@ const MAX_LOG_CHARS = 20_000;
 const MAX_BUFFER = 10 * 1024 * 1024;
 
 /**
- * Number of consecutive passes required for `baselineCheck` to conclude
- * "the test passes without any fix." Pre-v1.50.1 this was effectively 1
- * (single pass), which proved too noisy a signal for the A1-writer —
- * it couldn't distinguish transient flake from genuine classifier
- * misread. 3 consecutive passes is the point where the probability of
- * "3 coincidental flake-passes in a row" drops low enough that the
- * signal becomes attributable to the classifier's verdict being
- * wrong. Lower bound: the cost of 3 test runs per gated run is non-
- * trivial (e.g., +60-120s on typical E2E tests); upper bound: beyond
- * ~5 the marginal confidence gain is diminishing and the cost becomes
- * prohibitive for fast-iteration repos.
+ * Number of consecutive unmodified baseline attempts and consecutive
+ * evidence-bearing post-fix passes required before acting.
+ *
+ * Baseline: repair only when ALL attempts fail. Any pass (or a mixed
+ * fail/pass sequence) means the original failure was transient or
+ * flaky — publishing a fix would be unsafe.
+ *
+ * Post-fix: a single lucky pass is not enough to publish; require the
+ * same consecutive-pass count with concrete test evidence.
  */
-const BASELINE_PASS_COUNT = 3;
+export const VALIDATION_PASS_COUNT = 3;
 
 export class LocalFixValidator {
   private config: LocalValidatorConfig;
@@ -307,29 +319,75 @@ export class LocalFixValidator {
     core.info('✅ Setup complete');
   }
 
-  async baselineCheck(): Promise<TestRunResult> {
+  async baselineCheck(): Promise<BaselineCheckResult> {
     core.info(
-      `🔍 Running baseline check — does the test pass without any fix? ` +
-        `(requires ${BASELINE_PASS_COUNT} consecutive passes)`
+      `🔍 Running baseline check — does the unmodified test fail consistently? ` +
+        `(requires ${VALIDATION_PASS_COUNT}/${VALIDATION_PASS_COUNT} failures to proceed with repair)`
+    );
+
+    let totalDurationMs = 0;
+    let passCount = 0;
+    let failCount = 0;
+    let lastResult: TestRunResult | undefined;
+    let lastFailure: TestRunResult | undefined;
+
+    for (let pass = 1; pass <= VALIDATION_PASS_COUNT; pass++) {
+      core.info(`   Baseline attempt ${pass}/${VALIDATION_PASS_COUNT}...`);
+      const result = await this.runTest();
+      totalDurationMs += result.durationMs;
+      lastResult = result;
+
+      if (result.passed) {
+        passCount += 1;
+        core.info(`   ✅ Baseline attempt ${pass} passed`);
+      } else {
+        failCount += 1;
+        lastFailure = result;
+        core.info(`   ❌ Baseline attempt ${pass} failed`);
+      }
+    }
+
+    let disposition: BaselineDisposition;
+    if (failCount === VALIDATION_PASS_COUNT) {
+      disposition = 'all_failed';
+    } else if (passCount === VALIDATION_PASS_COUNT) {
+      disposition = 'all_passed';
+    } else {
+      disposition = 'mixed';
+    }
+
+    const representative = lastFailure ?? lastResult;
+    return {
+      passed: disposition === 'all_passed',
+      disposition,
+      passCount,
+      failCount,
+      logs: representative?.logs ?? '',
+      exitCode: representative?.exitCode ?? 0,
+      durationMs: totalDurationMs,
+    };
+  }
+
+  /**
+   * After applying a generated fix, require VALIDATION_PASS_COUNT
+   * consecutive evidence-bearing passes before publication.
+   */
+  async validateFixPasses(): Promise<TestRunResult> {
+    core.info(
+      `🧪 Validating applied fix — requires ${VALIDATION_PASS_COUNT} consecutive evidence-bearing passes`
     );
 
     let totalDurationMs = 0;
     let lastResult: TestRunResult | undefined;
 
-    for (let pass = 1; pass <= BASELINE_PASS_COUNT; pass++) {
-      core.info(`   Baseline pass ${pass}/${BASELINE_PASS_COUNT}...`);
+    for (let pass = 1; pass <= VALIDATION_PASS_COUNT; pass++) {
+      core.info(`   Post-fix pass ${pass}/${VALIDATION_PASS_COUNT}...`);
       const result = await this.runTest();
       totalDurationMs += result.durationMs;
       lastResult = result;
 
       if (!result.passed) {
-        // Short-circuit on first failure — running further passes after a
-        // confirmed failure wastes cycles and the failing pass's logs are
-        // the ones the operator wants to see. Caller treats
-        // `passed === false` as "baseline confirmed the failure exists,
-        // proceed to repair." Exit code is propagated so downstream
-        // telemetry can distinguish OOM / SIGKILL / test-assert failures.
-        core.info(`   ❌ Baseline failed on pass ${pass} — short-circuiting.`);
+        core.info(`   ❌ Post-fix pass ${pass} failed — rejecting validation`);
         return {
           passed: false,
           logs: result.logs,
@@ -337,11 +395,9 @@ export class LocalFixValidator {
           durationMs: totalDurationMs,
         };
       }
+      core.info(`   ✅ Post-fix pass ${pass} passed`);
     }
 
-    // All N passes succeeded. Use the last pass's logs/exitCode as the
-    // representative sample; the summed duration gives the operator the
-    // true cost of the multi-pass check (not just the final pass).
     return {
       passed: true,
       logs: lastResult?.logs ?? '',
@@ -374,16 +430,6 @@ export class LocalFixValidator {
       if (content.indexOf(change.oldCode) === -1) {
         return { valid: false, reason: `oldCode not found in ${cleanPath}` };
       }
-
-      if (/\.tsx?$/.test(cleanPath)) {
-        const typeCheck = this.quickTypeCheck(filePath);
-        if (!typeCheck.passed) {
-          return {
-            valid: false,
-            reason: `TypeScript compilation failed: ${typeCheck.error}`,
-          };
-        }
-      }
     }
 
     return { valid: true };
@@ -401,42 +447,6 @@ export class LocalFixValidator {
     }
 
     return { cleanPath, filePath };
-  }
-
-  private quickTypeCheck(filePath: string): {
-    passed: boolean;
-    error?: string;
-  } {
-    const tscPath = path.join(this._workDir, 'node_modules', '.bin', 'tsc');
-    if (!fs.existsSync(tscPath)) {
-      return { passed: true };
-    }
-
-    try {
-      execFileSync(tscPath, ['--noEmit', '--pretty', 'false', filePath], {
-        cwd: this._workDir,
-        timeout: 30000,
-        stdio: 'pipe',
-        encoding: 'utf-8',
-      });
-      return { passed: true };
-    } catch (err: unknown) {
-      const execErr = err as {
-        stdout?: string;
-        stderr?: string;
-        killed?: boolean;
-      };
-      if (execErr.killed) {
-        core.warning(`tsc type-check timed out for ${filePath} — skipping`);
-        return { passed: true };
-      }
-      const output = execErr.stdout || execErr.stderr || String(err);
-      const firstLine =
-        output
-          .split('\n')
-          .find(l => l.trim()) || 'Unknown error';
-      return { passed: false, error: firstLine };
-    }
   }
 
   async applyFix(changes: Array<{ file: string; oldCode: string; newCode: string }>): Promise<void> {

@@ -298,6 +298,10 @@ export class CodeReadingAgent extends BaseAgent<
     return null;
   }
 
+  protected getOutputSchema() {
+    return null;
+  }
+
   /**
    * Clean a file path by stripping CI runner prefixes, webpack://, etc.
    */

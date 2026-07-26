@@ -42,7 +42,6 @@ const core = __importStar(require("@actions/core"));
 const constants_1 = require("../config/constants");
 const run_telemetry_1 = require("../pipeline/run-telemetry");
 const test_evidence_1 = require("../services/test-evidence");
-const text_utils_1 = require("../utils/text-utils");
 const retry_1 = require("../utils/retry");
 function sleep(ms) {
     return new Promise((resolve) => setTimeout(resolve, ms));
@@ -330,7 +329,7 @@ class GitHubFixApplier {
         const body = [
             '## Auto-generated fix from adept-triage-agent',
             '',
-            '> ⚠️ **Draft PR — remote validation pending or failed.** This PR is opened automatically so engineers can review the proposed fix in context. Status will be updated once the validation workflow concludes.',
+            '> ⚠️ **Draft PR — remote validation pending.** This PR is opened automatically so engineers can review the proposed fix in context. It will be marked ready for review only after validation passes.',
             '',
             `**Triage run:** ${params.triageRunId}`,
             `**Branch:** \`${params.branchName}\``,
@@ -367,6 +366,50 @@ class GitHubFixApplier {
             return null;
         }
     }
+    async finalizeValidationPullRequest(params) {
+        const { octokit, owner, repo } = this.config;
+        const passed = params.validationStatus === 'passed';
+        const statusLine = passed
+            ? '> ✅ **Remote validation passed.** This PR is ready for review.'
+            : params.validationStatus === 'pending'
+                ? '> ⏳ **Remote validation still pending** after the wait budget.'
+                : `> ❌ **Remote validation ${params.validationStatus}.** Kept as draft.`;
+        try {
+            const existing = await octokit.pulls.get({
+                owner,
+                repo,
+                pull_number: params.prNumber,
+            });
+            const previousBody = existing.data.body || '';
+            const updatedBody = previousBody.replace(/> ⚠️ \*\*Draft PR — remote validation pending\.\*\*[^\n]*/, statusLine);
+            const bodyWithLink = params.validationUrl
+                ? `${updatedBody}\n\n**Validation run:** ${params.validationUrl}`
+                : updatedBody;
+            await octokit.pulls.update({
+                owner,
+                repo,
+                pull_number: params.prNumber,
+                body: bodyWithLink,
+            });
+            if (passed) {
+                try {
+                    await octokit.request('POST /repos/{owner}/{repo}/pulls/{pull_number}/ready_for_review', {
+                        owner,
+                        repo,
+                        pull_number: params.prNumber,
+                    });
+                }
+                catch (readyErr) {
+                    core.warning(`PR #${params.prNumber} body updated but mark-ready failed: ${readyErr instanceof Error ? readyErr.message : String(readyErr)}`);
+                }
+            }
+            core.info(`📬 PR #${params.prNumber} updated for validation status=${params.validationStatus}` +
+                (passed ? ' (marked ready for review)' : ' (kept draft)'));
+        }
+        catch (err) {
+            core.warning(`Failed to finalize PR #${params.prNumber} after validation: ${err instanceof Error ? err.message : String(err)}`);
+        }
+    }
     async triggerValidation(params) {
         const { octokit, owner, repo, validationWorkflow, enableValidation } = this.config;
         if (!enableValidation) {
@@ -399,7 +442,6 @@ class GitHubFixApplier {
                 },
             }), { context: 'triggering validation workflow' });
             core.info('Validation workflow triggered successfully');
-            const dispatchedAt = new Date();
             const maxPollAttempts = 10;
             const pollInterval = 3000;
             for (let attempt = 1; attempt <= maxPollAttempts; attempt++) {
@@ -412,25 +454,19 @@ class GitHubFixApplier {
                     event: 'workflow_dispatch',
                     per_page: 10,
                 }), { context: 'listing workflow runs' });
-                const candidates = runs.data.workflow_runs;
-                let match;
-                if (triageRunId) {
-                    match = candidates.find((run) => typeof run.display_title === 'string' &&
-                        run.display_title.includes(triageRunId));
+                if (!triageRunId) {
+                    core.warning('No triage_run_id provided — cannot safely correlate validation runs. ' +
+                        'Pass triage_run_id and set consumer run-name to include it.');
+                    return null;
                 }
+                const candidates = runs.data.workflow_runs;
+                const match = candidates.find((run) => typeof run.display_title === 'string' &&
+                    run.display_title.includes(triageRunId));
                 if (!match) {
-                    const fallback = candidates.find((run) => {
-                        const createdAt = new Date(run.created_at);
-                        return createdAt >= new Date(dispatchedAt.getTime() - 30_000);
-                    });
-                    if (fallback && triageRunId) {
-                        core.warning(`Validation run correlation fell back to time window for ` +
-                            `triage_run_id=${triageRunId}. For reliable correlation under ` +
-                            `concurrency, set \`run-name\` in the consumer ` +
-                            `validate-fix.yml to include the triage_run_id ` +
-                            `(e.g. \`run-name: Triage validate \${{ inputs.triage_run_id }}\`).`);
+                    if (attempt === maxPollAttempts) {
+                        core.warning(`No validation run matched triage_run_id=${triageRunId} in display_title. ` +
+                            `Set \`run-name: Triage validate \${{ inputs.triage_run_id }}\` in the consumer validate-fix.yml.`);
                     }
-                    match = fallback;
                 }
                 if (match) {
                     core.info(`Validation workflow run ID: ${match.id}`);
@@ -564,13 +600,13 @@ class GitHubFixApplier {
     async getValidationFailureLogs(runId) {
         const { octokit, owner, repo } = this.config;
         try {
-            const jobs = await (0, retry_1.withRetry)(() => octokit.actions.listJobsForWorkflowRun({
+            const jobsToRead = (await (0, retry_1.withRetry)(() => octokit.paginate(octokit.actions.listJobsForWorkflowRun, {
                 owner,
                 repo,
                 run_id: runId,
                 filter: 'latest',
-            }), { context: `listing jobs for validation run ${runId}` });
-            const jobsToRead = [...jobs.data.jobs].sort((a, b) => {
+                per_page: 100,
+            }), { context: `listing jobs for validation run ${runId}` })).sort((a, b) => {
                 if (a.conclusion === 'failure' && b.conclusion !== 'failure')
                     return -1;
                 if (b.conclusion === 'failure' && a.conclusion !== 'failure')
@@ -675,28 +711,6 @@ class GitHubFixApplier {
                             matchIndex = currentContent.indexOf(effectiveOldCode);
                             if (matchIndex !== -1) {
                                 core.info(`  ✅ Matched after trailing whitespace normalization`);
-                            }
-                        }
-                    }
-                    if (matchIndex === -1 && change.line > 0) {
-                        const contentLines = currentContent.split('\n');
-                        const oldLineCount = change.oldCode.split('\n').length;
-                        const start = Math.max(0, change.line - 3);
-                        const end = Math.min(contentLines.length, change.line + oldLineCount + 2);
-                        for (let s = start; s <= Math.min(start + 5, end - oldLineCount); s++) {
-                            const candidate = contentLines.slice(s, s + oldLineCount).join('\n');
-                            const similarity = computeLineSimilarity(change.oldCode, candidate);
-                            if (similarity >= 0.5) {
-                                const candidateIdx = currentContent.indexOf(candidate);
-                                if (candidateIdx !== -1) {
-                                    const secondIdx = currentContent.indexOf(candidate, candidateIdx + 1);
-                                    if (secondIdx === -1) {
-                                        matchIndex = candidateIdx;
-                                        effectiveOldCode = candidate;
-                                        core.info(`  ✅ Matched via line-range similarity (${(similarity * 100).toFixed(0)}%) at line ${s + 1}`);
-                                        break;
-                                    }
-                                }
                             }
                         }
                     }
@@ -853,7 +867,7 @@ function hasConcreteFailureEvidence(logs) {
     return /(?:\b\d+\s+failing\b|AssertionError|CypressError|TimeoutError|Process completed with exit code [1-9])/i.test(logs);
 }
 function buildRemoteValidationResult(params) {
-    const primaryError = extractPrimaryValidationError(params.logs);
+    const primaryError = (0, test_evidence_1.extractPrimaryValidationError)(params.logs);
     return {
         status: params.status,
         mode: 'remote',
@@ -865,59 +879,11 @@ function buildRemoteValidationResult(params) {
             ? {
                 failure: {
                     primaryError,
-                    failedAssertion: extractFailedAssertion(primaryError),
+                    failedAssertion: (0, test_evidence_1.extractFailedAssertion)(primaryError),
                     failureStage: 'validation',
                 },
             }
             : {}),
     };
-}
-function extractPrimaryValidationError(logs) {
-    if (!logs)
-        return undefined;
-    const clean = logs.replace(text_utils_1.ANSI_ESCAPE_REGEX, '');
-    const patterns = [
-        /AssertionError:[^\n]+/i,
-        /CypressError:[^\n]+/i,
-        /TimeoutError:[^\n]+/i,
-        /Error:[^\n]+/i,
-    ];
-    for (const pattern of patterns) {
-        const match = clean.match(pattern);
-        if (match)
-            return match[0].trim().slice(0, 500);
-    }
-    return undefined;
-}
-function extractFailedAssertion(primaryError) {
-    const expectedMatch = primaryError.match(/expected\s+(.+)/i);
-    if (expectedMatch)
-        return expectedMatch[0].slice(0, 300);
-    const timedOutMatch = primaryError.match(/Timed out[^:]*:\s*(.+)/i);
-    if (timedOutMatch)
-        return timedOutMatch[1].slice(0, 300);
-    return undefined;
-}
-function computeLineSimilarity(a, b) {
-    const aLines = a.split('\n').map((l) => l.trim()).filter(Boolean);
-    const bLines = b.split('\n').map((l) => l.trim()).filter(Boolean);
-    if (aLines.length === 0 || bLines.length === 0)
-        return 0;
-    let matched = 0;
-    for (const aLine of aLines) {
-        const aTokens = aLine.split(/\s+/).filter((t) => t.length > 2);
-        if (aTokens.length === 0) {
-            matched++;
-            continue;
-        }
-        for (const bLine of bLines) {
-            const hitCount = aTokens.filter((t) => bLine.includes(t)).length;
-            if (hitCount >= aTokens.length * 0.6) {
-                matched++;
-                break;
-            }
-        }
-    }
-    return matched / aLines.length;
 }
 //# sourceMappingURL=fix-applier.js.map

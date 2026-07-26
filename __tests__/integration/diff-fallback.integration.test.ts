@@ -9,6 +9,7 @@ import { Octokit } from '@octokit/rest';
 import { ArtifactFetcher } from '../../src/artifact-fetcher';
 import { PRDiff } from '../../src/types';
 import * as core from '@actions/core';
+import { mockOctokitPaginate } from '../helpers/mock-paginate';
 
 // Mock @actions/core
 jest.mock('@actions/core', () => ({
@@ -137,6 +138,7 @@ describe('Diff Fallback Integration Tests', () => {
         downloadArtifact: jest.fn(),
       },
     } as any;
+    mockOctokitPaginate(mockOctokit as any);
 
     artifactFetcher = new ArtifactFetcher(mockOctokit as Octokit);
   });

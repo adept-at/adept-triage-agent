@@ -1,7 +1,9 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.CANARY_REPOS = exports.BLAST_RADIUS = exports.FIX_VALIDATE_LOOP = exports.AGENT_CONFIG = exports.VERDICT_OVERRIDE_CONFIDENCE_THRESHOLD = exports.DEFAULT_PRODUCT_URL = exports.DEFAULT_PRODUCT_REPO = exports.AUTO_FIX = exports.TEST_ISSUE_CATEGORIES = exports.ERROR_TYPES = exports.FORMATTING = exports.ARTIFACTS = exports.SHORT_SHA_LENGTH = exports.REASONING_EFFORT = exports.AGENT_MODEL = exports.OPENAI = exports.CONFIDENCE = exports.LOG_LIMITS = void 0;
+exports.CANARY_REPOS = exports.BLAST_RADIUS = exports.FIX_VALIDATE_LOOP = exports.AGENT_CONFIG = exports.VERDICT_OVERRIDE_CONFIDENCE_THRESHOLD = exports.DEFAULT_PRODUCT_URL = exports.DEFAULT_PRODUCT_REPO = exports.AUTO_FIX = exports.TEST_ISSUE_CATEGORIES = exports.ERROR_TYPES = exports.FORMATTING = exports.ARTIFACTS = exports.SHORT_SHA_LENGTH = exports.REASONING_EFFORT = exports.GPT56_CANDIDATE_REASONING = exports.GPT56_CANDIDATE_MODEL = exports.AGENT_MODEL = exports.STAGE_MAX_OUTPUT_TOKENS = exports.OPENAI = exports.CONFIDENCE = exports.LOG_LIMITS = void 0;
 exports.supportsReasoningEffort = supportsReasoningEffort;
+exports.resolveAgentModel = resolveAgentModel;
+exports.resolveReasoningEffort = resolveReasoningEffort;
 exports.isCanaryRepo = isCanaryRepo;
 exports.LOG_LIMITS = {
     GITHUB_MAX_SIZE: 50_000,
@@ -32,12 +34,33 @@ exports.OPENAI = {
     MAX_RETRIES: 3,
     RETRY_DELAY_MS: 1000,
 };
+exports.STAGE_MAX_OUTPUT_TOKENS = {
+    classification: 4000,
+    analysis: 6000,
+    investigation: 8000,
+    fixGeneration: 12000,
+    review: 6000,
+};
 exports.AGENT_MODEL = {
     classification: exports.OPENAI.LEGACY_MODEL,
     analysis: exports.OPENAI.LEGACY_MODEL,
     investigation: exports.OPENAI.LEGACY_MODEL,
     fixGeneration: exports.OPENAI.UPGRADED_MODEL,
     review: exports.OPENAI.UPGRADED_MODEL,
+};
+exports.GPT56_CANDIDATE_MODEL = {
+    classification: 'gpt-5.6-terra',
+    analysis: 'gpt-5.6-terra',
+    investigation: 'gpt-5.6-terra',
+    fixGeneration: 'gpt-5.6-sol',
+    review: 'gpt-5.6-sol',
+};
+exports.GPT56_CANDIDATE_REASONING = {
+    classification: 'medium',
+    analysis: 'high',
+    investigation: 'high',
+    fixGeneration: 'high',
+    review: 'xhigh',
 };
 exports.REASONING_EFFORT = {
     classification: 'high',
@@ -47,12 +70,32 @@ exports.REASONING_EFFORT = {
     review: 'xhigh',
 };
 function supportsReasoningEffort(model) {
-    return model.startsWith('gpt-5.5');
+    return model.startsWith('gpt-5.5') || model.startsWith('gpt-5.6');
+}
+function resolveAgentModel(stage, override) {
+    if (override && override.trim())
+        return override.trim();
+    if (process.env.TRIAGE_MODEL_PROFILE === 'gpt56-candidate') {
+        return exports.GPT56_CANDIDATE_MODEL[stage];
+    }
+    return exports.AGENT_MODEL[stage];
+}
+function resolveReasoningEffort(stage, model) {
+    if (!supportsReasoningEffort(model))
+        return 'none';
+    if (process.env.TRIAGE_MODEL_PROFILE === 'gpt56-candidate') {
+        return exports.GPT56_CANDIDATE_REASONING[stage];
+    }
+    return exports.REASONING_EFFORT[stage];
 }
 exports.SHORT_SHA_LENGTH = 7;
 exports.ARTIFACTS = {
     MAX_PR_DIFF_FILES: 30,
     MAX_PATCH_LINES: 20,
+    MAX_ZIP_ENTRIES: 500,
+    MAX_ZIP_BYTES: 50 * 1024 * 1024,
+    MAX_SCREENSHOTS: 5,
+    MAX_SCREENSHOT_BASE64_CHARS: 5_000_000,
 };
 exports.FORMATTING = {
     MAIN_SUMMARY_MAX_LENGTH: 1000,
@@ -86,12 +129,13 @@ exports.DEFAULT_PRODUCT_URL = 'https://learn.adept.at';
 exports.VERDICT_OVERRIDE_CONFIDENCE_THRESHOLD = 70;
 exports.AGENT_CONFIG = {
     MAX_AGENT_ITERATIONS: 3,
+    GLOBAL_FIX_ATTEMPT_BUDGET: 3,
     AGENT_TIMEOUT_MS: 900_000,
     REVIEW_REQUIRED_CONFIDENCE: 70,
     INVESTIGATION_CHAIN_CONFIDENCE: 80,
 };
 exports.FIX_VALIDATE_LOOP = {
-    MAX_ITERATIONS: 3,
+    MAX_ITERATIONS: exports.AGENT_CONFIG.GLOBAL_FIX_ATTEMPT_BUDGET,
     TEST_TIMEOUT_MS: 900_000,
 };
 exports.BLAST_RADIUS = {

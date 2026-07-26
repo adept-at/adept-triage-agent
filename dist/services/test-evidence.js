@@ -1,6 +1,9 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.verifyTestEvidence = verifyTestEvidence;
+exports.extractPrimaryValidationError = extractPrimaryValidationError;
+exports.extractFailedAssertion = extractFailedAssertion;
+exports.normalizeFailureSignature = normalizeFailureSignature;
 const NO_TESTS_RAN_PATTERNS = [
     /Can't run because no spec files were found/i,
     /No spec files? (?:were )?found/i,
@@ -66,5 +69,35 @@ function verifyTestEvidence(logs) {
         trustworthy: false,
         reason: 'no concrete pass evidence found in logs (neither "N passing" nor a known runner success marker present)',
     };
+}
+function extractPrimaryValidationError(logs) {
+    if (!logs)
+        return undefined;
+    const clean = logs.replace(/\u001b\[[0-9;]*m/g, '');
+    const patterns = [
+        /AssertionError:[^\n]+/i,
+        /CypressError:[^\n]+/i,
+        /TimeoutError:[^\n]+/i,
+        /Error:[^\n]+/i,
+    ];
+    for (const pattern of patterns) {
+        const match = clean.match(pattern);
+        if (match)
+            return match[0].trim().slice(0, 500);
+    }
+    return undefined;
+}
+function extractFailedAssertion(primaryError) {
+    const expectedMatch = primaryError.match(/expected\s+(.+)/i);
+    if (expectedMatch)
+        return expectedMatch[0].slice(0, 300);
+    const timedOutMatch = primaryError.match(/Timed out[^:]*:\s*(.+)/i);
+    if (timedOutMatch)
+        return timedOutMatch[1].slice(0, 300);
+    return undefined;
+}
+function normalizeFailureSignature(message) {
+    const primary = extractPrimaryValidationError(message) || message;
+    return primary.replace(/\s+/g, ' ').trim().slice(0, 500);
 }
 //# sourceMappingURL=test-evidence.js.map

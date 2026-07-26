@@ -6,6 +6,8 @@ export interface ApplyResult {
     error?: string;
     commitSha?: string;
     branchName?: string;
+    prUrl?: string;
+    prNumber?: number;
     validationRunId?: number;
     validationStatus?: ValidationStatus;
     validationUrl?: string;
@@ -54,6 +56,12 @@ export interface FixApplier {
         url: string;
         number: number;
     } | null>;
+    finalizeValidationPullRequest(params: {
+        prNumber: number;
+        validationStatus: ValidationStatus;
+        validationUrl?: string;
+        triageRunId: string;
+    }): Promise<void>;
     waitForValidation(runId: number): Promise<ValidationOutcome>;
     getValidationFailureLogs(runId: number): Promise<string>;
 }
@@ -77,6 +85,12 @@ export declare class GitHubFixApplier implements FixApplier {
         url: string;
         number: number;
     } | null>;
+    finalizeValidationPullRequest(params: {
+        prNumber: number;
+        validationStatus: ValidationStatus;
+        validationUrl?: string;
+        triageRunId: string;
+    }): Promise<void>;
     triggerValidation(params: ValidationParams): Promise<{
         runId?: number;
         url?: string;

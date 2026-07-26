@@ -94,13 +94,17 @@ class AgentOrchestrator {
         core.info('🤖 Starting agentic repair pipeline...');
         const trace = { iterations: 0 };
         let timeoutId;
+        const abortController = new AbortController();
+        context.abortSignal = abortController.signal;
         try {
             const timeoutPromise = new Promise((_, reject) => {
                 timeoutId = setTimeout(() => {
+                    abortController.abort();
                     reject(new Error(`Orchestration timed out after ${this.config.totalTimeoutMs}ms`));
                 }, this.config.totalTimeoutMs);
             });
             const pipelinePromise = this.runPipeline(context, errorData, agentResults, previousResponseId, skills, startTime, trace);
+            pipelinePromise.catch(() => { });
             const result = await Promise.race([pipelinePromise, timeoutPromise]);
             clearTimeout(timeoutId);
             iterations = result.iterations;
@@ -173,6 +177,12 @@ class AgentOrchestrator {
     async runPipeline(context, _errorData, agentResults, previousResponseId, skills, startedAtMs, trace) {
         let iterations = 0;
         let lastResponseId = previousResponseId;
+        const ensureNotAborted = (stage) => {
+            if (context.abortSignal?.aborted) {
+                throw new Error(`Orchestration timed out after ${this.config.totalTimeoutMs}ms (aborted before ${stage})`);
+            }
+        };
+        ensureNotAborted('analysis');
         trace.lastStage = 'analysis';
         core.info('📊 Step 1: Running Analysis Agent...');
         if (skills && skills.relevant.length > 0) {
@@ -200,6 +210,7 @@ class AgentOrchestrator {
         const analysis = analysisResult.data;
         core.info(`   Root cause: ${analysis.rootCauseCategory}`);
         core.info(`   Confidence: ${analysis.confidence}%`);
+        ensureNotAborted('code_reading');
         trace.lastStage = 'code_reading';
         core.info('📖 Step 2: Running Code Reading Agent...');
         const codeReadingResult = await this.codeReadingAgent.execute({
@@ -247,6 +258,7 @@ class AgentOrchestrator {
                 core.warning(`⚠️ ${skills.flakiness.message}`);
             }
         }
+        ensureNotAborted('investigation');
         trace.lastStage = 'investigation';
         core.info('🔍 Step 3: Running Investigation Agent...');
         const productDiffSummary = context.productDiff && context.productDiff.files.length > 0
@@ -336,7 +348,6 @@ class AgentOrchestrator {
         ].filter(Boolean).join(' | ');
         let lastFix = null;
         let reviewFeedback = null;
-        let fixReviewChainId;
         let lastReviewIssues = [];
         let lastReviewRejected = false;
         let lastReviewAssessment;
@@ -408,6 +419,7 @@ class AgentOrchestrator {
                 };
             }
             iterations++;
+            ensureNotAborted(`fix_generation:${iterations}`);
             trace.iterations = iterations;
             trace.lastStage = 'fix_generation';
             core.info(`🔧 Step 4: Running Fix Generation Agent (iteration ${iterations})...`);
@@ -435,9 +447,8 @@ class AgentOrchestrator {
                 analysis,
                 investigation,
                 previousFeedback: reviewFeedback,
-            }, context, fixReviewChainId);
+            }, context);
             agentResults.fixGeneration = fixGenResult;
-            fixReviewChainId = fixGenResult.responseId ?? fixReviewChainId;
             lastResponseId = fixGenResult.responseId ?? lastResponseId;
             if (!fixGenResult.success || !fixGenResult.data) {
                 core.warning(`Fix generation failed on iteration ${iterations}`);
@@ -533,9 +544,8 @@ class AgentOrchestrator {
                     analysis,
                     investigation,
                     codeContext: codeReadingResult.data,
-                }, context, fixReviewChainId);
+                }, context);
                 agentResults.review = reviewResult;
-                fixReviewChainId = reviewResult.responseId ?? fixReviewChainId;
                 lastResponseId = reviewResult.responseId ?? lastResponseId;
                 if (reviewResult.success && reviewResult.data) {
                     const review = reviewResult.data;
@@ -549,8 +559,10 @@ class AgentOrchestrator {
                     if (review.improvements && review.improvements.length > 0) {
                         core.info(`   Improvements: ${review.improvements.join('; ')}`);
                     }
-                    if (review.approved) {
+                    const reviewMeetsConfidence = review.fixConfidence >= this.config.minConfidence;
+                    if (review.approved && reviewMeetsConfidence) {
                         core.info(`   ✅ Fix APPROVED by Review Agent on iteration ${iterations}`);
+                        core.info(`   Reviewer confidence: ${review.fixConfidence}% (generated fix confidence: ${lastFix.confidence}%)`);
                         lastReviewRejected = false;
                         trace.iterations = iterations;
                         trace.lastStage = 'review';
@@ -582,6 +594,9 @@ class AgentOrchestrator {
                         const issueLines = review.issues
                             .map((i) => `[${i.severity}] ${i.description}`)
                             .join('\n');
+                        const confidenceNote = !reviewMeetsConfidence
+                            ? `\n[CONFIDENCE] Reviewer fixConfidence ${review.fixConfidence}% below threshold ${this.config.minConfidence}%`
+                            : '';
                         const priorTrace = lastFix.failureModeTrace;
                         const blocking = review.issues.some(isBlockingCriticalIssue);
                         const traceReplay = blocking && priorTrace
@@ -591,8 +606,8 @@ class AgentOrchestrator {
                                 `- newStateAfterFix: ${priorTrace.newStateAfterFix || '(was empty)'}\n` +
                                 `- whyAssertionPassesNow: ${priorTrace.whyAssertionPassesNow || '(was empty)'}`
                             : '';
-                        reviewFeedback = issueLines + traceReplay;
-                        core.warning(`Fix not approved. Issues: ${review.issues.length}`);
+                        reviewFeedback = issueLines + confidenceNote + traceReplay;
+                        core.warning(`Fix not approved. Issues: ${review.issues.length}; reviewerConfidence=${review.fixConfidence}%; approved=${review.approved}`);
                         core.info(`   📝 Feedback to next iteration:\n${reviewFeedback}`);
                     }
                 }

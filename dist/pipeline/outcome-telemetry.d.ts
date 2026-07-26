@@ -19,6 +19,7 @@ export interface OutcomeBuildParams {
     autoFixSkippedReason?: string;
     skillId?: string;
     repo: string;
+    baselineDisposition?: 'all_passed' | 'all_failed' | 'mixed';
 }
 export declare function buildOutcomeEvent(params: OutcomeBuildParams): OutcomeEvent;
 export declare function logOutcomeSummary(event: OutcomeEvent): void;

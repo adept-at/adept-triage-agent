@@ -4,19 +4,12 @@ import * as os from 'os';
 import * as path from 'path';
 
 // -----------------------------------------------------------------------------
-// Multi-pass baselineCheck (v1.50.1 CP1)
+// Multi-attempt baselineCheck
 //
-// Pre-v1.50.1, baselineCheck() ran the test once. That single-pass signal was
-// flagged in the v1.50.0 review gate as too noisy to attribute 'incorrect'
-// against classifier-surfaced skills — a single pass doesn't distinguish
-//   (1) "test was never broken"            (classifier was wrong)
-//   (2) "test is flaky"                    (classifier was right, fix is moot)
-//   (3) "product race self-resolved"       (neither side wrong)
-//
-// v1.50.1 tightens the signal: baselineCheck runs the test BASELINE_PASS_COUNT
-// consecutive times (default: 3). Every pass must succeed before we conclude
-// "test passes without fix." Short-circuits on first failure to keep cost
-// bounded when the baseline genuinely fails.
+// Repair proceeds only when ALL baseline attempts fail. Any pass (or a mixed
+// fail/pass sequence) means the original failure was transient or flaky —
+// publishing a fix would be unsafe. All attempts always run so mixed
+// sequences are visible.
 // -----------------------------------------------------------------------------
 
 // Octokit is not touched by baselineCheck — give it a minimal stub.
@@ -45,7 +38,7 @@ function makeRunResult(passed: boolean, overrides?: Partial<TestRunResult>): Tes
   };
 }
 
-describe('LocalFixValidator.baselineCheck — multi-pass semantics (v1.50.1 CP1)', () => {
+describe('LocalFixValidator.baselineCheck — consistent-failure semantics', () => {
   it('passes only when all 3 runs pass in a row', async () => {
     const validator = makeValidator();
     const runTestSpy = jest
@@ -57,53 +50,55 @@ describe('LocalFixValidator.baselineCheck — multi-pass semantics (v1.50.1 CP1)
     const result = await validator.baselineCheck();
 
     expect(result.passed).toBe(true);
+    expect(result.disposition).toBe('all_passed');
     expect(runTestSpy).toHaveBeenCalledTimes(3);
   });
 
-  it('short-circuits on first failure (does NOT run subsequent passes)', async () => {
+  it('runs all attempts even after an early failure (no short-circuit)', async () => {
     const validator = makeValidator();
     const runTestSpy = jest
       .spyOn(validator, 'runTest')
       .mockResolvedValueOnce(makeRunResult(false, { logs: 'FAIL pass 1', exitCode: 1 }))
-      // Extra stubs in case the impl wrongly proceeds; we assert the count.
-      .mockResolvedValue(makeRunResult(true));
+      .mockResolvedValueOnce(makeRunResult(true))
+      .mockResolvedValueOnce(makeRunResult(true));
 
     const result = await validator.baselineCheck();
 
+    expect(result.disposition).toBe('mixed');
     expect(result.passed).toBe(false);
-    expect(runTestSpy).toHaveBeenCalledTimes(1);
-    expect(result.logs).toContain('FAIL pass 1');
+    expect(runTestSpy).toHaveBeenCalledTimes(3);
+    expect(result.passCount).toBe(2);
+    expect(result.failCount).toBe(1);
   });
 
-  it('fails overall when pass 3 fails (does NOT mask late instability)', async () => {
+  it('reports all_failed only when every attempt fails', async () => {
     const validator = makeValidator();
     const runTestSpy = jest
       .spyOn(validator, 'runTest')
-      .mockResolvedValueOnce(makeRunResult(true))
-      .mockResolvedValueOnce(makeRunResult(true))
-      .mockResolvedValueOnce(makeRunResult(false, { logs: 'FAIL pass 3', exitCode: 1 }));
+      .mockResolvedValueOnce(makeRunResult(false, { logs: 'FAIL 1', exitCode: 1 }))
+      .mockResolvedValueOnce(makeRunResult(false, { logs: 'FAIL 2', exitCode: 1 }))
+      .mockResolvedValueOnce(makeRunResult(false, { logs: 'FAIL 3', exitCode: 1 }));
 
     const result = await validator.baselineCheck();
 
+    expect(result.disposition).toBe('all_failed');
     expect(result.passed).toBe(false);
     expect(runTestSpy).toHaveBeenCalledTimes(3);
-    // Failed-pass logs are what the operator cares about — preserve them so
-    // the "why did baseline fail?" trail is present.
-    expect(result.logs).toContain('FAIL pass 3');
+    expect(result.logs).toContain('FAIL');
   });
 
-  it('fails overall when pass 2 fails', async () => {
+  it('treats fail then later pass as mixed (not repairable)', async () => {
     const validator = makeValidator();
     const runTestSpy = jest
       .spyOn(validator, 'runTest')
       .mockResolvedValueOnce(makeRunResult(true))
       .mockResolvedValueOnce(makeRunResult(false, { logs: 'FAIL pass 2', exitCode: 1 }))
-      .mockResolvedValue(makeRunResult(true));
+      .mockResolvedValueOnce(makeRunResult(true));
 
     const result = await validator.baselineCheck();
 
-    expect(result.passed).toBe(false);
-    expect(runTestSpy).toHaveBeenCalledTimes(2);
+    expect(result.disposition).toBe('mixed');
+    expect(runTestSpy).toHaveBeenCalledTimes(3);
   });
 
   it('returns a summed durationMs across all completed passes', async () => {
@@ -117,22 +112,21 @@ describe('LocalFixValidator.baselineCheck — multi-pass semantics (v1.50.1 CP1)
     const result = await validator.baselineCheck();
 
     expect(result.passed).toBe(true);
-    // Summed so the operator sees the actual elapsed cost of the multi-pass
-    // check, not just the last pass.
     expect(result.durationMs).toBe(3700);
   });
 
-  it('exit code on failure is taken from the FAILING pass (not 0)', async () => {
+  it('exit code on failure is taken from a failing pass (not 0)', async () => {
     const validator = makeValidator();
     jest
       .spyOn(validator, 'runTest')
-      .mockResolvedValueOnce(makeRunResult(true, { exitCode: 0 }))
-      .mockResolvedValueOnce(makeRunResult(false, { exitCode: 137, logs: 'OOM' }));
+      .mockResolvedValueOnce(makeRunResult(false, { exitCode: 137, logs: 'OOM' }))
+      .mockResolvedValueOnce(makeRunResult(false, { exitCode: 1, logs: 'FAIL' }))
+      .mockResolvedValueOnce(makeRunResult(false, { exitCode: 1, logs: 'FAIL' }));
 
     const result = await validator.baselineCheck();
 
-    expect(result.passed).toBe(false);
-    expect(result.exitCode).toBe(137);
+    expect(result.disposition).toBe('all_failed');
+    expect(result.exitCode).toBe(1);
   });
 });
 

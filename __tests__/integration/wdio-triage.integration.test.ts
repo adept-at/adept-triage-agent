@@ -24,6 +24,7 @@ import { OpenAIClient } from '../../src/openai-client';
 import { ArtifactFetcher } from '../../src/artifact-fetcher';
 import { AGENT_MODEL, REASONING_EFFORT } from '../../src/config/constants';
 import type { ActionInputs } from '../../src/types';
+import { mockOctokitPaginate } from '../helpers/mock-paginate';
 
 jest.mock('@actions/core', () => ({
   info: jest.fn(),
@@ -96,6 +97,7 @@ describe('WDIO Triage Integration', () => {
         downloadJobLogsForWorkflowRun: jest.fn().mockResolvedValue({ data: WDIO_FAILURE_LOG }),
       },
     } as any;
+    mockOctokitPaginate(mockOctokit as any);
 
     mockArtifactFetcher = {
       fetchScreenshots: jest.fn().mockResolvedValue([]),

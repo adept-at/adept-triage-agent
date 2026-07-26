@@ -687,6 +687,16 @@ export class SkillStore {
     spec?: string;
     errorMessage?: string;
     limit?: number;
+    /**
+     * Optional role eligibility predicate applied BEFORE scoring/limiting
+     * so ineligible records cannot occupy top-k slots.
+     */
+    eligible?: (skill: TriageSkill) => boolean;
+    /**
+     * When error text exists, require at least this error-similarity
+     * (0-1) for a skill to qualify. Spec-only matches are excluded.
+     */
+    minErrorSimilarity?: number;
   }): TriageSkill[] {
     const limit = opts.limit ?? 5;
     const normalized = normalizeFramework(opts.framework);
@@ -696,6 +706,7 @@ export class SkillStore {
     // query keeps the prior behavior (exact framework, or framework-agnostic).
     const frameworkSkills = this.skills.filter((s) => {
       if (s.retired) return false;
+      if (opts.eligible && !opts.eligible(s)) return false;
       if (normalized === 'unknown') return true;
       return s.framework === normalized || s.framework === 'unknown';
     });
@@ -707,12 +718,24 @@ export class SkillStore {
     // path in opts.spec (the common case when errorData.fileName
     // is sourced from CI log parsing).
     const querySpec = normalizeSpec(opts.spec);
+    const minErrorSim = opts.minErrorSimilarity ?? 0;
+    const hasErrorQuery = Boolean(opts.errorMessage);
 
     const scored = frameworkSkills.map((skill) => {
       let score = 0;
-      if (querySpec && normalizeSpec(skill.spec) === querySpec) score += 10;
+      const specMatch =
+        !!querySpec && normalizeSpec(skill.spec) === querySpec;
+      const errSim = opts.errorMessage
+        ? errorSimilarity(skill.errorPattern, normalizeError(opts.errorMessage))
+        : 0;
+
+      if (hasErrorQuery && errSim < minErrorSim) {
+        return { skill, score: 0 };
+      }
+
+      if (specMatch) score += 10;
       if (opts.errorMessage) {
-        score += errorSimilarity(skill.errorPattern, normalizeError(opts.errorMessage)) * 5;
+        score += errSim * 5;
       }
       return { skill, score };
     });
@@ -737,9 +760,11 @@ export class SkillStore {
     errorMessage?: string;
     limit?: number;
   }): TriageSkill[] {
-    return this.findRelevant(opts).filter(
-      (s) => s.isSeed === true || s.validatedLocally === true
-    );
+    return this.findRelevant({
+      ...opts,
+      eligible: (s) => s.isSeed === true || s.validatedLocally === true,
+      minErrorSimilarity: opts.errorMessage ? 0.15 : 0,
+    });
   }
 
   /** Negative evidence for fix-gen/review — failed trajectories on this spec. */
@@ -750,14 +775,13 @@ export class SkillStore {
     limit?: number;
   }): TriageSkill[] {
     const limit = opts.limit ?? 3;
-    return this.findRelevant({ ...opts, limit: limit * 2 })
-      .filter(
-        (s) =>
-          !s.isSeed &&
-          s.validatedLocally !== true &&
-          (s.failCount ?? 0) > 0
-      )
-      .slice(0, limit);
+    return this.findRelevant({
+      ...opts,
+      limit,
+      eligible: (s) =>
+        !s.isSeed && s.validatedLocally !== true && (s.failCount ?? 0) > 0,
+      minErrorSimilarity: opts.errorMessage ? 0.15 : 0,
+    });
   }
 
   /**
@@ -788,12 +812,21 @@ export class SkillStore {
     // seeds and skills).
     const querySpec = normalizeSpec(opts.spec);
 
+    const hasErrorQuery = Boolean(opts.errorMessage);
     const scored = candidates.map((skill) => {
       let score = 0;
+      const errSim = opts.errorMessage
+        ? errorSimilarity(skill.errorPattern, normalizeError(opts.errorMessage))
+        : 0;
+      // Spec match alone is not enough when error text exists — require
+      // meaningful error relevance so unrelated same-spec failures cannot
+      // dominate classifier memory.
+      if (hasErrorQuery && errSim < 0.15) {
+        return { skill, score: 0 };
+      }
       if (querySpec && normalizeSpec(skill.spec) === querySpec) score += 15;
       if (opts.errorMessage) {
-        score +=
-          errorSimilarity(skill.errorPattern, normalizeError(opts.errorMessage)) * 5;
+        score += errSim * 5;
       }
       if (now - parseSkillTimestamp(skill.lastUsedAt) < SEVEN_DAYS) score += 3;
       return { skill, score };

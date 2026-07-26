@@ -8,6 +8,7 @@ import {
 } from '../../src/repair/fix-applier';
 import { FixRecommendation } from '../../src/types';
 import { AUTO_FIX } from '../../src/config/constants';
+import { mockOctokitPaginate } from '../helpers/mock-paginate';
 
 // Mock dependencies
 jest.mock('@actions/core');
@@ -31,6 +32,7 @@ describe('fix-applier', () => {
     repos: {
       getContent: jest.Mock;
     };
+    paginate?: jest.Mock;
   };
 
   const createConfig = (): FixApplierConfig => ({
@@ -65,6 +67,7 @@ describe('fix-applier', () => {
         getContent: jest.fn(),
       },
     };
+    mockOctokitPaginate(mockOctokit);
 
     // Default successful mocks
     mockOctokit.git.getRef.mockResolvedValue({

@@ -6,6 +6,7 @@ const constants_1 = require("../config/constants");
 const framework_profiles_1 = require("../config/framework-profiles");
 const text_utils_1 = require("../utils/text-utils");
 const number_utils_1 = require("../utils/number-utils");
+const json_schemas_1 = require("../openai/json-schemas");
 const FINDING_TYPES = [
     'SELECTOR_CHANGE',
     'MISSING_ELEMENT',
@@ -18,10 +19,12 @@ const FINDING_SEVERITIES = ['HIGH', 'MEDIUM', 'LOW'];
 const SUGGESTED_LOCATIONS = ['TEST_CODE', 'APP_CODE', 'BOTH'];
 class InvestigationAgent extends base_agent_1.BaseAgent {
     constructor(openaiClient, config) {
+        const model = config?.model ?? (0, constants_1.resolveAgentModel)('investigation');
         super(openaiClient, 'InvestigationAgent', {
             ...config,
-            model: config?.model ?? constants_1.AGENT_MODEL.investigation,
-            reasoningEffort: config?.reasoningEffort ?? constants_1.REASONING_EFFORT.investigation,
+            model,
+            reasoningEffort: config?.reasoningEffort ?? (0, constants_1.resolveReasoningEffort)('investigation', model),
+            maxTokens: config?.maxTokens ?? constants_1.STAGE_MAX_OUTPUT_TOKENS.investigation,
         });
     }
     async execute(input, context, previousResponseId) {
@@ -130,20 +133,24 @@ You MUST respond with a JSON object matching this schema:
         parts.push('', '## Instructions', 'Based on all the information above:', '1. Identify all findings that explain or contribute to the failure', '2. Determine the primary cause', '3. Check if the issue can be fixed in test code', '4. List any selectors that need to be updated', '5. Provide a recommended fix approach', '', 'Respond with the JSON object as specified in the system prompt.');
         return parts.join('\n');
     }
+    getOutputSchema() {
+        return json_schemas_1.INVESTIGATION_SCHEMA;
+    }
     parseResponse(response) {
         try {
-            const jsonMatch = response.match(/\{[\s\S]*\}/);
-            if (!jsonMatch) {
-                this.log('No JSON found in response', 'warning');
-                return null;
-            }
-            const parsed = JSON.parse(jsonMatch[0]);
+            const parsed = JSON.parse(response);
             const normalizeFinding = (f) => ({
                 type: (0, text_utils_1.coerceEnum)(f?.type, FINDING_TYPES, 'OTHER'),
                 severity: (0, text_utils_1.coerceEnum)(f?.severity, FINDING_SEVERITIES, 'MEDIUM'),
                 description: typeof f?.description === 'string' ? f.description : '',
                 evidence: Array.isArray(f?.evidence) ? f.evidence : [],
-                location: f?.location,
+                location: f?.location
+                    ? {
+                        file: f.location.file,
+                        line: f.location.line ?? undefined,
+                        code: f.location.code ?? undefined,
+                    }
+                    : undefined,
                 relationToError: typeof f?.relationToError === 'string' ? f.relationToError : '',
             });
             const findings = Array.isArray(parsed.findings)
@@ -153,7 +160,7 @@ You MUST respond with a JSON object matching this schema:
                 ? parsed.selectorsToUpdate.map((s) => ({
                     current: s.current || '',
                     reason: s.reason || '',
-                    suggestedReplacement: s.suggestedReplacement,
+                    suggestedReplacement: s.suggestedReplacement ?? undefined,
                 }))
                 : [];
             const suggestedLocation = parsed.verdictOverride

@@ -16,6 +16,12 @@ export interface TestRunResult {
     exitCode: number;
     durationMs: number;
 }
+export type BaselineDisposition = 'all_passed' | 'all_failed' | 'mixed';
+export interface BaselineCheckResult extends TestRunResult {
+    disposition: BaselineDisposition;
+    passCount: number;
+    failCount: number;
+}
 export interface PushResult {
     branchName: string;
     commitSha: string;
@@ -23,6 +29,7 @@ export interface PushResult {
     prNumber?: number;
 }
 export declare function shouldDropEnvVar(key: string): boolean;
+export declare const VALIDATION_PASS_COUNT = 3;
 export declare class LocalFixValidator {
     private config;
     private octokit;
@@ -30,7 +37,8 @@ export declare class LocalFixValidator {
     constructor(config: LocalValidatorConfig, octokit: Octokit);
     get workDir(): string;
     setup(): Promise<void>;
-    baselineCheck(): Promise<TestRunResult>;
+    baselineCheck(): Promise<BaselineCheckResult>;
+    validateFixPasses(): Promise<TestRunResult>;
     preValidateFix(changes: Array<{
         file: string;
         oldCode: string;
@@ -40,7 +48,6 @@ export declare class LocalFixValidator {
         reason?: string;
     }>;
     private resolveChangePath;
-    private quickTypeCheck;
     applyFix(changes: Array<{
         file: string;
         oldCode: string;

@@ -30,6 +30,8 @@ export interface OutcomeBuildParams {
   autoFixSkippedReason?: string;
   skillId?: string;
   repo: string;
+  /** Explicit local baseline result — preferred over inferred S4. */
+  baselineDisposition?: 'all_passed' | 'all_failed' | 'mixed';
 }
 
 function normalizeFailureKey(spec: string, testName: string): string {
@@ -57,6 +59,7 @@ export function buildOutcomeEvent(params: OutcomeBuildParams): OutcomeEvent {
     autoFixSkippedReason,
     skillId,
     repo,
+    baselineDisposition,
   } = params;
 
   const spec = normalizeSpec(errorData.fileName) || 'unknown';
@@ -80,11 +83,10 @@ export function buildOutcomeEvent(params: OutcomeBuildParams): OutcomeEvent {
       ['applied', 'validated', 'validated_publish_failed', 'validated_not_published'].includes(
         repairStatus
       ));
-  const s4 =
-    s1 &&
-    !autoFixSkipped &&
-    repairStatus !== 'skipped' &&
-    repairStatus !== 'not_started';
+  // S4 must reflect an observed unrepaired baseline failure.
+  // Do not infer from repairStatus — that conflates "repair started"
+  // with "baseline reproduced".
+  const s4 = baselineDisposition === 'all_failed';
   const s6 = validationPassed;
   const s7 = fixFullyAccepted;
 

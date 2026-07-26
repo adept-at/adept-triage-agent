@@ -27,6 +27,7 @@ export declare class AnalysisAgent extends BaseAgent<AnalysisInput, AnalysisOutp
     execute(input: AnalysisInput, context: AgentContext, previousResponseId?: string): Promise<AgentResult<AnalysisOutput>>;
     protected getSystemPrompt(): string;
     protected buildUserPrompt(input: AnalysisInput, context: AgentContext): string;
+    protected getOutputSchema(): import("../openai/json-schemas").StrictJsonSchemaFormat;
     protected parseResponse(response: string): AnalysisOutput | null;
 }
 //# sourceMappingURL=analysis-agent.d.ts.map

@@ -28,6 +28,7 @@ export declare class ReviewAgent extends BaseAgent<ReviewInput, ReviewOutput> {
     execute(input: ReviewInput, context: AgentContext, previousResponseId?: string): Promise<AgentResult<ReviewOutput>>;
     protected getSystemPrompt(): string;
     protected buildUserPrompt(input: ReviewInput, context: AgentContext): string;
+    protected getOutputSchema(): import("../openai/json-schemas").StrictJsonSchemaFormat;
     protected parseResponse(response: string): ReviewOutput | null;
 }
 //# sourceMappingURL=review-agent.d.ts.map

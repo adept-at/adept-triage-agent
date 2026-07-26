@@ -67,7 +67,7 @@ async function processWorkflowLogs(octokit, artifactFetcher, inputs, repoDetails
     }
     const isCurrentJob = !!(inputs.jobName &&
         (inputs.jobName === context.job || inputs.jobName.includes(context.job)));
-    let jobs;
+    let jobList;
     try {
         if (!isCurrentJob &&
             (inputs.workflowRunId || context.payload.workflow_run)) {
@@ -84,18 +84,19 @@ async function processWorkflowLogs(octokit, artifactFetcher, inputs, repoDetails
         else if (isCurrentJob) {
             core.info(`Analyzing current job: ${inputs.jobName} (workflow still in progress)`);
         }
-        jobs = await (0, retry_1.withRetry)(() => octokit.actions.listJobsForWorkflowRun({
+        jobList = (await (0, retry_1.withRetry)(() => octokit.paginate(octokit.actions.listJobsForWorkflowRun, {
             owner,
             repo,
             run_id: parseInt(runId, 10),
             filter: 'latest',
-        }), { context: 'listing jobs for workflow run' });
+            per_page: 100,
+        }), { context: 'listing jobs for workflow run' }));
     }
     catch (error) {
         core.warning(`Failed to fetch workflow run or jobs after retries: ${error instanceof Error ? error.message : String(error)}`);
         return null;
     }
-    const targetJob = findTargetJob(jobs.data.jobs, inputs, isCurrentJob ?? false);
+    const targetJob = findTargetJob(jobList, inputs, isCurrentJob ?? false);
     if (!targetJob) {
         return null;
     }

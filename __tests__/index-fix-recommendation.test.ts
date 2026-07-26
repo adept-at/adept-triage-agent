@@ -21,6 +21,7 @@ import { ArtifactFetcher } from '../src/artifact-fetcher';
 import { buildRepairContext } from '../src/repair-context';
 import { SimplifiedRepairAgent } from '../src/repair/simplified-repair-agent';
 import { run } from '../src/index';
+import { mockOctokitPaginate } from './helpers/mock-paginate';
 
 describe('Fix Recommendation Integration', () => {
   let mockCore: jest.Mocked<typeof core>;
@@ -69,6 +70,7 @@ describe('Fix Recommendation Integration', () => {
         listJobsForWorkflowRun: jest.fn(),
       },
     } as any;
+    mockOctokitPaginate(mockOctokit as any);
     (Octokit as jest.MockedClass<typeof Octokit>).mockImplementation(
       () => mockOctokit
     );

@@ -66,6 +66,8 @@ export declare class SkillStore {
         spec?: string;
         errorMessage?: string;
         limit?: number;
+        eligible?: (skill: TriageSkill) => boolean;
+        minErrorSimilarity?: number;
     }): TriageSkill[];
     findRelevantForInvestigation(opts: {
         framework: string;

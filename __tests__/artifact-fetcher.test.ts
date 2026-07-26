@@ -2,6 +2,7 @@ import { ArtifactFetcher } from '../src/artifact-fetcher';
 import { Octokit } from '@octokit/rest';
 import * as core from '@actions/core';
 import AdmZip from 'adm-zip';
+import { mockOctokitPaginate } from './helpers/mock-paginate';
 
 // Mock dependencies
 jest.mock('@actions/core');
@@ -32,6 +33,7 @@ describe('ArtifactFetcher', () => {
         listFiles: jest.fn()
       }
     } as any;
+    mockOctokitPaginate(mockOctokit as any);
     
     artifactFetcher = new ArtifactFetcher(mockOctokit as Octokit);
   });
@@ -123,7 +125,7 @@ describe('ArtifactFetcher', () => {
       });
     });
 
-    it('should fall back to all artifacts when job name does not match artifact names', async () => {
+    it('should use the single unmatched artifact when job name does not match', async () => {
       const mockArtifacts = [
         { id: 5, name: 'wdio-logs', created_at: '2026-02-11T00:00:00Z' }
       ];
@@ -142,8 +144,26 @@ describe('ArtifactFetcher', () => {
 
       expect(result.length).toBe(1);
       expect(result[0].name).toBe('Test-failure-screenshot.png');
+      expect(core.info).toHaveBeenCalledWith(
+        expect.stringContaining('using the single remaining candidate')
+      );
+    });
+
+    it('should skip screenshots when job correlation fails with multiple candidates', async () => {
+      const mockArtifacts = [
+        { id: 5, name: 'wdio-logs-a', created_at: '2026-02-11T00:00:00Z' },
+        { id: 6, name: 'wdio-logs-b', created_at: '2026-02-11T00:00:00Z' },
+      ];
+
+      mockOctokit.actions!.listWorkflowRunArtifacts = jest.fn().mockResolvedValue({
+        data: { total_count: 2, artifacts: mockArtifacts }
+      });
+
+      const result = await artifactFetcher.fetchScreenshots('123', 'unrelatedJob');
+
+      expect(result).toEqual([]);
       expect(core.warning).toHaveBeenCalledWith(
-        expect.stringContaining('No artifacts specifically matched job')
+        expect.stringContaining('skipping to avoid sibling-job contamination')
       );
     });
 

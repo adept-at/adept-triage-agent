@@ -166,9 +166,10 @@ async function analyzeFailure(client, errorData, skillContext) {
                 indicators: edgeRejection.indicators
             };
         }
+        const classificationModel = (0, constants_1.resolveAgentModel)('classification');
         const response = await client.analyze(errorData, FEW_SHOT_EXAMPLES, skillContext, {
-            model: constants_1.AGENT_MODEL.classification,
-            reasoningEffort: constants_1.REASONING_EFFORT.classification,
+            model: classificationModel,
+            reasoningEffort: (0, constants_1.resolveReasoningEffort)('classification', classificationModel),
         });
         const confidence = calculateConfidence(response, errorData);
         const summary = generateSummary(response, errorData);

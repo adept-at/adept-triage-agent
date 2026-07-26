@@ -1,6 +1,7 @@
 import { OpenAIClient } from '../openai-client';
 import { ReasoningEffort } from '../config/constants';
 import { Framework } from '../types';
+import { StrictJsonSchemaFormat } from '../openai/json-schemas';
 export declare function getFrameworkLabel(framework?: Framework): string;
 export interface AgentResult<T = unknown> {
     success: boolean;
@@ -46,6 +47,7 @@ export interface AgentContext {
     investigationSummary?: string;
     priorInvestigationContext?: string;
     repoContext?: string;
+    abortSignal?: AbortSignal;
 }
 export interface AgentConfig {
     timeoutMs: number;
@@ -65,6 +67,7 @@ export declare abstract class BaseAgent<TInput, TOutput> {
     protected abstract getSystemPrompt(framework?: Framework): string;
     protected abstract buildUserPrompt(input: TInput, context: AgentContext): string;
     protected abstract parseResponse(response: string): TOutput | null;
+    protected abstract getOutputSchema(): StrictJsonSchemaFormat | null;
     protected executeWithTimeout(input: TInput, context: AgentContext, previousResponseId?: string): Promise<AgentResult<TOutput>>;
     private runAgentTask;
     protected log(message: string, level?: 'info' | 'debug' | 'warning'): void;

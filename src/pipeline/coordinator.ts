@@ -13,6 +13,7 @@ import {
   Verdict,
 } from '../types';
 import { ApplyResult } from '../repair/fix-applier';
+import { BaselineDisposition } from '../services/local-fix-validator';
 import { analyzeFailure } from '../simplified-analyzer';
 import { processWorkflowLogs } from '../services/log-processor';
 import { SkillStore, buildSkill, describeFixPattern, normalizeSpec } from '../services/skill-store';
@@ -38,6 +39,10 @@ import {
   attemptAutoFix,
   fixFingerprint,
 } from './validator';
+import {
+  extractPrimaryValidationError,
+  normalizeFailureSignature,
+} from '../services/test-evidence';
 
 export interface ClassificationResult {
   verdict: Verdict;
@@ -93,6 +98,8 @@ export interface RepairResult {
   autoFixSkipped?: boolean;
   autoFixSkippedReason?: string;
   repairTelemetry?: RepairTelemetry;
+  /** Explicit local baseline result — not inferred from repair status. */
+  baselineDisposition?: BaselineDisposition;
 }
 
 interface PipelineCoordinatorDeps {
@@ -216,14 +223,13 @@ export class PipelineCoordinator {
         })
       : '';
 
-    // Fetch the optional `.adept-triage/context.md` once per run, from
-    // the repo whose tests we're fixing. Falls back to the test-source
-    // repo when no autoFixTargetRepo is configured. Empty string for
-    // 404 / missing file — the common case until repos opt in.
+    // Fetch the optional `.adept-triage/context.md` once per run from the
+    // trusted base branch only — never from the failing feature branch —
+    // so branch-controlled content cannot inject system-priority policy.
+    // Empty string for 404 / missing file — the common case until repos opt in.
     const contextOwner = autoFixTargetRepo?.owner ?? this.repoDetails.owner;
     const contextRepo = autoFixTargetRepo?.repo ?? this.repoDetails.repo;
-    const contextRef =
-      this.inputs.branch || this.inputs.autoFixBaseBranch || 'main';
+    const contextRef = this.inputs.autoFixBaseBranch || 'main';
     const repoContextFetcher = new RepoContextFetcher(this.octokit);
     const repoContext = await repoContextFetcher.fetch(
       contextOwner,
@@ -240,6 +246,7 @@ export class PipelineCoordinator {
     let autoFixSkipped: boolean | undefined;
     let autoFixSkippedReason: string | undefined;
     let repairTelemetry: RepairTelemetry | undefined;
+    let baselineDisposition: BaselineDisposition | undefined;
 
     // LOCAL validation path: clone + apply + test in-container, push/PR on pass.
     // Requires ENABLE_LOCAL_VALIDATION explicitly true. Without this gate, a
@@ -273,6 +280,7 @@ export class PipelineCoordinator {
       autoFixSkipped = loopResult.autoFixSkipped;
       autoFixSkippedReason = loopResult.autoFixSkippedReason;
       repairTelemetry = loopResult.repairTelemetry;
+      baselineDisposition = loopResult.baselineDisposition;
     } else {
       const singleResult = await generateFixRecommendation(
         this.inputs,
@@ -324,6 +332,7 @@ export class PipelineCoordinator {
       autoFixSkipped,
       autoFixSkippedReason,
       repairTelemetry,
+      baselineDisposition,
     };
   }
 
@@ -382,6 +391,7 @@ export class PipelineCoordinator {
     autoFixSkipped?: boolean;
     autoFixSkippedReason?: string;
     skillId?: string;
+    baselineDisposition?: BaselineDisposition;
   }): void {
     this.outcomeSnapshot = params;
   }
@@ -638,6 +648,7 @@ export class PipelineCoordinator {
       autoFixSkipped: repairAutoFixSkipped,
       autoFixSkippedReason: repairAutoFixSkippedReason,
       repairTelemetry: repairTelemetryFromRun,
+      baselineDisposition,
     } = repairOutcome;
 
     let savedSkillId: string | undefined;
@@ -687,9 +698,10 @@ export class PipelineCoordinator {
           await skillStore.reinforceSkill(reinforceTarget.id, {
             success: validationPassed,
             validatedLocally: validationPassed,
-            prUrl: skillPrUrl || '',
+            prUrl: skillPrUrl || autoFixResult?.prUrl || '',
             confidence: fixRecommendation!.confidence,
           });
+          savedSkillId = reinforceTarget.id;
           core.info(
             `📝 Reinforced existing skill ${reinforceTarget.id} ` +
               `(byte-identical fix reuse, validationPassed=${validationPassed})`
@@ -726,7 +738,7 @@ export class PipelineCoordinator {
             // skillPrUrl is only set in `iterativeFixValidateLoop` when
             // `pushAndCreatePR` succeeded, so falling back to '' here is correct
             // both for "no publish attempt" and "publish failed after pass".
-            prUrl: skillPrUrl || '',
+            prUrl: skillPrUrl || autoFixResult?.prUrl || '',
             validatedLocally: validationPassed,
             // Persist a stable fingerprint so the next run's auto-fix gate can
             // detect when it's about to ship a byte-equivalent fix that already
@@ -793,6 +805,11 @@ export class PipelineCoordinator {
       autoFixResult
     );
 
+    // Prefer ApplyResult.prUrl; fall back to loop-level skillPrUrl for older paths.
+    if (autoFixResult && !autoFixResult.prUrl && skillPrUrl) {
+      autoFixResult.prUrl = skillPrUrl;
+    }
+
     this.captureOutcomeSnapshot({
       errorData,
       verdict: classification.verdict,
@@ -803,6 +820,7 @@ export class PipelineCoordinator {
       autoFixSkipped: result.autoFixSkipped,
       autoFixSkippedReason: result.autoFixSkippedReason,
       skillId: savedSkillId,
+      baselineDisposition,
     });
 
     // Reuse the pre-repair flakiness signal computed for the chronic gate.
@@ -876,13 +894,17 @@ export class PipelineCoordinator {
       if (workflowRun.data.status !== 'completed') {
         if (this.inputs.jobName) {
           try {
-            const jobs = await this.octokit.actions.listJobsForWorkflowRun({
-              owner,
-              repo,
-              run_id: parseInt(runId, 10),
-              filter: 'latest',
-            });
-            const targetJob = jobs.data.jobs.find(
+            const jobs = await this.octokit.paginate(
+              this.octokit.actions.listJobsForWorkflowRun,
+              {
+                owner,
+                repo,
+                run_id: parseInt(runId, 10),
+                filter: 'latest',
+                per_page: 100,
+              }
+            );
+            const targetJob = jobs.find(
               (job) => job.name === this.inputs.jobName
             );
 
@@ -986,10 +1008,18 @@ function buildFailedFixEvidence(
   autoFixResult: ApplyResult | null
 ): FailedFixEvidence {
   const validationFailure =
+    extractPrimaryValidationError(
+      autoFixResult?.validationResult?.failure?.primaryError ||
+        autoFixResult?.error ||
+        ''
+    ) ||
     autoFixResult?.validationResult?.failure?.primaryError ||
     autoFixResult?.error ||
     'Fix did not produce a validated passing result';
-  const originalFailure = errorData.message || 'unknown original failure';
+  const originalFailure =
+    extractPrimaryValidationError(errorData.message || '') ||
+    errorData.message ||
+    'unknown original failure';
 
   return {
     fixCommit: autoFixResult?.commitSha,
@@ -1008,10 +1038,6 @@ function buildFailedFixEvidence(
       normalizeFailureSignature(originalFailure) !==
       normalizeFailureSignature(validationFailure),
   };
-}
-
-function normalizeFailureSignature(message: string): string {
-  return message.replace(/\s+/g, ' ').trim().slice(0, 500);
 }
 
 export function shouldWriteSkillOutcome(

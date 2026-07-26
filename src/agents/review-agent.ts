@@ -11,7 +11,13 @@ import {
   getFrameworkLabel,
 } from './base-agent';
 import { OpenAIClient } from '../openai-client';
-import { AGENT_MODEL, REASONING_EFFORT, supportsReasoningEffort } from '../config/constants';
+import {
+  AGENT_CONFIG,
+  resolveAgentModel,
+  resolveReasoningEffort,
+  STAGE_MAX_OUTPUT_TOKENS,
+  supportsReasoningEffort,
+} from '../config/constants';
 import { AnalysisOutput } from './analysis-agent';
 import { CodeReadingOutput } from './code-reading-agent';
 import { FixGenerationOutput } from './fix-generation-agent';
@@ -19,6 +25,7 @@ import { InvestigationOutput } from './investigation-agent';
 import { sanitizeForPrompt } from '../services/skill-store';
 import { coerceEnum } from '../utils/text-utils';
 import { clampConfidence } from '../utils/number-utils';
+import { REVIEW_SCHEMA } from '../openai/json-schemas';
 
 /**
  * Whitelisted runtime values for ReviewIssue.severity. Enforced at
@@ -112,15 +119,16 @@ export interface ReviewInput {
  */
 export class ReviewAgent extends BaseAgent<ReviewInput, ReviewOutput> {
   constructor(openaiClient: OpenAIClient, config?: Partial<AgentConfig>) {
-    const resolvedModel = config?.model ?? AGENT_MODEL.review;
+    const resolvedModel = config?.model ?? resolveAgentModel('review');
     const resolvedEffort =
       supportsReasoningEffort(resolvedModel)
-        ? (config?.reasoningEffort ?? REASONING_EFFORT.review)
+        ? (config?.reasoningEffort ?? resolveReasoningEffort('review', resolvedModel))
         : 'none' as const;
     super(openaiClient, 'ReviewAgent', {
       ...config,
       model: resolvedModel,
       reasoningEffort: resolvedEffort,
+      maxTokens: config?.maxTokens ?? STAGE_MAX_OUTPUT_TOKENS.review,
     });
   }
 
@@ -219,9 +227,10 @@ You MUST respond with a JSON object matching this schema:
 
 ## Approval Rules
 
-- Approve if: No CRITICAL issues AND fix addresses root cause
-- Reject if: Any CRITICAL issues OR fix doesn't address the problem
-- CRITICAL issues automatically mean rejection`;
+- Approve ONLY when: \`approved\` is explicitly true, there are no CRITICAL issues, the fix addresses the root cause, AND fixConfidence is at least ${AGENT_CONFIG.REVIEW_REQUIRED_CONFIDENCE}
+- Reject when: \`approved\` is missing/false, any CRITICAL issues exist, fixConfidence is below ${AGENT_CONFIG.REVIEW_REQUIRED_CONFIDENCE}, or the fix doesn't address the problem
+- CRITICAL issues automatically mean rejection
+- Never omit \`approved\` — parsers treat missing/non-boolean approval as rejection`;
   }
 
   /**
@@ -467,18 +476,17 @@ You MUST respond with a JSON object matching this schema:
     return parts.join('\n');
   }
 
+  protected getOutputSchema() {
+    return REVIEW_SCHEMA;
+  }
+
   /**
-   * Parse the response
+   * Parse the response — schema guarantees JSON; retain fail-closed
+   * approval / CRITICAL / confidence domain rules.
    */
   protected parseResponse(response: string): ReviewOutput | null {
     try {
-      const jsonMatch = response.match(/\{[\s\S]*\}/);
-      if (!jsonMatch) {
-        this.log('No JSON found in response', 'warning');
-        return null;
-      }
-
-      const parsed = JSON.parse(jsonMatch[0]);
+      const parsed = JSON.parse(response);
 
       // Normalize issues. Severity goes through coerceEnum so the
       // downstream CRITICAL check and log rendering can't be subverted
@@ -488,19 +496,37 @@ You MUST respond with a JSON object matching this schema:
             severity: coerceEnum(i.severity, REVIEW_SEVERITIES, 'WARNING'),
             changeIndex: typeof i.changeIndex === 'number' ? i.changeIndex : 0,
             description: i.description || '',
-            suggestion: i.suggestion,
+            suggestion: i.suggestion ?? undefined,
           }))
         : [];
 
-      // Determine approval based on critical issues
+      // Fail closed: missing/non-boolean approved, CRITICAL issues, or
+      // low reviewer confidence all reject. Do not treat omitted
+      // `approved` as an implicit yes.
       const hasCritical = issues.some((i) => i.severity === 'CRITICAL');
-      const approved = !hasCritical && parsed.approved !== false;
+      const fixConfidence = clampConfidence(parsed.fixConfidence);
+      const explicitApproval = parsed.approved === true;
+      const meetsConfidence =
+        fixConfidence >= AGENT_CONFIG.REVIEW_REQUIRED_CONFIDENCE;
+      const approved = explicitApproval && !hasCritical && meetsConfidence;
+
+      if (!explicitApproval) {
+        this.log(
+          'Review response missing explicit approved=true; failing closed',
+          'warning'
+        );
+      } else if (!meetsConfidence) {
+        this.log(
+          `Reviewer fixConfidence ${fixConfidence}% below required ${AGENT_CONFIG.REVIEW_REQUIRED_CONFIDENCE}%; rejecting`,
+          'warning'
+        );
+      }
 
       return {
         approved,
         issues,
         assessment: parsed.assessment || '',
-        fixConfidence: clampConfidence(parsed.fixConfidence),
+        fixConfidence,
         improvements: Array.isArray(parsed.improvements)
           ? parsed.improvements
           : undefined,

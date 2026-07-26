@@ -1,6 +1,6 @@
 {
   "name": "adept-triage-agent",
-  "version": "1.54.3",
+  "version": "1.55.0",
   "description": "AI-powered test failure triage GitHub Action",
   "main": "dist/index.js",
   "scripts": {
@@ -16,7 +16,8 @@
     "all": "npm run build && npm run package",
     "pre-release": "./scripts/pre-release.sh",
     "verify-dist": "npm run all && git diff --exit-code dist/",
-    "prepare": "husky"
+    "prepare": "husky",
+    "replay:evaluate-models": "npx ts-node scripts/replay-evaluate-models.ts"
   },
   "keywords": [
     "github-action",
@@ -38,7 +39,7 @@
     "@aws-sdk/lib-dynamodb": "^3.1029.0",
     "@octokit/rest": "^20.0.2",
     "adm-zip": "^0.5.16",
-    "openai": "^4.90.0"
+    "openai": "^6.49.0"
   },
   "devDependencies": {
     "@types/adm-zip": "^0.5.7",

@@ -40,6 +40,7 @@ exports.OpenAIClient = void 0;
 const openai_1 = __importDefault(require("openai"));
 const core = __importStar(require("@actions/core"));
 const constants_1 = require("./config/constants");
+const json_schemas_1 = require("./openai/json-schemas");
 function getTokenUsage(response) {
     const usage = response.usage;
     if (!usage)
@@ -85,8 +86,8 @@ class OpenAIClient {
                     model,
                     instructions: systemPrompt,
                     input,
-                    max_output_tokens: constants_1.OPENAI.MAX_COMPLETION_TOKENS,
-                    text: { format: { type: 'json_object' } },
+                    max_output_tokens: constants_1.STAGE_MAX_OUTPUT_TOKENS.classification,
+                    text: { format: json_schemas_1.CLASSIFICATION_SCHEMA },
                     ...(reasoningEffort !== 'none'
                         ? {
                             reasoning: { effort: reasoningEffort },
@@ -96,6 +97,7 @@ class OpenAIClient {
                 const response = options?.signal
                     ? await this.openai.responses.create(requestBody, { signal: options.signal })
                     : await this.openai.responses.create(requestBody);
+                this.assertCompleteResponse(response, model);
                 const tokensUsed = getTokenUsage(response);
                 if (tokensUsed !== undefined) {
                     core.info(`🧮 ${model} analysis token usage: ${tokensUsed}`);
@@ -553,34 +555,14 @@ Changed Product Files:
         try {
             return JSON.parse(content);
         }
-        catch (e) {
-            core.info('Response is not JSON, attempting to parse structured text');
-            const verdictMatch = content.match(/verdict[:\s]*["']?(TEST_ISSUE|PRODUCT_ISSUE|INCONCLUSIVE)["']?/i);
-            const reasoningMatch = content.match(/reasoning[:\s]*["']?([^"'\n]+)["']?/i);
-            const indicatorsMatch = content.match(/indicators[:\s]*(?:\[([^\]]+)\]|([^\n]+))/i);
-            if (verdictMatch && reasoningMatch) {
-                const verdict = verdictMatch[1];
-                const reasoning = reasoningMatch[1].trim();
-                let indicators = [];
-                if (indicatorsMatch) {
-                    const indicatorString = indicatorsMatch[1] || indicatorsMatch[2];
-                    indicators = indicatorString.split(',').map(i => i.trim().replace(/["'[\]]/g, ''));
-                }
-                return {
-                    verdict,
-                    reasoning,
-                    indicators
-                };
-            }
-            const altMatch = content.match(/(?:verdict|conclusion):\s*(TEST_ISSUE|PRODUCT_ISSUE|INCONCLUSIVE)[\s\S]*?(?:reasoning|explanation):\s*([^\n]+)[\s\S]*?(?:indicators|factors):\s*([^\n]+)/i);
-            if (altMatch) {
-                return {
-                    verdict: altMatch[1],
-                    reasoning: altMatch[2].trim(),
-                    indicators: altMatch[3].split(/[,;]/).map(i => i.trim()).filter(i => i.length > 0)
-                };
-            }
-            throw new Error('Could not parse response in any expected format');
+        catch {
+            throw new Error('Classification response was not valid JSON');
+        }
+    }
+    assertCompleteResponse(response, model) {
+        if (response.status === 'incomplete') {
+            const reason = response.incomplete_details?.reason || 'unknown';
+            throw new Error(`Incomplete ${model} response (${reason})`);
         }
     }
     validateResponse(response) {
@@ -638,10 +620,16 @@ Changed Product Files:
     async generateWithCustomPrompt(params) {
         const model = params.model ?? constants_1.OPENAI.LEGACY_MODEL;
         const reasoningEffort = params.reasoningEffort ?? 'none';
-        const userContent = params.responseAsJson
+        const wantsJson = params.responseAsJson || !!params.jsonSchema;
+        const userContent = wantsJson
             ? this.ensureJsonMention(params.userContent)
             : params.userContent;
         const input = this.convertToResponsesInput(userContent);
+        const textFormat = params.jsonSchema
+            ? { format: params.jsonSchema }
+            : params.responseAsJson
+                ? { format: { type: 'json_object' } }
+                : undefined;
         core.info(`🧠 Using ${model} model (Responses API) reasoningEffort=${reasoningEffort}`);
         for (let attempt = 1; attempt <= this.maxRetries; attempt++) {
             try {
@@ -650,7 +638,7 @@ Changed Product Files:
                     instructions: params.systemPrompt,
                     input,
                     max_output_tokens: params.maxTokens ?? constants_1.OPENAI.MAX_COMPLETION_TOKENS,
-                    text: params.responseAsJson ? { format: { type: 'json_object' } } : undefined,
+                    text: textFormat,
                     ...(params.previousResponseId ? { previous_response_id: params.previousResponseId } : {}),
                     ...(reasoningEffort !== 'none'
                         ? {
@@ -661,6 +649,7 @@ Changed Product Files:
                 const response = params.signal
                     ? await this.openai.responses.create(requestBody, { signal: params.signal })
                     : await this.openai.responses.create(requestBody);
+                this.assertCompleteResponse(response, model);
                 const content = response.output_text;
                 if (!content) {
                     throw new Error('Empty response from OpenAI');

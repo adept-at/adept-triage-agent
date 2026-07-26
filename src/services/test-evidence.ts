@@ -175,3 +175,50 @@ export function verifyTestEvidence(logs: string | undefined): TestEvidenceResult
       'no concrete pass evidence found in logs (neither "N passing" nor a known runner success marker present)',
   };
 }
+
+/**
+ * Extract the canonical primary assertion/error line from runner logs.
+ * Shared by local and remote validation so failed-trajectory signature
+ * comparisons don't depend on arbitrary log tails.
+ */
+export function extractPrimaryValidationError(
+  logs?: string
+): string | undefined {
+  if (!logs) return undefined;
+  // Strip ANSI color codes from runner logs before signature extraction.
+  // eslint-disable-next-line no-control-regex -- intentional ESC sequence match
+  const clean = logs.replace(/\u001b\[[0-9;]*m/g, '');
+  const patterns = [
+    /AssertionError:[^\n]+/i,
+    /CypressError:[^\n]+/i,
+    /TimeoutError:[^\n]+/i,
+    /Error:[^\n]+/i,
+  ];
+  for (const pattern of patterns) {
+    const match = clean.match(pattern);
+    if (match) return match[0].trim().slice(0, 500);
+  }
+  return undefined;
+}
+
+/**
+ * Derive a compact assertion fragment from a primary error line.
+ */
+export function extractFailedAssertion(
+  primaryError: string
+): string | undefined {
+  const expectedMatch = primaryError.match(/expected\s+(.+)/i);
+  if (expectedMatch) return expectedMatch[0].slice(0, 300);
+  const timedOutMatch = primaryError.match(/Timed out[^:]*:\s*(.+)/i);
+  if (timedOutMatch) return timedOutMatch[1].slice(0, 300);
+  return undefined;
+}
+
+/**
+ * Normalize a failure message for same-signature comparisons used by
+ * failed-trajectory skill writes.
+ */
+export function normalizeFailureSignature(message: string): string {
+  const primary = extractPrimaryValidationError(message) || message;
+  return primary.replace(/\s+/g, ' ').trim().slice(0, 500);
+}

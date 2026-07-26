@@ -322,6 +322,8 @@ class SkillStore {
         const frameworkSkills = this.skills.filter((s) => {
             if (s.retired)
                 return false;
+            if (opts.eligible && !opts.eligible(s))
+                return false;
             if (normalized === 'unknown')
                 return true;
             return s.framework === normalized || s.framework === 'unknown';
@@ -329,12 +331,21 @@ class SkillStore {
         if (frameworkSkills.length === 0)
             return [];
         const querySpec = normalizeSpec(opts.spec);
+        const minErrorSim = opts.minErrorSimilarity ?? 0;
+        const hasErrorQuery = Boolean(opts.errorMessage);
         const scored = frameworkSkills.map((skill) => {
             let score = 0;
-            if (querySpec && normalizeSpec(skill.spec) === querySpec)
+            const specMatch = !!querySpec && normalizeSpec(skill.spec) === querySpec;
+            const errSim = opts.errorMessage
+                ? errorSimilarity(skill.errorPattern, normalizeError(opts.errorMessage))
+                : 0;
+            if (hasErrorQuery && errSim < minErrorSim) {
+                return { skill, score: 0 };
+            }
+            if (specMatch)
                 score += 10;
             if (opts.errorMessage) {
-                score += errorSimilarity(skill.errorPattern, normalizeError(opts.errorMessage)) * 5;
+                score += errSim * 5;
             }
             return { skill, score };
         });
@@ -353,15 +364,20 @@ class SkillStore {
         return result;
     }
     findRelevantForInvestigation(opts) {
-        return this.findRelevant(opts).filter((s) => s.isSeed === true || s.validatedLocally === true);
+        return this.findRelevant({
+            ...opts,
+            eligible: (s) => s.isSeed === true || s.validatedLocally === true,
+            minErrorSimilarity: opts.errorMessage ? 0.15 : 0,
+        });
     }
     findFailedTrajectories(opts) {
         const limit = opts.limit ?? 3;
-        return this.findRelevant({ ...opts, limit: limit * 2 })
-            .filter((s) => !s.isSeed &&
-            s.validatedLocally !== true &&
-            (s.failCount ?? 0) > 0)
-            .slice(0, limit);
+        return this.findRelevant({
+            ...opts,
+            limit,
+            eligible: (s) => !s.isSeed && s.validatedLocally !== true && (s.failCount ?? 0) > 0,
+            minErrorSimilarity: opts.errorMessage ? 0.15 : 0,
+        });
     }
     findForClassifier(opts) {
         const normalized = normalizeFramework(opts.framework);
@@ -377,13 +393,19 @@ class SkillStore {
         const now = Date.now();
         const SEVEN_DAYS = 7 * 86_400_000;
         const querySpec = normalizeSpec(opts.spec);
+        const hasErrorQuery = Boolean(opts.errorMessage);
         const scored = candidates.map((skill) => {
             let score = 0;
+            const errSim = opts.errorMessage
+                ? errorSimilarity(skill.errorPattern, normalizeError(opts.errorMessage))
+                : 0;
+            if (hasErrorQuery && errSim < 0.15) {
+                return { skill, score: 0 };
+            }
             if (querySpec && normalizeSpec(skill.spec) === querySpec)
                 score += 15;
             if (opts.errorMessage) {
-                score +=
-                    errorSimilarity(skill.errorPattern, normalizeError(opts.errorMessage)) * 5;
+                score += errSim * 5;
             }
             if (now - parseSkillTimestamp(skill.lastUsedAt) < SEVEN_DAYS)
                 score += 3;

@@ -11,9 +11,10 @@ import {
   getFrameworkLabel,
 } from './base-agent';
 import { OpenAIClient } from '../openai-client';
-import { AGENT_MODEL, DEFAULT_PRODUCT_REPO, REASONING_EFFORT } from '../config/constants';
+import { DEFAULT_PRODUCT_REPO, resolveAgentModel, resolveReasoningEffort, STAGE_MAX_OUTPUT_TOKENS } from '../config/constants';
 import { coerceEnum } from '../utils/text-utils';
 import { clampConfidence } from '../utils/number-utils';
+import { ANALYSIS_SCHEMA } from '../openai/json-schemas';
 
 /**
  * Whitelisted runtime values matching the RootCauseCategory type union.
@@ -95,10 +96,12 @@ export interface AnalysisInput {
  */
 export class AnalysisAgent extends BaseAgent<AnalysisInput, AnalysisOutput> {
   constructor(openaiClient: OpenAIClient, config?: Partial<AgentConfig>) {
+    const model = config?.model ?? resolveAgentModel('analysis');
     super(openaiClient, 'AnalysisAgent', {
       ...config,
-      model: config?.model ?? AGENT_MODEL.analysis,
-      reasoningEffort: config?.reasoningEffort ?? REASONING_EFFORT.analysis,
+      model,
+      reasoningEffort: config?.reasoningEffort ?? resolveReasoningEffort('analysis', model),
+      maxTokens: config?.maxTokens ?? STAGE_MAX_OUTPUT_TOKENS.analysis,
     });
   }
 
@@ -277,19 +280,17 @@ You MUST respond with a JSON object matching this schema:
     return parts.filter(Boolean).join('\n');
   }
 
+  protected getOutputSchema() {
+    return ANALYSIS_SCHEMA;
+  }
+
   /**
-   * Parse the response
+   * Parse the response — schema guarantees shape; retain domain coercion
+   * for enum/confidence safety.
    */
   protected parseResponse(response: string): AnalysisOutput | null {
     try {
-      // Try to extract JSON from the response
-      const jsonMatch = response.match(/\{[\s\S]*\}/);
-      if (!jsonMatch) {
-        this.log('No JSON found in response', 'warning');
-        return null;
-      }
-
-      const parsed = JSON.parse(jsonMatch[0]);
+      const parsed = JSON.parse(response);
 
       // Validate required fields
       if (!parsed.rootCauseCategory || typeof parsed.confidence !== 'number') {

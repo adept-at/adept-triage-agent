@@ -27,6 +27,13 @@ export declare const OPENAI: {
     readonly MAX_RETRIES: 3;
     readonly RETRY_DELAY_MS: 1000;
 };
+export declare const STAGE_MAX_OUTPUT_TOKENS: {
+    readonly classification: 4000;
+    readonly analysis: 6000;
+    readonly investigation: 8000;
+    readonly fixGeneration: 12000;
+    readonly review: 6000;
+};
 export declare const AGENT_MODEL: {
     readonly classification: "gpt-5.5";
     readonly analysis: "gpt-5.5";
@@ -34,6 +41,21 @@ export declare const AGENT_MODEL: {
     readonly fixGeneration: "gpt-5.5";
     readonly review: "gpt-5.5";
 };
+export declare const GPT56_CANDIDATE_MODEL: {
+    readonly classification: "gpt-5.6-terra";
+    readonly analysis: "gpt-5.6-terra";
+    readonly investigation: "gpt-5.6-terra";
+    readonly fixGeneration: "gpt-5.6-sol";
+    readonly review: "gpt-5.6-sol";
+};
+export declare const GPT56_CANDIDATE_REASONING: {
+    readonly classification: "medium";
+    readonly analysis: "high";
+    readonly investigation: "high";
+    readonly fixGeneration: "high";
+    readonly review: "xhigh";
+};
+export type AgentStage = keyof typeof AGENT_MODEL;
 export declare const REASONING_EFFORT: {
     readonly classification: "high";
     readonly analysis: "high";
@@ -43,10 +65,16 @@ export declare const REASONING_EFFORT: {
 };
 export type ReasoningEffort = 'none' | 'low' | 'medium' | 'high' | 'xhigh';
 export declare function supportsReasoningEffort(model: string): boolean;
+export declare function resolveAgentModel(stage: AgentStage, override?: string): string;
+export declare function resolveReasoningEffort(stage: AgentStage, model: string): ReasoningEffort;
 export declare const SHORT_SHA_LENGTH = 7;
 export declare const ARTIFACTS: {
     readonly MAX_PR_DIFF_FILES: 30;
     readonly MAX_PATCH_LINES: 20;
+    readonly MAX_ZIP_ENTRIES: 500;
+    readonly MAX_ZIP_BYTES: number;
+    readonly MAX_SCREENSHOTS: 5;
+    readonly MAX_SCREENSHOT_BASE64_CHARS: 5000000;
 };
 export declare const FORMATTING: {
     readonly MAIN_SUMMARY_MAX_LENGTH: 1000;
@@ -82,6 +110,7 @@ export declare const DEFAULT_PRODUCT_URL = "https://learn.adept.at";
 export declare const VERDICT_OVERRIDE_CONFIDENCE_THRESHOLD = 70;
 export declare const AGENT_CONFIG: {
     readonly MAX_AGENT_ITERATIONS: 3;
+    readonly GLOBAL_FIX_ATTEMPT_BUDGET: 3;
     readonly AGENT_TIMEOUT_MS: 900000;
     readonly REVIEW_REQUIRED_CONFIDENCE: 70;
     readonly INVESTIGATION_CHAIN_CONFIDENCE: 80;

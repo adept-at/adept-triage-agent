@@ -48,7 +48,8 @@ const local_fix_validator_1 = require("../services/local-fix-validator");
 const constants_1 = require("../config/constants");
 const repo_utils_1 = require("../utils/repo-utils");
 const run_telemetry_1 = require("./run-telemetry");
-async function generateFixRecommendation(inputs, repoDetails, errorData, openaiClient, octokit, previousAttempt, previousResponseId, skillStore, priorInvestigationContext, repoContext) {
+const test_evidence_1 = require("../services/test-evidence");
+async function generateFixRecommendation(inputs, repoDetails, errorData, openaiClient, octokit, previousAttempt, previousResponseId, skillStore, priorInvestigationContext, repoContext, maxFixIterations) {
     try {
         const iterLabel = previousAttempt
             ? ` (iteration ${previousAttempt.iteration + 1})`
@@ -75,6 +76,9 @@ async function generateFixRecommendation(inputs, repoDetails, errorData, openaiC
         }, {
             modelOverrideFixGen: inputs.modelOverrideFixGen,
             modelOverrideReview: inputs.modelOverrideReview,
+            ...(typeof maxFixIterations === 'number'
+                ? { orchestratorConfig: { maxIterations: maxFixIterations } }
+                : {}),
         });
         const skills = skillStore
             ? {
@@ -124,6 +128,7 @@ async function iterativeFixValidateLoop(inputs, repoDetails, autoFixTargetRepo, 
     let autoFixSkipped = false;
     let autoFixSkippedReason;
     let repairTelemetry;
+    let baselineDisposition;
     let previousAttempt;
     const failedFixFingerprints = new Set();
     const minConfidence = inputs.autoFixMinConfidence ?? constants_1.AUTO_FIX.DEFAULT_MIN_CONFIDENCE;
@@ -144,9 +149,13 @@ async function iterativeFixValidateLoop(inputs, repoDetails, autoFixTargetRepo, 
         await validator.setup();
         validatorReady = true;
         const baseline = await validator.baselineCheck();
-        if (baseline.passed) {
-            core.info('✅ Baseline check passed — test passes without fix. Failure was likely transient.');
-            core.info('📊 learning-telemetry baseline=passed validation=skipped iterations=0');
+        baselineDisposition = baseline.disposition;
+        if (baseline.disposition !== 'all_failed') {
+            const reason = baseline.disposition === 'all_passed'
+                ? 'baseline check passed without a fix (failure likely transient)'
+                : `baseline mixed results (${baseline.passCount} pass / ${baseline.failCount} fail) — treating as flaky/inconclusive`;
+            core.info(`✅ Skipping repair — ${reason}.`);
+            core.info(`📊 learning-telemetry baseline=${baseline.disposition} validation=skipped iterations=0`);
             return {
                 fixRecommendation: null,
                 autoFixResult: null,
@@ -157,18 +166,19 @@ async function iterativeFixValidateLoop(inputs, repoDetails, autoFixTargetRepo, 
                 autoFixSkippedReason,
                 repairTelemetry: {
                     status: 'skipped',
-                    summary: 'Repair skipped: baseline check passed without a fix (failure likely transient).',
+                    summary: `Repair skipped: ${reason}.`,
                     iterations: 0,
                     elapsedMs: 0,
                 },
+                baselineDisposition,
             };
         }
-        core.info('❌ Baseline check confirmed failure — proceeding with fix.');
-        core.info(`📊 learning-telemetry baseline=failed durationMs=${baseline.durationMs}`);
+        core.info('❌ Baseline check confirmed consistent failure — proceeding with fix.');
+        core.info(`📊 learning-telemetry baseline=all_failed durationMs=${baseline.durationMs}`);
         for (let iteration = 0; iteration < maxIterations; iteration++) {
             completedIterations = iteration + 1;
             core.info(`\n${'='.repeat(60)}\n🔄 Fix-Validate iteration ${iteration + 1}/${maxIterations}\n${'='.repeat(60)}`);
-            const fixResult = await generateFixRecommendation(inputs, repoDetails, errorData, openaiClient, octokit, previousAttempt, undefined, skillStore, investigationContext, repoContext);
+            const fixResult = await generateFixRecommendation(inputs, repoDetails, errorData, openaiClient, octokit, previousAttempt, undefined, skillStore, investigationContext, repoContext, 1);
             if (!fixResult.fix) {
                 fixRecommendation = null;
                 repairTelemetry = fixResult.repairTelemetry ?? repairTelemetry;
@@ -229,8 +239,8 @@ async function iterativeFixValidateLoop(inputs, repoDetails, autoFixTargetRepo, 
                 core.warning(`Iteration ${iteration + 1}: failed to apply fix locally — ${applyError}`);
                 break;
             }
-            core.info(`\n🧪 Running test locally...`);
-            const testResult = await validator.runTest();
+            core.info(`\n🧪 Running multi-pass local validation...`);
+            const testResult = await validator.validateFixPasses();
             if (testResult.passed) {
                 core.info(`\n✅ Test PASSED on iteration ${iteration + 1}! (${testResult.durationMs}ms)`);
                 core.info(`📊 learning-telemetry validation=passed iteration=${iteration + 1} durationMs=${testResult.durationMs}`);
@@ -249,6 +259,8 @@ async function iterativeFixValidateLoop(inputs, repoDetails, autoFixTargetRepo, 
                         modifiedFiles: fixRecommendation.proposedChanges.map((c) => c.file),
                         commitSha: pushResult.commitSha,
                         branchName: pushResult.branchName,
+                        prUrl: pushResult.prUrl,
+                        prNumber: pushResult.prNumber,
                         validationStatus: 'passed',
                         validationResult: {
                             status: 'passed',
@@ -266,6 +278,7 @@ async function iterativeFixValidateLoop(inputs, repoDetails, autoFixTargetRepo, 
                         autoFixSkipped,
                         autoFixSkippedReason,
                         repairTelemetry,
+                        baselineDisposition,
                     };
                 }
                 catch (pushError) {
@@ -291,11 +304,14 @@ async function iterativeFixValidateLoop(inputs, repoDetails, autoFixTargetRepo, 
                     autoFixSkipped,
                     autoFixSkippedReason,
                     repairTelemetry,
+                    baselineDisposition,
                 };
             }
             core.warning(`\n❌ Test FAILED on iteration ${iteration + 1} (exit code: ${testResult.exitCode}, ${testResult.durationMs}ms)`);
             core.info(`📊 learning-telemetry validation=failed iteration=${iteration + 1} durationMs=${testResult.durationMs}`);
             failedFixFingerprints.add(fingerprint);
+            const primaryError = (0, test_evidence_1.extractPrimaryValidationError)(testResult.logs) ||
+                'Local validation test failed';
             autoFixResult = {
                 success: false,
                 modifiedFiles: fixRecommendation.proposedChanges.map((c) => c.file),
@@ -306,7 +322,7 @@ async function iterativeFixValidateLoop(inputs, repoDetails, autoFixTargetRepo, 
                     mode: 'local',
                     conclusion: 'failure',
                     failure: {
-                        primaryError: testResult.logs?.slice(-1000) || 'Local validation test failed',
+                        primaryError,
                         failureStage: 'validation',
                     },
                 },
@@ -335,6 +351,7 @@ async function iterativeFixValidateLoop(inputs, repoDetails, autoFixTargetRepo, 
         autoFixSkipped,
         autoFixSkippedReason,
         repairTelemetry,
+        baselineDisposition,
     };
 }
 function normalizeFileForPatternMatch(path) {
@@ -463,12 +480,16 @@ async function attemptAutoFix(inputs, fixRecommendation, octokit, repoDetails, e
             core.info(`   Commit: ${result.commitSha}`);
             core.info(`   Files: ${result.modifiedFiles.join(', ')}`);
             if (result.branchName && result.commitSha) {
-                await fixApplier.openDraftPullRequest({
+                const draftPr = await fixApplier.openDraftPullRequest({
                     branchName: result.branchName,
                     commitSha: result.commitSha,
                     fix: fixRecommendation,
                     triageRunId: github.context.runId.toString(),
                 });
+                if (draftPr) {
+                    result.prUrl = draftPr.url;
+                    result.prNumber = draftPr.number;
+                }
             }
             if (inputs.enableValidation && result.branchName) {
                 core.info('\n🧪 Triggering validation workflow...');
@@ -516,6 +537,14 @@ async function attemptAutoFix(inputs, fixRecommendation, octokit, repoDetails, e
                             }
                             else {
                                 core.warning(`❌ Remote validation ${structured.status}: ${structured.failure?.primaryError || structured.conclusion || 'no failure detail'}`);
+                            }
+                            if (result.prNumber) {
+                                await fixApplier.finalizeValidationPullRequest({
+                                    prNumber: result.prNumber,
+                                    validationStatus: structured.status,
+                                    validationUrl: result.validationUrl,
+                                    triageRunId: github.context.runId.toString(),
+                                });
                             }
                         }
                         else {

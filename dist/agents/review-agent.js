@@ -6,6 +6,7 @@ const constants_1 = require("../config/constants");
 const skill_store_1 = require("../services/skill-store");
 const text_utils_1 = require("../utils/text-utils");
 const number_utils_1 = require("../utils/number-utils");
+const json_schemas_1 = require("../openai/json-schemas");
 const REVIEW_SEVERITIES = ['CRITICAL', 'WARNING', 'SUGGESTION'];
 const TRACE_FIELD_MAX_CHARS = 1000;
 function formatTraceField(value) {
@@ -16,14 +17,15 @@ function formatTraceField(value) {
 }
 class ReviewAgent extends base_agent_1.BaseAgent {
     constructor(openaiClient, config) {
-        const resolvedModel = config?.model ?? constants_1.AGENT_MODEL.review;
+        const resolvedModel = config?.model ?? (0, constants_1.resolveAgentModel)('review');
         const resolvedEffort = (0, constants_1.supportsReasoningEffort)(resolvedModel)
-            ? (config?.reasoningEffort ?? constants_1.REASONING_EFFORT.review)
+            ? (config?.reasoningEffort ?? (0, constants_1.resolveReasoningEffort)('review', resolvedModel))
             : 'none';
         super(openaiClient, 'ReviewAgent', {
             ...config,
             model: resolvedModel,
             reasoningEffort: resolvedEffort,
+            maxTokens: config?.maxTokens ?? constants_1.STAGE_MAX_OUTPUT_TOKENS.review,
         });
     }
     async execute(input, context, previousResponseId) {
@@ -110,9 +112,10 @@ You MUST respond with a JSON object matching this schema:
 
 ## Approval Rules
 
-- Approve if: No CRITICAL issues AND fix addresses root cause
-- Reject if: Any CRITICAL issues OR fix doesn't address the problem
-- CRITICAL issues automatically mean rejection`;
+- Approve ONLY when: \`approved\` is explicitly true, there are no CRITICAL issues, the fix addresses the root cause, AND fixConfidence is at least ${constants_1.AGENT_CONFIG.REVIEW_REQUIRED_CONFIDENCE}
+- Reject when: \`approved\` is missing/false, any CRITICAL issues exist, fixConfidence is below ${constants_1.AGENT_CONFIG.REVIEW_REQUIRED_CONFIDENCE}, or the fix doesn't address the problem
+- CRITICAL issues automatically mean rejection
+- Never omit \`approved\` — parsers treat missing/non-boolean approval as rejection`;
     }
     buildUserPrompt(input, context) {
         const parts = [];
@@ -210,29 +213,36 @@ You MUST respond with a JSON object matching this schema:
         parts.push('', '## Review Instructions', '1. For each change, verify oldCode appears EXACTLY in the file', '2. Check that newCode is syntactically valid', '3. Verify the fix addresses the root cause', '4. Look for potential side effects', '5. Assess overall likelihood of success', '6. CRITICAL: If PR changes are provided, verify the fix reasoning is consistent with the diff — if the fix claims code was "changed" or "updated" but the diff does NOT show that change, flag as CRITICAL issue', '7. CRITICAL: Inspect `failureModeTrace`. If missing or any field is vague/generic/tautological, flag a CRITICAL issue citing which field is inadequate.', '8. CRITICAL: Determine if the new condition/assertion is **strictly stronger** than the original. If yes, verify `whyAssertionPassesNow` justifies why the added requirement is guaranteed to hold in the failure scenario. If it does not, flag a CRITICAL issue — a strictly stronger condition cannot turn a failing assertion into a passing one.', '9. CRITICAL: If analysis flagged `issueLocation=APP_CODE`, audit whether the proposed test-code fix is appropriate. Flag as CRITICAL if the fix modifies test code without addressing why the analysis agent believed the failure was product-side. EXCEPTION: if investigation reported `isTestCodeFixable=true` with no verdictOverride, that clearance is sufficient — do NOT flag CRITICAL on the APP_CODE basis alone.', '10. CRITICAL: If investigation provided a `verdictOverride` (especially `APP_CODE`), verify the proposed fix is consistent with that finding. Flag as CRITICAL if the fix contradicts the verdict override evidence without explicit justification.', '11. If investigation provided `recommendedApproach` and/or `selectorsToUpdate`, verify the proposed fix covers them. Flag as WARNING if the fix omits an investigation-flagged selector or deviates from the recommended approach. Flag as CRITICAL if the fix directly contradicts the recommendation.', '12. If investigation listed multiple findings, the fix does not need to address every finding — but the reviewer should note any HIGH-severity finding the fix does not address and flag whether the missed finding is a likely cause of future failures.', '', 'Respond with the JSON object as specified in the system prompt.');
         return parts.join('\n');
     }
+    getOutputSchema() {
+        return json_schemas_1.REVIEW_SCHEMA;
+    }
     parseResponse(response) {
         try {
-            const jsonMatch = response.match(/\{[\s\S]*\}/);
-            if (!jsonMatch) {
-                this.log('No JSON found in response', 'warning');
-                return null;
-            }
-            const parsed = JSON.parse(jsonMatch[0]);
+            const parsed = JSON.parse(response);
             const issues = Array.isArray(parsed.issues)
                 ? parsed.issues.map((i) => ({
                     severity: (0, text_utils_1.coerceEnum)(i.severity, REVIEW_SEVERITIES, 'WARNING'),
                     changeIndex: typeof i.changeIndex === 'number' ? i.changeIndex : 0,
                     description: i.description || '',
-                    suggestion: i.suggestion,
+                    suggestion: i.suggestion ?? undefined,
                 }))
                 : [];
             const hasCritical = issues.some((i) => i.severity === 'CRITICAL');
-            const approved = !hasCritical && parsed.approved !== false;
+            const fixConfidence = (0, number_utils_1.clampConfidence)(parsed.fixConfidence);
+            const explicitApproval = parsed.approved === true;
+            const meetsConfidence = fixConfidence >= constants_1.AGENT_CONFIG.REVIEW_REQUIRED_CONFIDENCE;
+            const approved = explicitApproval && !hasCritical && meetsConfidence;
+            if (!explicitApproval) {
+                this.log('Review response missing explicit approved=true; failing closed', 'warning');
+            }
+            else if (!meetsConfidence) {
+                this.log(`Reviewer fixConfidence ${fixConfidence}% below required ${constants_1.AGENT_CONFIG.REVIEW_REQUIRED_CONFIDENCE}%; rejecting`, 'warning');
+            }
             return {
                 approved,
                 issues,
                 assessment: parsed.assessment || '',
-                fixConfidence: (0, number_utils_1.clampConfidence)(parsed.fixConfidence),
+                fixConfidence,
                 improvements: Array.isArray(parsed.improvements)
                     ? parsed.improvements
                     : undefined,

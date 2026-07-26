@@ -1,6 +1,7 @@
 import { OpenAIClient } from '../src/openai-client';
 import { ErrorData, FewShotExample } from '../src/types';
-import { OPENAI } from '../src/config/constants';
+import { OPENAI, STAGE_MAX_OUTPUT_TOKENS } from '../src/config/constants';
+import { CLASSIFICATION_SCHEMA } from '../src/openai/json-schemas';
 import OpenAI from 'openai';
 
 // Mock OpenAI
@@ -78,8 +79,8 @@ describe('OpenAIClient', () => {
       expect(mockCreate).toHaveBeenCalledWith(
         expect.objectContaining({
           model: OPENAI.MODEL,
-          max_output_tokens: OPENAI.MAX_COMPLETION_TOKENS,
-          text: { format: { type: 'json_object' } },
+          max_output_tokens: STAGE_MAX_OUTPUT_TOKENS.classification,
+          text: { format: CLASSIFICATION_SCHEMA },
           instructions: expect.any(String),
           input: expect.any(Array),
         })
@@ -112,8 +113,8 @@ describe('OpenAIClient', () => {
       expect(mockCreate).toHaveBeenCalledWith(
         expect.objectContaining({
           model: OPENAI.MODEL,
-          max_output_tokens: OPENAI.MAX_COMPLETION_TOKENS,
-          text: { format: { type: 'json_object' } },
+          max_output_tokens: STAGE_MAX_OUTPUT_TOKENS.classification,
+          text: { format: CLASSIFICATION_SCHEMA },
         })
       );
 
@@ -129,7 +130,7 @@ describe('OpenAIClient', () => {
       );
     });
 
-    it('should handle non-JSON response from vision model', async () => {
+    it('should reject non-JSON classification responses under strict schema', async () => {
       const errorDataWithScreenshots: ErrorData = {
         ...mockErrorData,
         screenshots: [{
@@ -144,16 +145,14 @@ describe('OpenAIClient', () => {
         output_text: 'Verdict: TEST_ISSUE\nReasoning: The test is using wrong selectors\nIndicators: wrong selector, element exists',
       };
 
-      mockCreate.mockResolvedValueOnce(mockResponse);
+      mockCreate
+        .mockResolvedValueOnce(mockResponse)
+        .mockResolvedValueOnce(mockResponse)
+        .mockResolvedValueOnce(mockResponse);
 
-      const result = await client.analyze(errorDataWithScreenshots, mockExamples);
-
-      expect(result).toEqual(expect.objectContaining({
-        verdict: 'TEST_ISSUE',
-        reasoning: 'The test is using wrong selectors',
-        indicators: ['wrong selector', 'element exists'],
-        responseId: 'resp-vision',
-      }));
+      await expect(
+        client.analyze(errorDataWithScreenshots, mockExamples)
+      ).rejects.toThrow('Failed to get analysis from OpenAI after 3 attempts');
     });
 
     it('should retry on failure and succeed', async () => {

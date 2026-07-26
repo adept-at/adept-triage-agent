@@ -87,9 +87,7 @@ export async function processWorkflowLogs(
   // still throw after retries, degrade to the no-error-data path (return null)
   // the coordinator already handles, rather than letting the rejection
   // propagate to index.ts and surface as verdict=ERROR.
-  let jobs: Awaited<
-    ReturnType<typeof octokit.actions.listJobsForWorkflowRun>
-  >;
+  let jobList: JobInfo[];
   try {
     // Check if workflow is completed when analyzing a different workflow
     if (
@@ -116,17 +114,18 @@ export async function processWorkflowLogs(
       );
     }
 
-    // Get the failed job
-    jobs = await withRetry(
+    // Paginate — matrix workflows can exceed one page of jobs
+    jobList = (await withRetry(
       () =>
-        octokit.actions.listJobsForWorkflowRun({
+        octokit.paginate(octokit.actions.listJobsForWorkflowRun, {
           owner,
           repo,
           run_id: parseInt(runId, 10),
           filter: 'latest',
+          per_page: 100,
         }),
       { context: 'listing jobs for workflow run' }
-    );
+    )) as JobInfo[];
   } catch (error) {
     core.warning(
       `Failed to fetch workflow run or jobs after retries: ${
@@ -137,7 +136,7 @@ export async function processWorkflowLogs(
   }
 
   const targetJob = findTargetJob(
-    jobs.data.jobs as JobInfo[],
+    jobList,
     inputs,
     isCurrentJob ?? false
   );

@@ -6,6 +6,7 @@ import { ActionInputs } from './types';
 import { AUTO_FIX, DEFAULT_PRODUCT_REPO } from './config/constants';
 import { parseRepoString } from './utils/repo-utils';
 import { PipelineCoordinator } from './pipeline/coordinator';
+import { setErrorOutput } from './pipeline/output';
 
 export { fixFingerprint, requiredConfidence } from './pipeline/validator';
 export { setSuccessOutput, setInconclusiveOutput, setErrorOutput, resolveAutoFixTargetRepo } from './pipeline/output';
@@ -24,19 +25,7 @@ async function run(): Promise<void> {
     await coordinator.execute();
   } catch (error) {
     const errorMsg = error instanceof Error ? error.message : 'An unknown error occurred';
-    core.setOutput('verdict', 'ERROR');
-    core.setOutput('confidence', '0');
-    core.setOutput('reasoning', errorMsg);
-    core.setOutput('summary', `Triage failed: ${errorMsg}`);
-    core.setOutput('triage_json', JSON.stringify({
-      verdict: 'ERROR',
-      confidence: 0,
-      reasoning: errorMsg,
-      summary: `Triage failed: ${errorMsg}`,
-      indicators: [],
-      metadata: { analyzedAt: new Date().toISOString(), error: true },
-    }));
-    core.setFailed(`Action failed: ${errorMsg}`);
+    setErrorOutput(errorMsg);
   }
 }
 
@@ -52,9 +41,11 @@ function getInputs(): ActionInputs {
     persistResults: core.getInput('PERSIST_RESULTS') !== 'false',
     workflowRunId: core.getInput('WORKFLOW_RUN_ID'),
     jobName: core.getInput('JOB_NAME'),
-    confidenceThreshold: safeParseInt(
+    confidenceThreshold: clampInt(
       core.getInput('CONFIDENCE_THRESHOLD'),
-      70
+      70,
+      0,
+      100
     ),
     prNumber: core.getInput('PR_NUMBER'),
     commitSha: core.getInput('COMMIT_SHA'),
@@ -62,9 +53,11 @@ function getInputs(): ActionInputs {
     testFrameworks: core.getInput('TEST_FRAMEWORKS'),
     enableAutoFix: core.getInput('ENABLE_AUTO_FIX') === 'true',
     autoFixBaseBranch: core.getInput('AUTO_FIX_BASE_BRANCH') || 'main',
-    autoFixMinConfidence: safeParseInt(
+    autoFixMinConfidence: clampInt(
       core.getInput('AUTO_FIX_MIN_CONFIDENCE'),
-      AUTO_FIX.DEFAULT_MIN_CONFIDENCE
+      AUTO_FIX.DEFAULT_MIN_CONFIDENCE,
+      0,
+      100
     ),
     autoFixTargetRepo: core.getInput('AUTO_FIX_TARGET_REPO') || undefined,
     branch: core.getInput('BRANCH') || undefined,
@@ -81,7 +74,7 @@ function getInputs(): ActionInputs {
     npmToken: core.getInput('NPM_TOKEN') || undefined,
     // Product repo diff inputs
     productRepo: core.getInput('PRODUCT_REPO') || DEFAULT_PRODUCT_REPO,
-    productDiffCommits: safeParseInt(core.getInput('PRODUCT_DIFF_COMMITS'), 5),
+    productDiffCommits: clampInt(core.getInput('PRODUCT_DIFF_COMMITS'), 5, 1, 50),
     triageAwsRegion: core.getInput('TRIAGE_AWS_REGION') || 'us-east-1',
     triageDynamoTable: core.getInput('TRIAGE_DYNAMO_TABLE') || 'triage-skills-v1-live',
     modelOverrideFixGen: core.getInput('MODEL_OVERRIDE_FIX_GEN') || undefined,
@@ -100,19 +93,31 @@ function resolveRepository(inputs: ActionInputs): {
 export { run };
 
 /**
- * Safely parse an integer with a fallback default.
- * Returns the default when the input is empty, undefined, or not a valid integer.
+ * Safely parse an integer and clamp to a documented inclusive range.
+ * Empty/invalid input falls back to defaultValue (already in range).
  */
-function safeParseInt(value: string | undefined, defaultValue: number): number {
+function clampInt(
+  value: string | undefined,
+  defaultValue: number,
+  min: number,
+  max: number
+): number {
   if (!value || value.trim() === '') return defaultValue;
   const parsed = parseInt(value, 10);
-  return isNaN(parsed) ? defaultValue : parsed;
+  if (isNaN(parsed)) return defaultValue;
+  if (parsed < min || parsed > max) {
+    core.warning(
+      `Input value ${parsed} outside range [${min}, ${max}]; using ${defaultValue}`
+    );
+    return defaultValue;
+  }
+  return parsed;
 }
 
 // Run the action if this is the main module
 if (require.main === module) {
   run().catch((error) => {
     const message = error instanceof Error ? error.message : String(error);
-    core.setFailed(`Fatal unhandled error: ${message}`);
+    setErrorOutput(`Fatal unhandled error: ${message}`);
   });
 }
