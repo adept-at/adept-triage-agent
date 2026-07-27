@@ -97,7 +97,7 @@ describe('ReviewAgent', () => {
       expect(result.data?.fixConfidence).toBe(90);
     });
 
-    it('keeps xhigh reasoning when overriding to gpt-5.5-pro', async () => {
+    it('keeps high reasoning when overriding to gpt-5.5-pro', async () => {
       agent = new ReviewAgent(mockOpenAIClient, { model: 'gpt-5.5-pro' });
       mockOpenAIClient.generateWithCustomPrompt = jest.fn().mockResolvedValue({
         text: JSON.stringify({
@@ -125,7 +125,7 @@ describe('ReviewAgent', () => {
       expect(mockOpenAIClient.generateWithCustomPrompt).toHaveBeenCalledWith(
         expect.objectContaining({
           model: 'gpt-5.5-pro',
-          reasoningEffort: 'xhigh',
+          reasoningEffort: 'high',
         })
       );
     });

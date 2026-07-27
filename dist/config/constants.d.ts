@@ -20,9 +20,9 @@ export declare const CONFIDENCE: {
     readonly MIN_FIX_CONFIDENCE: 50;
 };
 export declare const OPENAI: {
-    readonly MODEL: "gpt-5.5";
-    readonly LEGACY_MODEL: "gpt-5.5";
-    readonly UPGRADED_MODEL: "gpt-5.5";
+    readonly MODEL: "gpt-5.6-terra";
+    readonly LEGACY_MODEL: "gpt-5.6-terra";
+    readonly UPGRADED_MODEL: "gpt-5.6-sol";
     readonly MAX_COMPLETION_TOKENS: 24000;
     readonly MAX_RETRIES: 3;
     readonly RETRY_DELAY_MS: 1000;
@@ -35,11 +35,11 @@ export declare const STAGE_MAX_OUTPUT_TOKENS: {
     readonly review: 6000;
 };
 export declare const AGENT_MODEL: {
-    readonly classification: "gpt-5.5";
-    readonly analysis: "gpt-5.5";
-    readonly investigation: "gpt-5.5";
-    readonly fixGeneration: "gpt-5.5";
-    readonly review: "gpt-5.5";
+    readonly classification: "gpt-5.6-terra";
+    readonly analysis: "gpt-5.6-terra";
+    readonly investigation: "gpt-5.6-terra";
+    readonly fixGeneration: "gpt-5.6-sol";
+    readonly review: "gpt-5.6-sol";
 };
 export declare const GPT56_CANDIDATE_MODEL: {
     readonly classification: "gpt-5.6-terra";
@@ -49,19 +49,19 @@ export declare const GPT56_CANDIDATE_MODEL: {
     readonly review: "gpt-5.6-sol";
 };
 export declare const GPT56_CANDIDATE_REASONING: {
-    readonly classification: "medium";
+    readonly classification: "high";
     readonly analysis: "high";
     readonly investigation: "high";
     readonly fixGeneration: "high";
-    readonly review: "xhigh";
+    readonly review: "high";
 };
 export type AgentStage = keyof typeof AGENT_MODEL;
 export declare const REASONING_EFFORT: {
     readonly classification: "high";
     readonly analysis: "high";
     readonly investigation: "high";
-    readonly fixGeneration: "xhigh";
-    readonly review: "xhigh";
+    readonly fixGeneration: "high";
+    readonly review: "high";
 };
 export type ReasoningEffort = 'none' | 'low' | 'medium' | 'high' | 'xhigh';
 export declare function supportsReasoningEffort(model: string): boolean;

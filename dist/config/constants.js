@@ -27,9 +27,9 @@ exports.CONFIDENCE = {
     MIN_FIX_CONFIDENCE: 50,
 };
 exports.OPENAI = {
-    MODEL: 'gpt-5.5',
-    LEGACY_MODEL: 'gpt-5.5',
-    UPGRADED_MODEL: 'gpt-5.5',
+    MODEL: 'gpt-5.6-terra',
+    LEGACY_MODEL: 'gpt-5.6-terra',
+    UPGRADED_MODEL: 'gpt-5.6-sol',
     MAX_COMPLETION_TOKENS: 24000,
     MAX_RETRIES: 3,
     RETRY_DELAY_MS: 1000,
@@ -56,18 +56,18 @@ exports.GPT56_CANDIDATE_MODEL = {
     review: 'gpt-5.6-sol',
 };
 exports.GPT56_CANDIDATE_REASONING = {
-    classification: 'medium',
+    classification: 'high',
     analysis: 'high',
     investigation: 'high',
     fixGeneration: 'high',
-    review: 'xhigh',
+    review: 'high',
 };
 exports.REASONING_EFFORT = {
     classification: 'high',
     analysis: 'high',
     investigation: 'high',
-    fixGeneration: 'xhigh',
-    review: 'xhigh',
+    fixGeneration: 'high',
+    review: 'high',
 };
 function supportsReasoningEffort(model) {
     return model.startsWith('gpt-5.5') || model.startsWith('gpt-5.6');
