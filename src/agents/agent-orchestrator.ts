@@ -50,7 +50,7 @@ export interface OrchestratorConfig {
  */
 export const DEFAULT_ORCHESTRATOR_CONFIG: OrchestratorConfig = {
   maxIterations: 3,
-  // Keep in sync with AGENT_CONFIG.AGENT_TIMEOUT_MS: 15 minutes for GPT-5.5 xhigh.
+  // Keep in sync with AGENT_CONFIG.AGENT_TIMEOUT_MS: 15 minutes for reasoning models.
   totalTimeoutMs: 900_000,
   minConfidence: 70,
   requireReview: true,

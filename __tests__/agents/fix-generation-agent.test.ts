@@ -116,7 +116,7 @@ describe('FixGenerationAgent', () => {
       expect(result.data?.confidence).toBe(85);
     });
 
-    it('keeps xhigh reasoning when overriding to gpt-5.5-pro', async () => {
+    it('keeps high reasoning when overriding to gpt-5.5-pro', async () => {
       agent = new FixGenerationAgent(mockOpenAIClient, { model: 'gpt-5.5-pro' });
       const mockResponse: FixGenerationOutput = {
         changes: [
@@ -154,7 +154,7 @@ describe('FixGenerationAgent', () => {
       expect(mockOpenAIClient.generateWithCustomPrompt).toHaveBeenCalledWith(
         expect.objectContaining({
           model: 'gpt-5.5-pro',
-          reasoningEffort: 'xhigh',
+          reasoningEffort: 'high',
         })
       );
     });

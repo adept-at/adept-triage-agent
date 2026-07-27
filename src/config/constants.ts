@@ -47,11 +47,11 @@ export const CONFIDENCE = {
 /** OpenAI API configuration */
 export const OPENAI = {
   /** @deprecated Use LEGACY_MODEL or UPGRADED_MODEL. Kept for backward compat with tests/scripts that reference OPENAI.MODEL. */
-  MODEL: 'gpt-5.5',
+  MODEL: 'gpt-5.6-terra',
   /** Default model for classification, analysis, and investigation. */
-  LEGACY_MODEL: 'gpt-5.5',
+  LEGACY_MODEL: 'gpt-5.6-terra',
   /** Model family used by fix-generation and review agents. */
-  UPGRADED_MODEL: 'gpt-5.5',
+  UPGRADED_MODEL: 'gpt-5.6-sol',
   /** Shared fallback max completion tokens (prefer STAGE_MAX_OUTPUT_TOKENS). */
   MAX_COMPLETION_TOKENS: 24000,
   /** Maximum retry attempts */
@@ -61,9 +61,8 @@ export const OPENAI = {
 } as const;
 
 /**
- * Measured per-stage output-token ceilings. Keep GPT-5.5 during the
- * schema/SDK boundary migration; ceilings prevent a single stage from
- * consuming the shared 24k budget.
+ * Measured per-stage output-token ceilings. These prevent a single stage
+ * from consuming the shared 24k budget.
  */
 export const STAGE_MAX_OUTPUT_TOKENS = {
   classification: 4000,
@@ -74,13 +73,7 @@ export const STAGE_MAX_OUTPUT_TOKENS = {
 } as const;
 
 /**
- * Per-agent model selection. Entries explicitly name the legacy model
- * for unchanged agents so reverting the upgrade is a one-line edit
- * (flip AGENT_MODEL.fixGeneration and AGENT_MODEL.review back to
- * OPENAI.LEGACY_MODEL).
- *
- * Production remains on GPT-5.5 until replay + live-canary evidence
- * justifies pinning GPT-5.6 IDs from GPT56_CANDIDATE_MODEL.
+ * Per-agent production model selection.
  */
 export const AGENT_MODEL = {
   classification: OPENAI.LEGACY_MODEL,
@@ -91,9 +84,7 @@ export const AGENT_MODEL = {
 } as const;
 
 /**
- * Measured GPT-5.6 candidate routing for replay evaluation and canary.
- * Not production defaults — activate via TRIAGE_MODEL_PROFILE=gpt56-candidate
- * or per-stage MODEL_OVERRIDE_* inputs. One-line rollback: unset those.
+ * GPT-5.6 routing retained for replay evaluation and canary compatibility.
  */
 export const GPT56_CANDIDATE_MODEL = {
   classification: 'gpt-5.6-terra',
@@ -109,25 +100,24 @@ export const GPT56_CANDIDATE_MODEL = {
  * separately for difficult retries / disputed reviews.
  */
 export const GPT56_CANDIDATE_REASONING = {
-  classification: 'medium',
+  classification: 'high',
   analysis: 'high',
   investigation: 'high',
   fixGeneration: 'high',
-  review: 'xhigh',
+  review: 'high',
 } as const;
 
 export type AgentStage = keyof typeof AGENT_MODEL;
 
 /**
- * Per-agent reasoning effort. Classification, analysis, and investigation
- * use high reasoning; fix-generation and review use xhigh.
+ * Per-agent reasoning effort.
  */
 export const REASONING_EFFORT = {
   classification: 'high',
   analysis: 'high',
   investigation: 'high',
-  fixGeneration: 'xhigh',
-  review: 'xhigh',
+  fixGeneration: 'high',
+  review: 'high',
 } as const;
 
 export type ReasoningEffort = 'none' | 'low' | 'medium' | 'high' | 'xhigh';
@@ -280,7 +270,7 @@ export const AGENT_CONFIG = {
    */
   GLOBAL_FIX_ATTEMPT_BUDGET: 3,
   /**
-   * Total timeout for the entire agent orchestration. GPT-5.5 xhigh can
+   * Total timeout for the entire agent orchestration. Reasoning models can
    * spend several minutes on fix-generation + review, especially across
    * the 3-iteration loop, so the action allows a 15-minute orchestration
    * budget before giving up.

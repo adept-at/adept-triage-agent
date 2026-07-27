@@ -729,7 +729,7 @@ Changed Product Files:
    * Uses the Responses API. The model defaults to OPENAI.LEGACY_MODEL when
    * not overridden. Note: temperature parameter is accepted for backward
    * compatibility but is not supported by reasoning-class models
-   * such as gpt-5.5 that do not expose a temperature parameter.
+   * such as GPT-5 reasoning models that do not expose a temperature parameter.
    * The value will be ignored.
    */
   async generateWithCustomPrompt(params: {
