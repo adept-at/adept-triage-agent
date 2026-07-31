@@ -11,6 +11,11 @@ jest.mock('../src/openai-client');
 jest.mock('../src/artifact-fetcher');
 jest.mock('../src/repair-context');
 jest.mock('../src/repair/simplified-repair-agent');
+jest.mock('../src/services/source-run-gate', () => ({
+  claimSourceRunSlot: jest
+    .fn()
+    .mockResolvedValue({ status: 'admitted', attemptCount: 1 }),
+}));
 
 // Import required modules
 import {
@@ -67,7 +72,13 @@ describe('Fix Recommendation Integration', () => {
     mockOctokit = {
       actions: {
         getWorkflowRun: jest.fn(),
+        get getWorkflowRunAttempt() {
+          return this.getWorkflowRun;
+        },
         listJobsForWorkflowRun: jest.fn(),
+        get listJobsForWorkflowRunAttempt() {
+          return this.listJobsForWorkflowRun;
+        },
       },
     } as any;
     mockOctokitPaginate(mockOctokit as any);

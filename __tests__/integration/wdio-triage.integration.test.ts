@@ -79,8 +79,10 @@ describe('WDIO Triage Integration', () => {
 
     mockOctokit = {
       actions: {
-        getWorkflowRun: jest.fn().mockResolvedValue({ data: { status: 'completed' } }),
-        listJobsForWorkflowRun: jest.fn().mockResolvedValue({
+        getWorkflowRunAttempt: jest
+          .fn()
+          .mockResolvedValue({ data: { status: 'completed' } }),
+        listJobsForWorkflowRunAttempt: jest.fn().mockResolvedValue({
           data: {
             jobs: [
               {

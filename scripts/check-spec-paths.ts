@@ -7,18 +7,20 @@
  */
 
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
-import { DynamoDBDocumentClient, ScanCommand } from '@aws-sdk/lib-dynamodb';
+import { DynamoDBDocumentClient } from '@aws-sdk/lib-dynamodb';
+import { scanAllSkills } from './scan-skills.js';
 
 async function main() {
   const client = DynamoDBDocumentClient.from(
     new DynamoDBClient({ region: 'us-east-1' })
   );
-  const { Items = [] } = await client.send(
-    new ScanCommand({ TableName: 'triage-skills-v1-live' })
+  const items = await scanAllSkills<Record<string, unknown>>(
+    client,
+    'triage-skills-v1-live'
   );
 
   console.log('\nRaw spec / testName / fix.file values as persisted:\n');
-  for (const s of Items as Array<Record<string, unknown>>) {
+  for (const s of items) {
     console.log(`📦 ${s.repo} (id=${String(s.id).slice(0, 8)}, retired=${s.retired})`);
     console.log(`   spec:      "${s.spec}"`);
     console.log(`   testName:  "${s.testName}"`);

@@ -29,6 +29,9 @@ inputs:
   WORKFLOW_RUN_ID:
     description: 'Workflow run ID to fetch logs from'
     required: false
+  WORKFLOW_RUN_ATTEMPT:
+    description: 'Attempt number of the originating workflow run. Reruns receive a fresh triage budget.'
+    required: false
   JOB_NAME:
     description: 'Specific job name to analyze'
     required: false
@@ -127,7 +130,7 @@ inputs:
 
 outputs:
   verdict:
-    description: 'Classification result: TEST_ISSUE, PRODUCT_ISSUE, INCONCLUSIVE, PENDING, ERROR, or NO_FAILURE'
+    description: 'Classification result: TEST_ISSUE, PRODUCT_ISSUE, INCONCLUSIVE, TRIAGE_LIMIT_REACHED, PENDING, ERROR, or NO_FAILURE'
   confidence:
     description: 'Confidence score (0-100)'
   reasoning:

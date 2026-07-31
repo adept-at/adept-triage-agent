@@ -1,5 +1,9 @@
 import * as core from '@actions/core';
-import { finalizeRepairTelemetry, setSuccessOutput } from '../../src/pipeline/output';
+import {
+  finalizeRepairTelemetry,
+  setSuccessOutput,
+  setTriageLimitOutput,
+} from '../../src/pipeline/output';
 
 jest.mock('@actions/core');
 jest.mock('@actions/github', () => ({
@@ -338,5 +342,43 @@ describe('setSuccessOutput — auto-fix skip signal', () => {
     );
     expect(merged.status).toBe('validated');
     expect(merged.summary).toBe('Auto-fix validated.');
+  });
+
+  it('emits normalized skip outputs when the source-run limit is reached', () => {
+    setTriageLimitOutput('30646230879', 2, 2);
+
+    expect(outputs.get('verdict')).toBe('TRIAGE_LIMIT_REACHED');
+    expect(outputs.get('confidence')).toBe('0');
+    expect(outputs.get('summary')).toContain('limit of 2 triage attempts');
+    expect(outputs.get('repair_status')).toBe('skipped');
+    expect(outputs.get('has_fix_recommendation')).toBe('false');
+    expect(outputs.get('fix_recommendation')).toBe('');
+    expect(outputs.get('fix_summary')).toBe('');
+    expect(outputs.get('fix_confidence')).toBe('');
+    expect(outputs.get('auto_fix_applied')).toBe('false');
+    expect(outputs.get('auto_fix_branch')).toBe('');
+    expect(outputs.get('auto_fix_commit')).toBe('');
+    expect(outputs.get('auto_fix_files')).toBe('[]');
+    expect(outputs.get('validation_run_id')).toBe('');
+    expect(outputs.get('validation_url')).toBe('');
+    expect(outputs.get('validation_status')).toBe('skipped');
+    expect(outputs.get('auto_fix_skipped')).toBe('true');
+    expect(outputs.get('auto_fix_skipped_reason')).toContain(
+      'limit of 2 triage attempts'
+    );
+    expect(mockCore.setFailed).not.toHaveBeenCalled();
+
+    const triage = JSON.parse(outputs.get('triage_json')!);
+    expect(triage).toMatchObject({
+      verdict: 'TRIAGE_LIMIT_REACHED',
+      confidence: 0,
+      repair: { status: 'skipped', iterations: 0 },
+      metadata: {
+        sourceRunId: '30646230879',
+        sourceRunAttempt: 2,
+        maxAttempts: 2,
+        triageSkipped: true,
+      },
+    });
   });
 });

@@ -9,6 +9,11 @@ jest.mock('@octokit/rest');
 jest.mock('../src/simplified-analyzer');
 jest.mock('../src/openai-client');
 jest.mock('../src/artifact-fetcher');
+jest.mock('../src/services/source-run-gate', () => ({
+  claimSourceRunSlot: jest
+    .fn()
+    .mockResolvedValue({ status: 'admitted', attemptCount: 1 }),
+}));
 
 // Import analyzer functions
 import { analyzeFailure, extractErrorFromLogs } from '../src/simplified-analyzer';
@@ -53,7 +58,13 @@ describe('GitHub Action', () => {
     mockOctokit = {
       actions: {
         getWorkflowRun: jest.fn() as any,
+        get getWorkflowRunAttempt() {
+          return this.getWorkflowRun;
+        },
         listJobsForWorkflowRun: jest.fn() as any,
+        get listJobsForWorkflowRunAttempt() {
+          return this.listJobsForWorkflowRun;
+        },
         downloadJobLogsForWorkflowRun: jest.fn() as any,
       },
     } as any;
@@ -556,12 +567,19 @@ describe('GitHub Action', () => {
         summary: '🐛 **Product Issue**: Application error',
       });
 
-      await run();
+      // This is the triage workflow's attempt, not the explicit source run's.
+      process.env.GITHUB_RUN_ATTEMPT = '3';
+      try {
+        await run();
+      } finally {
+        delete process.env.GITHUB_RUN_ATTEMPT;
+      }
 
       expect(mockOctokit.actions.getWorkflowRun).toHaveBeenCalledWith({
         owner: 'test-owner',
         repo: 'test-repo',
         run_id: 12345,
+        attempt_number: 1,
       });
 
       expect(mockExtractErrorFromLogs).toHaveBeenCalledWith(mockLogs);
@@ -665,6 +683,7 @@ describe('GitHub Action', () => {
       (mockGithub.context as any).payload = {
         workflow_run: {
           id: 67890,
+          run_attempt: 2,
         },
       };
     });
@@ -706,6 +725,7 @@ describe('GitHub Action', () => {
         owner: 'test-owner',
         repo: 'test-repo',
         run_id: 67890,
+        attempt_number: 2,
       });
     });
   });

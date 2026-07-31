@@ -1,4 +1,5 @@
 import * as core from '@actions/core';
+import * as github from '@actions/github';
 import { Octokit } from '@octokit/rest';
 import { OpenAIClient } from './openai-client';
 import { ArtifactFetcher } from './artifact-fetcher';
@@ -31,6 +32,13 @@ async function run(): Promise<void> {
 
 function getInputs(): ActionInputs {
   const repositoryInput = core.getInput('REPOSITORY');
+  const workflowRunIdInput = core.getInput('WORKFLOW_RUN_ID');
+  const workflowRunAttemptInput = core.getInput('WORKFLOW_RUN_ATTEMPT');
+  const workflowRunEventAttempt = github.context.payload.workflow_run?.run_attempt;
+  const currentRunAttempt =
+    !workflowRunIdInput && !github.context.payload.workflow_run
+      ? process.env.GITHUB_RUN_ATTEMPT
+      : undefined;
   return {
     githubToken:
       core.getInput('GITHUB_TOKEN') || process.env.GITHUB_TOKEN || '',
@@ -39,7 +47,17 @@ function getInputs(): ActionInputs {
     errorFile: core.getInput('ERROR_FILE') || undefined,
     errorTestName: core.getInput('ERROR_TEST_NAME') || undefined,
     persistResults: core.getInput('PERSIST_RESULTS') !== 'false',
-    workflowRunId: core.getInput('WORKFLOW_RUN_ID'),
+    workflowRunId: workflowRunIdInput,
+    workflowRunAttempt: clampInt(
+      workflowRunAttemptInput ||
+        (workflowRunEventAttempt
+          ? String(workflowRunEventAttempt)
+          : currentRunAttempt),
+      1,
+      1,
+      1000
+    ),
+    sourceRunGateRequired: workflowRunAttemptInput !== '',
     jobName: core.getInput('JOB_NAME'),
     confidenceThreshold: clampInt(
       core.getInput('CONFIDENCE_THRESHOLD'),

@@ -29,11 +29,11 @@
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import {
   DynamoDBDocumentClient,
-  ScanCommand,
   DeleteCommand,
   UpdateCommand,
 } from '@aws-sdk/lib-dynamodb';
 import { normalizeSpec } from '../src/services/skill-store.js';
+import { scanAllSkills } from './scan-skills.js';
 
 const TABLE = process.env.TRIAGE_DYNAMO_TABLE || 'triage-skills-v1-live';
 const REGION = process.env.AWS_REGION || 'us-east-1';
@@ -83,8 +83,7 @@ interface AuditFlag {
 async function main() {
   const client = DynamoDBDocumentClient.from(new DynamoDBClient({ region: REGION }));
 
-  const { Items = [] } = await client.send(new ScanCommand({ TableName: TABLE }));
-  const skills = Items as Skill[];
+  const skills = await scanAllSkills<Skill>(client, TABLE);
 
   console.log(`\n📊 Skill Audit Report — ${skills.length} skills in ${TABLE}\n`);
 

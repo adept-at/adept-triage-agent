@@ -96,10 +96,11 @@ export async function processWorkflowLogs(
     ) {
       const workflowRun = await withRetry(
         () =>
-          octokit.actions.getWorkflowRun({
+          octokit.actions.getWorkflowRunAttempt({
             owner,
             repo,
             run_id: parseInt(runId, 10),
+            attempt_number: inputs.workflowRunAttempt ?? 1,
           }),
         { context: 'fetching workflow run' }
       );
@@ -114,14 +115,16 @@ export async function processWorkflowLogs(
       );
     }
 
-    // Paginate — matrix workflows can exceed one page of jobs
+    // Paginate the exact source attempt — GitHub reuses workflow run IDs on
+    // rerun, so the generic "latest" endpoint can silently analyze a later
+    // attempt than the dispatch that claimed this triage budget.
     jobList = (await withRetry(
       () =>
-        octokit.paginate(octokit.actions.listJobsForWorkflowRun, {
+        octokit.paginate(octokit.actions.listJobsForWorkflowRunAttempt, {
           owner,
           repo,
           run_id: parseInt(runId, 10),
-          filter: 'latest',
+          attempt_number: inputs.workflowRunAttempt ?? 1,
           per_page: 100,
         }),
       { context: 'listing jobs for workflow run' }
@@ -515,29 +518,39 @@ async function fetchArtifactsParallel(
   diffRepoDetails: RepoDetails,
   inputs: ActionInputs
 ): Promise<[Screenshot[], string, PRDiff | null, PRDiff | null]> {
-  const screenshotsPromise = artifactFetcher
-    .fetchScreenshots(runId, jobName, artifactRepoDetails)
-    .then((screenshots) => {
-      core.info(`Found ${screenshots.length} screenshots`);
-      return screenshots;
-    })
-    .catch((error) => {
-      core.warning(`Failed to fetch screenshots: ${error}`);
-      return [] as Screenshot[];
-    });
+  const useRunScopedArtifacts = (inputs.workflowRunAttempt ?? 1) === 1;
+  if (!useRunScopedArtifacts) {
+    core.info(
+      'Skipping run-scoped artifacts on a rerun because GitHub does not expose attempt-specific artifact listing.'
+    );
+  }
+  const screenshotsPromise = useRunScopedArtifacts
+    ? artifactFetcher
+        .fetchScreenshots(runId, jobName, artifactRepoDetails)
+        .then((screenshots) => {
+          core.info(`Found ${screenshots.length} screenshots`);
+          return screenshots;
+        })
+        .catch((error) => {
+          core.warning(`Failed to fetch screenshots: ${error}`);
+          return [] as Screenshot[];
+        })
+    : Promise.resolve([] as Screenshot[]);
 
-  const artifactLogsPromise = artifactFetcher
-    .fetchTestArtifactLogs(runId, jobName, artifactRepoDetails)
-    .then((logs) => {
-      if (logs) {
-        core.info(`Found test artifact logs (${logs.length} characters)`);
-      }
-      return logs;
-    })
-    .catch((error) => {
-      core.warning(`Failed to fetch test artifact logs: ${error}`);
-      return '';
-    });
+  const artifactLogsPromise = useRunScopedArtifacts
+    ? artifactFetcher
+        .fetchTestArtifactLogs(runId, jobName, artifactRepoDetails)
+        .then((logs) => {
+          if (logs) {
+            core.info(`Found test artifact logs (${logs.length} characters)`);
+          }
+          return logs;
+        })
+        .catch((error) => {
+          core.warning(`Failed to fetch test artifact logs: ${error}`);
+          return '';
+        })
+    : Promise.resolve('');
 
   const prDiffPromise = fetchDiffWithFallback(
     artifactFetcher,

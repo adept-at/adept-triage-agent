@@ -227,6 +227,11 @@ export const AUTO_FIX = {
   BRANCH_DEDUPE_WINDOW_MS: 6 * 60 * 60 * 1000,
 } as const;
 
+/** Cross-invocation admission budget for one source workflow attempt. */
+export const TRIAGE_RUN_GATE = {
+  MAX_ATTEMPTS: 2,
+} as const;
+
 /** Agentic repair system configuration */
 /** The product repository. All browser-test repos target learn-webapp. */
 export const DEFAULT_PRODUCT_REPO = 'adept-at/learn-webapp';

@@ -7,7 +7,8 @@
  */
 
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
-import { DynamoDBDocumentClient, ScanCommand } from '@aws-sdk/lib-dynamodb';
+import { DynamoDBDocumentClient } from '@aws-sdk/lib-dynamodb';
+import { scanAllSkills } from './scan-skills.js';
 
 const TABLE = process.env.TRIAGE_DYNAMO_TABLE || 'triage-skills-v1-live';
 const REGION = process.env.AWS_REGION || 'us-east-1';
@@ -15,9 +16,9 @@ const FILTER = process.argv[2];
 
 async function main() {
   const client = DynamoDBDocumentClient.from(new DynamoDBClient({ region: REGION }));
-  const { Items = [] } = await client.send(new ScanCommand({ TableName: TABLE }));
+  const items = await scanAllSkills<any>(client, TABLE);
 
-  const skills = (Items as any[])
+  const skills = items
     .filter(s => !FILTER || s.id.startsWith(FILTER))
     .sort((a, b) => (a.spec || '').localeCompare(b.spec || '') || (a.createdAt || '').localeCompare(b.createdAt || ''));
 

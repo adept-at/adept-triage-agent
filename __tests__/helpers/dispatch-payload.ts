@@ -7,6 +7,7 @@
 
 export interface TriageDispatchPayload {
   workflow_run_id: string;
+  workflow_run_attempt?: string;
   job_name: string;
   spec?: string;
   branch?: string;
@@ -48,6 +49,18 @@ export function validateTriageDispatchPayload(
     return {
       valid: false,
       error: `workflow_run_id must be numeric, got: ${workflowRunId}`,
+    };
+  }
+
+  if (
+    p.workflow_run_attempt !== undefined &&
+    (typeof p.workflow_run_attempt !== 'string' ||
+      !WORKFLOW_RUN_ID_REGEX.test(p.workflow_run_attempt) ||
+      p.workflow_run_attempt === '0')
+  ) {
+    return {
+      valid: false,
+      error: 'workflow_run_attempt must be a positive numeric string when present',
     };
   }
 
