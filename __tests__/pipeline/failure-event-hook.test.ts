@@ -20,6 +20,11 @@ jest.mock('@actions/core', () => ({
 
 jest.mock('../../src/services/failure-event-store');
 jest.mock('../../src/services/log-processor');
+jest.mock('../../src/services/source-run-gate', () => ({
+  claimSourceRunSlot: jest
+    .fn()
+    .mockResolvedValue({ status: 'admitted', attemptCount: 1 }),
+}));
 jest.mock('../../src/simplified-analyzer');
 
 const mockRecordFailureEvent = recordFailureEvent as jest.MockedFunction<
@@ -56,6 +61,9 @@ function makeCoordinator(): PipelineCoordinator {
       getWorkflowRun: jest
         .fn()
         .mockResolvedValue({ data: { status: 'completed' } }),
+      get getWorkflowRunAttempt() {
+        return this.getWorkflowRun;
+      },
     },
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
   } as any;

@@ -23,12 +23,14 @@ import { buildOutcomeEvent, logOutcomeSummary } from './outcome-telemetry';
 import { RepoContextFetcher } from '../services/repo-context-fetcher';
 import { inferRootCauseCategoryFromText } from '../repair/root-cause-category';
 import { recordGate, logRunGateSummary } from './run-telemetry';
-import { isCanaryRepo } from '../config/constants';
+import { isCanaryRepo, TRIAGE_RUN_GATE } from '../config/constants';
+import { claimSourceRunSlot } from '../services/source-run-gate';
 import {
   resolveAutoFixTargetRepo,
   setSuccessOutput,
   setInconclusiveOutput,
   setErrorOutput,
+  setTriageLimitOutput,
   finalizeRepairTelemetry,
   emitRepairOutputs,
   NOT_STARTED_REPAIR,
@@ -337,6 +339,52 @@ export class PipelineCoordinator {
   }
 
   async execute(): Promise<void> {
+    const sourceRunId = this.inputs.errorMessage
+      ? undefined
+      : this.inputs.workflowRunId ||
+        github.context.payload.workflow_run?.id?.toString() ||
+        github.context.runId.toString();
+
+    if (sourceRunId && this.inputs.persistResults !== false) {
+      const sourceRunAttempt = this.inputs.workflowRunAttempt ?? 1;
+      const sourceRunGate = await claimSourceRunSlot({
+        region: this.inputs.triageAwsRegion || 'us-east-1',
+        tableName:
+          this.inputs.triageDynamoTable || 'triage-skills-v1-live',
+        repository: `${github.context.repo.owner}/${github.context.repo.repo}`,
+        sourceRunId,
+        sourceRunAttempt,
+        maxAttempts: TRIAGE_RUN_GATE.MAX_ATTEMPTS,
+      });
+
+      if (sourceRunGate.status === 'limited') {
+        setTriageLimitOutput(
+          sourceRunId,
+          sourceRunAttempt,
+          TRIAGE_RUN_GATE.MAX_ATTEMPTS
+        );
+        return;
+      }
+
+      if (sourceRunGate.status === 'unavailable') {
+        if (this.inputs.sourceRunGateRequired === false) {
+          core.warning(
+            `Source-run admission gate unavailable for legacy caller; continuing without enforcement: ${sourceRunGate.reason}`
+          );
+        } else {
+          setErrorOutput(
+            `Triage skipped because the source-run admission budget could not be verified: ${sourceRunGate.reason}`
+          );
+          return;
+        }
+      } else {
+        core.info(
+          `✅ Source-run triage slot ${sourceRunGate.attemptCount}/${TRIAGE_RUN_GATE.MAX_ATTEMPTS} claimed ` +
+            `for workflow ${sourceRunId} attempt ${sourceRunAttempt}`
+        );
+      }
+    }
+
     const errorData = await processWorkflowLogs(
       this.octokit,
       this.artifactFetcher,
@@ -885,22 +933,23 @@ export class PipelineCoordinator {
     const runId = this.inputs.workflowRunId || github.context.runId.toString();
 
     try {
-      const workflowRun = await this.octokit.actions.getWorkflowRun({
+      const workflowRun = await this.octokit.actions.getWorkflowRunAttempt({
         owner,
         repo,
         run_id: parseInt(runId, 10),
+        attempt_number: this.inputs.workflowRunAttempt ?? 1,
       });
 
       if (workflowRun.data.status !== 'completed') {
         if (this.inputs.jobName) {
           try {
             const jobs = await this.octokit.paginate(
-              this.octokit.actions.listJobsForWorkflowRun,
+              this.octokit.actions.listJobsForWorkflowRunAttempt,
               {
                 owner,
                 repo,
                 run_id: parseInt(runId, 10),
-                filter: 'latest',
+                attempt_number: this.inputs.workflowRunAttempt ?? 1,
                 per_page: 100,
               }
             );

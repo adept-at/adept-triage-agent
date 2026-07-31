@@ -71,10 +71,11 @@ async function processWorkflowLogs(octokit, artifactFetcher, inputs, repoDetails
     try {
         if (!isCurrentJob &&
             (inputs.workflowRunId || context.payload.workflow_run)) {
-            const workflowRun = await (0, retry_1.withRetry)(() => octokit.actions.getWorkflowRun({
+            const workflowRun = await (0, retry_1.withRetry)(() => octokit.actions.getWorkflowRunAttempt({
                 owner,
                 repo,
                 run_id: parseInt(runId, 10),
+                attempt_number: inputs.workflowRunAttempt ?? 1,
             }), { context: 'fetching workflow run' });
             if (workflowRun.data.status !== 'completed') {
                 core.warning('Workflow run is not completed yet');
@@ -84,11 +85,11 @@ async function processWorkflowLogs(octokit, artifactFetcher, inputs, repoDetails
         else if (isCurrentJob) {
             core.info(`Analyzing current job: ${inputs.jobName} (workflow still in progress)`);
         }
-        jobList = (await (0, retry_1.withRetry)(() => octokit.paginate(octokit.actions.listJobsForWorkflowRun, {
+        jobList = (await (0, retry_1.withRetry)(() => octokit.paginate(octokit.actions.listJobsForWorkflowRunAttempt, {
             owner,
             repo,
             run_id: parseInt(runId, 10),
-            filter: 'latest',
+            attempt_number: inputs.workflowRunAttempt ?? 1,
             per_page: 100,
         }), { context: 'listing jobs for workflow run' }));
     }
@@ -300,28 +301,36 @@ function selectProductDiff({ prNumber, repoOwner, repoName, productRepo, prDiff,
     return fetchedProductDiff;
 }
 async function fetchArtifactsParallel(artifactFetcher, runId, jobName, artifactRepoDetails, diffRepoDetails, inputs) {
-    const screenshotsPromise = artifactFetcher
-        .fetchScreenshots(runId, jobName, artifactRepoDetails)
-        .then((screenshots) => {
-        core.info(`Found ${screenshots.length} screenshots`);
-        return screenshots;
-    })
-        .catch((error) => {
-        core.warning(`Failed to fetch screenshots: ${error}`);
-        return [];
-    });
-    const artifactLogsPromise = artifactFetcher
-        .fetchTestArtifactLogs(runId, jobName, artifactRepoDetails)
-        .then((logs) => {
-        if (logs) {
-            core.info(`Found test artifact logs (${logs.length} characters)`);
-        }
-        return logs;
-    })
-        .catch((error) => {
-        core.warning(`Failed to fetch test artifact logs: ${error}`);
-        return '';
-    });
+    const useRunScopedArtifacts = (inputs.workflowRunAttempt ?? 1) === 1;
+    if (!useRunScopedArtifacts) {
+        core.info('Skipping run-scoped artifacts on a rerun because GitHub does not expose attempt-specific artifact listing.');
+    }
+    const screenshotsPromise = useRunScopedArtifacts
+        ? artifactFetcher
+            .fetchScreenshots(runId, jobName, artifactRepoDetails)
+            .then((screenshots) => {
+            core.info(`Found ${screenshots.length} screenshots`);
+            return screenshots;
+        })
+            .catch((error) => {
+            core.warning(`Failed to fetch screenshots: ${error}`);
+            return [];
+        })
+        : Promise.resolve([]);
+    const artifactLogsPromise = useRunScopedArtifacts
+        ? artifactFetcher
+            .fetchTestArtifactLogs(runId, jobName, artifactRepoDetails)
+            .then((logs) => {
+            if (logs) {
+                core.info(`Found test artifact logs (${logs.length} characters)`);
+            }
+            return logs;
+        })
+            .catch((error) => {
+            core.warning(`Failed to fetch test artifact logs: ${error}`);
+            return '';
+        })
+        : Promise.resolve('');
     const prDiffPromise = fetchDiffWithFallback(artifactFetcher, inputs, diffRepoDetails);
     const productDiffPromise = fetchProductDiff(artifactFetcher, inputs);
     const [screenshots, artifactLogs, prDiff, rawProductDiff] = await Promise.all([

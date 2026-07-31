@@ -42,10 +42,10 @@ import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import {
   DynamoDBDocumentClient,
   PutCommand,
-  ScanCommand,
   DeleteCommand,
 } from '@aws-sdk/lib-dynamodb';
 import { normalizeError, normalizeSpec } from '../src/services/skill-store.js';
+import { scanAllSkills } from './scan-skills.js';
 
 const TABLE = process.env.TRIAGE_DYNAMO_TABLE || 'triage-skills-v1-live';
 const REGION = process.env.AWS_REGION || 'us-east-1';
@@ -264,8 +264,8 @@ async function insertOne(
 }
 
 async function listSeeds(client: DynamoDBDocumentClient): Promise<void> {
-  const { Items = [] } = await client.send(new ScanCommand({ TableName: TABLE }));
-  const seeds = (Items as Array<Record<string, unknown>>)
+  const items = await scanAllSkills<Record<string, unknown>>(client, TABLE);
+  const seeds = items
     .filter((s) => s.isSeed === true)
     .sort((a, b) =>
       String(a.repo).localeCompare(String(b.repo)) ||
@@ -293,8 +293,8 @@ async function listSeeds(client: DynamoDBDocumentClient): Promise<void> {
 }
 
 async function removeSeed(client: DynamoDBDocumentClient, prefix: string): Promise<void> {
-  const { Items = [] } = await client.send(new ScanCommand({ TableName: TABLE }));
-  const matches = (Items as Array<Record<string, unknown>>).filter(
+  const items = await scanAllSkills<Record<string, unknown>>(client, TABLE);
+  const matches = items.filter(
     (s) => s.isSeed === true && String(s.id).startsWith(prefix)
   );
 

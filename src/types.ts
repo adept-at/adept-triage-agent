@@ -4,6 +4,7 @@ export type Verdict =
   | 'TEST_ISSUE'
   | 'PRODUCT_ISSUE'
   | 'INCONCLUSIVE'
+  | 'TRIAGE_LIMIT_REACHED'
   | 'PENDING'
   | 'ERROR'
   | 'NO_FAILURE';
@@ -330,6 +331,10 @@ export interface ActionInputs {
   /** When false, skip DynamoDB persistence (skills, failures, outcomes) */
   persistResults?: boolean;
   workflowRunId?: string;
+  /** Attempt number of the originating workflow run; GitHub increments this on rerun. */
+  workflowRunAttempt?: number;
+  /** Fail closed if the source-run gate cannot be checked. False only for legacy callers that omit the attempt input. */
+  sourceRunGateRequired?: boolean;
   jobName?: string;
   confidenceThreshold: number;
   prNumber?: string;

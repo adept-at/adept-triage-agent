@@ -39,6 +39,7 @@ exports.finalizeRepairTelemetry = finalizeRepairTelemetry;
 exports.emitRepairOutputs = emitRepairOutputs;
 exports.setInconclusiveOutput = setInconclusiveOutput;
 exports.setErrorOutput = setErrorOutput;
+exports.setTriageLimitOutput = setTriageLimitOutput;
 exports.setSuccessOutput = setSuccessOutput;
 const core = __importStar(require("@actions/core"));
 const github = __importStar(require("@actions/github"));
@@ -170,6 +171,51 @@ function setErrorOutput(reason) {
     }));
     emitRepairOutputs(errorRepair);
     core.setFailed(reason);
+}
+function setTriageLimitOutput(sourceRunId, sourceRunAttempt, maxAttempts) {
+    const summary = `Triage skipped: workflow run ${sourceRunId} attempt ${sourceRunAttempt} ` +
+        `has reached the limit of ${maxAttempts} triage attempts.`;
+    const reasoning = `${summary} No workflow logs, artifacts, OpenAI analysis, or repair work were performed.`;
+    const repair = {
+        status: 'skipped',
+        summary: 'Repair skipped because the source workflow triage budget was exhausted.',
+        iterations: 0,
+        elapsedMs: 0,
+    };
+    core.setOutput('verdict', 'TRIAGE_LIMIT_REACHED');
+    core.setOutput('confidence', '0');
+    core.setOutput('reasoning', reasoning);
+    core.setOutput('summary', summary);
+    core.setOutput('triage_json', JSON.stringify({
+        verdict: 'TRIAGE_LIMIT_REACHED',
+        confidence: 0,
+        reasoning,
+        summary,
+        indicators: ['Source workflow triage budget exhausted'],
+        repair,
+        metadata: {
+            analyzedAt: new Date().toISOString(),
+            sourceRunId,
+            sourceRunAttempt,
+            maxAttempts,
+            triageSkipped: true,
+        },
+    }));
+    core.setOutput('has_fix_recommendation', 'false');
+    core.setOutput('fix_recommendation', '');
+    core.setOutput('fix_summary', '');
+    core.setOutput('fix_confidence', '');
+    core.setOutput('auto_fix_applied', 'false');
+    core.setOutput('auto_fix_branch', '');
+    core.setOutput('auto_fix_commit', '');
+    core.setOutput('auto_fix_files', '[]');
+    core.setOutput('validation_run_id', '');
+    core.setOutput('validation_url', '');
+    core.setOutput('validation_status', 'skipped');
+    core.setOutput('auto_fix_skipped', 'true');
+    core.setOutput('auto_fix_skipped_reason', summary);
+    emitRepairOutputs(repair);
+    core.info(`⏭️  ${summary}`);
 }
 function setSuccessOutput(result, errorData, autoFixResult, flakiness) {
     const repairBlock = result.repairTelemetry ??

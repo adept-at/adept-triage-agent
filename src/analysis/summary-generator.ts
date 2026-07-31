@@ -15,6 +15,7 @@ export function generateAnalysisSummary(response: OpenAIResponse, errorData: Err
     TEST_ISSUE: '🧪 Test Issue',
     PRODUCT_ISSUE: '🐛 Product Issue',
     INCONCLUSIVE: '❓ Inconclusive',
+    TRIAGE_LIMIT_REACHED: '⏭️ Triage Limit Reached',
     PENDING: '⏳ Pending',
     ERROR: '⚠️ Error',
     NO_FAILURE: '✅ No Failure'

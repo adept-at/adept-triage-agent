@@ -3010,6 +3010,7 @@ function generateAnalysisSummary(response, errorData) {
         TEST_ISSUE: '🧪 Test Issue',
         PRODUCT_ISSUE: '🐛 Product Issue',
         INCONCLUSIVE: '❓ Inconclusive',
+        TRIAGE_LIMIT_REACHED: '⏭️ Triage Limit Reached',
         PENDING: '⏳ Pending',
         ERROR: '⚠️ Error',
         NO_FAILURE: '✅ No Failure'
@@ -3729,7 +3730,7 @@ exports.ArtifactFetcher = ArtifactFetcher;
 "use strict";
 
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.CANARY_REPOS = exports.BLAST_RADIUS = exports.FIX_VALIDATE_LOOP = exports.AGENT_CONFIG = exports.VERDICT_OVERRIDE_CONFIDENCE_THRESHOLD = exports.DEFAULT_PRODUCT_URL = exports.DEFAULT_PRODUCT_REPO = exports.AUTO_FIX = exports.TEST_ISSUE_CATEGORIES = exports.ERROR_TYPES = exports.FORMATTING = exports.ARTIFACTS = exports.SHORT_SHA_LENGTH = exports.REASONING_EFFORT = exports.GPT56_CANDIDATE_REASONING = exports.GPT56_CANDIDATE_MODEL = exports.AGENT_MODEL = exports.STAGE_MAX_OUTPUT_TOKENS = exports.OPENAI = exports.CONFIDENCE = exports.LOG_LIMITS = void 0;
+exports.CANARY_REPOS = exports.BLAST_RADIUS = exports.FIX_VALIDATE_LOOP = exports.AGENT_CONFIG = exports.VERDICT_OVERRIDE_CONFIDENCE_THRESHOLD = exports.DEFAULT_PRODUCT_URL = exports.DEFAULT_PRODUCT_REPO = exports.TRIAGE_RUN_GATE = exports.AUTO_FIX = exports.TEST_ISSUE_CATEGORIES = exports.ERROR_TYPES = exports.FORMATTING = exports.ARTIFACTS = exports.SHORT_SHA_LENGTH = exports.REASONING_EFFORT = exports.GPT56_CANDIDATE_REASONING = exports.GPT56_CANDIDATE_MODEL = exports.AGENT_MODEL = exports.STAGE_MAX_OUTPUT_TOKENS = exports.OPENAI = exports.CONFIDENCE = exports.LOG_LIMITS = void 0;
 exports.supportsReasoningEffort = supportsReasoningEffort;
 exports.resolveAgentModel = resolveAgentModel;
 exports.resolveReasoningEffort = resolveReasoningEffort;
@@ -3852,6 +3853,9 @@ exports.AUTO_FIX = {
     DEFAULT_MIN_CONFIDENCE: 70,
     BRANCH_PREFIX: 'fix/triage-agent/',
     BRANCH_DEDUPE_WINDOW_MS: 6 * 60 * 60 * 1000,
+};
+exports.TRIAGE_RUN_GATE = {
+    MAX_ATTEMPTS: 2,
 };
 exports.DEFAULT_PRODUCT_REPO = 'adept-at/learn-webapp';
 exports.DEFAULT_PRODUCT_URL = 'https://learn.adept.at';
@@ -4265,6 +4269,7 @@ Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.resolveAutoFixTargetRepo = exports.setErrorOutput = exports.setInconclusiveOutput = exports.setSuccessOutput = exports.requiredConfidence = exports.fixFingerprint = void 0;
 exports.run = run;
 const core = __importStar(__nccwpck_require__(37484));
+const github = __importStar(__nccwpck_require__(93228));
 const rest_1 = __nccwpck_require__(65772);
 const openai_client_1 = __nccwpck_require__(50191);
 const artifact_fetcher_1 = __nccwpck_require__(45853);
@@ -4299,6 +4304,12 @@ async function run() {
 }
 function getInputs() {
     const repositoryInput = core.getInput('REPOSITORY');
+    const workflowRunIdInput = core.getInput('WORKFLOW_RUN_ID');
+    const workflowRunAttemptInput = core.getInput('WORKFLOW_RUN_ATTEMPT');
+    const workflowRunEventAttempt = github.context.payload.workflow_run?.run_attempt;
+    const currentRunAttempt = !workflowRunIdInput && !github.context.payload.workflow_run
+        ? process.env.GITHUB_RUN_ATTEMPT
+        : undefined;
     return {
         githubToken: core.getInput('GITHUB_TOKEN') || process.env.GITHUB_TOKEN || '',
         openaiApiKey: core.getInput('OPENAI_API_KEY', { required: true }),
@@ -4306,7 +4317,12 @@ function getInputs() {
         errorFile: core.getInput('ERROR_FILE') || undefined,
         errorTestName: core.getInput('ERROR_TEST_NAME') || undefined,
         persistResults: core.getInput('PERSIST_RESULTS') !== 'false',
-        workflowRunId: core.getInput('WORKFLOW_RUN_ID'),
+        workflowRunId: workflowRunIdInput,
+        workflowRunAttempt: clampInt(workflowRunAttemptInput ||
+            (workflowRunEventAttempt
+                ? String(workflowRunEventAttempt)
+                : currentRunAttempt), 1, 1, 1000),
+        sourceRunGateRequired: workflowRunAttemptInput !== '',
         jobName: core.getInput('JOB_NAME'),
         confidenceThreshold: clampInt(core.getInput('CONFIDENCE_THRESHOLD'), 70, 0, 100),
         prNumber: core.getInput('PR_NUMBER'),
@@ -5365,6 +5381,7 @@ const repo_context_fetcher_1 = __nccwpck_require__(3844);
 const root_cause_category_1 = __nccwpck_require__(21406);
 const run_telemetry_1 = __nccwpck_require__(93971);
 const constants_1 = __nccwpck_require__(58361);
+const source_run_gate_1 = __nccwpck_require__(62433);
 const output_1 = __nccwpck_require__(12639);
 const validator_1 = __nccwpck_require__(34670);
 const test_evidence_1 = __nccwpck_require__(92356);
@@ -5502,6 +5519,39 @@ class PipelineCoordinator {
         };
     }
     async execute() {
+        const sourceRunId = this.inputs.errorMessage
+            ? undefined
+            : this.inputs.workflowRunId ||
+                github.context.payload.workflow_run?.id?.toString() ||
+                github.context.runId.toString();
+        if (sourceRunId && this.inputs.persistResults !== false) {
+            const sourceRunAttempt = this.inputs.workflowRunAttempt ?? 1;
+            const sourceRunGate = await (0, source_run_gate_1.claimSourceRunSlot)({
+                region: this.inputs.triageAwsRegion || 'us-east-1',
+                tableName: this.inputs.triageDynamoTable || 'triage-skills-v1-live',
+                repository: `${github.context.repo.owner}/${github.context.repo.repo}`,
+                sourceRunId,
+                sourceRunAttempt,
+                maxAttempts: constants_1.TRIAGE_RUN_GATE.MAX_ATTEMPTS,
+            });
+            if (sourceRunGate.status === 'limited') {
+                (0, output_1.setTriageLimitOutput)(sourceRunId, sourceRunAttempt, constants_1.TRIAGE_RUN_GATE.MAX_ATTEMPTS);
+                return;
+            }
+            if (sourceRunGate.status === 'unavailable') {
+                if (this.inputs.sourceRunGateRequired === false) {
+                    core.warning(`Source-run admission gate unavailable for legacy caller; continuing without enforcement: ${sourceRunGate.reason}`);
+                }
+                else {
+                    (0, output_1.setErrorOutput)(`Triage skipped because the source-run admission budget could not be verified: ${sourceRunGate.reason}`);
+                    return;
+                }
+            }
+            else {
+                core.info(`✅ Source-run triage slot ${sourceRunGate.attemptCount}/${constants_1.TRIAGE_RUN_GATE.MAX_ATTEMPTS} claimed ` +
+                    `for workflow ${sourceRunId} attempt ${sourceRunAttempt}`);
+            }
+        }
         const errorData = await (0, log_processor_1.processWorkflowLogs)(this.octokit, this.artifactFetcher, this.inputs, this.repoDetails);
         if (!errorData) {
             await this.handleNoErrorData();
@@ -5837,19 +5887,20 @@ class PipelineCoordinator {
         const { owner, repo } = this.repoDetails;
         const runId = this.inputs.workflowRunId || github.context.runId.toString();
         try {
-            const workflowRun = await this.octokit.actions.getWorkflowRun({
+            const workflowRun = await this.octokit.actions.getWorkflowRunAttempt({
                 owner,
                 repo,
                 run_id: parseInt(runId, 10),
+                attempt_number: this.inputs.workflowRunAttempt ?? 1,
             });
             if (workflowRun.data.status !== 'completed') {
                 if (this.inputs.jobName) {
                     try {
-                        const jobs = await this.octokit.paginate(this.octokit.actions.listJobsForWorkflowRun, {
+                        const jobs = await this.octokit.paginate(this.octokit.actions.listJobsForWorkflowRunAttempt, {
                             owner,
                             repo,
                             run_id: parseInt(runId, 10),
-                            filter: 'latest',
+                            attempt_number: this.inputs.workflowRunAttempt ?? 1,
                             per_page: 100,
                         });
                         const targetJob = jobs.find((job) => job.name === this.inputs.jobName);
@@ -6197,6 +6248,7 @@ exports.finalizeRepairTelemetry = finalizeRepairTelemetry;
 exports.emitRepairOutputs = emitRepairOutputs;
 exports.setInconclusiveOutput = setInconclusiveOutput;
 exports.setErrorOutput = setErrorOutput;
+exports.setTriageLimitOutput = setTriageLimitOutput;
 exports.setSuccessOutput = setSuccessOutput;
 const core = __importStar(__nccwpck_require__(37484));
 const github = __importStar(__nccwpck_require__(93228));
@@ -6328,6 +6380,51 @@ function setErrorOutput(reason) {
     }));
     emitRepairOutputs(errorRepair);
     core.setFailed(reason);
+}
+function setTriageLimitOutput(sourceRunId, sourceRunAttempt, maxAttempts) {
+    const summary = `Triage skipped: workflow run ${sourceRunId} attempt ${sourceRunAttempt} ` +
+        `has reached the limit of ${maxAttempts} triage attempts.`;
+    const reasoning = `${summary} No workflow logs, artifacts, OpenAI analysis, or repair work were performed.`;
+    const repair = {
+        status: 'skipped',
+        summary: 'Repair skipped because the source workflow triage budget was exhausted.',
+        iterations: 0,
+        elapsedMs: 0,
+    };
+    core.setOutput('verdict', 'TRIAGE_LIMIT_REACHED');
+    core.setOutput('confidence', '0');
+    core.setOutput('reasoning', reasoning);
+    core.setOutput('summary', summary);
+    core.setOutput('triage_json', JSON.stringify({
+        verdict: 'TRIAGE_LIMIT_REACHED',
+        confidence: 0,
+        reasoning,
+        summary,
+        indicators: ['Source workflow triage budget exhausted'],
+        repair,
+        metadata: {
+            analyzedAt: new Date().toISOString(),
+            sourceRunId,
+            sourceRunAttempt,
+            maxAttempts,
+            triageSkipped: true,
+        },
+    }));
+    core.setOutput('has_fix_recommendation', 'false');
+    core.setOutput('fix_recommendation', '');
+    core.setOutput('fix_summary', '');
+    core.setOutput('fix_confidence', '');
+    core.setOutput('auto_fix_applied', 'false');
+    core.setOutput('auto_fix_branch', '');
+    core.setOutput('auto_fix_commit', '');
+    core.setOutput('auto_fix_files', '[]');
+    core.setOutput('validation_run_id', '');
+    core.setOutput('validation_url', '');
+    core.setOutput('validation_status', 'skipped');
+    core.setOutput('auto_fix_skipped', 'true');
+    core.setOutput('auto_fix_skipped_reason', summary);
+    emitRepairOutputs(repair);
+    core.info(`⏭️  ${summary}`);
 }
 function setSuccessOutput(result, errorData, autoFixResult, flakiness) {
     const repairBlock = result.repairTelemetry ??
@@ -9257,10 +9354,11 @@ async function processWorkflowLogs(octokit, artifactFetcher, inputs, repoDetails
     try {
         if (!isCurrentJob &&
             (inputs.workflowRunId || context.payload.workflow_run)) {
-            const workflowRun = await (0, retry_1.withRetry)(() => octokit.actions.getWorkflowRun({
+            const workflowRun = await (0, retry_1.withRetry)(() => octokit.actions.getWorkflowRunAttempt({
                 owner,
                 repo,
                 run_id: parseInt(runId, 10),
+                attempt_number: inputs.workflowRunAttempt ?? 1,
             }), { context: 'fetching workflow run' });
             if (workflowRun.data.status !== 'completed') {
                 core.warning('Workflow run is not completed yet');
@@ -9270,11 +9368,11 @@ async function processWorkflowLogs(octokit, artifactFetcher, inputs, repoDetails
         else if (isCurrentJob) {
             core.info(`Analyzing current job: ${inputs.jobName} (workflow still in progress)`);
         }
-        jobList = (await (0, retry_1.withRetry)(() => octokit.paginate(octokit.actions.listJobsForWorkflowRun, {
+        jobList = (await (0, retry_1.withRetry)(() => octokit.paginate(octokit.actions.listJobsForWorkflowRunAttempt, {
             owner,
             repo,
             run_id: parseInt(runId, 10),
-            filter: 'latest',
+            attempt_number: inputs.workflowRunAttempt ?? 1,
             per_page: 100,
         }), { context: 'listing jobs for workflow run' }));
     }
@@ -9486,28 +9584,36 @@ function selectProductDiff({ prNumber, repoOwner, repoName, productRepo, prDiff,
     return fetchedProductDiff;
 }
 async function fetchArtifactsParallel(artifactFetcher, runId, jobName, artifactRepoDetails, diffRepoDetails, inputs) {
-    const screenshotsPromise = artifactFetcher
-        .fetchScreenshots(runId, jobName, artifactRepoDetails)
-        .then((screenshots) => {
-        core.info(`Found ${screenshots.length} screenshots`);
-        return screenshots;
-    })
-        .catch((error) => {
-        core.warning(`Failed to fetch screenshots: ${error}`);
-        return [];
-    });
-    const artifactLogsPromise = artifactFetcher
-        .fetchTestArtifactLogs(runId, jobName, artifactRepoDetails)
-        .then((logs) => {
-        if (logs) {
-            core.info(`Found test artifact logs (${logs.length} characters)`);
-        }
-        return logs;
-    })
-        .catch((error) => {
-        core.warning(`Failed to fetch test artifact logs: ${error}`);
-        return '';
-    });
+    const useRunScopedArtifacts = (inputs.workflowRunAttempt ?? 1) === 1;
+    if (!useRunScopedArtifacts) {
+        core.info('Skipping run-scoped artifacts on a rerun because GitHub does not expose attempt-specific artifact listing.');
+    }
+    const screenshotsPromise = useRunScopedArtifacts
+        ? artifactFetcher
+            .fetchScreenshots(runId, jobName, artifactRepoDetails)
+            .then((screenshots) => {
+            core.info(`Found ${screenshots.length} screenshots`);
+            return screenshots;
+        })
+            .catch((error) => {
+            core.warning(`Failed to fetch screenshots: ${error}`);
+            return [];
+        })
+        : Promise.resolve([]);
+    const artifactLogsPromise = useRunScopedArtifacts
+        ? artifactFetcher
+            .fetchTestArtifactLogs(runId, jobName, artifactRepoDetails)
+            .then((logs) => {
+            if (logs) {
+                core.info(`Found test artifact logs (${logs.length} characters)`);
+            }
+            return logs;
+        })
+            .catch((error) => {
+            core.warning(`Failed to fetch test artifact logs: ${error}`);
+            return '';
+        })
+        : Promise.resolve('');
     const prDiffPromise = fetchDiffWithFallback(artifactFetcher, inputs, diffRepoDetails);
     const productDiffPromise = fetchProductDiff(artifactFetcher, inputs);
     const [screenshots, artifactLogs, prDiff, rawProductDiff] = await Promise.all([
@@ -10641,6 +10747,65 @@ function formatFailedTrajectoriesForPrompt(skills) {
     ].join('\n');
 }
 //# sourceMappingURL=skill-store.js.map
+
+/***/ }),
+
+/***/ 62433:
+/***/ ((__unused_webpack_module, exports, __nccwpck_require__) => {
+
+"use strict";
+
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.claimSourceRunSlot = claimSourceRunSlot;
+const GATE_TTL_DAYS = 30;
+async function claimSourceRunSlot(params) {
+    try {
+        const { DynamoDBClient } = await __nccwpck_require__.e(/* import() */ 305).then(__nccwpck_require__.t.bind(__nccwpck_require__, 64305, 23));
+        const { DynamoDBDocumentClient, UpdateCommand } = await Promise.all(/* import() */[__nccwpck_require__.e(305), __nccwpck_require__.e(907)]).then(__nccwpck_require__.t.bind(__nccwpck_require__, 58907, 19));
+        const client = DynamoDBDocumentClient.from(new DynamoDBClient({ region: params.region, maxAttempts: 1 }), { marshallOptions: { removeUndefinedValues: true } });
+        const now = params.now ?? new Date();
+        const expiresAt = Math.floor(now.getTime() / 1000) + GATE_TTL_DAYS * 24 * 60 * 60;
+        const result = await client.send(new UpdateCommand({
+            TableName: params.tableName,
+            Key: {
+                pk: `REPO#${params.repository}`,
+                sk: `TRIAGE_GATE#${params.sourceRunId}#ATTEMPT#${params.sourceRunAttempt}`,
+            },
+            ConditionExpression: 'attribute_not_exists(attemptCount) OR attemptCount < :maxAttempts',
+            UpdateExpression: 'SET entityType = :entityType, sourceRunId = :sourceRunId, ' +
+                'sourceRunAttempt = :sourceRunAttempt, maxAttempts = :maxAttempts, ' +
+                'updatedAt = :updatedAt, exp = if_not_exists(exp, :expiresAt) ' +
+                'ADD attemptCount :one',
+            ExpressionAttributeValues: {
+                ':entityType': 'triage-run-gate',
+                ':sourceRunId': params.sourceRunId,
+                ':sourceRunAttempt': params.sourceRunAttempt,
+                ':maxAttempts': params.maxAttempts,
+                ':updatedAt': now.toISOString(),
+                ':expiresAt': expiresAt,
+                ':one': 1,
+            },
+            ReturnValues: 'ALL_NEW',
+        }));
+        return {
+            status: 'admitted',
+            attemptCount: Number(result.Attributes?.attemptCount ?? 1),
+        };
+    }
+    catch (error) {
+        if (error &&
+            typeof error === 'object' &&
+            'name' in error &&
+            error.name === 'ConditionalCheckFailedException') {
+            return { status: 'limited' };
+        }
+        return {
+            status: 'unavailable',
+            reason: error instanceof Error ? error.message : String(error),
+        };
+    }
+}
+//# sourceMappingURL=source-run-gate.js.map
 
 /***/ }),
 

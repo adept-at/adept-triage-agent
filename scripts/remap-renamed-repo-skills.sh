@@ -21,8 +21,8 @@ trap 'rm -rf "$WORK"' EXIT
 # only reflects the final page when the CLI paginates.
 count_for_pk() {
   aws dynamodb query --table-name "$TABLE" --region "$REGION" \
-    --key-condition-expression "pk = :pk" \
-    --expression-attribute-values "{\":pk\":{\"S\":\"REPO#$1\"}}" \
+    --key-condition-expression "pk = :pk AND begins_with(sk, :prefix)" \
+    --expression-attribute-values "{\":pk\":{\"S\":\"REPO#$1\"},\":prefix\":{\"S\":\"SKILL#\"}}" \
     --projection-expression "pk" --output json \
     | python3 -c "import json,sys; print(len(json.load(sys.stdin)['Items']))"
 }
@@ -34,8 +34,8 @@ remap_repo() {
 
   # The AWS CLI auto-paginates `query`: Items spans every page.
   aws dynamodb query --table-name "$TABLE" --region "$REGION" \
-    --key-condition-expression "pk = :pk" \
-    --expression-attribute-values "{\":pk\":{\"S\":\"REPO#$OLD\"}}" \
+    --key-condition-expression "pk = :pk AND begins_with(sk, :prefix)" \
+    --expression-attribute-values "{\":pk\":{\"S\":\"REPO#$OLD\"},\":prefix\":{\"S\":\"SKILL#\"}}" \
     --output json > "$WORK/old-items.json"
 
   local COUNT

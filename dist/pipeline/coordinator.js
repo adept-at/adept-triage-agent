@@ -49,6 +49,7 @@ const repo_context_fetcher_1 = require("../services/repo-context-fetcher");
 const root_cause_category_1 = require("../repair/root-cause-category");
 const run_telemetry_1 = require("./run-telemetry");
 const constants_1 = require("../config/constants");
+const source_run_gate_1 = require("../services/source-run-gate");
 const output_1 = require("./output");
 const validator_1 = require("./validator");
 const test_evidence_1 = require("../services/test-evidence");
@@ -186,6 +187,39 @@ class PipelineCoordinator {
         };
     }
     async execute() {
+        const sourceRunId = this.inputs.errorMessage
+            ? undefined
+            : this.inputs.workflowRunId ||
+                github.context.payload.workflow_run?.id?.toString() ||
+                github.context.runId.toString();
+        if (sourceRunId && this.inputs.persistResults !== false) {
+            const sourceRunAttempt = this.inputs.workflowRunAttempt ?? 1;
+            const sourceRunGate = await (0, source_run_gate_1.claimSourceRunSlot)({
+                region: this.inputs.triageAwsRegion || 'us-east-1',
+                tableName: this.inputs.triageDynamoTable || 'triage-skills-v1-live',
+                repository: `${github.context.repo.owner}/${github.context.repo.repo}`,
+                sourceRunId,
+                sourceRunAttempt,
+                maxAttempts: constants_1.TRIAGE_RUN_GATE.MAX_ATTEMPTS,
+            });
+            if (sourceRunGate.status === 'limited') {
+                (0, output_1.setTriageLimitOutput)(sourceRunId, sourceRunAttempt, constants_1.TRIAGE_RUN_GATE.MAX_ATTEMPTS);
+                return;
+            }
+            if (sourceRunGate.status === 'unavailable') {
+                if (this.inputs.sourceRunGateRequired === false) {
+                    core.warning(`Source-run admission gate unavailable for legacy caller; continuing without enforcement: ${sourceRunGate.reason}`);
+                }
+                else {
+                    (0, output_1.setErrorOutput)(`Triage skipped because the source-run admission budget could not be verified: ${sourceRunGate.reason}`);
+                    return;
+                }
+            }
+            else {
+                core.info(`✅ Source-run triage slot ${sourceRunGate.attemptCount}/${constants_1.TRIAGE_RUN_GATE.MAX_ATTEMPTS} claimed ` +
+                    `for workflow ${sourceRunId} attempt ${sourceRunAttempt}`);
+            }
+        }
         const errorData = await (0, log_processor_1.processWorkflowLogs)(this.octokit, this.artifactFetcher, this.inputs, this.repoDetails);
         if (!errorData) {
             await this.handleNoErrorData();
@@ -521,19 +555,20 @@ class PipelineCoordinator {
         const { owner, repo } = this.repoDetails;
         const runId = this.inputs.workflowRunId || github.context.runId.toString();
         try {
-            const workflowRun = await this.octokit.actions.getWorkflowRun({
+            const workflowRun = await this.octokit.actions.getWorkflowRunAttempt({
                 owner,
                 repo,
                 run_id: parseInt(runId, 10),
+                attempt_number: this.inputs.workflowRunAttempt ?? 1,
             });
             if (workflowRun.data.status !== 'completed') {
                 if (this.inputs.jobName) {
                     try {
-                        const jobs = await this.octokit.paginate(this.octokit.actions.listJobsForWorkflowRun, {
+                        const jobs = await this.octokit.paginate(this.octokit.actions.listJobsForWorkflowRunAttempt, {
                             owner,
                             repo,
                             run_id: parseInt(runId, 10),
-                            filter: 'latest',
+                            attempt_number: this.inputs.workflowRunAttempt ?? 1,
                             per_page: 100,
                         });
                         const targetJob = jobs.find((job) => job.name === this.inputs.jobName);

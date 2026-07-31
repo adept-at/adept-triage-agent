@@ -105,6 +105,9 @@ export declare const AUTO_FIX: {
     readonly BRANCH_PREFIX: "fix/triage-agent/";
     readonly BRANCH_DEDUPE_WINDOW_MS: number;
 };
+export declare const TRIAGE_RUN_GATE: {
+    readonly MAX_ATTEMPTS: 2;
+};
 export declare const DEFAULT_PRODUCT_REPO = "adept-at/learn-webapp";
 export declare const DEFAULT_PRODUCT_URL = "https://learn.adept.at";
 export declare const VERDICT_OVERRIDE_CONFIDENCE_THRESHOLD = 70;

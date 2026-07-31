@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.CANARY_REPOS = exports.BLAST_RADIUS = exports.FIX_VALIDATE_LOOP = exports.AGENT_CONFIG = exports.VERDICT_OVERRIDE_CONFIDENCE_THRESHOLD = exports.DEFAULT_PRODUCT_URL = exports.DEFAULT_PRODUCT_REPO = exports.AUTO_FIX = exports.TEST_ISSUE_CATEGORIES = exports.ERROR_TYPES = exports.FORMATTING = exports.ARTIFACTS = exports.SHORT_SHA_LENGTH = exports.REASONING_EFFORT = exports.GPT56_CANDIDATE_REASONING = exports.GPT56_CANDIDATE_MODEL = exports.AGENT_MODEL = exports.STAGE_MAX_OUTPUT_TOKENS = exports.OPENAI = exports.CONFIDENCE = exports.LOG_LIMITS = void 0;
+exports.CANARY_REPOS = exports.BLAST_RADIUS = exports.FIX_VALIDATE_LOOP = exports.AGENT_CONFIG = exports.VERDICT_OVERRIDE_CONFIDENCE_THRESHOLD = exports.DEFAULT_PRODUCT_URL = exports.DEFAULT_PRODUCT_REPO = exports.TRIAGE_RUN_GATE = exports.AUTO_FIX = exports.TEST_ISSUE_CATEGORIES = exports.ERROR_TYPES = exports.FORMATTING = exports.ARTIFACTS = exports.SHORT_SHA_LENGTH = exports.REASONING_EFFORT = exports.GPT56_CANDIDATE_REASONING = exports.GPT56_CANDIDATE_MODEL = exports.AGENT_MODEL = exports.STAGE_MAX_OUTPUT_TOKENS = exports.OPENAI = exports.CONFIDENCE = exports.LOG_LIMITS = void 0;
 exports.supportsReasoningEffort = supportsReasoningEffort;
 exports.resolveAgentModel = resolveAgentModel;
 exports.resolveReasoningEffort = resolveReasoningEffort;
@@ -123,6 +123,9 @@ exports.AUTO_FIX = {
     DEFAULT_MIN_CONFIDENCE: 70,
     BRANCH_PREFIX: 'fix/triage-agent/',
     BRANCH_DEDUPE_WINDOW_MS: 6 * 60 * 60 * 1000,
+};
+exports.TRIAGE_RUN_GATE = {
+    MAX_ATTEMPTS: 2,
 };
 exports.DEFAULT_PRODUCT_REPO = 'adept-at/learn-webapp';
 exports.DEFAULT_PRODUCT_URL = 'https://learn.adept.at';

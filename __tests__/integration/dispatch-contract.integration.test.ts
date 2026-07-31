@@ -14,6 +14,7 @@ import {
 describe('Dispatch contract (triage-failed-test client_payload)', () => {
   const validPayload: TriageDispatchPayload = {
     workflow_run_id: '12345678',
+    workflow_run_attempt: '2',
     job_name: 'sauceTest',
     spec: 'test/specs/orginvites/invite.org.learner.enroll.ts',
     branch: 'main',
@@ -34,6 +35,15 @@ describe('Dispatch contract (triage-failed-test client_payload)', () => {
     });
     expect(result.valid).toBe(true);
     expect(result.error).toBeUndefined();
+  });
+
+  it('rejects an invalid workflow run attempt', () => {
+    const result = validateTriageDispatchPayload({
+      ...validPayload,
+      workflow_run_attempt: '0',
+    });
+    expect(result.valid).toBe(false);
+    expect(result.error).toMatch(/workflow_run_attempt/);
   });
 
   it('rejects missing workflow_run_id', () => {

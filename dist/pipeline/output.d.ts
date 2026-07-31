@@ -18,6 +18,7 @@ export declare function setInconclusiveOutput(result: {
     logs?: string[];
 }): void;
 export declare function setErrorOutput(reason: string): void;
+export declare function setTriageLimitOutput(sourceRunId: string, sourceRunAttempt: number, maxAttempts: number): void;
 export declare function setSuccessOutput(result: {
     verdict: string;
     confidence: number;

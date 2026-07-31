@@ -1,5 +1,5 @@
 import { Octokit } from '@octokit/rest';
-export type Verdict = 'TEST_ISSUE' | 'PRODUCT_ISSUE' | 'INCONCLUSIVE' | 'PENDING' | 'ERROR' | 'NO_FAILURE';
+export type Verdict = 'TEST_ISSUE' | 'PRODUCT_ISSUE' | 'INCONCLUSIVE' | 'TRIAGE_LIMIT_REACHED' | 'PENDING' | 'ERROR' | 'NO_FAILURE';
 export type Framework = 'cypress' | 'webdriverio' | 'unknown';
 export interface SourceFetchContext {
     octokit: Octokit;
@@ -190,6 +190,8 @@ export interface ActionInputs {
     errorTestName?: string;
     persistResults?: boolean;
     workflowRunId?: string;
+    workflowRunAttempt?: number;
+    sourceRunGateRequired?: boolean;
     jobName?: string;
     confidenceThreshold: number;
     prNumber?: string;
