@@ -1,6 +1,6 @@
 # Adept Triage Agent — Architecture
 
-> **Current version:** v1.52.9
+> **Current version:** v1.55.2
 > **Scope:** end-to-end architecture of the agent — entry point, pipeline, five-agent orchestration, skill-memory / repo-context learning loop, observability, operator surface.
 > **Audience:** engineers who need to understand the system deeply enough to extend or debug it without surprises.
 
@@ -30,12 +30,13 @@ The Adept Triage Agent is a Node 24 GitHub Action (`action.yml` → `dist/index.
 
 ### Key features
 
-- **Classification** — OpenAI-powered verdict (`TEST_ISSUE`, `PRODUCT_ISSUE`, `INCONCLUSIVE`, `PENDING`, `ERROR`, `NO_FAILURE`) with 0–100 confidence.
+- **Classification** — OpenAI-powered verdict (`TEST_ISSUE`, `PRODUCT_ISSUE`, `INCONCLUSIVE`, `TRIAGE_LIMIT_REACHED`, `PENDING`, `ERROR`, `NO_FAILURE`) with 0–100 confidence.
 - **Multi-agent repair** — five agents (analysis, code-reading, investigation, fix-gen, review) collaborate in an orchestrator with an internal fix/review loop. If agentic repair cannot produce an approved fix, the run fails honestly with no weaker fallback path.
-- **Local-validation loop** — clones the target repo, applies fixes on disk, runs the test command up to 3 iterations, and only pushes a branch + opens a PR after the test passes.
+- **Local-validation loop** — clones the target repo, confirms the failure is real with a 3-attempt baseline before generating any fix, applies fixes on disk across up to 3 iterations, and only pushes a branch + opens a PR after the test passes 3 consecutive evidence-bearing runs.
 - **Learning loop** — skills (canonical fix patterns for a spec + error shape) are persisted to DynamoDB, retrieved by relevance, and rendered into agent prompts. Human-curated seed skills bootstrap the store.
 - **Repo conventions** — each consumer repo can commit a `.adept-triage/context.md` describing its selector strategy, wait rules, auth flow, etc. For product repos where tooling files are unwelcome, the context is bundled in the agent itself.
 - **Chronic flakiness gate** — specs that have been auto-fixed repeatedly in a window are flagged and auto-fix is skipped; the failure is surfaced for human follow-up.
+- **Non-fixable seed gate** — curated seeds can flag a failure pattern as `nonFixable` (exhausted test data, admin-only remediation); a match skips repair entirely and surfaces manual-intervention guidance.
 
 ### Version milestones that shape the current design
 
@@ -60,7 +61,8 @@ The Adept Triage Agent is a Node 24 GitHub Action (`action.yml` → `dist/index.
 | **v1.52.6** | **Curated-seed expansion**: added `04-mailosaur-concurrent-mailbox-cleanup` to `seeds/lib-wdio-8-multi-remote/` to cover the org-invites Mailosaur race-condition pattern. No code change; see `seeds/DEPLOYED.md`. |
 | **v1.52.7** | **Repair lifecycle outputs**: six new action outputs (`repair_status`, `repair_summary`, `repair_details`, `repair_iterations`, `repair_last_stage`, `repair_review_issues`) surface the orchestrator's lifecycle outcome — `not_started | skipped | in_progress | no_fix_generated | review_rejected | timed_out | cancelled | no_approved_fix | approved | applied | validated` — orthogonally to the classifier `verdict`. The `RepairTelemetry` type is constructed by `AgentOrchestrator`, finalized in `finalizeRepairTelemetry`, and emitted by `emitRepairOutputs` so Slack and dashboards can distinguish e.g. "TEST_ISSUE classified, fix rejected by review" from "TEST_ISSUE classified, fix validated and shipped". |
 | **v1.52.8** | **Code-reading performance**: tree-based path resolution in `code-reading-agent.ts` collapses multiple `getContent` calls into a single `getTree` followed by local lookups, materially reducing GitHub API calls for repos with deep test trees. Fix-generation default tightened for repos that don't declare a framework. |
-| **v1.52.9** | **Validation/publish decoupled (B1 + H1) + remote dispatch hardened (B5)** — the first phase of the architecture roadmap (Wave A; see `docs/ARCHITECTURE_ROADMAP.md`). A passing local test followed by a push/PR creation failure is no longer recorded as a failed skill trajectory: `validatedLocally` and `recordOutcome` are now driven by validation outcome, not by `ApplyResult.success`. Two new `RepairStatus` values surface this — `validated_publish_failed` (validation passed, publish failed afterward) and `validated_not_published` (reserved for future ApplyResult shapes). `auto_fix_applied` is now `applySucceeded && validationPassed` (was `success` alone), and `triage_json.autoFix.applied` agrees with the action output and `metadata.autoFixApplied`. `triggerValidation` resolves the target repo's default branch via `octokit.repos.get` instead of hardcoding `'main'`, and runs are correlated by `display_title` substring keyed on `triage_run_id` with time-window fallback for legacy consumer workflows. `validation_status` is the authoritative validation outcome, independent of publish success. |
+| **v1.52.9** | **Validation/publish decoupled (B1 + H1) + remote dispatch hardened (B5)** — the first phase of the architecture roadmap (Wave A; the roadmap doc has since been removed — see git history for `docs/ARCHITECTURE_ROADMAP.md`). A passing local test followed by a push/PR creation failure is no longer recorded as a failed skill trajectory: `validatedLocally` and `recordOutcome` are now driven by validation outcome, not by `ApplyResult.success`. Two new `RepairStatus` values surface this — `validated_publish_failed` (validation passed, publish failed afterward) and `validated_not_published` (reserved for future ApplyResult shapes). `auto_fix_applied` is now `applySucceeded && validationPassed` (was `success` alone), and `triage_json.autoFix.applied` agrees with the action output and `metadata.autoFixApplied`. `triggerValidation` resolves the target repo's default branch via `octokit.repos.get` instead of hardcoding `'main'`, and runs are correlated by `display_title` substring keyed on `triage_run_id` with time-window fallback for legacy consumer workflows. `validation_status` is the authoritative validation outcome, independent of publish success. |
+| v1.52.10–v1.55.x | Not itemized here — highlights that shape the current design: baseline check moved **before** any fix generation; multi-pass post-fix validation (`validateFixPasses`, 3 consecutive evidence-bearing passes); non-fixable seed gate; verdict-override gate switched to an absolute threshold (70) covering `APP_CODE` and `BOTH`; cross-run fix-fingerprint dedupe + failed-trajectory confidence boosts; skill reinforcement instead of duplicate inserts; source-run admission gate (`TRIAGE_LIMIT_REACHED`); infrastructure fast-path; hybrid credential env-filtering in the local validator; single `gpt-5.6-sol` model for all stages. |
 
 ---
 
@@ -86,17 +88,17 @@ PATs are needed whenever `REPOSITORY` or `AUTO_FIX_TARGET_REPO` differs from `gi
 
 ## Runtime entry point
 
-`src/index.ts` → `run()` does exactly this sequence (`src/index.ts:13-41`):
+`src/index.ts` → `run()` does exactly this sequence:
 
-1. **`getInputs()`** — parses `ActionInputs` from `core.getInput` + `process.env`. Booleans are strict `=== 'true'`; any other string is `false`.
+1. **`getInputs()`** — parses `ActionInputs` from `core.getInput` + `process.env`. Feature booleans are strict `=== 'true'` (any other string is `false`); the one exception is `PERSIST_RESULTS`, which defaults on and is parsed as `!== 'false'`. Numeric inputs go through `clampInt` (out-of-range values fall back to the default with a warning).
 2. **`new Octokit({ auth: inputs.githubToken })`**.
 3. **`resolveRepository(inputs)`** → `{ owner, repo }` via `parseRepoString`; falls back to `github.context.repo` on invalid/missing `REPOSITORY`.
 4. **`new OpenAIClient(inputs.openaiApiKey)`**.
 5. **`new ArtifactFetcher(octokit)`**.
 6. **`new PipelineCoordinator({ octokit, openaiClient, artifactFetcher, inputs, repoDetails })`**.
-7. **`await coordinator.execute()`** — all GH Action outputs are set from inside the coordinator (`setSuccessOutput` / `setInconclusiveOutput` / `setErrorOutput` in `src/pipeline/output.ts`).
+7. **`await coordinator.execute()`** — all GH Action outputs are set from inside the coordinator (`setSuccessOutput` / `setInconclusiveOutput` / `setErrorOutput` / `setTriageLimitOutput` in `src/pipeline/output.ts`).
 
-The only output set directly in `index.ts` is a top-level `catch` that builds an `ERROR` verdict + `core.setFailed(...)` for anything that escapes the coordinator's own error handling. The `require.main === module` trailer catches fatal unhandled errors outside the try/catch.
+The top-level `catch` in `index.ts` delegates to `setErrorOutput(...)` (which emits the `ERROR` verdict outputs and calls `core.setFailed`) for anything that escapes the coordinator's own error handling. The `require.main === module` trailer catches fatal unhandled errors outside the try/catch the same way.
 
 ---
 
@@ -106,37 +108,43 @@ The only output set directly in `index.ts` is a top-level `catch` that builds an
 
 One class, five methods worth knowing:
 
-- **`execute()`** — Top-level. Runs log processing, constructs `SkillStore` if AWS creds are ambient, then wraps `runClassifyAndRepair()` in `try { ... } finally { skillStore?.logRunSummary() }`. The `finally` guarantees a per-run summary line at every exit (including thrown errors).
+- **`execute()`** — Top-level. First claims a **source-run admission slot** (`claimSourceRunSlot`, `TRIAGE_RUN_GATE.MAX_ATTEMPTS = 2` triage runs per source workflow attempt; a `limited` result emits the `TRIAGE_LIMIT_REACHED` verdict via `setTriageLimitOutput` and returns; `unavailable` fails the run unless the caller is a legacy consumer that didn't pass `WORKFLOW_RUN_ATTEMPT`). Then runs log processing, constructs `SkillStore` when `autoFixTargetRepo` resolves and `PERSIST_RESULTS` isn't false, and wraps `runClassifyAndRepair()` in `try { ... } finally { skillStore?.logRunSummary(); logRunGateSummary(); persistRunOutcome() }`. The `finally` guarantees per-run summary lines and a durable outcome-event write at every exit (including thrown errors).
 - **`runClassifyAndRepair()`** *(private)* — The decision tree:
-  1. `classify()` → returns `ClassificationResult`.
-  2. If `classification.confidence < confidenceThreshold` → `setInconclusiveOutput` and return (classify handles this internally).
-  3. If `verdict !== 'TEST_ISSUE'` → `setSuccessOutput` with the verdict and return.
-  4. **Chronic flakiness gate**: if `skillStore.detectFlakiness(spec)` returns `fixCount >= CHRONIC_FLAKINESS_THRESHOLD` (default `3`), skip repair entirely, set `autoFixSkipped=true` with a human-readable reason, and return. This is how we stop stacking fallback fixes on truly broken specs.
-  5. `repair()` → returns `RepairResult`.
-  6. Save a skill if a fix was attempted AND `skillStore` and `autoFixTargetRepo` are both resolved, using `buildSkill()` with the agent-reported root cause and investigation findings.
-  7. `setSuccessOutput` with the combined result.
-- **`classify()`** — Reads classifier-relevant skills (`findForClassifier`), renders them into the classifier context, calls `analyzeFailure()`, handles low-confidence / non-`TEST_ISSUE` early exits.
-- **`repair()`** — Resolves auto-fix target, fetches repo context (via `RepoContextFetcher`), branches on local-validation availability:
+  1. **Infrastructure fast-path** (`detectInfrastructureFailure`): unambiguous remote-WebDriver / Sauce session-creation failures skip the LLM classifier entirely and emit `INCONCLUSIVE` at 95 confidence. No test or product code ran, so no fix is applicable.
+  2. **Synthetic canary fast-path** (`detectSyntheticCanaryFailure`): for repos in `CANARY_REPOS`, the seeded canary selector failure is classified `TEST_ISSUE` deterministically.
+  3. `classify()` → returns `ClassificationResult`. A durable failure event is recorded (`recordFailureEvent`) for every verdict before the early returns below.
+  4. If `classification.confidence < confidenceThreshold` → `setInconclusiveOutput` and return (classify handles the output internally).
+  5. If `verdict !== 'TEST_ISSUE'` → `setSuccessOutput` with the verdict and return.
+  6. **Non-fixable seed gate**: `skillStore.findNonFixableMatch(...)` — if a curated seed with `nonFixable: true` matches the spec exactly AND the error pattern with ≥0.3 Jaccard similarity, skip repair, set `autoFixSkipped=true` with the seed's manual-intervention guidance, and return. Runs **before** the chronic-flakiness gate because non-fixable is the stronger signal ("we know from the start no code fix applies" vs "we've tried repeatedly").
+  7. **Chronic flakiness gate**: if `skillStore.detectFlakiness(spec)` returns `isFlaky` (thresholds in `FLAKY_THRESHOLDS`: >1 fix in 3 days or >2 in 7 days), skip repair entirely, set `autoFixSkipped=true` with a human-readable reason, and return. This is how we stop stacking fallback fixes on truly broken specs.
+  8. `repair()` → returns `RepairResult`. Wrapped in try/catch: repair is best-effort, so an infrastructure throw (clone / npm install / network during validation setup) publishes the classification with `repair_status=no_fix_generated` telemetry instead of erasing the verdict as `ERROR`.
+  9. Persist the skill outcome when a fix was attempted AND `shouldWriteSkillOutcome` says the validation reached a terminal state. If the fix is byte-identical to an existing skill (`findReinforcementTarget` on `fixFingerprint` + normalized spec), **reinforce** that skill in place (`reinforceSkill`) instead of inserting a near-duplicate; otherwise `buildSkill()` + `save()` + `recordOutcome()`. `validatedLocally` is driven by validation outcome, not publish success; failed validations also persist `failedFixEvidence` (but only when the validation failure has the same failure signature as the original error — unrelated downstream failures skip the write).
+  10. `setSuccessOutput` with the combined result and finalized repair telemetry.
+- **`classify()`** — Reads classifier-relevant skills (`findForClassifier`), renders them via `formatSkillsForClassifierContext`, appends a flakiness-signal block when `detectFlakiness` fires, calls `analyzeFailure()`, handles low-confidence / non-`TEST_ISSUE` early exits.
+- **`repair()`** — Resolves auto-fix target, fetches repo context (via `RepoContextFetcher`, from the trusted base branch only — never the failing feature branch), branches on local-validation availability:
   - **Local path** (all of `enableAutoFix`, `enableValidation`, `enableLocalValidation`, `validationTestCommand`, `autoFixTargetRepo` true) → `iterativeFixValidateLoop`.
   - **Otherwise** → `generateFixRecommendation` + optional `attemptAutoFix`.
 - **`handleNoErrorData()`** — Runs when log processing yields nothing. Classifies as `NO_FAILURE` (green run), `PENDING` (still in progress), or `ERROR` (cannot determine).
 
 ### `iterativeFixValidateLoop` (`src/pipeline/validator.ts`)
 
-The local-validation loop. Maximum `FIX_VALIDATE_LOOP.MAX_ITERATIONS = 3`. For each iteration:
+The local-validation loop. Maximum `FIX_VALIDATE_LOOP.MAX_ITERATIONS` outer iterations (= `AGENT_CONFIG.GLOBAL_FIX_ATTEMPT_BUDGET` = 3); each outer iteration runs the orchestrator with `maxFixIterations: 1` so the outer loop owns the global generated-fix budget (no nested 3×3 cost).
+
+**Before any fix generation** (setup + baseline first — the cheapest, highest-signal gate):
+
+- `validator.setup()` — clones the target repo, `npm ci`/`install` (with `--ignore-scripts`), npm + Cypress binary caching.
+- `baselineCheck()` — runs the unmodified test `VALIDATION_PASS_COUNT` (3) times and classifies the `BaselineDisposition`: `all_failed` (proceed with repair), `all_passed` (failure was transient — skip repair), or `mixed` (flaky/inconclusive — skip repair). Any non-`all_failed` disposition returns `{ fixRecommendation: null, iterations: 0, repairTelemetry.status: 'skipped' }` without spending a single LLM call.
+
+Then, per iteration:
 
 1. `generateFixRecommendation(...)` — builds a `RepairContext`, spins up `SimplifiedRepairAgent` with model overrides, calls `repairAgent.generateFixRecommendation(...)`. Returns `{ fix, agentRootCause, agentInvestigationFindings, lastResponseId }` or `null`. Local validation retries intentionally start each full orchestrator run without a cross-iteration `previous_response_id`; the retry signal is the explicit sanitized `previousAttempt` block below.
 2. If `null` or no `proposedChanges` → break.
-3. **Blast-radius gate** (`requiredConfidence` in `src/pipeline/validator.ts`):
-   - `+10` to the required confidence if any changed path touches shared code (`/pageobjects/`, `/helpers/`, `/commands/`, ...).
-   - `+5` if 2+ files changed.
-   - Capped at `max(baseMin, 95)` — explicit user floor is never lowered.
-   - If the scaled threshold blocks the fix **because scaling kicked in** (not because confidence was just below the base threshold), set `autoFixSkipped=true` with the reasons; otherwise break silently.
-4. **Duplicate-fix fingerprint**: if this fix has the same `fixFingerprint(...)` as a previously failed fix in this loop, break. Prevents infinite retry-same-attempt loops.
-5. **First iteration only**: `validator.setup()` — clones the target repo, `npm ci`/`install`, optional Cypress binary cache. Then **`baselineCheck()`** — runs the test **3 consecutive times** without any fix applied. If all 3 pass, conclude the original failure was transient and return `{ fixRecommendation: null, autoFixResult: null, iterations: 0 }`. If any pass fails, short-circuit (it's a real failure).
-6. `applyFix` (on-disk patch using resolved-path containment), `runTest`.
-7. **On pass**: `pushAndCreatePR` (create branch, commit, push, open PR). Return with `autoFixResult.success = true`. Push-failure edge case: fix passed locally but push failed → return with `success=false` + `validationStatus=passed` (so operators can tell "the fix works, GitHub just rejected the push" apart from a real failure).
-8. **On fail**: add fingerprint to failed set, `validator.reset()` (git clean), build `previousAttempt` for next iteration with the failed fix diff + sanitized validation logs + prior agent reasoning. Loop.
+3. **Blast-radius gate** (`requiredConfidence` in `src/pipeline/validator.ts`) — see [Blast-radius confidence scaling](#blast-radius-confidence-scaling) for the full factor list. If the scaled threshold blocks the fix **because scaling kicked in** (not because confidence was just below the base threshold), set `autoFixSkipped=true` with the reasons; otherwise break silently.
+4. **In-run duplicate-fix fingerprint**: if this fix has the same `fixFingerprint(...)` as a previously failed fix in this loop, break. Prevents infinite retry-same-attempt loops.
+5. **Cross-run fingerprint dedupe**: `skillStore.findRecentFailedFingerprints(spec, 24h)` — if the fix is byte-equivalent to one already saved as a `validatedLocally=false` skill on the same spec within the last 24 hours, skip unconditionally with `autoFixSkipped=true`. This blocks duplicates even when their confidence clears the raised threshold.
+6. `applyFix` (on-disk patch using resolved-path containment), then **`validateFixPasses()`** — the fix must pass `VALIDATION_PASS_COUNT` (3) **consecutive evidence-bearing** test runs before publication; a single lucky pass is not enough.
+7. **On pass**: `pushAndCreatePR` (create branch, commit — staging **only** `changedFiles`, not `git add -A` — push, open PR). Return with `autoFixResult.success = true` and `validationStatus=passed`. Push-failure edge case: fix passed locally but push failed → return with `success=false` + `validationStatus=passed` (so operators can tell "the fix works, GitHub just rejected the push" apart from a real failure — surfaced as `repair_status=validated_publish_failed`).
+8. **On fail**: add fingerprint to failed set, record a terminal `validationStatus=failed` `ApplyResult` (this is what lets the coordinator persist the failed trajectory + fingerprint so the cross-run dedupe has data), `validator.reset()` (git clean), build `previousAttempt` for next iteration with the failed fix diff + sanitized validation logs + prior agent reasoning. Loop.
 9. **After the loop**: `validator.cleanup()` always runs (`try { ... } finally { ... }`).
 
 ### `ClassificationResult` vs `RepairResult`
@@ -164,6 +172,8 @@ interface RepairResult {
   agentInvestigationFindings?: string;
   autoFixSkipped?: boolean;
   autoFixSkippedReason?: string;
+  repairTelemetry?: RepairTelemetry;
+  baselineDisposition?: BaselineDisposition;  // explicit local baseline result
 }
 ```
 
@@ -206,8 +216,8 @@ All live under `src/agents/`. All except `CodeReadingAgent` extend `BaseAgent` a
   - `primaryFinding?`, `isTestCodeFixable`, `recommendedApproach`, `selectorsToUpdate[]`, `confidence`.
   - `verdictOverride?` — `{ suggestedLocation: 'TEST_CODE' | 'APP_CODE' | 'BOTH', confidence, evidence[] }`. Parse-time whitelist; invalid locations cause the entire `verdictOverride` to be dropped.
 - **Verdict override gates** (applied in orchestrator immediately after investigation runs):
-  - If `verdictOverride.suggestedLocation === 'APP_CODE'` **and** `verdictOverride.confidence >= analysis.confidence` → abort repair. The agent trusted investigation over analysis.
-  - If `!isTestCodeFixable && !verdictOverride` → abort repair. The agent concluded the failure is not test-fixable.
+  - If `verdictOverride.suggestedLocation` is `'APP_CODE'` **or** `'BOTH'` and `verdictOverride.confidence >= VERDICT_OVERRIDE_CONFIDENCE_THRESHOLD` (absolute, 70) → abort repair. The gate deliberately does NOT compare against `analysis.confidence` — analysis confidence measures certainty in a *root-cause category*, override confidence measures certainty in a *defect location*; comparing them apples-to-oranges rejected legitimate product-side overrides whenever analysis happened to be very sure of its (different) categorization. `BOTH` fires the gate just like `APP_CODE` — a product component in the failure means a test-side fix would paper over a real regression either way.
+  - If `!isTestCodeFixable` → abort repair unconditionally. The only sanctioned "not test-fixable but proceed anyway" case was a confident product-side override, and the gate above already converts that into an abort.
 - **Framework-aware prompt**: WebdriverIO shows `browser.*` command prefix; Cypress shows `cy.*`.
 
 ### Fix generation agent — `fix-generation-agent.ts`
@@ -221,7 +231,7 @@ All live under `src/agents/`. All except `CodeReadingAgent` extend `BaseAgent` a
   - **`failureModeTrace?`** — four sub-fields: `originalState`, `rootMechanism`, `newStateAfterFix`, `whyAssertionPassesNow`. This is the causal rationale the review agent audits; missing/vague trace is a CRITICAL rejection.
 - **System prompt composition** (see `getSystemPrompt` in `src/agents/fix-generation-agent.ts`):
   - `COMMON_PREAMBLE`
-  - Framework-specific patterns block — `CYPRESS_PATTERNS` for `cypress`, `WDIO_PATTERNS` for `webdriverio`. **Unknown / missing framework defaults to `CYPRESS_PATTERNS` only** (matches `action.yml`'s default `TEST_FRAMEWORKS: cypress`); `getSystemPrompt` emits a single `core.warning` per agent instance via the `warnedUnknownFramework` flag so the action log doesn't get spammed across the fix/review loop iterations.
+  - Framework-specific patterns block from the framework-profile registry (`src/config/framework-profiles.ts`) — `CYPRESS_PATTERNS` for `cypress`, `WDIO_PATTERNS` for `webdriverio`. **Unknown / missing framework gets a framework-NEUTRAL pattern block** (not Cypress) so an unattributed failure isn't pushed toward `cy.*` fixes; `getSystemPrompt` emits a single `core.warning` per agent instance via the `warnedUnknownFramework` flag so the action log doesn't get spammed across the fix/review loop iterations.
   - `COMMON_SUFFIX` containing the JSON output schema + `failureModeTrace` rules + `oldCode` rules (must verbatim-match source)
 - **Iteration**: driven by the orchestrator. Each iteration may receive `previousFeedback` from prior review issues or low-confidence / oldCode-validation rejections.
 
@@ -260,48 +270,43 @@ Every field and what it's for:
 | `includeScreenshots?` | Default `true`; orchestrator sets to `false` after investigation to conserve tokens. |
 | `investigationSummary?` | Short string used by downstream skill save. |
 | `priorInvestigationContext?` | Prior investigation findings from the skill store (for the investigation agent only). |
-| `repoContext?` | The `.adept-triage/context.md` block — prepended to every agent's system prompt. |
+| `repoContext?` | The `.adept-triage/context.md` block — rendered into every agent's **user prompt** as a delimited, explicitly untrusted context section (never system instructions). |
+| `abortSignal?` | Orchestration-level abort signal — on total-timeout the orchestrator aborts all in-flight agent calls so they stop consuming tokens. |
 
 ---
 
 ## Prompt composition
 
 ### System prompt
-For every agent except `CodeReadingAgent` (which doesn't call the LLM):
+For every agent except `CodeReadingAgent` (which doesn't call the LLM), the system prompt is the agent's role + rubric + output schema, unmodified. Fix-gen's system prompt additionally includes the framework pattern block (`CYPRESS_PATTERNS` / `WDIO_PATTERNS` / neutral, ~100 lines of canonical fix patterns) before the JSON schema.
 
-```
-<agent role + rubric + output schema>
-
-<repo conventions block, if context.repoContext is set>
-```
-
-`BaseAgent.runAgentTask` (`src/agents/base-agent.ts:267-270`) does this concatenation automatically. Empty `repoContext` collapses to no-op. **Order matters**: the agent's role frames the task; repo conventions refine "how this repo does things." Swapping the order would risk the model treating conventions as the primary task.
-
-Fix-gen's system prompt additionally includes `CYPRESS_PATTERNS` or `WDIO_PATTERNS` (~100 lines each of canonical fix patterns) before the JSON schema.
+Repo conventions are deliberately **not** in the system prompt. `.adept-triage/context.md` is branch-controlled consumer content, so `BaseAgent.runAgentTask` prepends it to the **user prompt** under a `### Repository conventions (untrusted user context)` header with an explicit instruction to treat it as repo-style evidence only, never system policy. Empty `repoContext` collapses to no-op.
 
 ### User prompt
 
 Each agent's `buildUserPrompt` is role-specific but composes these layers when present:
 
-1. `delegationContext` (orchestrator briefing from prior stages)
-2. `errorMessage`, diffs, code slices, screenshots metadata
-3. `skillsPrompt` (prior-fix memory)
-4. Role-specific instructions
+1. `repoContext` (delimited untrusted conventions block, prepended by `BaseAgent.runAgentTask`)
+2. `delegationContext` (orchestrator briefing from prior stages)
+3. `errorMessage`, diffs, code slices, screenshots metadata
+4. `skillsPrompt` (prior-fix memory)
+5. Role-specific instructions
 
 ### Skill-memory rendering
 
-Three entry points, different framings to prevent anchoring bias:
+Four entry points, different framings to prevent anchoring bias:
 
-- **`formatSkillsForPrompt(skills, role, flakiness?)`** — used by orchestrator before analysis/investigation/fix-gen/review. Role-specific header:
+- **`formatSkillsForPrompt(skills, role, flakiness?)`** — used by orchestrator before analysis/investigation/fix-gen/review. The orchestrator filters the skill list to seeds and validated skills (`isSeed || validatedLocally === true`) before rendering. Role-specific header:
   - `investigation`: "these patterns have been applied before — use as background; do NOT anchor."
   - `fix_generation`: "validated approaches are starting points; use the causal trace as a reasoning template."
   - `review`: "check alignment with prior validated patterns; weaker current trace is a WARNING signal."
-- **`formatForInvestigation({ framework, spec, errorMessage })`** — used by coordinator to build `investigationContext` passed through as `priorInvestigationContext`. Filters to skills that have `investigationFindings` set. Top 3 rendered as "Prior investigation for `<spec>` (<date>)".
-- **`formatSkillsForClassifierContext(skills)`** — used by coordinator for the classifier context block. Numbered lines of (errorPattern, rootCauseCategory, fix summary, confidence, optional classificationOutcome). Seed skills are explicitly labeled as curated guidance and do not render `classificationOutcome`, even if older seeded rows still carry one.
+- **`formatFailedTrajectoriesForPrompt(skills)`** — negative-evidence block appended for fix-gen and review only: prior fixes on this spec that did NOT validate ("do NOT repeat them unless you can explain why they will succeed now"), sourced from `findFailedTrajectories`.
+- **`formatForInvestigation({ framework, spec, errorMessage })`** — used by coordinator to build `investigationContext` passed through as `priorInvestigationContext`. Retrieves via `findRelevantForInvestigation` (seeds + validated only) and filters to skills that have `investigationFindings` set. Top 3 rendered as "Prior investigation for `<spec>` (<date>)".
+- **`formatSkillsForClassifierContext(skills)`** — used by coordinator for the classifier context block. Numbered lines of (errorPattern, rootCauseCategory, fix summary, confidence, optional classificationOutcome). Seed skills are explicitly labeled as curated guidance and do not render `classificationOutcome`, even if older seeded rows still carry one. `nonFixable` seeds render a hard directive that the failure needs human action, not a code fix.
 
 **Trace rendering** is gated to avoid feeding "how this fix reasoned" under skills that failed:
 - Only for roles `fix_generation` and `review`.
-- Only when the skill is validated (`validatedLocally === true` OR `successCount > 0`).
+- Only when the skill is validated (`validatedLocally === true` OR `successCount > 0`), and the runtime record hasn't contradicted that (suppressed when `successCount + failCount >= 3` with `successCount === 0` — see the trace-rendering safety net below).
 - Each trace sub-field capped at 200 chars.
 
 **Track-record wording** is three-state honest:
@@ -341,7 +346,7 @@ Defensive sanitizer applied to every model-adjacent string before it lands in a 
 
 `SimplifiedRepairAgent.generateFixRecommendation()` now has exactly one repair path: the agentic orchestrator. If the orchestrator cannot produce an approved fix, the method returns `null`; the coordinator reports that no safe fix was generated. There is no weaker fallback repair path.
 
-This is intentional. The removed legacy one-shot path bypassed the investigation agent, review agent, causal-trace enforcement, iterative feedback loop, and the upgraded `gpt-5.5` fix-gen/review model. A weak one-shot fix that happened to pass could be saved as a validated skill and pollute future memory. Failing honestly is safer than creating a low-quality fix.
+This is intentional. The removed legacy one-shot path bypassed the investigation agent, review agent, causal-trace enforcement, iterative feedback loop, and the full reasoning-model fix-gen/review pipeline. A weak one-shot fix that happened to pass could be saved as a validated skill and pollute future memory. Failing honestly is safer than creating a low-quality fix.
 
 ### Entry point
 
@@ -356,18 +361,18 @@ In `SimplifiedRepairAgent.generateFixRecommendation()` (`src/repair/simplified-r
 
 Happy path (`src/agents/agent-orchestrator.ts`):
 
-1. Wrap the whole pipeline in a `Promise.race` against a `totalTimeoutMs` timer (default **900,000 ms / 15 minutes** for GPT-5.5 xhigh latency). `BaseAgent.DEFAULT_AGENT_CONFIG.timeoutMs` uses the same value, so inner agent calls share the same budget.
-2. **Analysis** — receives `skillsPrompt` pre-rendered with role `investigation` (by design — analysis shares investigation's "don't anchor" framing). Local-validation retries start analysis fresh from an API-history perspective; they receive prior failure state through the explicit `previousAttempt` context instead.
+1. Wrap the whole pipeline in a `Promise.race` against a `totalTimeoutMs` timer (default **900,000 ms / 15 minutes** — reasoning models can spend minutes per fix-gen/review round). On timeout an `AbortController` shared through `context.abortSignal` cancels all in-flight agent calls so they stop consuming tokens. `BaseAgent.DEFAULT_AGENT_CONFIG.timeoutMs` uses the same value, so inner agent calls share the same budget.
+2. **Analysis** — receives `skillsPrompt` pre-rendered with role `investigation` (by design — analysis shares investigation's "don't anchor" framing), filtered to seeds + validated skills. Local-validation retries start analysis fresh from an API-history perspective; they receive prior failure state through the explicit `previousAttempt` context instead.
 3. **Code reading** — no LLM, no chaining. Sets `context.sourceFileContent` (line-numbered) and `context.relatedFiles`.
 4. **Investigation** — chains to analysis **only** when `analysis.confidence < AGENT_CONFIG.INVESTIGATION_CHAIN_CONFIDENCE` (default **80**). Lower analysis confidence = pull in analysis's reasoning context; higher = start fresh to avoid cascading over-confident analysis.
-5. **Verdict gates** — abort repair if `verdictOverride.suggestedLocation === 'APP_CODE'` with high-enough confidence, or if `!isTestCodeFixable && !verdictOverride`.
-6. **Fix-gen / review loop** — up to `maxIterations` (default **3**). Each iteration:
-   - Set `delegationContext` and `skillsPrompt` for fix-gen.
-   - Run fix-gen with shared `fixReviewChainId` (Responses-API chain within the same run).
-   - `autoCorrectOldCode` tries to snap near-miss `oldCode` strings to exact source matches.
+5. **Verdict gates** — abort repair if `verdictOverride.suggestedLocation` is `APP_CODE` or `BOTH` with confidence `>= VERDICT_OVERRIDE_CONFIDENCE_THRESHOLD` (70, absolute), or if `!isTestCodeFixable` (unconditional).
+6. **Fix-gen / review loop** — up to `maxIterations` (default **3**; the local-validation path passes **1** so the outer loop owns the budget). Before each round, a wall-clock budget guard requires at least `MIN_FIX_GEN_BUDGET_MS` (180s) + `MIN_REVIEW_BUDGET_MS` (120s) remaining, otherwise the loop stops early with honest telemetry instead of starting a round it can't finish. Each iteration:
+   - Set `delegationContext` and `skillsPrompt` (validated skills + failed-trajectory negative evidence) for fix-gen.
+   - Run fix-gen. Fix/review stages intentionally do NOT chain `previous_response_id` — their prompts already carry full prior-stage context.
+   - `autoCorrectOldCode` tries to snap near-miss `oldCode` strings to exact source matches (dropping changes it can't match).
    - If confidence `< minConfidence` (default **70**), set `reviewFeedback` and continue.
-   - If `requireReview`: run review with the same chain id.
-   - Approved + no blocking CRITICALs → return fix with `approach: 'agentic'`.
+   - If `requireReview`: run review. Approval requires `review.approved` **and** `review.fixConfidence >= minConfidence`.
+   - Approved → return fix with `approach: 'agentic'` and `repair_status=approved`.
    - Not approved → build `reviewFeedback` from issues + (if blocking CRITICAL with prior trace) explicit replay of `previousFix.failureModeTrace` → next iteration.
 7. **Max iterations — review approval is mandatory** — if the review loop exhausts its iterations without the review agent approving the last fix, the orchestrator returns an error regardless of the fix's confidence. There is no "ship unapproved but high-confidence fix" fallback. Pre-v1.52.4 there was a narrow fallback that shipped the last high-confidence fix when it had no blocking quality CRITICALs, with a warning that validation was the final gate. That path was removed because it still allowed unapproved fixes to reach validation and skill storage, undermining the agentic-only repair contract. The orchestrator now classifies the refusal reason (`unresolved quality CRITICAL(s)` vs `max iterations reached without review approval`) for telemetry and logs it, but in every case returns `null` up to the coordinator.
 
@@ -389,6 +394,7 @@ Fields (`src/services/skill-store.ts`) and what they mean:
 | `errorPattern` | `normalizeError(errorMessage)` | Structural shape for similarity matching. |
 | `rootCauseCategory` | Analysis / inference | One of the analysis enum values. |
 | `fix: { file, changeType, summary, pattern }` | Fix-gen / callers | What the fix was. |
+| `fixFingerprint?` | `fixFingerprint(recommendation)` at save | Stable fingerprint of the change set; powers cross-run duplicate detection and reinforcement matching. Missing on legacy skills (they just opt out of the dedupe). |
 | `confidence`, `iterations` | Repair loop | At save time. |
 | `prUrl` | Coordinator (when PR created) | Trust signal for fix-gen/review; empty when local-only. |
 | `validatedLocally` | Coordinator (local path) | Gates classifier retrieval + trace rendering. |
@@ -400,19 +406,21 @@ Fields (`src/services/skill-store.ts`) and what they mean:
 | `investigationFindings` | `summarizeInvestigationForRetry` | Rendered by `formatForInvestigation`. |
 | `repoContext?` | Callers (seeds optional) | Per-skill note; distinct from the global `.adept-triage/context.md`. |
 | `failureModeTrace?` | Fix-gen | The 4-field causal trace (v1.48.1/v1.49.1). |
+| `failedFixEvidence?` | Coordinator (failed validations) | Structured evidence from the validation failure that falsified this fix (failure signatures, failed assertion, stage). Rendered only as "what did not work," never as a success template. |
+| `nonFixable?` | Seed CLI only | Marks the failure pattern as not fixable by code in this repo. A match (`findNonFixableMatch`) short-circuits repair before it starts. |
 | **`isSeed?`** | Seed CLI only | Audit-script exemption (skipped by every per-skill maintenance rule) + prompt-framing label (v1.52.0). |
 
 ### DynamoDB layout
 
 - **Table**: `triage-skills-v1-live` (configurable via `TRIAGE_DYNAMO_TABLE`).
 - **Partition key** `pk` = `REPO#<owner>/<repo>`.
-- **Sort key** `sk` = `SKILL#<id>`.
+- **Sort key** `sk` = `SKILL#<id>` for skills. The same table also holds durable failure events (`FAILURE#<timestamp>#<runId>`), run-outcome events (`OUTCOME#<timestamp>#<runId>`), and source-run admission-gate records (`TRIAGE_GATE#<sourceRunId>#ATTEMPT#<n>`).
 - **Auth**: AWS SDK default provider chain — the action does NOT wire OIDC or reference a role ARN in code. Consumer workflows typically use `aws-actions/configure-aws-credentials@v4` with OIDC before this action runs.
 - **No partition cap**. Partitions grow unbounded; manual cleanup via `scripts/audit-skills.ts` is the operator path for trimming the long tail.
 
 ### Never-reject contracts
 
-`load()`, `save()`, `recordOutcome()`, `recordClassificationOutcome()` ALL have an explicit never-reject contract:
+`load()`, `save()`, `recordOutcome()`, `reinforceSkill()`, `recordClassificationOutcome()` ALL have an explicit never-reject contract:
 
 - Errors are caught, logged (warning level), and translated to sentinel states (empty cache, in-memory rollback, skipped update).
 - The coordinator awaits these without `.catch(...)` and relies on this — a DynamoDB outage must not take down triage.
@@ -423,11 +431,11 @@ As of the manual-skill-lifecycle refactor, the agent does NOT auto-prune or auto
 
 The operator-facing surface is `scripts/audit-skills.ts`, which:
 
-- Flags high-fail-rate skills (`>40%` failure with `≥3` attempts) as `WARN` with `action: 'retire'`. The thresholds match the old auto-retire heuristic so the manual surface matches what the agent used to do automatically. Operators run `--retire-flagged` to silence them.
-- Flags worse offenders (empty/stub fix summaries, obvious junk) as `DELETE`. Operators run `--delete-flagged` to remove them.
+- Flags high-fail-rate skills (`>40%` failure with `≥3` recorded outcomes) as `WARN` with `action: 'retire'`. The thresholds match the old auto-retire heuristic so the manual surface matches what the agent used to do automatically. Operators run `--retire-flagged` to silence them.
+- Flags failed trajectories, generic-only legacy skills, noisy `classificationOutcome='incorrect'` rows (use `--clear-noisy-incorrect`), short fix summaries, and duplicate spec+test rows — see [Audit tooling](#audit-tooling). A `--delete-flagged` flag exists for `DELETE`-severity findings, but no current rule emits that severity.
 - Skips seeds entirely (`isSeed === true` skips every per-skill rule).
 
-Retirement still has runtime effect: retrieval helpers (`findRelevant`, `findForClassifier`, `findNonFixableMatch`, `countForSpec`) exclude retired skills, so a manual `--retire-flagged` is enough to stop a skill from reaching LLM prompts. `detectFlakiness` intentionally still counts retired skills so the chronic-flakiness gate stays integral on specs whose patterns have all been silenced.
+Retirement still has runtime effect: retrieval helpers (`findRelevant` and everything built on it, `findForClassifier`, `findNonFixableMatch`, `countForSpec`) exclude retired skills, so a manual `--retire-flagged` is enough to stop a skill from reaching LLM prompts. `detectFlakiness` intentionally still counts retired skills so the chronic-flakiness gate stays integral on specs whose patterns have all been silenced (it does, however, exclude seeds — a curated seed batch is not runtime fix-attempt evidence).
 
 ### Trace-rendering safety net
 
@@ -437,11 +445,16 @@ With auto-retire gone, a skill saved with `validatedLocally: true` will continue
 
 - **`normalizeSpec`** (v1.52.0) — strips GitHub Actions runner prefixes (Linux `/home/runner/work/<repo>/<repo>/`, Windows `D:\a\<repo>\<repo>\`) and leading `./`. Applied at **write time** in `buildSkill` and at **read time** in `findRelevant`, `findForClassifier`, `detectFlakiness`, `countForSpec`. This is what makes relative-path seeds match runtime absolute-path failures.
 
-| Method | Filter | Scoring | Limit |
+| Method | Filter | Scoring / behavior | Limit |
 |---|---|---|---|
-| `findRelevant({ framework, spec, errorMessage, limit })` | `!retired` + framework | spec-match `+10`, error-similarity Jaccard × 5 | 5 |
-| `findForClassifier({ framework, spec, errorMessage })` | `!retired` + framework + **`validatedLocally === true`** | spec-match `+15`, error-similarity × 5, `+3` recency (lastUsedAt within 7d) | 3 |
-| `detectFlakiness(spec)` | (counts retired) | Windowed: `>1` in 3d → flaky; `>2` in 7d → flaky | — |
+| `findRelevant({ framework, spec, errorMessage, limit, eligible?, minErrorSimilarity? })` | `!retired` + framework (an `unknown` query framework drops the filter) + optional eligibility predicate; when error text exists, skills below `minErrorSimilarity` score 0 | spec-match `+10`, error-similarity Jaccard × 5 | 5 |
+| `findRelevantForInvestigation(...)` | `findRelevant` with `eligible: isSeed \|\| validatedLocally`, `minErrorSimilarity: 0.15` | same | 5 |
+| `findFailedTrajectories(...)` | `findRelevant` with `eligible: !isSeed && !validatedLocally && failCount > 0`, `minErrorSimilarity: 0.15` | same — negative evidence for fix-gen/review | 3 |
+| `findForClassifier({ framework, spec, errorMessage })` | `!retired` + framework + **`validatedLocally === true`**; error-similarity `< 0.15` scores 0 when error text exists | spec-match `+15`, error-similarity × 5, `+3` recency (lastUsedAt within 7d) | 3 |
+| `findNonFixableMatch({ framework, spec, errorMessage })` | `nonFixable === true` + `!retired` + framework + **exact normalized-spec match** | best error similarity `>= 0.3` Jaccard, or no match | 1 |
+| `detectFlakiness(spec)` | counts retired, **excludes seeds** | Windowed: `>1` in 3d → flaky; `>2` in 7d → flaky | — |
+| `countRecentFailedTrajectories(spec, windowMs)` / `findRecentFailedFingerprints(spec, windowMs)` | `!isSeed` + `!retired` + `validatedLocally === false` + within window (fingerprint variant also requires `fixFingerprint`) | Count / fingerprint list — feeds the recent-failure confidence boost and cross-run dedupe | — |
+| `findReinforcementTarget({ spec, testName, fixFingerprint })` | `!retired` + `!isSeed` + same `fixFingerprint` + same normalized spec | prefers exact `testName` match, then recency | 1 |
 | `countForSpec(spec)` | `!retired` | Count | — |
 
 ### `RepoContextFetcher` (v1.52.0)
@@ -467,7 +480,7 @@ A static map of `<owner>/<repo>` → raw markdown string. Used for repos where a
 
 ### Wiring into agent prompts
 
-Coordinator calls `RepoContextFetcher.fetch(...)`, threads `repoContext` through validator → repair-agent → `createAgentContext({ repoContext })`, and `BaseAgent.runAgentTask` appends it to every agent's system prompt.
+Coordinator calls `RepoContextFetcher.fetch(...)` against the trusted base branch, threads `repoContext` through validator → repair-agent → `createAgentContext({ repoContext })`, and `BaseAgent.runAgentTask` prepends it to every agent's **user prompt** as a delimited untrusted-context block (branch-controlled consumer content never becomes system instructions).
 
 ### Seed skills (v1.52.0)
 
@@ -479,7 +492,7 @@ Seeds are normal skills with `isSeed: true` and these defaults:
 - `successCount: 0`
 - `classificationOutcome: 'unknown'`
 
-These defaults make seeds immediately eligible for `findForClassifier` (which requires `validatedLocally === true`) without making them look empirically successful. Prompt renderers label `isSeed` rows as curated operator-provided guidance and suppress `classificationOutcome` for seeds, so a bootstrap exemplar does not overstate runtime evidence. Seeds score the same way as auto-saved skills; the `isSeed` flag affects pruning, audit behavior, and prompt trust framing.
+These defaults make seeds immediately eligible for `findForClassifier` (which requires `validatedLocally === true`) without making them look empirically successful. Prompt renderers label `isSeed` rows as curated operator-provided guidance and suppress `classificationOutcome` for seeds, so a bootstrap exemplar does not overstate runtime evidence. Seeds score the same way as auto-saved skills; the `isSeed` flag affects audit behavior, prompt trust framing, and exclusion from flakiness counts, reinforcement, and failed-trajectory retrieval. A seed may also set `nonFixable: true` to feed the coordinator's non-fixable gate.
 
 **CLI**: `scripts/seed-skill.ts` takes a single file, a directory (recursive), `--list`, or `--remove <id-prefix>`. Validates `SeedInput` shape before inserting. Applies `normalizeSpec` and `normalizeError` the same way `buildSkill` does.
 
@@ -490,13 +503,14 @@ These defaults make seeds immediately eligible for `findForClassifier` (which re
 | Severity | Check | Action flag |
 |---|---|---|
 | WARN | Failed trajectory (`!validatedLocally && !retired`) | `--retire-flagged` |
-| INFO | `rootCauseCategory === 'OTHER'` (legacy pre-April-2026 data) | — |
+| INFO | `rootCauseCategory === 'OTHER'` (should be a specific category) | — |
+| WARN | Generic-only legacy row (`OTHER` + no findings + `fix.changeType` missing/`OTHER`) | `--retire-flagged` |
 | WARN | `classificationOutcome === 'incorrect'` (pre-v1.50.1 noisy writer) | `--clear-noisy-incorrect` |
 | INFO | Empty `investigationFindings` | — |
-| WARN | Empty or very short fix summary | — |
+| WARN | Empty or very short fix summary (<20 chars) | — |
 | INFO | Stale (>30d no activity) | — |
-| WARN | High fail rate (`>40%` with `>=3` attempts) — retire candidate (replaces the agent's old auto-retire mechanism) | `--retire-flagged` |
-| WARN | Duplicate spec+test (newer than one active skill) | `--retire-flagged` |
+| WARN | High fail rate (`>40%` with `>=3` recorded outcomes) — retire candidate (replaces the agent's old auto-retire mechanism) | `--retire-flagged` |
+| WARN | Duplicate spec+test (older than the most recently used active skill) | `--retire-flagged` |
 
 **Seeds are skipped** for all per-skill checks and for the duplicate-group check (seeds legitimately cover multiple failure modes of the same test).
 
@@ -519,25 +533,40 @@ Used when **all** of these are true:
 - `VALIDATION_TEST_COMMAND` is set
 - `AUTO_FIX_TARGET_REPO` resolves
 
-Flow: `iterativeFixValidateLoop` → `LocalFixValidator` clones the target repo into a temp dir, installs deps, optionally caches the Cypress binary, does a 3-consecutive-pass baseline check (`BASELINE_PASS_COUNT = 3`, v1.50.1), then per iteration applies the fix, runs the test command, and on pass pushes a branch + opens a PR.
+Flow: `iterativeFixValidateLoop` → `LocalFixValidator` clones the target repo into a temp dir, installs deps (`npm ci --ignore-scripts`, npm + Cypress binary caching), runs the multi-attempt baseline check (`VALIDATION_PASS_COUNT = 3`, disposition-based — see below) **before any fix generation**, then per iteration applies the fix, runs `validateFixPasses()` (3 consecutive evidence-bearing passes), and on pass pushes a branch + opens a PR.
 
 `{spec}` and `{url}` in `VALIDATION_TEST_COMMAND` are substituted from `VALIDATION_SPEC` / `VALIDATION_PREVIEW_URL` (or from the `spec` in the dispatch payload).
 
+Hardening in `LocalFixValidator` worth knowing:
+
+- **Env filtering** (`shouldDropEnvVar` / `filterEnv`): test subprocesses get a filtered environment — a hybrid of an explicit deny-list (agent credentials: `GITHUB_TOKEN`, `OPENAI_API_KEY`, `CROSS_REPO_PAT`, `AWS_*`, OIDC request vars, Slack webhook, and their `INPUT_*` mirrors), a categorical credential-name pattern (`TOKEN|SECRET|PASSWORD|KEY|PAT|...`) that catches future credentials without code changes, and a small audited allow-override set for test-needed credentials (`SAUCE_*`, `MAILOSAUR_API_KEY`, `CYPRESS_RECORD_KEY`, `BROWSERSTACK_*`).
+- **Spec safety**: the spec path must match a strict pathspec regex (alphanumerics + `_-./`), contain no `..`, and resolve to an existing file inside the clone workdir — a shell-injection defense for log-extracted spec paths interpolated into `execSync`.
+- **Test evidence verification** (`verifyTestEvidence`): exit code 0 alone is not proof tests ran (piped runners without `pipefail`, "no spec files found"). Passes without concrete pass evidence are treated as failures so false validations can't poison the skill store.
+
 ### Remote path (legacy)
 
-Used when the local conditions aren't met and `ENABLE_AUTO_FIX === 'true'` + `ENABLE_VALIDATION === 'true'`. `attemptAutoFix` applies the fix via the GitHub API (creates a branch, commits, opens a PR), then `triggerValidation` dispatches `VALIDATION_WORKFLOW` (default `validate-fix.yml`) on the target repo. `validation_run_id` + `validation_url` are surfaced on the action output.
+Used when the local conditions aren't met and `ENABLE_AUTO_FIX === 'true'` + `ENABLE_VALIDATION === 'true'`. `attemptAutoFix` first re-checks the blast-radius gate and the cross-run fingerprint dedupe (its only duplicate defense — there's no in-loop fingerprint set on this path), applies the fix via the GitHub API (creates a branch, commits), opens a **draft PR** best-effort, then `triggerValidation` dispatches `VALIDATION_WORKFLOW` (default `validate-fix.yml`) on the target repo, waits for the run (`waitForValidation`), records the structured `ValidationResult`, and finalizes the PR with the validation outcome. `validation_run_id` + `validation_url` are surfaced on the action output.
 
-### Baseline check short-circuit
+### Baseline disposition
 
-On the first failing run in the 3-pass baseline, the validator short-circuits — we already know the test legitimately fails, no point running the other two. On 3/3 passes, we return `fixRecommendation: null` + `iterations: 0` — the original failure was transient and no fix is needed.
+The baseline runs all `VALIDATION_PASS_COUNT` (3) attempts against the unmodified test and classifies the result:
+
+- `all_failed` — the failure is real; proceed with repair.
+- `all_passed` — the original failure was transient; return `fixRecommendation: null` + `iterations: 0`, no fix needed.
+- `mixed` — flaky/inconclusive; also skip repair (publishing a fix validated against a flaky baseline would be unsafe).
+
+Because the baseline runs before any fix generation, a transient flake — the modal CI failure — costs three test runs, not a 15-minute multi-agent repair budget.
 
 ### Blast-radius confidence scaling
 
-`requiredConfidence(fix, baseMin)` scales up the required confidence based on change scope:
+`requiredConfidence(fix, baseMin, { recentFailedTrajectories })` scales up the required confidence based on change scope (`BLAST_RADIUS` in `src/config/constants.ts`):
 
-- `+10` if any changed path matches a shared-code fragment (`/pageobjects/`, `/helpers/`, `/commands/`, ...).
-- `+5` if the fix touches 2+ files.
-- Scaled threshold is capped at `max(baseMin, 95)`.
+- `+10` (`SHARED_CODE_BOOST`) if any changed path matches a shared-code fragment (`/pageobjects/`, `/helpers/`, `/commands/`, ...).
+- `+5` (`MULTI_FILE_BOOST`) if the fix touches 2+ files.
+- `+5` (`GLOBAL_TIMEOUT_BOOST`) if a change introduces a large (≥30s) global timeout that `oldCode` didn't have — wide semantic blast radius even in a single file.
+- `+5` (`HELPER_CONTRACT_CHANGE_BOOST`) if a shared-code change makes a helper rethrow where the old code didn't (`newCode` adds `throw`) — every existing caller is affected.
+- `+8` per recent failed trajectory on the same spec within 24h (`RECENT_FAILED_TRAJECTORY_BOOST`, capped at `+16`).
+- Scaled threshold is capped at `max(baseMin, 95)` — an explicit user floor is never lowered.
 
 `auto_fix_skipped` is set **only** when scaling raised the bar — a fix that fails only the base threshold isn't flagged as "skipped by policy" because no policy kicked in.
 
@@ -551,7 +580,8 @@ On the first failing run in the 3-pass baseline, the validator short-circuits �
 |---|---|
 | `TEST_ISSUE` | Test code problem; may trigger fix recommendation / auto-fix. |
 | `PRODUCT_ISSUE` | Real app regression; no fix proposed. |
-| `INCONCLUSIVE` | Confidence below threshold; no fix proposed. |
+| `INCONCLUSIVE` | Confidence below threshold, or the infrastructure fast-path fired (session-creation failure); no fix proposed. |
+| `TRIAGE_LIMIT_REACHED` | The source workflow attempt already used its triage budget (`TRIAGE_RUN_GATE.MAX_ATTEMPTS = 2`); the run exits without classifying. |
 | `PENDING` | The referenced workflow run hasn't finished yet (same-workflow mode). |
 | `NO_FAILURE` | No failing job detected. |
 | `ERROR` | Unrecoverable failure (missing inputs, etc.). `core.setFailed(...)`. |
@@ -574,9 +604,10 @@ All values are strings (GitHub Actions convention). JSON blobs are stringified J
 
 ### Error contracts
 
-- **`index.ts` top-level catch** — builds an `ERROR` verdict inline and calls `core.setFailed(...)`. Backstop for anything that escapes the coordinator.
+- **`index.ts` top-level catch** — delegates to `setErrorOutput(...)`, which emits the `ERROR` verdict outputs and calls `core.setFailed(...)`. Backstop for anything that escapes the coordinator.
 - **`setErrorOutput(reason)`** — used by `handleNoErrorData` when no failure can be located; calls `core.setFailed(reason)`.
 - **`setInconclusiveOutput`** — does NOT call `core.setFailed`; the run is a clean pass but the verdict is `INCONCLUSIVE`.
+- **Repair-stage isolation** — a throw from `repair()` publishes the already-computed classification with degraded repair telemetry instead of escalating to `ERROR`; repair is best-effort, classification is the product.
 - **Never-reject contract** applies to all `SkillStore` methods + `RepoContextFetcher.fetch` — the learning loop must never take down triage.
 
 ---
@@ -592,10 +623,11 @@ Every grep-stable log line, what it means, and when to care.
 | `📝 Loaded N skill(s) from DynamoDB (<table>) for <owner>/<repo>` | Skills loaded. If missing, check AWS creds / table / region. |
 | `📝 skill-telemetry role=<role> count=<n> ids=<csv>` | Which skills reached which prompt on this run. Proves retrieval is actually working. |
 | `📊 skill-telemetry-summary loaded=N surfaced=M saved=K` | Per-run rollup. Emitted even when all zero (explicit "no activity"). |
-| `📊 learning-telemetry baseline=<passed or failed> ...` | Baseline outcome and duration for local validation. |
+| `📊 learning-telemetry baseline=<all_failed \| all_passed \| mixed> ...` | Baseline disposition (and duration) for local validation; non-`all_failed` dispositions log `validation=skipped iterations=0`. |
 | `📊 learning-telemetry validation=<passed or failed> iteration=N ...` | Local validation test outcome by iteration. |
-| `📊 learning-telemetry verdict=<verdict> savedSkillId=<id> fixSucceeded=<bool> iterations=N` | Connects a saved skill to the verdict and validation outcome that produced it. |
-| `📝 Saved validated skill <id>` / `📝 Saved failed skill trajectory <id>` | Skill persisted after a fix attempt. |
+| `📊 learning-telemetry verdict=<verdict> savedSkillId=<id> validationPassed=<bool> publishSucceeded=<bool> iterations=N` | Connects a saved skill to the verdict, validation, and publish outcomes that produced it (`reinforcedSkillId=` variant when an existing skill was reinforced instead). |
+| `📝 Saved validated skill <id>` / `📝 Saved failed skill trajectory <id>` / `📝 Reinforced existing skill <id>` | Skill persisted (or reinforced in place) after a fix attempt. |
+| `📝 Skipping skill outcome write ...` | Skill write gated: remote validation still pending, or no terminal validation result. |
 | `[<AgentName>] Token usage: N` / `🧮 <model> analysis token usage: N` | OpenAI Responses API usage metadata when the API returns token counts. |
 
 ### Repo context
@@ -614,13 +646,16 @@ Every grep-stable log line, what it means, and when to care.
 | `🤖 Agentic approach: <approach>, iterations: N, time: Xms` | Agentic success with stats. |
 | `🤖 Agentic repair did not produce an approved fix; no weaker fallback repair path will run.` | Agentic repair failed honestly; no weaker repair path is attempted. |
 | `🔄 Fix-Validate iteration N/3` | Local validation loop iteration. |
-| `🧪 Running test locally...` | Local validation is running the test command. |
-| `🔍 Running baseline check — does the test pass without any fix? (requires 3 consecutive passes)` | Baseline gate. |
-| `✅ Baseline check passed — test passes without fix. Failure was likely transient.` | 3/3 passes, no fix needed. |
-| `❌ Baseline failed on pass N — short-circuiting.` | Baseline proved real failure. |
-| `⚠️ FLAKINESS DETECTED: <message>` | A spec is flaky but not chronic; repair still runs. |
-| `⏭️ Chronic flakiness: <message> Auto-fix skipped` | `CHRONIC_FLAKINESS_THRESHOLD` hit; human follow-up needed. |
-| `⏭️ Auto-fix skipped: <reason>` | Blast-radius gate or similar policy withheld a fix. |
+| `🔍 Running baseline check — does the unmodified test fail consistently? (requires 3/3 failures to proceed with repair)` | Baseline gate (runs before any fix generation). |
+| `✅ Skipping repair — baseline check passed without a fix (failure likely transient).` | `all_passed` disposition — no fix needed. The `mixed` variant logs `baseline mixed results (N pass / M fail)`. |
+| `❌ Baseline check confirmed consistent failure — proceeding with fix.` | `all_failed` disposition — real failure. |
+| `🧪 Running multi-pass local validation...` / `🧪 Validating applied fix — requires 3 consecutive evidence-bearing passes` | Post-fix validation (`validateFixPasses`). |
+| `⏭️  Infrastructure fast-path: <summary>` | Session-creation failure short-circuited to `INCONCLUSIVE` without an LLM call. |
+| `⏭️  Non-fixable failure pattern matched (seed <id>): <summary>` | Non-fixable seed gate skipped repair; manual intervention required. |
+| `⚠️ FLAKINESS DETECTED: <message>` | A spec is flaky — this same signal drives the chronic-flakiness gate. |
+| `⏭️  Chronic flakiness: <message> Auto-fix skipped` | `detectFlakiness` returned `isFlaky`; human follow-up needed. |
+| `⏭️ Auto-fix skipped: <reason>` | Blast-radius gate, cross-run fingerprint dedupe, or similar policy withheld a fix. |
+| `✅ Source-run triage slot N/2 claimed for workflow <id> attempt <n>` | Source-run admission gate accounting. |
 
 ---
 
@@ -633,31 +668,37 @@ Every numeric / string default operators might want to know.
 | `CONFIDENCE_THRESHOLD` | `70` | `action.yml` input |
 | `AUTO_FIX_MIN_CONFIDENCE` | `70` | `action.yml` input |
 | `AUTO_FIX_BASE_BRANCH` | `main` | `action.yml` input |
+| `PERSIST_RESULTS` | `true` (set `false` to skip all DynamoDB writes, e.g. canary runs) | `action.yml` input |
 | `AUTO_FIX.BRANCH_PREFIX` | `fix/triage-agent/` | `src/config/constants.ts` |
-| `CHRONIC_FLAKINESS_THRESHOLD` | `3` | `src/config/constants.ts` |
-| Flakiness windows | `>1` fix in 3d OR `>2` in 7d | `src/services/skill-store.ts` `FLAKY_THRESHOLDS` |
+| `AUTO_FIX.BRANCH_DEDUPE_WINDOW_MS` | `6h` — an existing fix branch for the same spec within this window refuses a new attempt | `src/config/constants.ts` |
+| `TRIAGE_RUN_GATE.MAX_ATTEMPTS` | `2` triage runs per source workflow attempt | `src/config/constants.ts` |
+| Flakiness windows | `>1` fix in 3d OR `>2` in 7d (this IS the chronic-flakiness gate — no separate threshold constant) | `src/services/skill-store.ts` `FLAKY_THRESHOLDS` |
+| `VERDICT_OVERRIDE_CONFIDENCE_THRESHOLD` | `70` (absolute; fires for `APP_CODE` and `BOTH`) | `src/config/constants.ts` |
 | `BLAST_RADIUS.SHARED_CODE_BOOST` | `+10` | `src/config/constants.ts` |
 | `BLAST_RADIUS.MULTI_FILE_BOOST` | `+5` | `src/config/constants.ts` |
+| `BLAST_RADIUS.GLOBAL_TIMEOUT_BOOST` | `+5` (new ≥30s timeout in `newCode`) | `src/config/constants.ts` |
+| `BLAST_RADIUS.HELPER_CONTRACT_CHANGE_BOOST` | `+5` (shared file now rethrows) | `src/config/constants.ts` |
+| `BLAST_RADIUS.RECENT_FAILED_TRAJECTORY_BOOST` | `+8` per recent failed trajectory, capped `+16`, 24h window | `src/config/constants.ts` |
 | `BLAST_RADIUS.MAX_REQUIRED_CONFIDENCE` | `95` | `src/config/constants.ts` |
-| `FIX_VALIDATE_LOOP.MAX_ITERATIONS` | `3` | `src/config/constants.ts` |
+| `AGENT_CONFIG.GLOBAL_FIX_ATTEMPT_BUDGET` | `3` (owns the local-validation outer loop; `FIX_VALIDATE_LOOP.MAX_ITERATIONS` aliases it) | `src/config/constants.ts` |
 | `FIX_VALIDATE_LOOP.TEST_TIMEOUT_MS` | `900_000` | `src/config/constants.ts` |
-| `BASELINE_PASS_COUNT` | `3` | `src/services/local-fix-validator.ts` |
-| `AGENT_CONFIG.MAX_AGENT_ITERATIONS` | `3` | `src/config/constants.ts` |
+| `VALIDATION_PASS_COUNT` | `3` (baseline attempts AND post-fix consecutive passes) | `src/services/local-fix-validator.ts` |
+| `AGENT_CONFIG.MAX_AGENT_ITERATIONS` | `3` (remote path; local passes 1 per outer iteration) | `src/config/constants.ts` |
 | `AGENT_CONFIG.AGENT_TIMEOUT_MS` | `900_000` | `src/config/constants.ts` |
+| `MIN_FIX_GEN_BUDGET_MS` / `MIN_REVIEW_BUDGET_MS` | `180_000` / `120_000` (wall-clock guards before starting a fix/review round) | `src/agents/agent-orchestrator.ts` |
 | `BaseAgent.DEFAULT_AGENT_CONFIG.timeoutMs` | `AGENT_CONFIG.AGENT_TIMEOUT_MS` | `src/agents/base-agent.ts` |
-| `BaseAgent.DEFAULT_AGENT_CONFIG.maxTokens` | `OPENAI.MAX_COMPLETION_TOKENS` | `src/agents/base-agent.ts` |
+| `BaseAgent.DEFAULT_AGENT_CONFIG.maxTokens` | `OPENAI.MAX_COMPLETION_TOKENS` (each agent overrides with its `STAGE_MAX_OUTPUT_TOKENS` entry) | `src/agents/base-agent.ts` |
 | `AGENT_CONFIG.REVIEW_REQUIRED_CONFIDENCE` | `70` | `src/config/constants.ts` |
 | `AGENT_CONFIG.INVESTIGATION_CHAIN_CONFIDENCE` | `80` | `src/config/constants.ts` |
-| Skill retire-candidate threshold (operator-facing, audit-skills.ts rule 7) | `failRate > 0.4` AND `failCount >= 3` | `scripts/audit-skills.ts` |
+| Skill retire-candidate threshold (operator-facing, audit-skills.ts rule 7) | fail rate `> 0.4` with `>= 3` recorded outcomes | `scripts/audit-skills.ts` |
 | `REPO_CONTEXT_MAX_CHARS` | `6500` | `src/services/repo-context-fetcher.ts` |
-| `OPENAI.LEGACY_MODEL` | `gpt-5.5` (currently identical to `UPGRADED_MODEL`; the split is a structural rollback affordance) | `src/config/constants.ts` |
-| `OPENAI.UPGRADED_MODEL` | `gpt-5.5` (same as `LEGACY_MODEL` today; flipping fix-gen / review back is a one-line edit per the constants comment) | `src/config/constants.ts` |
-| `OPENAI.MAX_COMPLETION_TOKENS` | `24_000` | `src/config/constants.ts` |
-| `AGENT_MODEL.classification` | `LEGACY_MODEL` (`gpt-5.5`, high reasoning) | `src/config/constants.ts` |
-| `AGENT_MODEL.analysis` / `investigation` | `LEGACY_MODEL` (`gpt-5.5`, high reasoning) | `src/config/constants.ts` |
-| `AGENT_MODEL.fixGeneration` / `review` | `UPGRADED_MODEL` (`gpt-5.5`, xhigh reasoning) | `src/config/constants.ts` |
-| `REASONING_EFFORT.classification` / `analysis` / `investigation` | `high` | `src/config/constants.ts` |
-| `REASONING_EFFORT.fixGeneration` / `review` | `xhigh` | `src/config/constants.ts` |
+| `OPENAI.MODEL` | `gpt-5.6-sol` — the single production model for every stage (the old `LEGACY_MODEL` / `UPGRADED_MODEL` split is gone) | `src/config/constants.ts` |
+| `OPENAI.MAX_COMPLETION_TOKENS` | `24_000` (shared fallback; prefer per-stage ceilings) | `src/config/constants.ts` |
+| `STAGE_MAX_OUTPUT_TOKENS` | classification `4000`, analysis `6000`, investigation `8000`, fixGeneration `12000`, review `6000` | `src/config/constants.ts` |
+| `AGENT_MODEL.*` (all five stages) | `OPENAI.MODEL` (`gpt-5.6-sol`) | `src/config/constants.ts` |
+| `GPT56_CANDIDATE_MODEL` / `GPT56_CANDIDATE_REASONING` | all `gpt-5.6-sol` / all `high` — retained for replay evaluation and canary compatibility via `TRIAGE_MODEL_PROFILE=gpt56-candidate` | `src/config/constants.ts` |
+| `REASONING_EFFORT.*` (all five stages) | `high` | `src/config/constants.ts` |
+| Model resolution (`resolveAgentModel`) | explicit override (`MODEL_OVERRIDE_FIX_GEN` / `MODEL_OVERRIDE_REVIEW` input) > `TRIAGE_MODEL_PROFILE=gpt56-candidate` env > `AGENT_MODEL` pin. `resolveReasoningEffort` mirrors this and returns `none` for models without reasoning support (`supportsReasoningEffort`: `gpt-5.5*` / `gpt-5.6*`). | `src/config/constants.ts` |
 | `PRODUCT_REPO` | `adept-at/learn-webapp` | `action.yml` input |
 | `PRODUCT_DIFF_COMMITS` | `5` | `action.yml` input |
 | `TRIAGE_AWS_REGION` | `us-east-1` | `action.yml` input |
@@ -670,22 +711,31 @@ Every numeric / string default operators might want to know.
 
 Things that are load-bearing across the codebase. If you break one of these, something silently degrades rather than erroring.
 
-- **`SkillStore` never rejects**. `load()`, `save()`, `recordOutcome()`, `recordClassificationOutcome()` all catch and swallow errors (with warnings). The coordinator relies on `await` without `.catch(...)`.
+- **`SkillStore` never rejects**. `load()`, `save()`, `recordOutcome()`, `reinforceSkill()`, `recordClassificationOutcome()` all catch and swallow errors (with warnings). The coordinator relies on `await` without `.catch(...)`.
 - **`RepoContextFetcher.fetch` never rejects**. 404 and all other errors return `''` and the agent keeps running.
 - **`logRunSummary()` runs at every exit**. Wrapped in `try { runClassifyAndRepair(...) } finally { skillStore?.logRunSummary() }` in `execute()`. Guaranteed one summary line per run, even on throw.
 - **Bundled-context map keys must be lowercase**. Enforced by a test. `getBundledRepoContext` lowercases its lookup input.
 - **Bundled context takes precedence over in-repo context**. For repos in `BUNDLED_REPO_CONTEXTS`, the in-repo `.adept-triage/context.md` is never fetched. This is intentional — adding a repo to the bundle map is an explicit "keep it here" signal.
 - **`normalizeSpec` must be applied on both sides of equality**. Seeds write relative paths; runtime writes absolute paths. Without normalization on the read side, seeds are inert.
-- **No agent-driven skill mutation beyond save + counter updates**. The agent does not prune, retire, or delete skills. All cleanup is operator-driven via `scripts/audit-skills.ts`.
+- **No agent-driven skill mutation beyond save + counter/reinforcement updates**. The agent does not prune, retire, or delete skills (reinforcement only promotes — it never downgrades `validatedLocally`). All cleanup is operator-driven via `scripts/audit-skills.ts`.
 - **Seeds are exempted from every per-skill audit rule**. The `isSeed` guard at the top of `audit-skills.ts` skips the entire per-skill check loop — operators must use `scripts/seed-skill.ts --remove` to retire a seed.
 - **`validatedLocally: true` on seeds, but no synthetic success counter**. Without `validatedLocally`, seeds would never surface through `findForClassifier`; without the seed prompt label, they would look like runtime-proven memory.
 - **Local fix paths must be resolved inside the clone workdir**. `LocalFixValidator` uses `path.resolve(workDir, cleanPath)` and requires the resolved path to start with `${workDir}${path.sep}` so sibling-prefix paths cannot escape.
+- **Test subprocesses never see agent credentials**. `filterEnv` applies the explicit deny-list + credential-name pattern (with the audited test-credential overrides) to every `npm` / test-command invocation in `LocalFixValidator`.
+- **`pushAndCreatePR` stages only the fix's `changedFiles`**. Scaffold files written during setup (`.npmrc`, env files) must never land in a fix commit; the `git add -A` fallback exists only for legacy callers and explicitly unstages those files.
 - **Model confidence values are clamped at parse time**. Gates assume `0–100`; malformed model output must not bypass thresholds.
 - **Analysis `rootCauseCategory` is whitelisted at parse time**. A drifting model can't land arbitrary strings that propagate into storage + logs.
-- **Investigation `verdictOverride` trumps analysis when its confidence is >= analysis's**. Orchestrator aborts repair in this case; don't silently proceed.
+- **A product-side `verdictOverride` (`APP_CODE` or `BOTH`) at or above the absolute threshold (70) aborts repair**. It is deliberately NOT compared to `analysis.confidence` — the two confidences measure different things. A not-test-fixable verdict aborts unconditionally.
 - **Review approval is parsed safely**. Any CRITICAL issue forces `approved = false` even if the model claims `approved: true`.
 - **`sanitizeForPrompt` escapes triple backticks and injection keywords**. Every model-adjacent string goes through it before entering a prompt. Test-runner logs are adversarial.
 - **`retired` skills count in `detectFlakiness` but NOT in retrieval**. Retirement means "stop recommending"; flakiness means "stop auto-fixing." Different polarities; different filters.
+
+---
+
+## Known issues (open, salvaged from the May 2026 code review)
+
+- **Unconditional recency boost in `findForClassifier`** (`skill-store.ts`, scoring loop): any skill used within 7 days gets +3 regardless of spec or error relevance, which alone clears the `score > 0` surfacing filter — a recently-used but irrelevant skill can occupy one of the classifier's 3 memory slots.
+- **Blank-error Jaccard inflation in `errorSimilarity`** (`skill-store.ts`): `''.split(/\s+/)` yields `['']`, so the empty-set guard never fires and two blank/whitespace error strings score a perfect 1.0 similarity. Any retrieval path comparing two skills that both lack error text (e.g. `findNonFixableMatch`, similarity floors) treats them as identical failures.
 
 ---
 

@@ -1,8 +1,13 @@
 # Design: Failure Event Records + Weekly Failure Report
 
-Status: Approved for implementation
+Status: Implemented — shipped in v1.53.0
 Target version: v1.53.0 (minor — additive feature)
 Date: 2026-07-03
+
+> Implementation note: the feature shipped as designed with one divergence —
+> the weekly report script reads with per-repo `Query` instead of `Scan`
+> (see Task B below for why). The phased plan in section 5 is a historical
+> record of how the work was executed.
 
 ## 1. Problem
 
@@ -145,12 +150,15 @@ Model on `scripts/inspect-skills.ts` (env-var config, plain `console.log`,
 `npx tsx` execution, no build integration):
 
 - Config: `TRIAGE_DYNAMO_TABLE` (default `triage-skills-v1-live`),
-  `AWS_REGION` (default `us-east-1`), optional `--days N` argv (default 7).
-- Read path: `ScanCommand` with
-  `FilterExpression: 'begins_with(sk, :f) AND failedAt >= :start'`.
-  A scan is deliberate — the table is tiny, and scanning avoids maintaining a
-  hardcoded repo list (repos onboard/offboard). Paginate with
-  `LastEvaluatedKey` (scans return partial pages when filtered).
+  `AWS_REGION` (default `us-east-1`), optional `--days N` argv (default 7),
+  optional `TRIAGE_REPOS` (comma-separated `owner/repo` list overriding the
+  built-in default repo list).
+- Read path: per-repo `QueryCommand` with
+  `sk BETWEEN 'FAILURE#<start>' AND 'FAILURE#<end>'`. The design originally
+  called for a `ScanCommand` (to avoid maintaining a repo list), but the
+  operator read-only SSO role (DevProdReadOnly) allows `dynamodb:Query` on
+  this table and not `Scan`, so the shipped script queries each repo
+  partition instead. Paginate with `LastEvaluatedKey`.
 - Output (markdown to stdout, so it can be pasted into Slack/GitHub as-is):
   1. Header: window covered, total event count, per-repo totals.
   2. Main table sorted by count desc, grouped by `repo + spec + testName`:
@@ -247,7 +255,7 @@ aws dynamodb query --table-name triage-skills-v1-live \
 
 ### Phase 4 — E2E verification (testing methodology)
 
-Per `docs/E2E_TESTING_PLAN.md` Approach 3 (extended smoke script):
+Per the extended-smoke-script approach (formerly documented in `docs/E2E_TESTING_PLAN.md`, since removed — see git history):
 
 1. **Pre-flight:** verify `CROSS_REPO_PAT` is valid in the consumer repos
    (`gh secret list`). Verified 2026-07-03: the PAT was rotated 2026-06-03

@@ -2,7 +2,7 @@
 
 > Visual reference for how a triage run flows end-to-end.
 > For textual deep-dive, see [ARCHITECTURE.md](ARCHITECTURE.md).
-> **Current version:** v1.52.9
+> **Current version:** v1.55.2
 
 ---
 
@@ -23,32 +23,42 @@ flowchart TB
     DEPS --> COORDINATOR["new PipelineCoordinator"]
     COORDINATOR --> EXECUTE["coordinator.execute()"]
 
-    EXECUTE --> LOGS["processWorkflowLogs<br/>fetch logs + artifacts + screenshots"]
+    EXECUTE --> RUN_GATE{"source-run slot<br/>available?<br/>(max 2 triage runs per<br/>workflow attempt)"}
+    RUN_GATE -- no --> LIMIT["setTriageLimitOutput<br/>TRIAGE_LIMIT_REACHED"]
+    RUN_GATE -- yes --> LOGS["processWorkflowLogs<br/>fetch logs + artifacts + screenshots"]
 
     LOGS --> HAS_ERR{"errorData<br/>found?"}
     HAS_ERR -- no --> NO_ERR["handleNoErrorData()<br/>→ NO_FAILURE / PENDING / ERROR"]
-    HAS_ERR -- yes --> SKILL_LOAD["SkillStore.load()<br/>(if AWS creds in env)"]
+    HAS_ERR -- yes --> SKILL_LOAD["SkillStore.load()<br/>(if autoFixTargetRepo<br/>+ persistResults)"]
 
-    SKILL_LOAD --> CLASSIFY_STEP["classify()"]
+    SKILL_LOAD --> INFRA{"infra failure<br/>signature?<br/>(Sauce / WebDriver<br/>session creation)"}
+    INFRA -- yes --> INFRA_OUT["fast-path INCONCLUSIVE<br/>(no LLM round-trip)"]
+    INFRA -- no --> CLASSIFY_STEP["classify()<br/>(synthetic-canary specs skip<br/>the LLM → TEST_ISSUE)"]
 
     CLASSIFY_STEP --> CONF{"confidence >=<br/>threshold?"}
     CONF -- no --> INCONCL["setInconclusiveOutput"]
     CONF -- yes --> VERDICT{"verdict ==<br/>TEST_ISSUE?"}
     VERDICT -- no --> NON_TEST["setSuccessOutput<br/>(PRODUCT_ISSUE etc.)"]
-    VERDICT -- yes --> FLAKY{"chronically<br/>flaky spec?<br/>(fixCount >= 3)"}
+    VERDICT -- yes --> NONFIX{"non-fixable seed<br/>match?<br/>(findNonFixableMatch:<br/>exact spec + error<br/>Jaccard >= 0.3)"}
+    NONFIX -- yes --> NONFIX_OUT["autoFixSkipped=true<br/>setSuccessOutput<br/>(manual intervention required —<br/>no code fix applies)"]
+    NONFIX -- no --> FLAKY{"chronically<br/>flaky spec?<br/>(detectFlakiness isFlaky:<br/>&gt;1 fix in 3d or &gt;2 in 7d)"}
     FLAKY -- yes --> CHRONIC["autoFixSkipped=true<br/>setSuccessOutput<br/>(human follow-up)"]
     FLAKY -- no --> REPAIR_STEP["repair()"]
 
-    REPAIR_STEP --> SAVE_SKILL["Save skill to DynamoDB<br/>if fix attempted +<br/>skillStore + targetRepo"]
+    REPAIR_STEP --> SAVE_SKILL["Persist skill outcome<br/>if fix attempted + terminal<br/>validation result (see §6)"]
     SAVE_SKILL --> OUT["setSuccessOutput<br/>+ action outputs"]
 
-    OUT --> SUMMARY["logRunSummary()<br/>📊 skill-telemetry-summary<br/>(always fires)"]
-    NO_ERR --> SUMMARY
+    OUT --> SUMMARY["logRunSummary()<br/>📊 skill-telemetry-summary<br/>(try/finally — fires at every<br/>exit after errorData was found)"]
+    INFRA_OUT --> SUMMARY
     INCONCL --> SUMMARY
     NON_TEST --> SUMMARY
+    NONFIX_OUT --> SUMMARY
     CHRONIC --> SUMMARY
 
+    style LIMIT fill:#f8d7da,color:#000
     style CHRONIC fill:#fff3cd,color:#000
+    style NONFIX_OUT fill:#fff3cd,color:#000
+    style INFRA_OUT fill:#fff3cd,color:#000
     style INCONCL fill:#f8d7da,color:#000
     style NO_ERR fill:#f8d7da,color:#000
     style OUT fill:#d4edda,color:#000
@@ -67,7 +77,7 @@ flowchart TB
     FLAK_LOG -- yes --> WARN["⚠️ FLAKINESS DETECTED"]
     FLAK_LOG -- no --> CLASSIFIER_SKILLS
 
-    WARN --> CLASSIFIER_SKILLS["skillStore.findForClassifier({<br/>framework, spec, errorMessage })<br/>filter: validatedLocally + !retired<br/>score: +15 spec, +5×sim, +3 recent<br/>top 3"]
+    WARN --> CLASSIFIER_SKILLS["skillStore.findForClassifier({<br/>framework, spec, errorMessage })<br/>filter: validatedLocally + !retired<br/>+ errSim >= 0.15 when error text<br/>score: +15 spec, +5×sim, +3 recent<br/>top 3"]
 
     CLASSIFIER_SKILLS --> RENDER["formatSkillsForClassifierContext<br/>📝 skill-telemetry role=classifier"]
     RENDER --> MERGE["Merge:<br/>skillContext + flakinessContext"]
@@ -80,13 +90,13 @@ flowchart TB
 
 ## 3. Agentic repair pipeline — the five-agent orchestrator
 
-Happy path inside `AgentOrchestrator.orchestrate()` (`src/agents/agent-orchestrator.ts`). Wrapped in a `Promise.race` against `totalTimeoutMs = 900000` (15 minutes for GPT-5.5 xhigh latency).
+Happy path inside `AgentOrchestrator.orchestrate()` (`src/agents/agent-orchestrator.ts`). Wrapped in a `Promise.race` against `totalTimeoutMs = 900000` (15-minute budget for reasoning models). Every LLM stage runs on the single production model `gpt-5.6-sol` at reasoning effort `high` (`OPENAI.MODEL` via `resolveAgentModel`; precedence: explicit per-stage override > `TRIAGE_MODEL_PROFILE=gpt56-candidate` > `AGENT_MODEL` pin). Each fix/review round is additionally gated on remaining wall time (`MIN_FIX_GEN_BUDGET_MS = 180s` + `MIN_REVIEW_BUDGET_MS = 120s`).
 
 ```mermaid
 flowchart TB
     START["orchestrate(context, errorData,<br/>previousResponseId usually unset,<br/>skills)"]
-    START --> SKILL_PROMPT_A["context.skillsPrompt<br/>= formatSkillsForPrompt(skills, 'investigation', flakiness)"]
-    SKILL_PROMPT_A --> ANALYSIS["<b>Analysis Agent</b><br/>gpt-5.5 high<br/>→ rootCauseCategory, issueLocation,<br/>selectors, confidence"]
+    START --> SKILL_PROMPT_A["context.skillsPrompt<br/>= formatSkillsForPrompt(skills, 'investigation', flakiness)<br/>(seeds + validated skills only)"]
+    SKILL_PROMPT_A --> ANALYSIS["<b>Analysis Agent</b><br/>gpt-5.6-sol high<br/>→ rootCauseCategory, issueLocation,<br/>selectors, confidence"]
 
     ANALYSIS --> CODE_READ["<b>Code Reading Agent</b><br/>no LLM — direct octokit getContent<br/>→ test file + page objects + support files"]
 
@@ -98,24 +108,24 @@ flowchart TB
     CHAIN_NO --> SKILL_PROMPT_I
 
     SKILL_PROMPT_I["context.skillsPrompt<br/>= priorInvestigationContext<br/>+ baseInvestigationSkills"]
-    SKILL_PROMPT_I --> INVESTIGATION["<b>Investigation Agent</b><br/>gpt-5.5 high<br/>→ findings, recommendedApproach,<br/>selectorsToUpdate, isTestCodeFixable,<br/>verdictOverride?"]
+    SKILL_PROMPT_I --> INVESTIGATION["<b>Investigation Agent</b><br/>gpt-5.6-sol high<br/>→ findings, recommendedApproach,<br/>selectorsToUpdate, isTestCodeFixable,<br/>verdictOverride?"]
 
-    INVESTIGATION --> OVERRIDE{"verdictOverride<br/>APP_CODE with<br/>higher conf?"}
-    OVERRIDE -- yes --> ABORT_APP["ABORT:<br/>investigation outvoted analysis —<br/>not test-fixable"]
+    INVESTIGATION --> OVERRIDE{"verdictOverride<br/>APP_CODE or BOTH<br/>with conf >= 70?<br/>(absolute threshold)"}
+    OVERRIDE -- yes --> ABORT_APP["ABORT:<br/>confident product-side override —<br/>repair would paper over<br/>a real regression"]
     OVERRIDE -- no --> TEST_FIXABLE{"isTestCodeFixable?"}
-    TEST_FIXABLE -- no --> ABORT_TEST["ABORT:<br/>not test-code-fixable<br/>+ no override"]
+    TEST_FIXABLE -- no --> ABORT_TEST["ABORT (conservative):<br/>not test-code-fixable —<br/>fires even when a sub-threshold<br/>override exists"]
     TEST_FIXABLE -- yes --> LOOP_START
 
     LOOP_START["Fix/Review loop<br/>maxIterations = 3"]
-    LOOP_START --> FIX_GEN["<b>Fix Generation Agent</b><br/>gpt-5.5 xhigh<br/>+ CYPRESS_PATTERNS / WDIO_PATTERNS<br/>→ changes[], failureModeTrace (4 fields),<br/>confidence, reasoning"]
+    LOOP_START --> FIX_GEN["<b>Fix Generation Agent</b><br/>gpt-5.6-sol high<br/>+ CYPRESS_PATTERNS / WDIO_PATTERNS<br/>+ failed-trajectory negative evidence<br/>→ changes[], failureModeTrace (4 fields),<br/>confidence, reasoning"]
 
     FIX_GEN --> AUTO_CORRECT["autoCorrectOldCode<br/>(snap near-miss oldCode to source)"]
 
     AUTO_CORRECT --> CONF_GATE{"confidence >=<br/>70?"}
     CONF_GATE -- no --> FEEDBACK_CONF["reviewFeedback<br/>= low-confidence msg<br/>→ next iteration"]
-    CONF_GATE -- yes --> REVIEW["<b>Review Agent</b><br/>gpt-5.5 xhigh<br/>audits: oldCode match, trace quality,<br/>logical strengthening, APP_CODE justification,<br/>verdictOverride alignment,<br/>recommendedApproach honored"]
+    CONF_GATE -- yes --> REVIEW["<b>Review Agent</b><br/>gpt-5.6-sol high<br/>audits: oldCode match, trace quality,<br/>logical strengthening, APP_CODE justification,<br/>verdictOverride alignment,<br/>recommendedApproach honored"]
 
-    REVIEW --> APPROVED{"approved<br/>+ no CRITICAL?"}
+    REVIEW --> APPROVED{"approved +<br/>reviewer fixConfidence<br/>>= 70?"}
     APPROVED -- yes --> SHIP["return fix<br/>approach: agentic"]
     APPROVED -- no --> BLOCKING{"blocking<br/>CRITICAL?"}
     BLOCKING -- yes --> TRACE_REPLAY["reviewFeedback<br/>+ prior failureModeTrace<br/>replay → next iteration"]
@@ -185,8 +195,10 @@ flowchart TB
     FIX_ROLE --> GATE
     REV_ROLE --> GATE
 
-    GATE["TRACE RENDERING GATE<br/>(v1.49.2)<br/>• only for fix_gen + review<br/>• only when isValidated:<br/>  validatedLocally OR successCount > 0"]
+    GATE["TRACE RENDERING GATE<br/>(v1.49.2, tightened)<br/>• only for fix_gen + review<br/>• only when isValidated:<br/>  validatedLocally OR successCount > 0<br/>• suppressed when runtime contradicts:<br/>  successCount == 0 AND<br/>  successCount + failCount >= 3"]
 ```
+
+The orchestrator pre-filters what reaches `formatSkillsForPrompt` to seeds + `validatedLocally: true` skills for every role. Failed trajectories are rendered separately via `formatFailedTrajectoriesForPrompt` (negative evidence, fix-gen + review only: "these fixes were tried and did NOT validate").
 
 ---
 
@@ -194,43 +206,45 @@ flowchart TB
 
 ```mermaid
 flowchart TB
-    START["iterativeFixValidateLoop<br/>FIX_VALIDATE_LOOP.MAX_ITERATIONS = 3"]
+    START["iterativeFixValidateLoop<br/>FIX_VALIDATE_LOOP.MAX_ITERATIONS = 3<br/>(= GLOBAL_FIX_ATTEMPT_BUDGET)"]
 
-    START --> GEN["generateFixRecommendation<br/>(agentic only;<br/>previousResponseId undefined<br/>across local retries)"]
+    START --> SETUP["validator.setup()<br/>clone repo + npm ci<br/>+ optional Cypress binary"]
+    SETUP --> BASELINE["baselineCheck() FIRST —<br/>before any fix generation<br/>run unmodified test 3×<br/>(VALIDATION_PASS_COUNT = 3)"]
+    BASELINE --> BASELINE_DISP{"disposition?"}
+    BASELINE_DISP -- all_passed --> RETURN_TRANSIENT["return:<br/>fixRecommendation: null<br/>(transient or flaky/inconclusive —<br/>repair skipped, no LLM spend)"]
+    BASELINE_DISP -- mixed --> RETURN_TRANSIENT
+    BASELINE_DISP -- all_failed --> GEN
+
+    GEN["generateFixRecommendation<br/>(agentic only; maxFixIterations = 1<br/>per outer iteration;<br/>previousResponseId undefined<br/>across local retries)"]
     GEN --> NULL_CHK{"fix == null?"}
     NULL_CHK -- yes --> BREAK_EMPTY["break"]
     NULL_CHK -- no --> CHG_CHK{"proposedChanges<br/>empty?"}
     CHG_CHK -- yes --> BREAK_EMPTY
     CHG_CHK -- no --> BLAST
 
-    BLAST["requiredConfidence(fix, minConf)<br/>+10 shared code<br/>+5 multi-file<br/>cap: max(minConf, 95)"]
+    BLAST["requiredConfidence(fix, minConf)<br/>+10 shared code, +5 multi-file<br/>+5 global timeout >=30s<br/>+5 helper contract change (rethrow)<br/>+8 per recent failed trajectory (24h, cap +16)<br/>cap: max(minConf, 95)"]
     BLAST --> CONF_GATE{"fix.confidence<br/>>= requiredConf?"}
     CONF_GATE -- no + scaling --> SKIPPED["autoFixSkipped=true<br/>+ reason"]
     CONF_GATE -- no, no scaling --> BREAK_EMPTY
     CONF_GATE -- yes --> DUP_CHK
 
-    DUP_CHK["fixFingerprint<br/>matches previous failed?"]
+    DUP_CHK{"fixFingerprint matches<br/>an earlier failed attempt<br/>in THIS run?"}
     DUP_CHK -- yes --> BREAK_DUP["break<br/>(avoid retry same)"]
-    DUP_CHK -- no --> FIRST{"first<br/>iteration?"}
+    DUP_CHK -- no --> XRUN_DUP{"fingerprint matches a<br/>validatedLocally=false skill<br/>saved on this spec in 24h?<br/>(findRecentFailedFingerprints)"}
+    XRUN_DUP -- yes --> SKIPPED
+    XRUN_DUP -- no --> APPLY["validator.applyFix(changes)"]
 
-    FIRST -- yes --> SETUP["validator.setup()<br/>clone repo + npm ci<br/>+ optional Cypress binary"]
-    SETUP --> BASELINE["baselineCheck()<br/>run test 3 consecutive times<br/>WITHOUT any fix applied"]
-    BASELINE --> BASELINE_PASS{"all 3 pass?"}
-    BASELINE_PASS -- yes --> RETURN_TRANSIENT["return:<br/>fixRecommendation: null<br/>(failure was transient)"]
-    BASELINE_PASS -- no --> APPLY["validator.applyFix(changes)"]
-
-    FIRST -- no --> APPLY
-
-    APPLY --> RUN["validator.runTest()<br/>🧪 Running test locally..."]
-    RUN --> TEST_PASS{"test passed?"}
+    APPLY --> RUN["validator.validateFixPasses()<br/>🧪 multi-pass local validation —<br/>3 consecutive evidence-bearing<br/>passes required"]
+    RUN --> TEST_PASS{"all 3<br/>passes?"}
     TEST_PASS -- yes --> PUSH["pushAndCreatePR<br/>→ branch + commit + PR"]
     PUSH --> PR_OK{"push OK?"}
     PR_OK -- yes --> RETURN_SUCCESS["return: autoFixResult.success=true<br/>+ prUrl + commitSha"]
-    PR_OK -- no --> RETURN_PARTIAL["return: success=false<br/>validationStatus=passed<br/>(test works, push failed)"]
+    PR_OK -- no --> RETURN_PARTIAL["return: success=false<br/>validationStatus=passed<br/>(test works, push failed —<br/>still counts as validated<br/>for the skill store)"]
 
-    TEST_PASS -- no --> RESET["validator.reset()<br/>git checkout -- .<br/>+ git clean -fd"]
+    TEST_PASS -- no --> RECORD_FAIL["record failed autoFixResult<br/>(validationStatus=failed →<br/>coordinator saves a<br/>validatedLocally=false<br/>failed-trajectory skill)"]
+    RECORD_FAIL --> RESET["validator.reset()<br/>git checkout -- .<br/>+ git clean -fd"]
     RESET --> ITER_CHK{"iterations<br/>< 3?"}
-    ITER_CHK -- yes --> BUILD_PRIOR["buildNextPreviousAttempt<br/>diff + logs + priorAgentRootCause<br/>+ priorAgentInvestigationFindings<br/>+ prior failureModeTrace"]
+    ITER_CHK -- yes --> BUILD_PRIOR["buildNextPreviousAttempt<br/>diff + logs + priorAgentRootCause<br/>+ priorAgentInvestigationFindings<br/>(sourced from THIS iteration's<br/>fixResult, never stale)"]
     BUILD_PRIOR --> GEN
     ITER_CHK -- no --> EXHAUSTED["🛑 All 3 attempts exhausted"]
 
@@ -249,6 +263,8 @@ flowchart TB
     style SKIPPED fill:#fff3cd,color:#000
     style EXHAUSTED fill:#f8d7da,color:#000
 ```
+
+The remote path (`attemptAutoFix`, used when `ENABLE_LOCAL_VALIDATION` is off) applies the same blast-radius gate and cross-run fingerprint dedupe, then applies the fix via the GitHub API, opens a draft PR, and optionally dispatches + awaits a remote validation workflow.
 
 ---
 
@@ -276,26 +292,33 @@ flowchart TB
     PIPELINE --> ON_SAVE
 
     subgraph ON_SAVE["After fix attempt (if skillStore + targetRepo)"]
-        BUILD["buildSkill({<br/>  spec: normalizeSpec(...),<br/>  errorPattern: normalizeError(...),<br/>  rootCauseCategory, fix, confidence,<br/>  prUrl, validatedLocally,<br/>  failureModeTrace,<br/>  investigationFindings<br/>})"]
-        SAVE["SkillStore.save(skill)<br/>→ PutCommand<br/>(no auto-prune)"]
-        SAVE --> RECORD{"fix succeeded?"}
+        WRITE_GATE{"terminal validation<br/>result?<br/>(shouldWriteSkillOutcome —<br/>pending / inconclusive /<br/>changed failure signature<br/>→ skip write)"}
+        WRITE_GATE -- no --> SKIP_WRITE["📝 skip skill outcome write"]
+        WRITE_GATE -- yes --> REINF{"byte-identical fix on<br/>same spec already stored?<br/>(findReinforcementTarget<br/>by fixFingerprint)"}
+        REINF -- yes --> REINFORCE["reinforceSkill(id)<br/>bump counters + lastUsedAt;<br/>promote validatedLocally / prUrl /<br/>confidence on validated reuse<br/>(never downgrades)"]
+        REINF -- no --> BUILD["buildSkill({<br/>  spec: normalizeSpec(...),<br/>  errorPattern: normalizeError(...),<br/>  rootCauseCategory, fix, confidence,<br/>  prUrl, validatedLocally = validationPassed,<br/>  fixFingerprint, failureModeTrace,<br/>  investigationFindings,<br/>  failedFixEvidence (on failed validation)<br/>})"]
+        BUILD --> SAVE["SkillStore.save(skill)<br/>→ PutCommand<br/>(no auto-prune)"]
+        SAVE --> RECORD{"validationPassed?<br/>(validation truth — a push/PR<br/>failure after a passing test<br/>still records success)"}
         RECORD -- yes --> OUTCOME_OK["recordOutcome(skill.id, true)<br/>+ recordClassificationOutcome(<br/>  skill.id, 'correct')<br/>→ counter UpdateCommand only"]
-        RECORD -- no --> OUTCOME_FAIL["recordOutcome(skill.id, false)<br/>→ counter UpdateCommand only<br/>(no auto-retire)"]
+        RECORD -- no --> OUTCOME_FAIL["recordOutcome(skill.id, false)<br/>📝 Saved failed skill trajectory<br/>→ counter UpdateCommand only<br/>(no auto-retire)"]
     end
 
     OUTCOME_OK --> SUMMARY["logRunSummary()<br/>📊 loaded=N surfaced=M saved=K"]
     OUTCOME_FAIL --> SUMMARY
+    REINFORCE --> SUMMARY
+    SKIP_WRITE --> SUMMARY
 ```
 
 ### Seed-skill protection
 
 ```mermaid
 flowchart LR
-    SEED["scripts/seed-skill.ts<br/>inserts TriageSkill<br/>with isSeed: true<br/>validatedLocally: true<br/>successCount: 0<br/>classificationOutcome: 'unknown'<br/>prompt label: curated guidance"]
+    SEED["scripts/seed-skill.ts<br/>inserts TriageSkill<br/>with isSeed: true<br/>validatedLocally: true<br/>successCount: 0<br/>classificationOutcome: 'unknown'<br/>optional nonFixable: true<br/>prompt label: curated guidance"]
 
     SEED --> DYNAMO["DynamoDB<br/>triage-skills-v1-live"]
 
-    DYNAMO --> RETRIEVAL["findRelevant<br/>findForClassifier<br/>(scored like any other skill)"]
+    DYNAMO --> RETRIEVAL["findRelevant<br/>findForClassifier<br/>(scored like any other skill;<br/>excluded from flakiness counts)"]
+    DYNAMO --> NONFIX_GATE["findNonFixableMatch<br/>(coordinator repair short-circuit:<br/>exact spec + error Jaccard >= 0.3)"]
     DYNAMO --> AUDIT["scripts/audit-skills.ts<br/>SKIPS seeds ✔<br/>(per-skill + dedup checks)"]
     DYNAMO --> REMOVAL["scripts/seed-skill.ts --remove<br/>operator-only seed retirement"]
 
@@ -307,26 +330,36 @@ flowchart LR
 
 ## 7. Verdict state machine
 
+The three `TEST_ISSUE_*` terminal states below all emit `verdict=TEST_ISSUE`; they are distinguished by the `fix_recommendation` / `auto_fix_skipped` outputs.
+
 ```mermaid
 stateDiagram-v2
-    [*] --> processingLogs
+    [*] --> admissionGate
+
+    admissionGate --> TRIAGE_LIMIT_REACHED : 3rd+ triage run for the same<br/>source workflow attempt (max 2)
+    admissionGate --> processingLogs : slot claimed
 
     processingLogs --> NO_FAILURE : workflow run succeeded
     processingLogs --> PENDING : run still in progress
     processingLogs --> ERROR : unrecoverable / missing inputs
+    processingLogs --> INCONCLUSIVE : infra fast-path (Sauce/WebDriver<br/>session-creation failure)
     processingLogs --> classifying : errorData found
 
     classifying --> INCONCLUSIVE : confidence < threshold
     classifying --> PRODUCT_ISSUE : verdict=PRODUCT_ISSUE
-    classifying --> flakyGate : verdict=TEST_ISSUE
+    classifying --> nonFixableGate : verdict=TEST_ISSUE
 
-    flakyGate --> TEST_ISSUE_SKIPPED : fixCount >= 3 (chronic)<br/>auto_fix_skipped=true
+    nonFixableGate --> TEST_ISSUE_SKIPPED : non-fixable seed matched<br/>auto_fix_skipped=true
+    nonFixableGate --> flakyGate : no match
+
+    flakyGate --> TEST_ISSUE_SKIPPED : detectFlakiness isFlaky<br/>(>1 fix in 3d or >2 in 7d)<br/>auto_fix_skipped=true
     flakyGate --> repairing : not chronic
 
     repairing --> TEST_ISSUE_WITH_FIX : fix generated + (auto-applied OR recommendation only)
-    repairing --> TEST_ISSUE_SKIPPED : blast-radius gate blocked fix
-    repairing --> TEST_ISSUE_NO_FIX : fix-gen failed / verdict override / not test-fixable
+    repairing --> TEST_ISSUE_SKIPPED : baseline transient/mixed, blast-radius gate,<br/>or cross-run fingerprint dedupe
+    repairing --> TEST_ISSUE_NO_FIX : fix-gen failed / verdict override /<br/>not test-fixable / repair threw<br/>(classification preserved)
 
+    TRIAGE_LIMIT_REACHED --> [*]
     NO_FAILURE --> [*]
     PENDING --> [*]
     ERROR --> [*] : core.setFailed
@@ -362,19 +395,23 @@ sequenceDiagram
 
     Coord->>Coord: classify()
     Note over Coord: 📝 skill-telemetry role=classifier ids=...
-    Coord->>Coord: detectFlakiness<br/>⚠️ FLAKINESS DETECTED<br/>or ⏭️ Chronic flakiness
+    Coord->>Coord: detectFlakiness<br/>⚠️ FLAKINESS DETECTED<br/>⏭️ Non-fixable failure pattern matched<br/>or ⏭️ Chronic flakiness
 
-    Coord->>Orch: orchestrate() [agentic]
-    Note over Orch: 🤖 Starting agentic repair pipeline<br/>📊 Step 1/2/3/4/5 ...<br/>📝 skill-telemetry role=investigation/fix_generation/review
+    Coord->>Val: iterativeFixValidateLoop → setup + baselineCheck (BEFORE any fix generation)
+    Note over Val: 🔍 Running baseline check — does the unmodified test fail consistently?<br/>❌ Baseline check confirmed consistent failure<br/>OR ✅ Skipping repair — baseline passed / mixed
+
+    Coord->>Orch: orchestrate() [agentic, once per loop iteration]
+    Note over Orch: 🤖 Starting agentic repair pipeline<br/>📊 Step 1/2/3/4/5 ...<br/>📝 skill-telemetry role=investigation/fix_generation/review/failed_trajectory
     Orch-->>Coord: fix + failureModeTrace
-    Note over Orch: 🤖 Agentic approach: agentic, iterations: N
+    Note over Orch: ✅ Agentic repair completed in Nms with N iteration(s)
 
-    Coord->>Val: iterativeFixValidateLoop
-    Note over Val: 🔄 Fix-Validate iteration N/3<br/>🔍 Running baseline check (requires 3 consecutive passes)<br/>✅ Baseline passed OR ❌ Baseline failed on pass N<br/>🧪 Running test locally
+    Coord->>Val: applyFix + validateFixPasses
+    Note over Val: 🔄 Fix-Validate iteration N/3<br/>🧪 Running multi-pass local validation...<br/>📊 learning-telemetry validation=passed/failed iteration=N
+
     Val-->>Coord: success + prUrl
 
     Coord->>Store: save(skill)
-    Note over Store: 📝 Saved validated skill ...<br/>🧹 Pruned N old skill(s)<br/>⚠️ Skill ... retired — X%
+    Note over Store: 📝 Saved validated skill ...<br/>OR 📝 Saved failed skill trajectory ...<br/>OR 📝 Reinforced existing skill ...
 
     Coord->>Store: logRunSummary()
     Note over Store: 📊 skill-telemetry-summary loaded=N surfaced=M saved=K

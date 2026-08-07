@@ -123,7 +123,7 @@ export interface AgentConfig {
   maxTokens: number;
   /** Whether to include detailed logs */
   verbose: boolean;
-  /** Override model for this agent (defaults to OPENAI.LEGACY_MODEL via openai-client) */
+  /** Override model for this agent (defaults to OPENAI.MODEL via openai-client) */
   model?: string;
   /** Reasoning effort for this agent ('none' = no reasoning field sent) */
   reasoningEffort?: ReasoningEffort;

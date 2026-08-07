@@ -27,9 +27,7 @@ exports.CONFIDENCE = {
     MIN_FIX_CONFIDENCE: 50,
 };
 exports.OPENAI = {
-    MODEL: 'gpt-5.6-terra',
-    LEGACY_MODEL: 'gpt-5.6-terra',
-    UPGRADED_MODEL: 'gpt-5.6-sol',
+    MODEL: 'gpt-5.6-sol',
     MAX_COMPLETION_TOKENS: 24000,
     MAX_RETRIES: 3,
     RETRY_DELAY_MS: 1000,
@@ -42,16 +40,16 @@ exports.STAGE_MAX_OUTPUT_TOKENS = {
     review: 6000,
 };
 exports.AGENT_MODEL = {
-    classification: exports.OPENAI.LEGACY_MODEL,
-    analysis: exports.OPENAI.LEGACY_MODEL,
-    investigation: exports.OPENAI.LEGACY_MODEL,
-    fixGeneration: exports.OPENAI.UPGRADED_MODEL,
-    review: exports.OPENAI.UPGRADED_MODEL,
+    classification: exports.OPENAI.MODEL,
+    analysis: exports.OPENAI.MODEL,
+    investigation: exports.OPENAI.MODEL,
+    fixGeneration: exports.OPENAI.MODEL,
+    review: exports.OPENAI.MODEL,
 };
 exports.GPT56_CANDIDATE_MODEL = {
-    classification: 'gpt-5.6-terra',
-    analysis: 'gpt-5.6-terra',
-    investigation: 'gpt-5.6-terra',
+    classification: 'gpt-5.6-sol',
+    analysis: 'gpt-5.6-sol',
+    investigation: 'gpt-5.6-sol',
     fixGeneration: 'gpt-5.6-sol',
     review: 'gpt-5.6-sol',
 };

@@ -65,7 +65,7 @@ class OpenAIClient {
         this.openai = new openai_1.default({ apiKey });
     }
     async analyze(errorData, examples, skillContext, options) {
-        const model = options?.model ?? constants_1.OPENAI.LEGACY_MODEL;
+        const model = options?.model ?? constants_1.OPENAI.MODEL;
         const reasoningEffort = options?.reasoningEffort ?? 'none';
         core.info(`🧠 Using ${model} model for analysis (Responses API) reasoningEffort=${reasoningEffort}`);
         const systemPrompt = this.getSystemPrompt();
@@ -618,7 +618,7 @@ Changed Product Files:
         return new Promise(resolve => setTimeout(resolve, ms));
     }
     async generateWithCustomPrompt(params) {
-        const model = params.model ?? constants_1.OPENAI.LEGACY_MODEL;
+        const model = params.model ?? constants_1.OPENAI.MODEL;
         const reasoningEffort = params.reasoningEffort ?? 'none';
         const wantsJson = params.responseAsJson || !!params.jsonSchema;
         const userContent = wantsJson
