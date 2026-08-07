@@ -83,6 +83,12 @@ gh api "repos/adept-at/wdio-9-bidi-mux3/actions/runs/24835972873/logs" > /tmp/ru
 unzip -p /tmp/run.zip "0_triage _ triage.txt" | sed -n '216,360p'
 ```
 
+> Note: GitHub retains Actions logs for ~90 days, so the raw log download
+> for this April 2026 run may no longer be available. The run summary pages,
+> commit, and PR (see Reference: Public URLs) remain permanent evidence. To
+> re-capture live log evidence, run the same greps against any recent triage
+> run — the marker lines are unchanged.
+
 ### Phase 1 — The originating failure (12:43:46Z)
 
 The scheduled `video transcripts` workflow ([run 24835888362](https://github.com/adept-at/wdio-9-bidi-mux3/actions/runs/24835888362)) ran the test `should play video with transcripts` on Sauce Labs against `--b=firefox,edge`.
@@ -130,7 +136,7 @@ The classifier (gpt-5.3-codex) is invoked with the screenshot, error text, and t
 line 223 | 12:45:50  📝 skill-telemetry role=investigation count=2 ids=99ed0d7e-d4d2-4c2a-8275-7479129cfbe7,d88c016d-666f-4004-896c-3ce2d2290fc3
 ```
 
-This is the **first proof** the agent didn't just load skills, it actually rendered them into a model's prompt. The grep-stable `skill-telemetry` line emits *only* when `formatSkillsForPrompt` actually serializes skills into a prompt — see `src/services/skill-store.ts:166`.
+This is the **first proof** the agent didn't just load skills, it actually rendered them into a model's prompt. The grep-stable `skill-telemetry` line emits *only* when a skill formatter actually serializes skills into a prompt — see `logSkillTelemetry` in `src/services/skill-store.ts`.
 
 ### Phase 5 — Agentic repair pipeline (12:45:50 → 12:46:49, 59s)
 
@@ -237,7 +243,7 @@ A new skill was written back to DynamoDB capturing this run's investigation find
 
 ## One-Command Demo Reproduction
 
-For a video — drop this into a terminal during the demo to show the evidence live:
+For a video — drop this into a terminal during the demo to show the evidence live (subject to the ~90-day log retention caveat above; substitute a recent triage run ID if the download 404s):
 
 ```bash
 RUN=24835972873
@@ -282,11 +288,11 @@ These are the log lines the agent emits — stable across releases and dashboard
 
 | Marker | Source | Emitted when |
 |---|---|---|
-| `📝 Loaded N skill(s) from DynamoDB (<table>) for <owner>/<repo>` | `src/services/skill-store.ts:431` | At every run start, after the partition scan |
-| `📝 skill-telemetry role=<role> count=<n> ids=<id1>,<id2>,...` | `src/services/skill-store.ts:166` (`logSkillTelemetry`) | When `formatSkillsForPrompt` actually serializes skills into a prompt for `<role>` ∈ `investigation`, `fix_generation`, `review`, `classifier` |
-| `📝 N skill(s) available from prior runs` | `src/agents/agent-orchestrator.ts:396` | When the orchestrator hands skills to the investigation agent |
-| `📝 Saved skill <id> to DynamoDB (<count> total)` | `src/services/skill-store.ts:518` | When a new skill record is persisted |
-| `📊 skill-telemetry-summary loaded=N surfaced=M saved=K` | `src/services/skill-store.ts:861` (`logRunSummary`) | Once per run, in the coordinator's finally block |
+| `📝 Loaded N skill(s) from DynamoDB (<table>) for <owner>/<repo>` | `SkillStore.load()` in `src/services/skill-store.ts` | At every run start, after the partition query |
+| `📝 skill-telemetry role=<role> count=<n> ids=<id1>,<id2>,...` | `logSkillTelemetry` in `src/services/skill-store.ts` | When a skill formatter serializes skills into a prompt for `<role>` ∈ `investigation`, `fix_generation`, `review`, `classifier`, `failed_trajectory` |
+| `📝 N skill(s) available from prior runs` | `src/agents/agent-orchestrator.ts` | When the orchestrator hands skills to the investigation agent |
+| `📝 Saved skill <id> to DynamoDB (<count> total)` | `SkillStore.save()` in `src/services/skill-store.ts` | When a new skill record is persisted |
+| `📊 skill-telemetry-summary loaded=N surfaced=M saved=K` | `SkillStore.logRunSummary()` in `src/services/skill-store.ts` | Once per run, in the coordinator's finally block |
 
 ## Reference: Public URLs
 
