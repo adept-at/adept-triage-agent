@@ -46,12 +46,8 @@ export const CONFIDENCE = {
 
 /** OpenAI API configuration */
 export const OPENAI = {
-  /** @deprecated Use LEGACY_MODEL or UPGRADED_MODEL. Kept for backward compat with tests/scripts that reference OPENAI.MODEL. */
-  MODEL: 'gpt-5.6-terra',
-  /** Default model for classification, analysis, and investigation. */
-  LEGACY_MODEL: 'gpt-5.6-terra',
-  /** Model family used by fix-generation and review agents. */
-  UPGRADED_MODEL: 'gpt-5.6-sol',
+  /** Production model for all agent stages. */
+  MODEL: 'gpt-5.6-sol',
   /** Shared fallback max completion tokens (prefer STAGE_MAX_OUTPUT_TOKENS). */
   MAX_COMPLETION_TOKENS: 24000,
   /** Maximum retry attempts */
@@ -76,20 +72,20 @@ export const STAGE_MAX_OUTPUT_TOKENS = {
  * Per-agent production model selection.
  */
 export const AGENT_MODEL = {
-  classification: OPENAI.LEGACY_MODEL,
-  analysis: OPENAI.LEGACY_MODEL,
-  investigation: OPENAI.LEGACY_MODEL,
-  fixGeneration: OPENAI.UPGRADED_MODEL,
-  review: OPENAI.UPGRADED_MODEL,
+  classification: OPENAI.MODEL,
+  analysis: OPENAI.MODEL,
+  investigation: OPENAI.MODEL,
+  fixGeneration: OPENAI.MODEL,
+  review: OPENAI.MODEL,
 } as const;
 
 /**
  * GPT-5.6 routing retained for replay evaluation and canary compatibility.
  */
 export const GPT56_CANDIDATE_MODEL = {
-  classification: 'gpt-5.6-terra',
-  analysis: 'gpt-5.6-terra',
-  investigation: 'gpt-5.6-terra',
+  classification: 'gpt-5.6-sol',
+  analysis: 'gpt-5.6-sol',
+  investigation: 'gpt-5.6-sol',
   fixGeneration: 'gpt-5.6-sol',
   review: 'gpt-5.6-sol',
 } as const;

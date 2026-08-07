@@ -20,9 +20,7 @@ export declare const CONFIDENCE: {
     readonly MIN_FIX_CONFIDENCE: 50;
 };
 export declare const OPENAI: {
-    readonly MODEL: "gpt-5.6-terra";
-    readonly LEGACY_MODEL: "gpt-5.6-terra";
-    readonly UPGRADED_MODEL: "gpt-5.6-sol";
+    readonly MODEL: "gpt-5.6-sol";
     readonly MAX_COMPLETION_TOKENS: 24000;
     readonly MAX_RETRIES: 3;
     readonly RETRY_DELAY_MS: 1000;
@@ -35,16 +33,16 @@ export declare const STAGE_MAX_OUTPUT_TOKENS: {
     readonly review: 6000;
 };
 export declare const AGENT_MODEL: {
-    readonly classification: "gpt-5.6-terra";
-    readonly analysis: "gpt-5.6-terra";
-    readonly investigation: "gpt-5.6-terra";
+    readonly classification: "gpt-5.6-sol";
+    readonly analysis: "gpt-5.6-sol";
+    readonly investigation: "gpt-5.6-sol";
     readonly fixGeneration: "gpt-5.6-sol";
     readonly review: "gpt-5.6-sol";
 };
 export declare const GPT56_CANDIDATE_MODEL: {
-    readonly classification: "gpt-5.6-terra";
-    readonly analysis: "gpt-5.6-terra";
-    readonly investigation: "gpt-5.6-terra";
+    readonly classification: "gpt-5.6-sol";
+    readonly analysis: "gpt-5.6-sol";
+    readonly investigation: "gpt-5.6-sol";
     readonly fixGeneration: "gpt-5.6-sol";
     readonly review: "gpt-5.6-sol";
 };

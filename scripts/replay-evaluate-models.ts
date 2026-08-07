@@ -3,7 +3,7 @@
  * Non-production GPT-5.6 replay evaluator.
  *
  * Compares production GPT-5.5 routing against the GPT-5.6 candidate profile
- * (terra for classify/analyze/investigate, sol for fix/review) using
+ * (sol for all stages) using
  * historical fixture cases. This is an evaluation tool — not a test suite.
  *
  * Usage:

@@ -35,7 +35,7 @@ export class OpenAIClient {
   }
 
   async analyze(errorData: ErrorData, examples: FewShotExample[], skillContext?: string, options?: { model?: string; reasoningEffort?: ReasoningEffort; signal?: AbortSignal }): Promise<OpenAIResponse & { responseId: string }> {
-    const model = options?.model ?? OPENAI.LEGACY_MODEL;
+    const model = options?.model ?? OPENAI.MODEL;
     const reasoningEffort = options?.reasoningEffort ?? 'none';
     core.info(`🧠 Using ${model} model for analysis (Responses API) reasoningEffort=${reasoningEffort}`);
     
@@ -726,7 +726,7 @@ Changed Product Files:
    * by the repair agent to request a structured JSON repair plan, without
    * going through the triage-specific prompt path.
    *
-   * Uses the Responses API. The model defaults to OPENAI.LEGACY_MODEL when
+   * Uses the Responses API. The model defaults to OPENAI.MODEL when
    * not overridden. Note: temperature parameter is accepted for backward
    * compatibility but is not supported by reasoning-class models
    * such as GPT-5 reasoning models that do not expose a temperature parameter.
@@ -744,7 +744,7 @@ Changed Product Files:
     maxTokens?: number;
     signal?: AbortSignal;
   }): Promise<{ text: string; responseId: string; tokensUsed?: number }> {
-    const model = params.model ?? OPENAI.LEGACY_MODEL;
+    const model = params.model ?? OPENAI.MODEL;
     const reasoningEffort = params.reasoningEffort ?? 'none';
     const wantsJson = params.responseAsJson || !!params.jsonSchema;
     const userContent = wantsJson
